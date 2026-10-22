@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using FluentAssertions;
+using PSXRecomp.Core;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -613,6 +614,8 @@ public sealed class GuestCancellationTests
             var residual = engine.LastStopDiagnostics.Residuals.Should().ContainSingle().Subject;
             residual.ProcessId.Should().Be(sleeper.Id, "the residual carries the survivor's process id");
             residual.State.Should().Be(ResidualState.EndedAfterKill, "the stop killed the survivor and saw it exit");
+            residual.ObservedAtUtc.Kind.Should().Be(DateTimeKind.Utc, "the residual is stamped with its observation time (UTC)");
+            residual.ObservedAtUtc.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(5));
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
 
             // The survivor is a tracked process, so the stop reaps it through its own handle and reports it as left running.
@@ -656,6 +659,7 @@ public sealed class GuestCancellationTests
             outcome.Confirmed.Should().BeTrue("the root was killed and its exit was seen");
             outcome.Refused.Should().BeNull("the stop itself was not refused");
             outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child");
+            outcome.Result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode, "a successful stop is never rewritten to a refusal");
             outcome.Leftover.Should().Contain($"descendant process {grandchild.Id} (", "the survivor is reported with its process id");
             outcome.Leftover.Should().Contain("still running; kill refused", "its state is alive: the stop could not end it");
             grandchild.HasExited.Should().BeFalse("the survivor really is still running, checked on the OS and not only in the record");
@@ -785,8 +789,13 @@ public sealed class GuestCancellationTests
             cts.Cancel();
             var outcome = run.Result;
 
-            outcome.Confirmed.Should().BeFalse("the stop must not be confirmed while a tracked identity is unverifiable");
-            outcome.Refused.Should().Contain("could not be verified, so its children cannot be attributed");
+            // Owner spec (round 15): the root was killed and its exit seen, so the stop succeeded and the result is Cancelled. The unverifiable
+            // identity of the middle is an uncertainty in the diagnostics: its children are unidentified and are not claimed or reaped.
+            outcome.Confirmed.Should().BeTrue("the root was killed and its exit was seen");
+            outcome.Refused.Should().BeNull("the kill itself was not refused");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child");
+            outcome.Leftover.Should().Contain("could not be verified, so its unclaimed children are unidentified", "the uncertainty is recorded");
+            outcome.Leftover.Should().NotContain("after its owner ended (killed)", "nothing below the unverifiable middle is reaped");
         }
         finally
         {
@@ -795,12 +804,75 @@ public sealed class GuestCancellationTests
         }
     }
 
-    [SkippableFact]
-    public void StartTimeUnreadable_RefusesTheStop_AndConfirmsNothing()
+    [Fact]
+    public void ProcessTreeListing_SeesARealChild_OnEveryPlatformThatSupportsIt()
     {
-        // Issue #827 review (2a): with no start time for the child, no descendant can be attributed to it. The stop must be refused and
-        // must not be confirmed, even though the kill succeeds.
-        Skip.IfNot(OperatingSystem.IsWindows(), "the sleeper fixture is started through the Windows test copy");
+        // Regression guard (Issue #820, round 15): macOS listed nothing, so every stop was refused. On Windows, Linux and macOS a real child is listed
+        // with its parent id; any other platform reports that the listing is unavailable.
+        using var dir = new TempDirectory();
+        var child = StartSleeper(dir);
+        try
+        {
+            var listing = ProcessTreeInterop.TryReadParentIds();
+            if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
+            {
+                listing.Should().BeNull("this platform cannot list the process tree");
+                return;
+            }
+
+            listing.Should().NotBeNull("the process tree can be listed on this platform");
+            listing!.Should().Contain(entry => entry.Pid == child.Id && entry.Ppid == Environment.ProcessId, "a real child is listed under this test process");
+        }
+        finally
+        {
+            if (!child.HasExited)
+            {
+                child.Kill(true);
+            }
+
+            child.Dispose();
+        }
+    }
+
+    [Fact]
+    public void KillRefused_IsARefusal_NotCancelled_OnEveryPlatform()
+    {
+        // Owner spec (round 15), cross-platform: a kill the OS refuses leaves the child alive, so the stop did not succeed. The result is not
+        // Cancelled, and the refusal is recorded with its reason. The OS refusal is the test seam (not constructible on demand).
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "killrefused");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+                copy,
+                SleepArguments,
+                60_000,
+                cts.Token,
+                kill: _ => throw new InvalidOperationException("access denied (test seam)")));
+            WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(300));
+            cts.Cancel();
+
+            var outcome = run.Result;
+            outcome.Confirmed.Should().BeFalse("the child was not killed");
+            outcome.Refused.Should().Contain("the kill was refused", "the refusal is recorded with its reason");
+            outcome.Result.Status.Should().NotBe(RecompilerExecutionStatus.Cancelled, "a stop that did not end the child is not a success");
+            ProcessNameProbe.IsRunning(name).Should().BeTrue("the child is really still running");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void StartTimeUnreadable_EndsCancelled_AndRecordsTheUnidentifiedDescendants()
+    {
+        // Owner spec (round 15), written independently of the implementation: a stop that kills the live child and sees its exit has succeeded,
+        // so the result is Cancelled, even when the child's start time cannot be read. The unreadable start time is an uncertainty in the
+        // diagnostics: its descendants are unidentified and no pid is reported. Runs on Windows and Linux: the child is the platform's sleep copy.
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "nostart");
         try
@@ -815,8 +887,12 @@ public sealed class GuestCancellationTests
                 cts.Token,
                 startTime: _ => null);
 
-            outcome.Confirmed.Should().BeFalse("no descendant can be attributed without the child's start time");
-            outcome.Refused.Should().Contain("start time of child process");
+            outcome.Confirmed.Should().BeTrue("the child was killed and its exit was seen");
+            outcome.Refused.Should().BeNull("the kill itself was not refused");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child");
+            outcome.Result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            outcome.Leftover.Should().Contain("unidentified", "the descendants that cannot be attributed are reported as unidentified");
+            ProcessNameProbe.IsRunning(Path.GetFileNameWithoutExtension(copy)).Should().BeFalse("the child is dead");
         }
         finally
         {
@@ -978,9 +1054,13 @@ public sealed class GuestCancellationTests
             cts.Cancel();
             var outcome = run.Result;
 
-            outcome.Confirmed.Should().BeFalse();
-            outcome.Refused.Should().Contain("cannot be read", "a start time that cannot be read is refused, as for the root");
-            outcome.Leftover.Should().BeNull("nothing below the unattributable process is claimed or reaped");
+            // Owner spec (round 15): the middle was killed with the root's tree and its exit seen (the root tree kill), so the result is Cancelled.
+            // The middle's start time cannot be read: its descendants are unidentified, a diagnostic, and nothing below it is reaped by the stop.
+            outcome.Confirmed.Should().BeTrue("the root was killed and its exit was seen");
+            outcome.Refused.Should().BeNull("the kill itself was not refused");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child");
+            outcome.Leftover.Should().Contain("cannot be read", "the unreadable start time is recorded as an uncertainty");
+            outcome.Leftover.Should().NotContain("after its owner ended (killed)", "nothing below the unattributable process is reaped");
         }
         finally
         {
@@ -1113,7 +1193,7 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public async Task RealArtifact_DescendantThatCannotBeChecked_EndsRefused_NotAsAPlainFailure()
+    public async Task RealArtifact_DescendantThatCannotBeChecked_EndsCancelled_WithAnUnidentifiedResidual()
     {
         // Failure injection (Issue #827 review): a descendant whose handle is no longer usable models an access the OS refuses. The
         // stop cannot tell whether it is gone, so it must say so, not report a plain failure.
@@ -1145,10 +1225,16 @@ public sealed class GuestCancellationTests
 
             var result = await run.WaitAsync(StopWait);
 
-            result.State.Should().NotBe(TitleExecutionState.Cancelled, "an unchecked descendant is not confirmed");
+            // Owner spec (round 15): the artifact was killed and its exit seen, so the result is Cancelled. The descendant that cannot be checked is
+            // an unidentified uncertainty in the diagnostics: the shutdown is not clean, and no pid is claimed for it.
+            result.State.Should().Be(TitleExecutionState.Cancelled, "the artifact was killed and its exit was seen");
             result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
             engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual);
-            engine.LastStopDiagnostics!.Refused.Should().Contain("could not be checked");
+            engine.LastStopDiagnostics!.Refused.Should().BeNull("the stop itself was not refused");
+            var uncertainty = engine.LastStopDiagnostics.Residuals.Should().ContainSingle().Subject;
+            uncertainty.ProcessId.Should().BeNull("the descendant's identity cannot be verified, so no pid is reported");
+            uncertainty.State.Should().Be(ResidualState.Unverified);
+            uncertainty.Reason.Should().Contain("could not be checked");
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
         }
         finally
