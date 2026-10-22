@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core;
 
@@ -7,8 +8,8 @@ namespace PSXRecomp.Infrastructure;
 /// <summary>
 /// What one stop request did to one child process (Issue #827). A stop is <em>confirmed</em> only when the child and every
 /// descendant it had at the stop were seen exited. A kill request alone never confirms it. A stop the OS refused, a child still
-/// running after the bounded wait, a descendant still running, or an output pipe still held after the stop is <em>refused</em>,
-/// with its reason.
+/// running after the bounded wait, a descendant still running or not checkable, or an output pipe still held after the stop is
+/// <em>refused</em>, with its reason.
 /// </summary>
 /// <remarks>
 /// The stop runs under <see cref="_gate"/>. The run seals the record (<see cref="Seal"/>) before it reads the outcome, so a stop that
@@ -36,11 +37,21 @@ internal sealed class StopRecord : IDisposable
     /// </summary>
     internal Func<Process, IReadOnlyList<Process>?>? DescendantsProbe { get; init; }
 
+    /// <summary>
+    /// Observes each wait of the run (the test seam, Issue #827). It receives the record, the child, the wait's name ("exit" or
+    /// "pump"), and what the wait reported; it returns what the run should use. Null observes nothing.
+    /// </summary>
+    internal Func<StopRecord, Process, string, bool, bool>? ObserveForTest { get; init; }
+
     /// <summary>The OS process id of the child the stop targets, or 0 before the child starts.</summary>
     internal int ProcessId { get; private set; }
 
     /// <summary>True once a stop has finished its decision (confirmed, refused, or found the child already gone).</summary>
-    internal bool Settled => _settled;
+    public bool Settled => _settled;
+
+    /// <summary>Applies the observation seam to a wait's report (identity when no seam is set).</summary>
+    internal bool Observe(Process process, string phase, bool ended) =>
+        ObserveForTest is null ? ended : ObserveForTest(this, process, phase, ended);
 
     /// <summary>
     /// Registers the stop for the child. The child is killed only when the stop token is cancelled. Dispose the returned record
@@ -90,6 +101,19 @@ internal sealed class StopRecord : IDisposable
         }
     }
 
+    /// <summary>True when the child has exited, or its handle is no longer usable (the run already released it).</summary>
+    internal static bool HasExitedOrGone(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
     private void Stop(Process process)
     {
         lock (_gate)
@@ -103,6 +127,11 @@ internal sealed class StopRecord : IDisposable
             {
                 Decide(process);
             }
+            catch (Exception exception)
+            {
+                // Nothing escapes the stop thread, and nothing is left undecided: an unexpected failure is a refusal.
+                RefuseIfUnset($"the stop failed unexpectedly: {exception.Message}");
+            }
             finally
             {
                 _settled = true;
@@ -112,6 +141,8 @@ internal sealed class StopRecord : IDisposable
 
     private void Decide(Process process)
     {
+        var listed = false;
+        var killed = false;
         try
         {
             if (HasExitedOrGone(process))
@@ -124,6 +155,7 @@ internal sealed class StopRecord : IDisposable
 
             // The descendants are listed before the kill: once the root is gone, its children are no longer attached to it.
             var descendants = DescendantsProbe is null ? ProcessTree.DescendantsOf(process) : DescendantsProbe(process);
+            listed = true;
             try
             {
                 if (descendants is null)
@@ -132,6 +164,7 @@ internal sealed class StopRecord : IDisposable
                 }
 
                 process.Kill(true);
+                killed = true;
                 if (!process.WaitForExit(Remaining(clock)))
                 {
                     RefuseIfUnset($"the child {ProcessId} was still running {ConfirmTimeout.TotalSeconds:0} s after the kill");
@@ -140,10 +173,10 @@ internal sealed class StopRecord : IDisposable
 
                 if (descendants is not null)
                 {
-                    var alive = descendants.Where(d => !WaitGone(d, clock)).Select(d => d.Id).ToList();
-                    if (alive.Count > 0)
+                    var problems = descendants.Select(descendant => AwaitGone(descendant, clock)).OfType<string>().ToList();
+                    if (problems.Count > 0)
                     {
-                        RefuseIfUnset($"descendant processes {string.Join(", ", alive)} were still running after the kill");
+                        RefuseIfUnset(string.Join("; ", problems));
                         return;
                     }
                 }
@@ -166,25 +199,15 @@ internal sealed class StopRecord : IDisposable
         }
         catch (Exception exception)
         {
-            // An exit between the check and the kill is a natural end of the child, not a refused stop.
-            if (!HasExitedOrGone(process))
+            // A kill that failed only because the child had already exited, after its tree was listed, is a natural end. Every other
+            // failure (a refused kill, a tree that could not be checked) is a refused stop, never a plain failure (Issue #827).
+            if (listed && !killed && HasExitedOrGone(process))
             {
-                RefuseIfUnset($"the kill was refused: {exception.Message}");
-                Trace.WriteLine($"Stopping the artifact process failed: {exception.Message}");
+                return;
             }
-        }
-    }
 
-    /// <summary>True when the child has exited, or its handle is no longer usable (the run already released it).</summary>
-    private static bool HasExitedOrGone(Process process)
-    {
-        try
-        {
-            return process.HasExited;
-        }
-        catch (InvalidOperationException)
-        {
-            return true;
+            RefuseIfUnset($"the stop could not be confirmed: {exception.Message}");
+            Trace.WriteLine($"Stopping the artifact process {ProcessId} failed: {exception.Message}");
         }
     }
 
@@ -194,15 +217,31 @@ internal sealed class StopRecord : IDisposable
         return left > TimeSpan.Zero ? left : TimeSpan.Zero;
     }
 
-    private static bool WaitGone(Process descendant, Stopwatch clock)
+    /// <summary>Waits for one descendant to exit. Returns null when it is gone, otherwise the reason it is not confirmed.</summary>
+    private static string? AwaitGone(Process descendant, Stopwatch clock)
     {
         try
         {
-            return descendant.WaitForExit(Remaining(clock));
+            return descendant.WaitForExit(Remaining(clock))
+                ? null
+                : $"descendant process {DescribeId(descendant)} was still running after the kill";
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception exception)
         {
-            return descendant.HasExited;
+            // A handle that cannot be checked is not known to be gone: the stop is refused, never confirmed.
+            return $"descendant process {DescribeId(descendant)} could not be checked: {exception.Message}";
+        }
+    }
+
+    private static string DescribeId(Process process)
+    {
+        try
+        {
+            return process.Id.ToString(CultureInfo.InvariantCulture);
+        }
+        catch (InvalidOperationException)
+        {
+            return "unknown";
         }
     }
 }
@@ -214,7 +253,10 @@ internal sealed class StopRecord : IDisposable
 [Infrastructure]
 internal static class ProcessTree
 {
-    /// <summary>The descendants of <paramref name="root"/> as process handles (the caller disposes them), or null when unsupported.</summary>
+    /// <summary>
+    /// The descendants of <paramref name="root"/> as process handles (the caller disposes them), or null when unsupported. A process
+    /// that is gone before its handle is opened is not a survivor. Any other failure to open a handle is thrown: the caller refuses.
+    /// </summary>
     internal static IReadOnlyList<Process>? DescendantsOf(Process root)
     {
         var parents = ProcessTreeInterop.TryReadParentIds();
@@ -252,9 +294,9 @@ internal static class ProcessTree
                 {
                     found.Add(Process.GetProcessById(childId));
                 }
-                catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+                catch (ArgumentException)
                 {
-                    // Already gone between the listing and the handle: it is not a survivor.
+                    // Not running any more (the id names no process): it is not a survivor.
                 }
             }
         }

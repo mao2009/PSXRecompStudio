@@ -215,6 +215,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Func<Process, IReadOnlyList<Process>?>? StopDescendantsProbe { get; set; }
 
     /// <summary>
+    /// Test seam (Issue #827): observes each wait of a segment (see <see cref="StopRecord.ObserveForTest"/>). It can force a
+    /// reported state, which lets a test place a stop at an exact point of the wait. Null in production.
+    /// </summary>
+    internal Func<StopRecord, Process, string, bool, bool>? WaitObservedForTest { get; set; }
+
+    /// <summary>
     /// Decides the result of a run that was asked to stop (Issue #827). A run that completed keeps its result. A refused stop is a
     /// failure with the reason. A confirmed stop is Cancelled. Anything else keeps its own classification.
     /// </summary>
@@ -707,7 +713,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         // What a stop did to this child. It alone decides a Cancelled or refused result (see ApplyStopOutcome).
-        var stopRecord = new StopRecord { DescendantsProbe = StopDescendantsProbe };
+        var stopRecord = new StopRecord { DescendantsProbe = StopDescendantsProbe, ObserveForTest = WaitObservedForTest };
         CancellationToken stopToken;
         try
         {
@@ -1033,7 +1039,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         if (bridge is null)
         {
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord))
+            if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
             {
                 // The budget ran out, or a stop was refused or confirmed: the child is killed, and the stop (if any) decides the result.
                 TryKillTree(process);
@@ -1070,7 +1076,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool pumpCompleted;
         try
         {
-            pumpCompleted = WaitBounded(milliseconds => pump.Wait(milliseconds), timeoutMs, stopRecord);
+            pumpCompleted = WaitBounded(milliseconds => pump.Wait(milliseconds), timeoutMs, stopRecord, process, "pump");
         }
         catch (Exception exception)
         {
@@ -1101,7 +1107,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, pumpEnded);
         }
 
-        if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord))
+        if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
         {
             // The pump ended but the child has not exited: stop it. Nothing is using
             // the bridge's devices any more.
@@ -1120,7 +1126,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Waits for <paramref name="waitSlice"/> to report the end within <paramref name="timeoutMs"/>, but returns early once a stop has
     /// settled (Issue #827): a refused or confirmed stop must not wait out the run's whole budget. Returns true only when the end was seen.
     /// </summary>
-    private static bool WaitBounded(Func<int, bool> waitSlice, int timeoutMs, StopRecord stopRecord)
+    private static bool WaitBounded(Func<int, bool> waitSlice, int timeoutMs, StopRecord stopRecord, Process process, string phase)
     {
         var clock = Stopwatch.StartNew();
         while (true)
@@ -1131,15 +1137,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return false;
             }
 
-            if (waitSlice(Math.Min(StopRecord.PollMs, remaining)))
+            if (stopRecord.Observe(process, phase, waitSlice(Math.Min(StopRecord.PollMs, remaining))))
             {
                 return true;
             }
 
-            if (stopRecord.Settled)
+            if (!stopRecord.Settled)
             {
-                return false;
+                continue;
             }
+
+            // A stop has settled. A child that already ended normally is not a timeout: its end is taken, and its output is drained
+            // within the drain bound (Issue #827 review). A live child ends the wait with the stop's own decision.
+            if (waitSlice(0))
+            {
+                return true;
+            }
+
+            return StopRecord.HasExitedOrGone(process) && waitSlice(PumpDrainTimeoutMs);
         }
     }
 
@@ -1164,9 +1179,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         IReadOnlyList<string> arguments,
         int timeoutMs,
         CancellationToken stopToken,
-        Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null)
+        Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null,
+        Func<StopRecord, Process, string, bool, bool>? observe = null)
     {
-        var stopRecord = new StopRecord { DescendantsProbe = descendantsProbe };
+        var stopRecord = new StopRecord { DescendantsProbe = descendantsProbe, ObserveForTest = observe };
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
         try
