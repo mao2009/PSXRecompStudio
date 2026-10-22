@@ -16,8 +16,22 @@ internal sealed class FrameReadGate
 {
     private readonly object _lock = new();
     private bool _stopRequested;
+    private CancellationToken _externalStop;
     private int _reads;
     private int _readsAtStop;
+
+    /// <summary>
+    /// Sets the external cancellation of the run (the token passed to the orchestrator). The gate checks it under its lock on every read, so a
+    /// read that starts after the token was cancelled never runs, whether or not a stop request has reached the engine yet (review round 12).
+    /// CancellationTokenSource.Cancel sets the token's flag before it runs the callbacks, so the check sees the cancellation at once.
+    /// </summary>
+    internal void SetExternalStop(CancellationToken externalStop)
+    {
+        lock (_lock)
+        {
+            _externalStop = externalStop;
+        }
+    }
 
     /// <summary>Sets the stop request flag. Waits for a read in progress; no read starts after this returns.</summary>
     internal void RequestStop()
@@ -42,7 +56,8 @@ internal sealed class FrameReadGate
         ArgumentNullException.ThrowIfNull(read);
         lock (_lock)
         {
-            if (_stopRequested || stopRecorded())
+            // All three signals are checked under the lock, every time: the request flag, the external cancellation, and the caller's stop record.
+            if (_stopRequested || _externalStop.IsCancellationRequested || stopRecorded())
             {
                 return false;
             }

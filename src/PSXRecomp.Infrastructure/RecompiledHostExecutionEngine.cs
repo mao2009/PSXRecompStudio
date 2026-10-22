@@ -295,9 +295,45 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Every read of this engine's GPU/VRAM goes through this gate (the run-end frame and the live VBlank frames). It holds the stop request flag.
+    /// Every read of this engine's GPU/VRAM goes through this gate (the run-end frame and the live VBlank frames). It holds the stop request flag
+    /// and the external cancellation of the run.
     /// </summary>
     private readonly FrameReadGate _frameReads = new();
+
+    /// <summary>Attaches the run's external cancellation to the gate (see <see cref="ICancellableExecutionEngine.AttachCancellation"/>).</summary>
+    public IDisposable AttachCancellation(CancellationToken cancellationToken)
+    {
+        _frameReads.SetExternalStop(cancellationToken);
+        return new ExternalStopScope(_frameReads);
+    }
+
+    /// <summary>Ends an attachment: the gate stops watching the run's external token.</summary>
+    private sealed class ExternalStopScope(FrameReadGate gate) : IDisposable
+    {
+        public void Dispose() => gate.SetExternalStop(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The live VBlank read guard of this engine, as the bridge builds it (no stop record in the predicate, so the flag and the external token alone
+    /// decide). Test seam (review round 12): a guard call after a stop must read nothing.
+    /// </summary>
+    internal Func<Action, bool> LiveReadGuardForTest => read => _frameReads.TryRead(() => false, read);
+
+    /// <summary>Whether the engine's stop token has been cancelled (after any dispose, false). Test seam.</summary>
+    internal bool StopIsRequestedForTest
+    {
+        get
+        {
+            try
+            {
+                return _stopRequested.IsCancellationRequested;
+            }
+            catch (ObjectDisposedException)
+            {
+                return true;
+            }
+        }
+    }
 
     /// <summary>
     /// Test seam (Issue #827, review round 10): runs inside the frame gate, after the flag check and before the GPU read starts. A test starts
@@ -710,6 +746,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stop requested before the child starts ends the segment without launching anything.
         if (_stopRequested.IsCancellationRequested)
         {
+            // A stop that began before the child started: there is no child to stop, so nothing is left behind. The diagnostics say so, which keeps
+            // the shutdown status in line with the Cancelled result (review round 12).
+            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Leftover: null);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the artifact started.");
         }
@@ -793,7 +832,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
         catch (ObjectDisposedException)
         {
-            // Disposed while this segment was being prepared: the run is stopped before any child starts.
+            // Disposed while this segment was being prepared: the run is stopped before any child starts (no child, nothing left behind).
+            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Leftover: null);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The engine was disposed before the artifact started.");
         }
@@ -879,6 +919,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         return ResolveOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, drainTimedOut, OutputBudgetMsForTest ?? _runTimeoutMs);
     }
+
+    /// <summary>
+    /// The instant from which a stop caps the output drains and the pump wait (Issue #827, review round 12). Only a stop that found its child alive,
+    /// with its decision settled, caps them. A child that ended on its own before the stop keeps the run's own output budget: a stop must not turn
+    /// its completed output into a drain timeout. Null when no cap applies.
+    /// </summary>
+    private static long? StopCapInstant(StopRecord stop) =>
+        stop.Settled && !stop.ChildEndedBeforeStop ? stop.StoppedAt : null;
 
     /// <summary>
     /// The result of a run after its child ended or was stopped (Issue #827). A confirmed stop decides first (Cancelled). Next, a stdout drain
@@ -1347,7 +1395,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             if (childEnded is { } ended)
             {
                 end = ended + outputBudgetMs * frequency / 1000;
-                if (stop.StoppedAt is { } stoppedAt)
+
+                // A stop caps the wait only when it found the child alive (round 12): a child that ended first keeps the output budget.
+                if (StopCapInstant(stop) is { } stoppedAt)
                 {
                     var cap = Math.Max(ended, stoppedAt) + PumpDrainTimeoutMs * frequency / 1000;
                     if (cap < end)
@@ -1481,8 +1531,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 // The deadline is absolute and shared by the drains of one run. A stop caps it at the cleanup budget counted from the later of the
                 // drain's start and the stop: the stop's own work (ending the tree) is not charged to the drain.
                 var end = budgetEnd;
-                var capFrom = stop.StoppedAt is { } stoppedAt ? Math.Max(drainStart, stoppedAt) : drainStart;
-                if (stop.StoppedAt is not null)
+                var capStop = StopCapInstant(stop);
+                var capFrom = capStop is { } stoppedAt ? Math.Max(drainStart, stoppedAt) : drainStart;
+                if (capStop is not null)
                 {
                     var cap = capFrom + PumpDrainTimeoutMs * frequency / 1000;
                     if (cap < end)
