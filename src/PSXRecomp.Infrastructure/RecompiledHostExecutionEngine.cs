@@ -205,6 +205,25 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// <summary>Diagnostic code of a segment stopped by <see cref="RequestCancel"/> (Issue #820).</summary>
     public const string CancelledDiagnosticCode = "ARTIFACT_CANCELLED";
 
+    /// <summary>Diagnostic code of a stop the OS refused, or whose child did not confirm its exit (Issue #820).</summary>
+    public const string StopRefusedDiagnosticCode = "ARTIFACT_STOP_REFUSED";
+
+    /// <summary>How long a stop waits for a killed child to be seen as exited before the stop is reported as not confirmed.</summary>
+    private static readonly TimeSpan StopConfirmTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>What a stop did to one child process (Issue #820). Written on the stop thread, read after the run's wait.</summary>
+    private sealed class StopRecord
+    {
+        /// <summary>True only once the kill succeeded and the child was seen as exited.</summary>
+        public volatile bool Confirmed;
+
+        /// <summary>The reason a live child could not be confirmed stopped, or null.</summary>
+        public volatile string? Refused;
+
+        /// <summary>The OS process id of the child the stop targeted, or 0 when none was started.</summary>
+        public volatile int ProcessId;
+    }
+
     /// <summary>
     /// Asks the run to stop (Issue #820). It is idempotent and returns at once: the child process tree is killed on a
     /// thread-pool thread, so a caller on the UI thread never waits for the process to exit.
@@ -673,7 +692,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         // Set only when a stop reached a child that was still running (see StopChild). It alone decides a Cancelled result.
-        var stopDelivered = new System.Runtime.CompilerServices.StrongBox<bool>();
+        var stopRecord = new StopRecord();
         CancellationToken stopToken;
         try
         {
@@ -686,7 +705,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The engine was disposed before the artifact started.");
         }
 
-        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, stopToken, stopDelivered);
+        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, stopToken, stopRecord);
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
         // guest's console output (the boot/TTY text before the engine's
@@ -705,13 +724,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         FallbackTimings = pumpEnded ? bridge?.FallbackTimings : null;
         FallbackInFlight = bridge?.FallbackInFlight;
         FallbackReturns = bridge?.FallbackReturns;
-        LastFrameBgra32 = pumpEnded ? bridge?.CaptureFrameBgra32() : null;
+        // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
+        LastFrameBgra32 = pumpEnded && !stopToken.IsCancellationRequested ? bridge?.CaptureFrameBgra32() : null;
 
         var classified = ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge);
 
+        // Issue #820: a stop the OS refused, or a live child that did not confirm its exit, is reported as such. It is neither a
+        // Cancelled result (the child may still be running) nor a timeout (the stop was asked for, and it failed).
+        if (stopToken.IsCancellationRequested && stopRecord.Refused is { } refusal)
+        {
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed,
+                StopRefusedDiagnosticCode,
+                $"The stop request was refused for process {stopRecord.ProcessId}, which may still be running: {refusal}");
+        }
+
         // Issue #820: a failure caused by stopping a live child is Cancelled. A child that had already finished on its own keeps
         // its own result, and so does a completed run, whatever stop request arrives afterwards.
-        if (classified.Status != RecompilerExecutionStatus.Completed && stopDelivered.Value)
+        if (classified.Status != RecompilerExecutionStatus.Completed && stopRecord.Confirmed)
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.");
@@ -936,7 +966,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// caller then neither reads nor disposes those devices (Issue #762).</returns>
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge, CancellationToken stopToken,
-        System.Runtime.CompilerServices.StrongBox<bool> stopDelivered)
+        StopRecord stopRecord)
     {
         var psi = new ProcessStartInfo(fileName)
         {
@@ -976,7 +1006,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stop request kills the child tree. That closes its pipes, so a read blocked on the RHOST
         // protocol (or on stderr) returns, and the existing timeout path below does the cleanup and classification.
         // If the request arrived before this point, the registration runs at once and the child is killed here.
-        using var stopRegistration = stopToken.Register(() => StopChild(process, stopDelivered));
+        stopRecord.ProcessId = process.Id;
+        using var stopRegistration = stopToken.Register(() => StopChild(process, stopRecord));
         var stderrTask = process.StandardError.ReadToEndAsync();
 
         if (bridge is null)
@@ -1114,11 +1145,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Kills a child on a stop request (Issue #820). It runs on whatever thread requested the stop, so it never throws: a child
-    /// that already exited is left alone, and an OS failure to kill is traced. <paramref name="stopDelivered"/> records that a
-    /// stop reached a live child, which is what makes the run's failure a Cancelled result.
+    /// Kills a child on a stop request (Issue #820). It runs on whatever thread requested the stop, so it never throws. A kill is a
+    /// request until the child is seen exited: only that sets <see cref="StopRecord.Confirmed"/>. A kill the OS refused, or a child
+    /// still running after the kill, is recorded in <see cref="StopRecord.Refused"/> with its reason. A child that exited on its
+    /// own before the stop reached it is neither confirmed nor refused.
     /// </summary>
-    private static void StopChild(Process process, System.Runtime.CompilerServices.StrongBox<bool> stopDelivered)
+    private static void StopChild(Process process, StopRecord stopRecord)
     {
         try
         {
@@ -1127,14 +1159,25 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return;
             }
 
-            // Recorded only once the kill succeeded: a child that exits on its own just before, or a kill the OS refused,
-            // must not be reported as a failure caused by the stop.
             process.Kill(true);
-            stopDelivered.Value = true;
+            if (process.WaitForExit(StopConfirmTimeout))
+            {
+                stopRecord.Confirmed = true;
+            }
+            else
+            {
+                stopRecord.Refused = $"the child was still running {StopConfirmTimeout.TotalSeconds:0} s after the kill";
+                Trace.WriteLine($"Stop of the artifact process {process.Id} not confirmed: {stopRecord.Refused}");
+            }
         }
         catch (Exception exception)
         {
-            Trace.WriteLine($"Stopping the artifact process failed: {exception.Message}");
+            // An exit between the check and the kill is a natural end of the child, not a refused stop.
+            if (!process.HasExited)
+            {
+                stopRecord.Refused = exception.Message;
+                Trace.WriteLine($"Stopping the artifact process {process.Id} failed: {exception.Message}");
+            }
         }
     }
 

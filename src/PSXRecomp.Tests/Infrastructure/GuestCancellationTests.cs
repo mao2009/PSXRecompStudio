@@ -3,6 +3,7 @@ using FluentAssertions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Core.Runtime;
 using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
@@ -77,6 +78,17 @@ public sealed class GuestCancellationTests
     /// <summary>True while a process named like the artifact copy exists.</summary>
     private static bool ArtifactProcessRunning(string binaryPath) =>
         ProcessNameProbe.IsRunning(Path.GetFileNameWithoutExtension(binaryPath));
+
+    /// <summary>Busy-waits for <paramref name="duration"/> (a bounded, deterministic pause for the test layer).</summary>
+    private static void SpinFor(TimeSpan duration)
+    {
+        var clock = Stopwatch.StartNew();
+        var spin = new SpinWait();
+        while (clock.Elapsed < duration)
+        {
+            spin.SpinOnce();
+        }
+    }
 
     /// <summary>Waits, with a bound, for <paramref name="condition"/> to hold; a missed condition fails the test.</summary>
     private static void WaitUntil(Func<bool> condition, TimeSpan bound)
@@ -283,5 +295,136 @@ public sealed class GuestCancellationTests
 
         result.State.Should().Be(TitleExecutionState.RuntimeFailure, "the crash happened before the stop, so it is not a cancellation");
         result.DiagnosticCode.Should().Be("ARTIFACT_FAILED");
+    }
+
+    [Fact]
+    public async Task RealArtifact_RepeatedStopRequests_EndCancelledOnce_AndLeaveNoProcess()
+    {
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
+        using var cts = new CancellationTokenSource();
+        var artifactName = Path.GetFileNameWithoutExtension(binary);
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
+        try
+        {
+            WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+            run.IsCompleted.Should().BeFalse("the child must still be running when the stop requests are sent");
+
+            // Stop requests race from four threads, both through the token and directly on the engine: each one must be harmless.
+            await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+            {
+                cts.Cancel();
+                engine.RequestCancel();
+            })));
+        }
+        finally
+        {
+            cts.Cancel();
+        }
+
+        var result = await run.WaitAsync(StopWait);
+
+        result.State.Should().Be(TitleExecutionState.Cancelled);
+        result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
+        ArtifactProcessRunning(binary).Should().BeFalse("the stopped artifact process must be gone when the run returns");
+    }
+
+    [Fact]
+    public async Task RealArtifact_StopRacingANaturalEnd_NeverFailsAndLeavesNoProcess()
+    {
+        uint[] words = [.. Li(T0, 0x1234u), Nop];
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+        var blockEntryPcs = new HashSet<uint>(program.Blocks.Select(b => b.EntryPc));
+        using var dir = new TempDirectory();
+        using (var builder = new RecompiledHostExecutionEngine(
+            program, words, Entry, new GeneratedHostBuildService(), dir.FullPath, embedImage: true))
+        {
+            new ExecutionOrchestrator().Execute(builder, handoff: null, Request(Entry, 64))
+                .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
+        }
+
+        var binary = UniqueArtifactCopy(BuiltBinary(dir), dir);
+        var artifactName = Path.GetFileNameWithoutExtension(binary);
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            // The stop lands at a varied moment (a fixed schedule, so the test is repeatable): before the child starts, while it
+            // runs, or after it has finished.
+            var delay = TimeSpan.FromMilliseconds(attempt * 7 % 40);
+            using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(binary, blockEntryPcs: blockEntryPcs, imageWords: words, imageLoadAddress: Entry);
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                SpinFor(delay);
+                cts.Cancel();
+            });
+
+            var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64), cancellationToken: cts.Token);
+            await stopper;
+
+            // Either the program finished first and keeps its result, or the stop won and the run is Cancelled. A failure is never acceptable.
+            if (result.State == TitleExecutionState.Cancelled)
+            {
+                result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode, $"attempt {attempt}");
+            }
+            else
+            {
+                result.FinalSnapshot.Should().NotBeNull($"attempt {attempt}: {result.DiagnosticCode} {result.DiagnosticMessage}");
+                result.FinalSnapshot!.Gpr[(int)T0].Should().Be(0x1234u, $"attempt {attempt}");
+            }
+
+            ProcessNameProbe.IsRunning(artifactName).Should().BeFalse($"attempt {attempt}: no artifact process may outlive its run");
+        }
+    }
+
+    [Fact]
+    public async Task SyntheticFrameRun_StopDuringFrameEmission_EndsCancelled_AndTouchesNoGpuAfterTheStop()
+    {
+        using var dir = new TempDirectory();
+        var slot = new LiveFrameSlot();
+        var words = SyntheticLiveProgram.Words();
+        var entry = SyntheticLiveProgram.EntryPc;
+        var program = ReachableProgramBuilder.Build(entry, words, entry, []);
+        using var engine = new RecompiledHostExecutionEngine(
+            program,
+            words,
+            entry,
+            new GeneratedHostBuildService(),
+            dir.FullPath,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
+            embedImage: true,
+            liveFrames: slot);
+        using var cts = new CancellationTokenSource();
+        var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 20_000_000u);
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cts.Token));
+        try
+        {
+            // The stop is sent only once the GPU has produced a frame, so it lands while the program is emitting frames.
+            WaitUntil(() => run.IsCompleted || slot.TryGetNewer(0, out _), StopWait);
+            run.IsCompleted.Should().BeFalse("a frame must be emitted before the stop is sent");
+            cts.Cancel();
+        }
+        finally
+        {
+            cts.Cancel();
+        }
+
+        var result = await run.WaitAsync(StopWait);
+
+        result.State.Should().Be(TitleExecutionState.Cancelled);
+        result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
+        engine.LastFrameBgra32.Should().BeNull("a stopped run does not read the GPU/VRAM after the stop");
+        slot.TryGetNewer(0, out var latest).Should().BeTrue();
+        SpinFor(TimeSpan.FromMilliseconds(300));
+        slot.TryGetNewer(latest!.Sequence, out _).Should().BeFalse("no frame is published after the run has returned");
+    }
+
+    /// <summary>Discards the guest's TTY bytes; the test only needs the Runtime to run.</summary>
+    private sealed class DiscardSink : IRuntimeOutputSink
+    {
+        public void WriteByte(byte value)
+        {
+        }
     }
 }
