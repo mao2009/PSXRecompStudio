@@ -51,6 +51,12 @@ public static class PackageCommand
     /// </summary>
     public const int GuiRunTimeoutMs = 4 * 60 * 60 * 1000;
 
+    /// <summary>
+    /// How much longer than the window run the launcher waits for the window host (Issue #830). The window closes 30 seconds after its run
+    /// ends; start-up and close take a few seconds more. Past this bound the launcher stops the host, shows why, and exits non-zero.
+    /// </summary>
+    public const int GuiLauncherWaitMarginMs = 10 * 60 * 1000;
+
     /// <summary>The documented usage line for <c>package</c>.</summary>
     public const string Usage =
         "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... " +
@@ -134,7 +140,8 @@ public static class PackageCommand
             var windowedLaunch = gui
                 ? new RecompiledArtifactCodeGen.WindowedLaunch(
                     RuntimeHostLayout.GuiHostFileName,
-                    RuntimeHostLayout.ManifestRelativePath)
+                    RuntimeHostLayout.ManifestRelativePath,
+                    GuiRunTimeoutMs + GuiLauncherWaitMarginMs)
                 : null;
             var artifactSource = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch,
@@ -259,7 +266,14 @@ public static class PackageCommand
             File.WriteAllText(Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName), serialized);
 
             // Write the end-user README.
-            WriteReadme(outputDir, guestFirmware, mixedFallback, binaryName);
+            if (gui)
+            {
+                WriteWindowReadme(outputDir, binaryName);
+            }
+            else
+            {
+                WriteReadme(outputDir, guestFirmware, mixedFallback, binaryName);
+            }
 
             if (arguments.Json)
             {
@@ -405,6 +419,50 @@ public static class PackageCommand
         }
 
         return null;
+    }
+
+    /// <summary>The README of a <c>--gui</c> package (Issue #830): the window, its limits, and the job object's behaviour.</summary>
+    private static void WriteWindowReadme(string gameDir, string binaryName)
+    {
+        var readme = new System.Text.StringBuilder();
+        readme.AppendLine("# Game window distribution");
+        readme.AppendLine();
+        readme.AppendLine("This directory contains a PS1 program packaged with <c>psxrecomp package --gui</c>. It runs in a window on " +
+                          "Windows, with no console.");
+        readme.AppendLine();
+        readme.AppendLine("## Launching");
+        readme.AppendLine();
+        readme.AppendLine($"Double-click {binaryName}. The window shows the frames of the program as it runs.");
+        readme.AppendLine();
+        readme.AppendLine("## Ending the program");
+        readme.AppendLine();
+        readme.AppendLine("- Closing the window stops the program and then the window closes.");
+        readme.AppendLine("- When the program ends by itself, its result stays on screen and the window closes after 30 seconds. " +
+                          "Closing it sooner also works.");
+        readme.AppendLine($"- A run is limited to {PackageCommand.GuiRunTimeoutMs / 3_600_000} hours. The launcher also stops the window " +
+                          $"if it has not ended {PackageCommand.GuiLauncherWaitMarginMs / 60_000} minutes after that limit, and reports why.");
+        readme.AppendLine();
+        readme.AppendLine("## Process handling");
+        readme.AppendLine();
+        readme.AppendLine($"{binaryName} starts the window host and keeps it, and the program it runs, in a Windows job object that ends " +
+                          "them when the launcher ends. If the job object cannot be set up, the game does not start and a message " +
+                          "explains why. Running runtime/PSXRecomp.GameWindow.exe directly is not supported: it runs outside the job object.");
+        readme.AppendLine();
+        readme.AppendLine("## Contents");
+        readme.AppendLine();
+        readme.AppendLine($"- {binaryName}: launcher and native ahead-of-time program artifact.");
+        readme.AppendLine("- runtime/PSXRecomp.GameWindow.exe: the window host.");
+        readme.AppendLine("- runtime/runtime-host.json: the run manifest the window reads.");
+        readme.AppendLine("- runtime/artifact-image.bin: the program image sidecar (matches the artifact).");
+        readme.AppendLine("- runtime/PSXRecomp.Native.dll and the GCC runtime libraries it needs (libgcc_s_seh-1.dll, " +
+                          "libstdc++-6.dll and, if listed by the native module, libwinpthread-1.dll): the native video module.");
+        readme.AppendLine("- README.txt: this file.");
+        readme.AppendLine();
+        readme.AppendLine("## Requirements");
+        readme.AppendLine();
+        readme.AppendLine("- Windows. The window host is framework-dependent: it needs the .NET 10 runtime.");
+        readme.AppendLine("- No compiler is needed on the end-user machine.");
+        File.WriteAllText(Path.Combine(gameDir, RuntimeHostLayout.ReadmeFileName), readme.ToString());
     }
 
     private static void WriteReadme(

@@ -999,7 +999,14 @@ public sealed class RecompiledArtifactCodeGenTests
     public void GenerateStandalone_WindowedDirectLaunch_StartsGuiHostWithoutConsoleAndReapsIt()
     {
         var source = GenerateDirectLaunchSource(
-            new RecompiledArtifactCodeGen.WindowedLaunch("PSXRecomp.GameWindow.exe", "runtime/runtime-host.json"));
+            new RecompiledArtifactCodeGen.WindowedLaunch("PSXRecomp.GameWindow.exe", "runtime/runtime-host.json", 15_000_000));
+
+        // The launcher's wait is bounded by the limit it was given, and an unbounded wait is never emitted (Issue #830, MAJOR-1).
+        source.Should().Contain("WaitForSingleObject(pi.hProcess, 15000000u)");
+        source.Should().NotContain("WaitForSingleObject(pi.hProcess, INFINITE)");
+        source.Should().Contain("WAIT_TIMEOUT");
+        source.Should().Contain("report_window_message(L\"The window host did not end within its wait limit");
+        source.Should().Contain("The window host ended with exit code");
 
         source.Should().Contain("\"PSXRecomp.GameWindow.exe\"");
         source.Should().Contain("\"runtime/runtime-host.json\"");
@@ -1015,7 +1022,7 @@ public sealed class RecompiledArtifactCodeGenTests
         source.Should().NotContain("error: cannot build command line");
         source.Should().Contain("report_window_launch_failure(L\"The launcher could not build the window host's command line\"");
         source.Should().Contain("report_window_launch_failure(");
-        source.Should().Contain("MessageBoxW(NULL, text, L\"PSXRecomp\", MB_OK | MB_ICONERROR)");
+        source.Should().Contain("MessageBoxW(NULL, message, L\"PSXRecomp\", MB_OK | MB_ICONERROR)");
         source.Should().Contain("CloseHandle(job)");
     }
 

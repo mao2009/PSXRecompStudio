@@ -624,7 +624,11 @@ public static class RecompiledArtifactCodeGen
     /// <c>runtime/</c> directory with <paramref name="ArgumentRelativePath"/> as its argument, creates it without a console, and
     /// ties its lifetime to a Job Object with kill-on-close on Windows. Only the Windows launcher supports it.
     /// </summary>
-    public sealed record WindowedLaunch(string HostBinaryName, string ArgumentRelativePath);
+    /// <param name="WaitLimitMs">
+    /// The longest the launcher waits for the window host, in milliseconds (Issue #830). Past it, the launcher stops the host and
+    /// reports the limit. It is set above the window's run timeout, so it only ends a host that has stopped responding.
+    /// </param>
+    public sealed record WindowedLaunch(string HostBinaryName, string ArgumentRelativePath, int WaitLimitMs);
 
     /// <summary>
     /// Turns the direct-launch prologue into the windowed launcher (Issue #830). Each replacement must find its target, so a
@@ -635,11 +639,15 @@ public static class RecompiledArtifactCodeGen
     {
         // Fail closed (Issue #830): every way the launcher can fail to start the window host shows its reason in a message box and
         // does not start the game. The launcher is a windowed program, so stderr would not be visible.
-        var text = Patch(prologue, "static int run_via_runtime_host(void) {", @"static void report_window_launch_failure(const wchar_t* what, DWORD error) {
+        var text = Patch(prologue, "static int run_via_runtime_host(void) {", @"static void report_window_message(const wchar_t* message) {
+    OutputDebugStringW(message);
+    MessageBoxW(NULL, message, L""PSXRecomp"", MB_OK | MB_ICONERROR);
+}
+
+static void report_window_launch_failure(const wchar_t* what, DWORD error) {
     wchar_t text[512];
     swprintf(text, 512, L""%ls (Windows error %lu). The game was not started."", what, (unsigned long)error);
-    OutputDebugStringW(text);
-    MessageBoxW(NULL, text, L""PSXRecomp"", MB_OK | MB_ICONERROR);
+    report_window_message(text);
 }
 
     static int run_via_runtime_host(void) {");
@@ -697,9 +705,35 @@ public static class RecompiledArtifactCodeGen
             report_window_launch_failure(L""The window host could not be resumed"", resume_error);
             return 1;
         }
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        // The wait is bounded (Issue #830, MAJOR-1): a window host that does not end within the limit is stopped and the reason is shown.
+        // The limit is the window's run timeout plus a margin, so it only ends a host that has stopped responding.
+        DWORD wait_result = WaitForSingleObject(pi.hProcess, __WAIT_LIMIT_MS__u);
+        if (wait_result == WAIT_TIMEOUT) {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(job);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            report_window_message(L""The window host did not end within its wait limit, so the launcher stopped it."");
+            return 1;
+        }
+        if (wait_result != WAIT_OBJECT_0) {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(job);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            report_window_launch_failure(L""The launcher could not wait for the window host"", GetLastError());
+            return 1;
+        }
         // Closing the last handle of the job ends any process still in it, so a child left behind is reaped.
         CloseHandle(job);");
+        // A window host that ends with an error is reported: the launcher otherwise exits with its code and says nothing.
+        text = Patch(text, "GetExitCodeProcess(pi.hProcess, &exit_code);", @"GetExitCodeProcess(pi.hProcess, &exit_code);
+        if (exit_code != 0) {
+            wchar_t exit_text[128];
+            swprintf(exit_text, 128, L""The window host ended with exit code %lu."", (unsigned long)exit_code);
+            report_window_message(exit_text);
+        }");
+        text = text.Replace("__WAIT_LIMIT_MS__", windowed.WaitLimitMs.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
         return text;
     }
 

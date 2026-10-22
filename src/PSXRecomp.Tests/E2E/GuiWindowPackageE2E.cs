@@ -1,5 +1,6 @@
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -77,6 +78,21 @@ public sealed class GuiWindowPackageE2E : IDisposable
         var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(Path.Join(runtimeDir, RuntimeHostLayout.ManifestFileName)));
         manifest.RunTimeoutMs.Should().BeGreaterThan(HeadlessRunTimeoutMs, "a window runs until it is closed");
         manifest.RunTimeoutMs.Should().BeLessThanOrEqualTo(MaxGuiRunTimeoutMs, "the window's bound is finite");
+
+        // The launcher's wait for the window host is finite, and sits above the window's run timeout by the margin (Issue #830, MAJOR-1).
+        var launcherSource = File.ReadAllText(Path.Join(outputDir, "gui-game.exe.c"));
+        var waitMatch = Regex.Match(launcherSource, @"WaitForSingleObject\(pi\.hProcess, (\d+)u\)");
+        waitMatch.Success.Should().BeTrue("the launcher waits for the window host with a bounded limit");
+        var launcherWaitMs = long.Parse(waitMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+        launcherWaitMs.Should().Be(manifest.RunTimeoutMs + PackageCommand.GuiLauncherWaitMarginMs, "the wait is the run timeout plus the margin");
+        launcherWaitMs.Should().BeGreaterThan(manifest.RunTimeoutMs);
+        launcherSource.Should().NotContain("WaitForSingleObject(pi.hProcess, INFINITE)");
+
+        // The README describes the window package, not the headless one (Issue #830, LOW-2).
+        var readme = File.ReadAllText(Path.Join(outputDir, RuntimeHostLayout.ReadmeFileName));
+        readme.Should().Contain("closes after 30 seconds");
+        readme.Should().Contain("job object");
+        readme.Should().NotContain("runtime/PSXRecomp.RuntimeHost", "a window package ships no Runtime host");
 #pragma warning restore AARC003
     }
 

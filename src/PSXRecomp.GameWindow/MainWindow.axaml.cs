@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -23,6 +24,10 @@ public partial class MainWindow : Window
 {
     private readonly LiveFrameSlot _slot = new();
     private readonly DispatcherTimer _poll;
+    /// <summary>The window's clock for the run-end grace period (Issue #830).</summary>
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly RunEndAutoClose _autoClose = new(RunEndAutoClose.DefaultGracePeriod);
+    private DispatcherTimer? _autoCloseTimer;
     private long _lastSequence;
     private int _framesShown;
     private WriteableBitmap? _bitmap;
@@ -43,7 +48,11 @@ public partial class MainWindow : Window
         _poll = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, (_, _) => PollFrame());
         Opened += (_, _) => Start();
         Closing += OnClosing;
-        Closed += (_, _) => _poll.Stop();
+        Closed += (_, _) =>
+        {
+            _poll.Stop();
+            _autoCloseTimer?.Stop();
+        };
     }
 
     private void Start()
@@ -158,6 +167,23 @@ public partial class MainWindow : Window
             : $"Run ended: {run.Result.State} ({run.Result.DiagnosticCode}). Frames shown: {_framesShown}";
         if (_closeWhenRunEnds)
         {
+            Close();
+            return;
+        }
+
+        // Issue #830: the result stays visible for a grace period, then the window closes by itself, so a finished program
+        // does not leave the window, the window host, or the launcher running. Closing it earlier is always possible.
+        _autoClose.Start(_clock.Elapsed);
+        Status.Text += $" The window closes in {_autoClose.Grace.TotalSeconds:0} s.";
+        _autoCloseTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Normal, (_, _) => CloseWhenDue());
+        _autoCloseTimer.Start();
+    }
+
+    private void CloseWhenDue()
+    {
+        if (_autoClose.IsDue(_clock.Elapsed))
+        {
+            _autoCloseTimer?.Stop();
             Close();
         }
     }
