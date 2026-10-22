@@ -681,6 +681,23 @@ internal sealed class StopRecord : IDisposable
 }
 
 /// <summary>
+/// What a stop left behind, reported apart from the run's result (Issue #827, decided in review round 10). The result of the run stands on its own;
+/// this record says whether the child's process cleanup was confirmed. A refusal or a residual process is reported here with the process id and
+/// the reason, and makes the shutdown not clean, even when the run's result is a completed one.
+/// </summary>
+/// <param name="ProcessId">The child's process id.</param>
+/// <param name="ChildEndedBeforeStop">True when the child ended on its own before the stop reached it.</param>
+/// <param name="Confirmed">True when a live child's kill was confirmed by its exit, with no residual.</param>
+/// <param name="Refused">The reason the stop was refused, or null.</param>
+/// <param name="Leftover">The descendants still running after the stop, or null.</param>
+[Infrastructure]
+internal sealed record StopDiagnostics(int ProcessId, bool ChildEndedBeforeStop, bool Confirmed, string? Refused, string? Leftover)
+{
+    /// <summary>True when the process cleanup of the stop was not refused and left no residual process.</summary>
+    public bool Clean => Refused is null && Leftover is null;
+}
+
+/// <summary>
 /// Reads process start times for the stop bookkeeping (Issue #827). The parent links come from <see cref="ProcessTreeInterop"/>.
 /// </summary>
 [Infrastructure]

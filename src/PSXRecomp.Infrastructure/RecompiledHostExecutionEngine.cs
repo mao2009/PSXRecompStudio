@@ -218,7 +218,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Descendants that a stop found still running after its child had already ended on its own (Issue #827 review). A diagnostic only: the
     /// child's result is not changed by it. Set by the last run of this engine.
     /// </summary>
-    internal string? LeftoverDescendants { get; private set; }
+    internal StopDiagnostics? LastStopDiagnostics { get; private set; }
+
+    /// <summary>
+    /// Whether the last run's shutdown was clean: no refused stop and no residual process (Issue #827, round 10). It is separate from the run's
+    /// result: a completed run with a residual child is not a clean shutdown, and the caller must not treat the shutdown as a success.
+    /// </summary>
+    public bool ShutdownClean => LastStopDiagnostics?.Clean ?? true;
 
     /// <summary>How many times the last run read a frame from the bridge (Issue #827 review): zero after a stop is the check.</summary>
     internal int FrameCaptureCalls { get; private set; }
@@ -253,52 +259,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Action<Process>? KillOverrideForTest { get; set; }
 
     /// <summary>
-    /// Decides the result of a run that was asked to stop (Issue #827). A run that completed keeps its result, unless the stop left a
-    /// descendant running. A refused stop is a failure with the reason. A confirmed stop is Cancelled. Anything else keeps its own
-    /// classification.
+    /// The result of a run that was asked to stop (Issue #827, decided in review round 10). The run's own result always stands unless the stop
+    /// came first and was confirmed: a child that ended before the stop reached it keeps its result (completed, or the failure it had), and a
+    /// stop that was refused or left a residual keeps the classification too. Each refusal and residual goes to the stop's diagnostics
+    /// (<see cref="StopDiagnostics"/>), not into the result. Only a confirmed stop of a live child is <c>Cancelled</c>.
     /// </summary>
     internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop)
     {
-        // A child that ended before the stop reached it is not a stop: the stop did nothing to it. Its result stands. Descendants it left
-        // running are a diagnostic (LeftoverDescendants), never a refusal (Issue #827 review).
-        if (stop.ChildEndedBeforeStop)
-        {
-            // A refusal that was recorded anyway is never dropped silently: it is reported as the stop's refusal.
-            if (stop.Outcome.Refused is { } refusedAnyway)
-            {
-                return RecompilerExecutionResult.Failed(
-                    RecompilerExecutionStatus.ExecutionFailed,
-                    StopRefusedDiagnosticCode,
-                    $"The stop request was refused for process {stop.ProcessId}, which may still be running: {refusedAnyway}");
-            }
-
-            return classified;
-        }
-
-        // A descendant left running by a stop that reached a live child is a refused stop, even for a completed run.
-        if (stop.Leftover is { } leftover)
-        {
-            return RecompilerExecutionResult.Failed(
-                RecompilerExecutionStatus.ExecutionFailed,
-                StopRefusedDiagnosticCode,
-                $"The stop found descendants of process {stop.ProcessId} still running after it ended: {leftover}");
-        }
-
-        // A refusal is decided before a completed result is kept: a refused stop is never absorbed by a completed run (Issue #827 review).
-        var (confirmed, refused) = stop.Outcome;
-        if (refused is not null)
-        {
-            return RecompilerExecutionResult.Failed(
-                RecompilerExecutionStatus.ExecutionFailed,
-                StopRefusedDiagnosticCode,
-                $"The stop request was refused for process {stop.ProcessId}, which may still be running: {refused}");
-        }
-
-        if (classified.Status == RecompilerExecutionStatus.Completed)
+        if (stop.StoppedAt is null || stop.ChildEndedBeforeStop)
         {
             return classified;
         }
 
+        var (confirmed, _) = stop.Outcome;
         return confirmed
             ? RecompilerExecutionResult.Failed(RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.")
             : classified;
@@ -310,13 +283,42 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     public void RequestCancel()
     {
-        // The request is recorded before the stop is queued: a reader that checks the flag after this call sees the request at once.
-        _cancelRequested = true;
+        // The flag is set under the frame lock. A frame read holds that lock from its check of the flag to the end of the GPU read, so the flag
+        // cannot change between them, and no read starts after the flag is visible (Issue #827, review round 10). The lock covers the flag only.
+        lock (_frameGate)
+        {
+            _cancelRequested = true;
+        }
+
         ThreadPool.QueueUserWorkItem(_ => CancelStopSource());
     }
 
-    /// <summary>Set synchronously by <see cref="RequestCancel"/>, before the stop is applied on the pool (Issue #827 review).</summary>
-    private volatile bool _cancelRequested;
+    /// <summary>Set by <see cref="RequestCancel"/> under <see cref="_frameGate"/>, before the stop is applied on the pool.</summary>
+    private bool _cancelRequested;
+
+    /// <summary>
+    /// Guards the stop request flag and the frame read together: a frame is read only while the flag is clear, and the flag is set only between
+    /// reads. The GPU/VRAM is read by the run's own thread only (the pump has ended), so the lock never contends with a pump.
+    /// </summary>
+    private readonly object _frameGate = new();
+
+    /// <summary>
+    /// Test seam (Issue #827, review round 10): runs inside the frame lock, after the flag check and before the GPU read starts. A test starts
+    /// a stop from here to show that the stop waits for the read. Null in production.
+    /// </summary>
+    internal Action? DuringFrameReadForTest { get; set; }
+
+    /// <summary>Whether the flag is set (read under the frame lock). For tests.</summary>
+    internal bool StopRequestFlagForTest
+    {
+        get
+        {
+            lock (_frameGate)
+            {
+                return _cancelRequested;
+            }
+        }
+    }
 
     private void CancelStopSource()
     {
@@ -807,11 +809,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
         catch (Exception exception) when (stopToken.IsCancellationRequested)
         {
-            // Nothing escapes a run that was asked to stop: whatever failed while stopping is a refused stop, with its reason.
+            // Nothing escapes a run that was asked to stop. The failure is the run's result; what the stop could not do is in the diagnostics.
+            stopRecord.RefuseIfUnset($"the stop could not be completed for process {stopRecord.ProcessId}, which may still be running: {exception.Message}");
+            LastStopDiagnostics = new StopDiagnostics(stopRecord.ProcessId, false, false, stopRecord.Outcome.Refused, null);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed,
-                StopRefusedDiagnosticCode,
-                $"The stop request could not be completed for process {stopRecord.ProcessId}, which may still be running: {exception.Message}");
+                "ARTIFACT_RUN_EXCEPTION",
+                $"The run failed while it was being stopped: {exception.Message}");
         }
         finally
         {
@@ -840,33 +844,48 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
         // The record, not the token, decides: a stop that has begun is recorded before its kill, and the record is sealed at this point.
         BeforeFrameCaptureForTest?.Invoke();
-        // A frame is read only when no stop was requested. Each of the three signals covers a window the others do not: the request flag (set at
-        // once by RequestCancel), the stop token (set before its callbacks run), and the stop record (set when a stop begins).
-        var stopRequestedNow = _cancelRequested || stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null;
-        if (pumpEnded && !stopRequestedNow && bridge is not null)
+        (byte[] Bgra, int Width, int Height)? frame = null;
+        if (pumpEnded && bridge is not null)
         {
-            FrameCaptureCalls++;
-            LastFrameBgra32 = bridge.CaptureFrameBgra32();
-        }
-        else
-        {
-            LastFrameBgra32 = null;
+            // A frame is read only while no stop was requested. The flag check and the read start are one section under the frame lock
+            // (RequestCancel sets the flag under the same lock), so a stop cannot land between them. The token and the stop record are read too:
+            // they cover a stop that began on another path (Issue #827, review round 10).
+            lock (_frameGate)
+            {
+                var stopRequestedNow = _cancelRequested || stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null;
+                if (!stopRequestedNow)
+                {
+                    DuringFrameReadForTest?.Invoke();
+                    FrameCaptureCalls++;
+                    frame = bridge.CaptureFrameBgra32();
+                }
+            }
         }
 
-        LeftoverDescendants = stopRecord.Leftover;
+        LastFrameBgra32 = frame;
+
+        // What the stop left behind is reported apart from the result (round 10): a refusal or a residual process is in the diagnostics, and the
+        // result stays as the run had it.
+        LastStopDiagnostics = stopRecord.StoppedAt is null
+            ? null
+            : new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, stopRecord.Outcome.Confirmed, stopRecord.Outcome.Refused, stopRecord.Leftover);
+        if (LastStopDiagnostics is { Clean: false } residual)
+        {
+            Trace.WriteLine($"Stop of artifact process {residual.ProcessId} left a residual: refused={residual.Refused}; leftover={residual.Leftover}");
+        }
+
         return ResolveOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, drainTimedOut, OutputBudgetMsForTest ?? _runTimeoutMs);
     }
 
     /// <summary>
-    /// The result of a run after its child ended or was stopped (Issue #827). A stop that was refused, or confirmed, decides first. Next,
-    /// a stdout drain that ran out of time is reported as such: the output was not read, so the result cannot be read either.
-    /// Otherwise the classification stands.
+    /// The result of a run after its child ended or was stopped (Issue #827). A confirmed stop decides first (Cancelled). Next, a stdout drain
+    /// that ran out of time is reported as such: the output was not read, so the result cannot be read either. Otherwise the run's own
+    /// result stands; a refusal or residual is in the stop diagnostics, not in the result.
     /// </summary>
     internal static RecompilerExecutionResult ResolveOutcome(RecompilerExecutionResult classified, StopRecord stop, bool drainTimedOut, int budgetMs)
     {
         var afterStop = ApplyStopOutcome(classified, stop);
-        if (afterStop.Status == RecompilerExecutionStatus.Cancelled
-            || afterStop.DiagnosticCode == StopRefusedDiagnosticCode)
+        if (afterStop.Status == RecompilerExecutionStatus.Cancelled)
         {
             return afterStop;
         }
