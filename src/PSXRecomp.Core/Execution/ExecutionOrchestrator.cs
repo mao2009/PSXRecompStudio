@@ -63,17 +63,33 @@ public sealed class ExecutionOrchestrator
         ITitleExecutionHandoff? handoff,
         TitleExecutionRequest request,
         Action<RecompilerStateSnapshot>? segmentCallback = null,
-        Action? postLoadAction = null)
+        Action? postLoadAction = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(request);
+
+        // Issue #820: a stop request before the run starts ends it as Cancelled, without loading or launching anything.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Terminal(TitleExecutionState.Cancelled, null, 0, engine.Name, CancelledCode, CancelledMessage);
+        }
+
+        // The engine is asked to stop only when it supports it. Registration is removed when this call returns.
+        using var stopRegistration = cancellationToken.Register(() => (engine as ICancellableExecutionEngine)?.RequestCancel());
 
         engine.Load(request);
         postLoadAction?.Invoke();
 
         return Run(engine, handoff, request.InitialGpr.ToArray(), request.InitialHi, request.InitialLo, request.EntryPc,
-            request.OuterBudget, request.SegmentBudget, segmentCallback);
+            request.OuterBudget, request.SegmentBudget, segmentCallback, cancellationToken);
     }
+
+    /// <summary>Diagnostic code of a run stopped by a cancellation request (Issue #820).</summary>
+    public const string CancelledCode = "EXECUTION_CANCELLED";
+
+    /// <summary>Diagnostic message of a run stopped by a cancellation request (Issue #820).</summary>
+    public const string CancelledMessage = "The run was stopped by a cancellation request before the guest reached a classified end.";
 
     /// <summary>
     /// Continues a run from a segment snapshot on an engine that is already loaded (a Runtime-boundary handoff, review
@@ -86,11 +102,13 @@ public sealed class ExecutionOrchestrator
         RecompilerStateSnapshot from,
         uint outerBudget,
         uint segmentBudget,
-        Action<RecompilerStateSnapshot>? segmentCallback = null)
+        Action<RecompilerStateSnapshot>? segmentCallback = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(from);
-        return Run(engine, handoff, from.Gpr.ToArray(), from.HI, from.LO, from.PC, outerBudget, segmentBudget, segmentCallback);
+        using var stopRegistration = cancellationToken.Register(() => (engine as ICancellableExecutionEngine)?.RequestCancel());
+        return Run(engine, handoff, from.Gpr.ToArray(), from.HI, from.LO, from.PC, outerBudget, segmentBudget, segmentCallback, cancellationToken);
     }
 
     private static TitleExecutionResult Run(
@@ -102,13 +120,19 @@ public sealed class ExecutionOrchestrator
         uint pc,
         uint outer,
         uint segmentBudget,
-        Action<RecompilerStateSnapshot>? segmentCallback)
+        Action<RecompilerStateSnapshot>? segmentCallback,
+        CancellationToken cancellationToken = default)
     {
         uint segments = 0;
         RecompilerStateSnapshot? last = null;
 
         while (true)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Terminal(TitleExecutionState.Cancelled, last, segments, engine.Name, CancelledCode, CancelledMessage);
+            }
+
             if (outer == 0)
             {
                 return Terminal(
@@ -126,6 +150,13 @@ public sealed class ExecutionOrchestrator
 
             if (result.Status != RecompilerExecutionStatus.Completed)
             {
+                // A stop ends the run as Cancelled, never as a RuntimeFailure. The engine reports Cancelled only when the stop
+                // itself caused the failure, so a failure that happened before the stop keeps its own classification (Issue #820).
+                if (result.Status == RecompilerExecutionStatus.Cancelled)
+                {
+                    return Terminal(TitleExecutionState.Cancelled, last, segments, engine.Name, CancelledCode, CancelledMessage);
+                }
+
                 // An engine mechanism failure (host process lost, timeout,
                 // malformed output) is a failed run, not a handoff/contract
                 // violation, so it is a RuntimeFailure with the engine's code.
