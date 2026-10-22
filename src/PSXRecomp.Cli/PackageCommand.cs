@@ -42,6 +42,15 @@ public static class PackageCommand
     /// <summary>Default per-segment guest budget; shared with <see cref="RunCommand"/>.</summary>
     public const uint DefaultSegmentBudget = RunCommand.DefaultSegmentBudget;
 
+    /// <summary>The manifest's run timeout for a headless package, in milliseconds (unchanged).</summary>
+    public const int DefaultRunTimeoutMs = 60_000;
+
+    /// <summary>
+    /// The manifest's run timeout for a <c>--gui</c> package (Issue #830): a window runs until it is closed. The bound is finite, four hours,
+    /// so no run waits forever; closing the window stops the run before the bound is reached.
+    /// </summary>
+    public const int GuiRunTimeoutMs = 4 * 60 * 60 * 1000;
+
     /// <summary>The documented usage line for <c>package</c>.</summary>
     public const string Usage =
         "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... " +
@@ -195,7 +204,7 @@ public static class PackageCommand
                         ex.Message);
                 }
 
-                CopyNativeRuntimeLibraries(runtimeDir);
+                CarryCompilerRuntimeLibraries(artifactPath, runtimeDir);
 
             }
             else
@@ -229,7 +238,7 @@ public static class PackageCommand
                 blockEntryPcs,
                 programEnd,
                 (int)R3000aRegister.V0,  // V0
-                60000,                    // 60 second run timeout
+                gui ? GuiRunTimeoutMs : DefaultRunTimeoutMs,
                 entryPc);
 
             var serialized = RuntimeHostManifestJson.Serialize(manifest);
@@ -330,25 +339,59 @@ public static class PackageCommand
     }
 
     /// <summary>
-    /// The GCC runtime libraries that <c>PSXRecomp.Native.dll</c> imports (Issue #830). The window loads that library, and it is built
-    /// with GCC, so it needs these from the toolchain's bin directory. The window's package carries them next to the window, so it runs on
-    /// a machine without the compiler.
+    /// Makes the window package self-contained with respect to the compiler (Issue #830). The game executable must import only Windows
+    /// libraries (it is linked with <c>-static-libgcc</c>), and the window's native module imports GCC runtime libraries: those are copied
+    /// next to the window from the compiler's bin directory. Every non-Windows import must be found, or the package is not written.
     /// </summary>
-    private static readonly string[] NativeRuntimeLibraries = ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"];
-
-    private static void CopyNativeRuntimeLibraries(string runtimeDir)
+    private static void CarryCompilerRuntimeLibraries(string artifactPath, string runtimeDir)
     {
-        var compilerDirectory = Path.GetDirectoryName(FindOnPath("gcc.exe")
-            ?? throw new InvalidOperationException("The window package needs the GCC runtime libraries, but gcc.exe was not found on PATH."));
-        foreach (var name in NativeRuntimeLibraries)
+        var gccPath = FindOnPath("gcc.exe")
+            ?? throw new InvalidOperationException("The window package needs the GCC runtime libraries, but gcc.exe was not found on PATH.");
+        var compilerDirectory = Path.GetDirectoryName(gccPath)!;
+
+        var artifactImports = PeImageInfo.ImportedDllNames(File.ReadAllBytes(artifactPath))
+            .Where(name => !PeImageInfo.IsWindowsLibrary(name))
+            .ToArray();
+        if (artifactImports.Length > 0)
         {
-            var source = Path.Combine(compilerDirectory!, name);
-            if (File.Exists(source))
+            throw new InvalidOperationException(
+                $"The game executable imports {string.Join(", ", artifactImports)}, which the window package does not carry.");
+        }
+
+        // The closure of the native module's imports: a copied compiler library imports further ones (libstdc++ needs libwinpthread).
+        var nativePath = Path.Combine(runtimeDir, "PSXRecomp.Native.dll");
+        var pending = new Queue<string>(PeImageInfo.ImportedDllNames(File.ReadAllBytes(nativePath)));
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var missing = new List<string>();
+        while (pending.Count > 0)
+        {
+            var name = pending.Dequeue();
+            if (PeImageInfo.IsWindowsLibrary(name) || !visited.Add(name))
             {
-                File.Copy(source, Path.Combine(runtimeDir, name), overwrite: true);
+                continue;
+            }
+
+            var source = Path.Combine(compilerDirectory, name);
+            if (!File.Exists(source))
+            {
+                missing.Add(name);
+                continue;
+            }
+
+            File.Copy(source, Path.Combine(runtimeDir, name), overwrite: true);
+            foreach (var next in PeImageInfo.ImportedDllNames(File.ReadAllBytes(source)))
+            {
+                pending.Enqueue(next);
             }
         }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"The window's native module needs {string.Join(", ", missing)}, which were not found in {compilerDirectory}.");
+        }
     }
+
 
     private static string? FindOnPath(string fileName)
     {
