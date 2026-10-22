@@ -281,8 +281,9 @@ public sealed class GuestCancellationTests
     private static string WriteStdoutHoldingArtifact(TempDirectory dir, string tail)
     {
         var path = Path.Combine(dir.FullPath, "holder.sh");
+        // The snapshot's pc is the program's entry block (a pc with no block would be an unresolved transfer, not the child's result).
         var script = "#!/bin/sh\n"
-            + "printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x0\\nhi=0x0\\nlo=0x0\\n'\n"
+            + $"printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x{Entry:x8}\\nhi=0x0\\nlo=0x0\\n'\n"
             + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i; i=$((i+1)); done\n"
             + "printf 'RSNAPSHOT_END\\n'\n"
             + "sh -c 'sleep 60 &'\n"
@@ -314,7 +315,7 @@ public sealed class GuestCancellationTests
         // Owner spec (round 17), written from the spec: the child ended on its own and printed a valid snapshot, so its result (Completed) stands.
         // A grandchild keeps stdout open past the drain budget: a residual of the cleanup, with an unidentified holder. No stop was requested, so
         // the shutdown is not NotStopped. This goes through the real engine's RunSegment, not a test copy of it.
-        Skip.If(OperatingSystem.IsWindows(), "a shell artifact whose grandchild holds stdout is Linux-only; the Windows residual path is covered by the child tests");
+        Skip.If(OperatingSystem.IsWindows(), "a POSIX shell artifact whose grandchild holds stdout runs on Linux and macOS; the Windows residual path is covered by the child tests");
         using var dir = new TempDirectory();
         using var engine = HoldingEngine(WriteStdoutHoldingArtifact(dir, "exit 0"));
 
@@ -335,7 +336,7 @@ public sealed class GuestCancellationTests
     {
         // Owner spec (round 17): a stop that killed the live child and saw its exit has succeeded, so the result is Cancelled, whatever the
         // cleanup left. The grandchild that holds stdout is a residual with an unidentified holder, so the shutdown is Residual.
-        Skip.If(OperatingSystem.IsWindows(), "a shell artifact whose grandchild holds stdout is Linux-only; the Windows residual path is covered by the child tests");
+        Skip.If(OperatingSystem.IsWindows(), "a POSIX shell artifact whose grandchild holds stdout runs on Linux and macOS; the Windows residual path is covered by the child tests");
         using var dir = new TempDirectory();
         using var engine = HoldingEngine(WriteStdoutHoldingArtifact(dir, "sleep 30"));
         using var cts = new CancellationTokenSource();
