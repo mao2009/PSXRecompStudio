@@ -949,11 +949,12 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public void OutputDrainTimeout_IsReportedAsItsOwnFailure_NotAsASilentOne()
+    public void NaturalEnd_WithAGrandchildHoldingStdout_KeepsTheChildsResult_AndRecordsTheHolderAsAResidual()
     {
-        // Issue #827 review (MEDIUM 2): the child ends with exit 0, but a grandchild it started holds its stdout, so the drain runs out of time.
-        // The output was not read, so the run is reported as a failure with its reason, not as a silent loss. The budget is injected (500 ms),
-        // so the test does not wait for the run's real budget.
+        // Owner spec (round 16), written from the spec and not from the implementation: the guest's result and the process cleanup are decided
+        // apart. The child ended on its own with exit 0, so its result is Completed and stands. A grandchild it started still holds stdout after
+        // the drain budget: that is a residual of the cleanup, with an unidentified holder, and it does not change the result. No stop was requested.
+        // The budget is injected (500 ms), so the test does not wait for the run's real budget.
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "drain");
         var (fileName, arguments) = OperatingSystem.IsWindows()
@@ -966,14 +967,47 @@ public sealed class GuestCancellationTests
                 fileName, arguments, timeoutMs: 60_000, CancellationToken.None, outputBudgetMs: 500);
 
             clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
-            outcome.TimedOut.Should().BeFalse("the child itself did not time out");
+            outcome.TimedOut.Should().BeFalse("the child ended on its own");
             outcome.ExitCode.Should().Be(0, "the child ended normally");
-            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed);
-            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode);
-            outcome.Result.DiagnosticMessage.Should().Contain("stdout drain timed out after 500 ms");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Completed, "the child ended on its own: its own result stands");
+            outcome.Result.DiagnosticCode.Should().BeNull("the stalled stdout is not the guest's result");
+            outcome.Confirmed.Should().BeFalse("no stop was requested");
+            outcome.Refused.Should().BeNull("no stop was refused");
+            outcome.Leftover.Should().Contain("holder is unidentified", "the pipe holder is a residual with its pid not known");
         }
         finally
         {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void ChildStillAlive_WithAStalledOutputDrain_IsOutputDrainTimeout()
+    {
+        // Owner spec (round 16): the output drain-timeout code is the result only while the guest is still running at its budget, and its
+        // stdout cannot be drained after the kill. The grandchild holds the stdout and is not in the tree, so the cleanup cannot end it. The
+        // budget is injected (1.5 s); the cleanup budget is the stdout's own (5 s), so the test takes about seven seconds.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "stalled");
+        var middle = OperatingSystem.IsWindows() ? NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "stalledmid") : string.Empty;
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", middle, "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul" })
+            : ("/bin/sh", new[] { "-c", $"sh -c '{copy} 60 &'; sleep 30" });
+        try
+        {
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(fileName, arguments, timeoutMs: 1_500, CancellationToken.None);
+
+            outcome.TimedOut.Should().BeTrue("the child was still running at its budget");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed, "the guest did not finish, and its output could not be drained");
+            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode);
+        }
+        finally
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                KillNamed(middle);
+            }
+
             KillNamed(copy);
         }
     }
