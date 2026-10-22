@@ -610,6 +610,7 @@ internal sealed class StopRecord : IDisposable
         var reaped = new List<ResidualProcess>();
         var unresolved = new List<ResidualProcess>();
         var clock = Stopwatch.StartNew();
+        var graceSpent = false;
         var kill = DescendantKillForTest ?? (process => process.Kill(true));
         foreach (var tracked in _tracked)
         {
@@ -652,12 +653,19 @@ internal sealed class StopRecord : IDisposable
                 continue;
             }
 
-            // The exit of a process just killed gets at least a second, even when the stop's shared budget is spent on the natural ends.
+            // The exit of a process just killed gets time even when the stop's shared budget is spent on the natural ends: one second for the
+            // first such process, then 100 ms for each further one. The decision's hold on the gate is therefore bounded by ConfirmTimeout plus
+            // one second and 100 ms per further tracked process (round 17, LOW).
             var left = wait - clock.Elapsed;
             var gone = false;
             try
             {
-                var grace = left > TimeSpan.FromSeconds(1) ? left : TimeSpan.FromSeconds(1);
+                var grace = left > TimeSpan.Zero ? left : (graceSpent ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(1));
+                if (left <= TimeSpan.Zero)
+                {
+                    graceSpent = true;
+                }
+
                 gone = tracked.Handle.WaitForExit(grace);
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)

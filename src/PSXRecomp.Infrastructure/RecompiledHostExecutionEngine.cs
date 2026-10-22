@@ -912,11 +912,21 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // result stays as the run had it.
         // A stop that was requested but never processed by the record (the registration was sealed before the request arrived) is not reported as
         // NotStopped: its descendants were not checked, so it is a refusal of the shutdown, never a clean one (Issue #827, round 14).
+        // The outcome first: ResolveOutcome adds the residuals of the output drains (a pipe holder, a cut drain). The diagnostics are taken after
+        // it, so they include every residual (owner spec, round 17; a snapshot taken earlier missed them).
+        var result = ResolveOutcome(
+            ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge),
+            stopRecord,
+            drainTimedOut,
+            drainCutWhileAlive,
+            OutputBudgetMsForTest ?? _runTimeoutMs);
+
         var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
         LastStopDiagnostics = stopRecord.StoppedAt is not null
             ? new StopDiagnostics(stopRecord.ProcessId, stopRecord.ChildEndedBeforeStop, stopRecord.Outcome.Confirmed, stopRecord.Outcome.Refused, stopRecord.Residuals)
             : stopRequested
-                ? new StopDiagnostics(stopRecord.ProcessId, false, false, "the stop was requested after the run's stop record was sealed, so the child's descendants were not checked", [])
+                // A stop that was requested but never processed by the record: not NotStopped, its descendants were not checked (round 14).
+                ? new StopDiagnostics(stopRecord.ProcessId, false, false, "the stop was requested after the run's stop record was sealed, so the child's descendants were not checked", stopRecord.Residuals)
                 // A natural end that left a residual (an output pipe still held after the child ended): the child ended before any stop.
                 : stopRecord.Residuals.Count > 0
                     ? new StopDiagnostics(stopRecord.ProcessId, true, false, null, stopRecord.Residuals)
@@ -926,12 +936,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             Trace.WriteLine($"Stop of artifact process {residual.ProcessId} left a residual: refused={residual.Refused}; residuals={residual.ResidualText}");
         }
 
-        return ResolveOutcome(
-            ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge),
-            stopRecord,
-            drainTimedOut,
-            drainCutWhileAlive,
-            OutputBudgetMsForTest ?? _runTimeoutMs);
+        return result;
     }
 
     /// <summary>
@@ -974,6 +979,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         if (drainCutWhileAlive)
         {
+            // The killed child's pipe is still held: the holder is a residual of the cleanup (unidentified), and the result is the drain timeout.
+            stop.AddResidual(new ResidualProcess(
+                null,
+                ResidualState.Unverified,
+                $"an output pipe is still held after the artifact was killed at its budget ({budgetMs} ms); the holder is unidentified (pid not known)"));
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed,
                 OutputDrainTimeoutDiagnosticCode,
@@ -1366,6 +1376,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryReleaseStdout(process);
             var pumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
             timedOut = !stopRecord.Settled;
+
+            // The child was alive at its budget and killed, and its output still did not end: the same cut as the null-bridge path, so the
+            // guest did not finish and its output is unread (owner spec B; round 17, MEDIUM 2).
+            drainCutWhileAlive = !pumpEnded;
             return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, pumpEnded);
         }
 
