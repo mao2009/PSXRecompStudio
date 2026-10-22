@@ -85,12 +85,18 @@ internal sealed class StopRecord : IDisposable
 
     private long? _stoppedAt;
 
-    /// <summary>The Stopwatch timestamp at which a stop arrived, or null when none has (read under the record's lock).</summary>
+    /// <summary>
+    /// Guards the stop instant only. It is separate from <see cref="_gate"/>, which a stop holds for the whole decision (including its waits),
+    /// so a reader of the instant never waits for a stop in progress (Issue #827 review).
+    /// </summary>
+    private readonly object _stopMark = new();
+
+    /// <summary>The Stopwatch timestamp at which a stop arrived, or null when none has.</summary>
     internal long? StoppedAt
     {
         get
         {
-            lock (_gate)
+            lock (_stopMark)
             {
                 return _stoppedAt;
             }
@@ -152,12 +158,23 @@ internal sealed class StopRecord : IDisposable
             return;
         }
 
-        lock (_gate)
+        // A stop in progress holds the gate for its whole decision: the wait does not block on it. The next wait samples again, and
+        // a decision that runs now does not need a sample (Issue #827 review).
+        if (!System.Threading.Monitor.TryEnter(_gate))
+        {
+            return;
+        }
+
+        try
         {
             if (!_sealed)
             {
                 ClaimFromSnapshot();
             }
+        }
+        finally
+        {
+            System.Threading.Monitor.Exit(_gate);
         }
     }
 
@@ -204,7 +221,18 @@ internal sealed class StopRecord : IDisposable
     }
 
     /// <summary>True once a stop has found the child already ended on its own (no kill was needed).</summary>
-    internal bool ChildEndedBeforeStop { get; private set; }
+    internal bool ChildEndedBeforeStop
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _childEndedBeforeStop;
+            }
+        }
+    }
+
+    private bool _childEndedBeforeStop;
 
     /// <summary>True when the child has exited, or its handle is no longer usable (the run already released it).</summary>
     internal static bool HasExitedOrGone(Process process)
@@ -221,15 +249,19 @@ internal sealed class StopRecord : IDisposable
 
     private void Stop(Process process)
     {
+        // The instant the stop arrived is recorded first, outside the decision's lock: the drains and the frame decision read it while the
+        // decision waits (Issue #827).
+        lock (_stopMark)
+        {
+            _stoppedAt ??= Stopwatch.GetTimestamp();
+        }
+
         lock (_gate)
         {
             if (_sealed)
             {
                 return;
             }
-
-            // The instant the stop arrived: the output drains of this run are capped at the cleanup budget counted from here (Issue #827).
-            _stoppedAt ??= Stopwatch.GetTimestamp();
 
             try
             {
@@ -351,7 +383,7 @@ internal sealed class StopRecord : IDisposable
     /// </summary>
     private void EndedBeforeStop()
     {
-        ChildEndedBeforeStop = true;
+        _childEndedBeforeStop = true;
         var (endedLeft, endedUnresolved) = ReapTracked(ConfirmTimeout);
         var endedAll = endedLeft.Concat(endedUnresolved).ToList();
         if (endedAll.Count > 0)

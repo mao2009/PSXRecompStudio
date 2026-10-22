@@ -220,6 +220,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     internal string? LeftoverDescendants { get; private set; }
 
+    /// <summary>How many times the last run read a frame from the bridge (Issue #827 review): zero after a stop is the check.</summary>
+    internal int FrameCaptureCalls { get; private set; }
+
+    /// <summary>
+    /// Test seam (Issue #827 review): runs just before the frame decision of a segment, after the stop record is sealed. A test requests a
+    /// stop here to place it in that window. Null in production.
+    /// </summary>
+    internal Action? BeforeFrameCaptureForTest { get; set; }
+
     /// <summary>
     /// Test seam (Issue #827): the stdout drain budget of a child that ended on its own, in milliseconds. Null uses the run's timeout.
     /// </summary>
@@ -275,11 +284,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 $"The stop found descendants of process {stop.ProcessId} still running after it ended: {leftover}");
         }
 
-        if (classified.Status == RecompilerExecutionStatus.Completed)
-        {
-            return classified;
-        }
-
+        // A refusal is decided before a completed result is kept: a refused stop is never absorbed by a completed run (Issue #827 review).
         var (confirmed, refused) = stop.Outcome;
         if (refused is not null)
         {
@@ -287,6 +292,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 RecompilerExecutionStatus.ExecutionFailed,
                 StopRefusedDiagnosticCode,
                 $"The stop request was refused for process {stop.ProcessId}, which may still be running: {refused}");
+        }
+
+        if (classified.Status == RecompilerExecutionStatus.Completed)
+        {
+            return classified;
         }
 
         return confirmed
@@ -298,7 +308,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Asks the run to stop (Issue #820). It is idempotent and returns at once: the child process tree is killed on a
     /// thread-pool thread, so a caller on the UI thread never waits for the process to exit.
     /// </summary>
-    public void RequestCancel() => ThreadPool.QueueUserWorkItem(_ => CancelStopSource());
+    public void RequestCancel()
+    {
+        // The request is recorded before the stop is queued: a reader that checks the flag after this call sees the request at once.
+        _cancelRequested = true;
+        ThreadPool.QueueUserWorkItem(_ => CancelStopSource());
+    }
+
+    /// <summary>Set synchronously by <see cref="RequestCancel"/>, before the stop is applied on the pool (Issue #827 review).</summary>
+    private volatile bool _cancelRequested;
 
     private void CancelStopSource()
     {
@@ -821,7 +839,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         FallbackReturns = bridge?.FallbackReturns;
         // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
         // The record, not the token, decides: a stop that has begun is recorded before its kill, and the record is sealed at this point.
-        LastFrameBgra32 = pumpEnded && stopRecord.StoppedAt is null ? bridge?.CaptureFrameBgra32() : null;
+        BeforeFrameCaptureForTest?.Invoke();
+        // A frame is read only when no stop was requested. Each of the three signals covers a window the others do not: the request flag (set at
+        // once by RequestCancel), the stop token (set before its callbacks run), and the stop record (set when a stop begins).
+        var stopRequestedNow = _cancelRequested || stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null;
+        if (pumpEnded && !stopRequestedNow && bridge is not null)
+        {
+            FrameCaptureCalls++;
+            LastFrameBgra32 = bridge.CaptureFrameBgra32();
+        }
+        else
+        {
+            LastFrameBgra32 = null;
+        }
 
         LeftoverDescendants = stopRecord.Leftover;
         return ResolveOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, drainTimedOut, OutputBudgetMsForTest ?? _runTimeoutMs);
