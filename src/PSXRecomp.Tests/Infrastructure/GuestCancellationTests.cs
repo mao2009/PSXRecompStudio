@@ -820,8 +820,8 @@ public sealed class GuestCancellationTests
         var copy = NamedCopy(dir, SleepBinary, "capped");
         var name = Path.GetFileNameWithoutExtension(copy);
         var (fileName, arguments) = OperatingSystem.IsWindows()
-            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "2", "127.0.0.1", ">nul" })
-            : ("/bin/sh", new[] { "-c", $"{copy} 60 & sleep 2" });
+            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60 &" });
         try
         {
             using var cts = new CancellationTokenSource();
@@ -829,7 +829,8 @@ public sealed class GuestCancellationTests
             {
                 WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
 
-                // The child ends about two seconds in and the drain starts; the stop lands at 2.5 s, during the drain.
+                // The child ends at once, so the drain starts at once; the stop lands 2.5 s later, well inside the drain (the drain's cap runs from
+                // the later of its start and the stop, so a late drain start would not test the cap).
                 SpinFor(TimeSpan.FromMilliseconds(2500));
                 cts.Cancel();
             });
@@ -988,10 +989,25 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public void ACompletedRun_KeepsItsResult_EvenWhenAStopIsRefusedAfterIt()
+    public void ACompletedRun_WithARecordedRefusal_IsReportedAsRefused_NotAbsorbed()
     {
+        // Issue #827 review (LOW 4): a refusal decides before a completed result is kept. A refused stop is never absorbed by a completed run.
         var stop = new StopRecord();
-        stop.RefuseIfUnset("a refusal that arrived after the run had completed");
+        stop.RefuseIfUnset("a refusal recorded by a stop");
+        stop.Seal();
+        var completed = new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null);
+
+        var result = RecompiledHostExecutionEngine.ApplyStopOutcome(completed, stop);
+
+        result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+        result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed);
+    }
+
+    [Fact]
+    public void ACompletedRun_WithoutAStop_KeepsItsResult()
+    {
+        // A completed run with no stop at all keeps its result.
+        var stop = new StopRecord();
         stop.Seal();
         var completed = new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null);
 
@@ -1172,6 +1188,37 @@ public sealed class GuestCancellationTests
 
 
 #pragma warning restore AARC003
+
+    [Fact]
+    public void FrameIsNotRead_WhenTheStopIsRequestedAfterTheStopRecordIsSealed()
+    {
+        // Issue #827 review (MAJOR, window a): the child ends on its own (a short budget). The stop is requested after the run has sealed its stop
+        // record, just before the frame decision. The stop was requested, so no frame may be read: zero reads, and no frame kept. A null result alone
+        // is not enough, so the number of reads is checked too.
+        using var dir = new TempDirectory();
+        var slot = new LiveFrameSlot();
+        var words = SyntheticLiveProgram.Words();
+        var entry = SyntheticLiveProgram.EntryPc;
+        var program = ReachableProgramBuilder.Build(entry, words, entry, []);
+        using var engine = new RecompiledHostExecutionEngine(
+            program,
+            words,
+            entry,
+            new GeneratedHostBuildService(),
+            dir.FullPath,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
+            embedImage: true,
+            liveFrames: slot);
+        using var cts = new CancellationTokenSource();
+        engine.BeforeFrameCaptureForTest = () => cts.Cancel();
+
+        // A short budget: the child ends by itself, so its pump ends and the frame decision is reached.
+        var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 200_000u);
+        new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cts.Token);
+
+        engine.FrameCaptureCalls.Should().Be(0, "a stop was requested before the frame decision, so no frame is read");
+        engine.LastFrameBgra32.Should().BeNull();
+    }
 
     /// <summary>Discards the guest's TTY bytes; the test only needs the Runtime to run.</summary>
     private sealed class DiscardSink : IRuntimeOutputSink
