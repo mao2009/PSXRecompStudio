@@ -46,7 +46,7 @@ public static class PackageCommand
     public const string Usage =
         "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... " +
         "[--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] " +
-        "[--fallback-max-transitions <n>] [--self-contained] [--json]\n" +
+        "[--fallback-max-transitions <n>] [--self-contained] [--gui] [--json]\n" +
         "       psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--build-timeout-seconds <n>] [--self-contained]";
 
     internal static int Run(
@@ -110,7 +110,23 @@ public static class PackageCommand
             var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
             var binaryName = artifactName + (windows ? ".exe" : "");
 
+            // Issue #830: --gui packages a window that runs the PS-X EXE through the Runtime in its own process. It is
+            // Windows-only and needs the PS-X EXE file itself, which is copied into runtime/.
+            var gui = arguments.Gui;
+            if (gui && (!windows || !Path.GetExtension(arguments.Input!).Equals(".exe", StringComparison.OrdinalIgnoreCase)))
+            {
+                return Fail(
+                    "GUI_UNSUPPORTED_INPUT",
+                    arguments.EntryRoots,
+                    "--gui needs a PS-X EXE input (.exe) on Windows.");
+            }
+
             var hostRelativePath = RuntimeHostLayout.HostRelativePath;
+            var windowedLaunch = gui
+                ? new RecompiledArtifactCodeGen.WindowedLaunch(
+                    RuntimeHostLayout.GuiHostFileName,
+                    RuntimeHostLayout.RuntimeDirectoryName + "/" + RuntimeHostLayout.GuiGameFileName)
+                : null;
             var artifactSource = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch,
                 initialGpr,
@@ -122,7 +138,8 @@ public static class PackageCommand
                 imageLoadAddress,
                 ProgramImageBytes(input.InstructionWords),
                 hostBridge: true,
-                directLaunchHostRelativePath: hostRelativePath);
+                directLaunchHostRelativePath: hostRelativePath,
+                windowedLaunch: windowedLaunch);
 
             if (!artifactSource.Success)
             {
@@ -136,7 +153,11 @@ public static class PackageCommand
             // Build the native artifact.
             var buildService = new GeneratedHostBuildService();
             var build = buildService.Build(
-                new GeneratedHostBuildRequest(artifactSource.Source!, outputDir, binaryName));
+                new GeneratedHostBuildRequest(
+                    artifactSource.Source!,
+                    outputDir,
+                    binaryName,
+                    ExtraLinkerArguments: gui ? new[] { "-mwindows" } : null));
             if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {
                 return Fail(
@@ -156,16 +177,35 @@ public static class PackageCommand
 
             // Provision the shared Runtime host into <outputDir>/runtime/ .
             var runtimeDir = Path.Combine(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
-            try
+            if (gui)
             {
-                RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, arguments.SelfContained);
+                try
+                {
+                    RuntimeHostBuildService.ProvisionGameWindow(runtimeDir, arguments.SelfContained);
+                }
+                catch (RuntimeHostBuildService.RuntimeHostProvisionFailed ex)
+                {
+                    return Fail(
+                        ex.DiagnosticCode ?? "GUI_HOST_PROVISION_FAILED",
+                        arguments.EntryRoots,
+                        ex.Message);
+                }
+
+                File.Copy(arguments.Input!, Path.Combine(runtimeDir, RuntimeHostLayout.GuiGameFileName), overwrite: true);
             }
-            catch (RuntimeHostBuildService.RuntimeHostProvisionFailed ex)
+            else
             {
-                return Fail(
-                    ex.DiagnosticCode ?? "RUNTIME_HOST_PROVISION_FAILED",
-                    arguments.EntryRoots,
-                    ex.Message);
+                try
+                {
+                    RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, arguments.SelfContained);
+                }
+                catch (RuntimeHostBuildService.RuntimeHostProvisionFailed ex)
+                {
+                    return Fail(
+                        ex.DiagnosticCode ?? "RUNTIME_HOST_PROVISION_FAILED",
+                        arguments.EntryRoots,
+                        ex.Message);
+                }
             }
 
             // Write the program-image sidecar the manifest points to.

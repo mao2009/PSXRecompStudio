@@ -313,7 +313,8 @@ public static class RecompiledArtifactCodeGen
         uint imageLoadAddress,
         IReadOnlyList<byte> programImage,
         bool hostBridge = false,
-        string? directLaunchHostRelativePath = null)
+        string? directLaunchHostRelativePath = null,
+        WindowedLaunch? windowedLaunch = null)
     {
         ArgumentNullException.ThrowIfNull(generatedDispatch);
         ArgumentNullException.ThrowIfNull(initialGpr);
@@ -361,7 +362,8 @@ public static class RecompiledArtifactCodeGen
             imageLoadAddress,
             programImage,
             hostBridge,
-            directLaunchHostRelativePath);
+            directLaunchHostRelativePath,
+            windowedLaunch);
 
         if (!standaloneSource.Success)
         {
@@ -391,7 +393,8 @@ public static class RecompiledArtifactCodeGen
         uint imageLoadAddress,
         IReadOnlyList<byte> programImage,
         bool hostBridge = false,
-        string? directLaunchHostRelativePath = null)
+        string? directLaunchHostRelativePath = null,
+        WindowedLaunch? windowedLaunch = null)
     {
         var sb = new System.Text.StringBuilder();
 
@@ -537,7 +540,7 @@ public static class RecompiledArtifactCodeGen
         // comment that sits exactly where the old main began, not on the signature
         // text itself (fragile). The old main body immediately follows the marker, so
         // we replace the whole [marker .. old main closing brace] region at once.
-        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath);
+        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath, windowedLaunch);
         const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
 
         // Split the launcher prologue into a file-scope header (preprocessor directives
@@ -616,8 +619,51 @@ public static class RecompiledArtifactCodeGen
             true, prologueHeader + standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
     }
 
+    /// <summary>
+    /// A windowed (GUI) direct launch (Issue #830): the launcher starts <paramref name="HostBinaryName"/> from the
+    /// <c>runtime/</c> directory with <paramref name="ArgumentRelativePath"/> as its argument, creates it without a console, and
+    /// ties its lifetime to a Job Object with kill-on-close on Windows. Only the Windows launcher supports it.
+    /// </summary>
+    public sealed record WindowedLaunch(string HostBinaryName, string ArgumentRelativePath);
+
+    /// <summary>
+    /// Turns the direct-launch prologue into the windowed launcher (Issue #830). Each replacement must find its target, so a
+    /// change to the headless prologue fails here instead of silently producing a console launcher. Headless output never passes
+    /// through this method.
+    /// </summary>
+    private static string WindowedLauncherPatch(string prologue, WindowedLaunch windowed)
+    {
+        var text = Patch(prologue, "\"PSXRecomp.RuntimeHost.exe\"", "\"" + windowed.HostBinaryName + "\"");
+        text = Patch(text, "\"runtime/runtime-host.json\"", "\"" + windowed.ArgumentRelativePath + "\"");
+        text = Patch(text, "TRUE, 0, NULL, NULL, &si, &pi", "TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi");
+        text = Patch(text, "STARTUPINFOW si = { sizeof(si) };", @"HANDLE job = CreateJobObjectW(NULL, NULL);
+        if (job) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits;
+            memset(&job_limits, 0, sizeof(job_limits));
+            job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, &job_limits, sizeof(job_limits));
+        }
+        STARTUPINFOW si = { sizeof(si) };");
+        text = Patch(text, "WaitForSingleObject(pi.hProcess, INFINITE);", @"if (job) AssignProcessToJobObject(job, pi.hProcess);
+        WaitForSingleObject(pi.hProcess, INFINITE);");
+        // Closing the last handle of the job ends any process still in it, so a child left behind is reaped.
+        text = Patch(text, "CloseHandle(pi.hProcess);", @"if (job) CloseHandle(job);
+        CloseHandle(pi.hProcess);");
+        return text;
+    }
+
+    private static string Patch(string text, string target, string replacement)
+    {
+        if (!text.Contains(target, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Windowed launcher patch target not found in the direct-launch prologue: {target}");
+        }
+
+        return text.Replace(target, replacement, StringComparison.Ordinal);
+    }
+
     private static (string? LauncherPrologue, string Main) BuildStandaloneMain(
-        bool hostBridge, string? directLaunchHostRelativePath)
+        bool hostBridge, string? directLaunchHostRelativePath, WindowedLaunch? windowedLaunch)
     {
         // Phase 2 (Issue #757): the embedded-image artifact may attach the shared
         // Runtime host bridge when the caller opts in (--host-transfer), so it runs
@@ -798,6 +844,11 @@ int main(int argc, char** argv) {
     }
 "
             : null;
+
+        if (launcherPrologue is not null && windowedLaunch is not null)
+        {
+            launcherPrologue = WindowedLauncherPatch(launcherPrologue, windowedLaunch);
+        }
 
         string delegationCheck = launcherPrologue is not null
             ? @"

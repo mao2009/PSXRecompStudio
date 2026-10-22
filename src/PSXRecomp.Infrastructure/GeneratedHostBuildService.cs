@@ -88,7 +88,15 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         }
 
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
-        var link = RunToolchain(compiler, [objectPath, "-o", binaryPath], _toolchainTimeoutMs);
+        var linkArgs = new List<string> { objectPath };
+        if (request.ExtraLinkerArguments is { Count: > 0 })
+        {
+            linkArgs.AddRange(request.ExtraLinkerArguments);
+        }
+        linkArgs.Add("-o");
+        linkArgs.Add(binaryPath);
+
+        var link = RunToolchain(compiler, linkArgs, _toolchainTimeoutMs);
         if (link.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");

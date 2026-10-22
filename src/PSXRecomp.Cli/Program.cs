@@ -52,9 +52,9 @@ public static class Program
         var rest = args[1..];
         return command switch
         {
-            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowMixedFallback: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
-            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowMixedFallback: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, allowSelfContained: false, allowGuestFirmware: false, standardOutput, standardError),
-            "package" => Dispatch("package", rest, allowSegmentBudget: false, allowMixedFallback: true, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: true, allowGuestFirmware: true, standardOutput, standardError),
+            "recompile" => Dispatch("recompile", rest, allowSegmentBudget: false, allowMixedFallback: false, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: false, allowGuestFirmware: false, allowGui: false, standardOutput, standardError),
+            "run" => Dispatch("run", rest, allowSegmentBudget: true, allowMixedFallback: true, allowReport: true, allowFrameEvidence: true, requireOutput: false, allowSelfContained: false, allowGuestFirmware: false, allowGui: false, standardOutput, standardError),
+            "package" => Dispatch("package", rest, allowSegmentBudget: false, allowMixedFallback: true, allowReport: false, allowFrameEvidence: false, requireOutput: true, allowSelfContained: true, allowGuestFirmware: true, allowGui: true, standardOutput, standardError),
             "screenshot" => ScreenshotCommand.Run(rest, standardOutput, standardError),
             "doctor" => Doctor(rest, standardOutput, standardError),
             "openbios-probe" => OpenBiosProbeCommand.Run(rest, standardOutput, standardError),
@@ -74,10 +74,11 @@ public static class Program
         bool requireOutput,
         bool allowSelfContained,
         bool allowGuestFirmware,
+        bool allowGui,
         TextWriter standardOutput,
         TextWriter standardError)
     {
-        if (!TryParse(arguments, allowSegmentBudget, allowMixedFallback, allowReport, allowFrameEvidence, requireOutput, allowSelfContained, allowGuestFirmware, out var parsed, out var error))
+        if (!TryParse(arguments, allowSegmentBudget, allowMixedFallback, allowReport, allowFrameEvidence, requireOutput, allowSelfContained, allowGuestFirmware, allowGui, out var parsed, out var error))
         {
             standardError.WriteLine($"psxrecomp {command}: {error}");
             WriteCommandUsage(command, standardError);
@@ -113,6 +114,7 @@ public static class Program
         bool requireOutput,
         bool allowSelfContained,
         bool allowGuestFirmware,
+        bool allowGui,
         out ParsedArguments parsed,
         out string? error)
     {
@@ -133,6 +135,7 @@ public static class Program
         var entryRoots = new SortedSet<uint>();
         var help = false;
         bool selfContained = false;
+        bool gui = false;
         bool? guestFirmware = null;
         string? bios = null, biosRom = null, aotDir = null;
         uint? codeBytes = null, instructionBudget = null;
@@ -277,6 +280,15 @@ public static class Program
                 case "--standalone":
                     standalone = true;
                     break;
+                case "--gui":
+                    if (!allowGui)
+                    {
+                        parsed = default;
+                        error = "'--gui' is only valid for 'package'.";
+                        return false;
+                    }
+                    gui = true;
+                    break;
                 case "--self-contained":
                     if (!allowSelfContained)
                     {
@@ -368,7 +380,7 @@ public static class Program
 
         if (help)
         {
-            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware, Firmware: firmware);
+            parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: true, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware, Firmware: firmware, Gui: gui);
             error = null;
             return true;
         }
@@ -387,7 +399,7 @@ public static class Program
             return false;
         }
 
-        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware, Firmware: firmware);
+        parsed = new ParsedArguments(input, outputDirectory, json, segmentBudget, report, frameEvidence, standalone, entryRoots.ToArray(), Help: false, MixedFallback: mixedFallback, FallbackSegmentBudget: fallbackSegmentBudget, FallbackMaxTransitions: fallbackMaxTransitions, SelfContained: selfContained, GuestFirmware: guestFirmware, Firmware: firmware, Gui: gui);
         error = null;
         return true;
     }
@@ -501,7 +513,8 @@ internal sealed record ParsedArguments(
     uint? FallbackMaxTransitions = null,
     bool SelfContained = false,
     bool? GuestFirmware = null,
-    FirmwareOptions? Firmware = null);
+    FirmwareOptions? Firmware = null,
+    bool Gui = false);
 
 /// <summary>The <c>package --bios</c> family (Issue #732). Present only when at least one of the options was given.</summary>
 /// <param name="BuildTimeoutSeconds">

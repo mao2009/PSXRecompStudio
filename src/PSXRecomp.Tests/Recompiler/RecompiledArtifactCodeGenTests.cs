@@ -975,5 +975,61 @@ public sealed class RecompiledArtifactCodeGenTests
             }
         }
     }
+    /// <summary>
+    /// Issue #830 regression guard: the headless direct launch keeps the Runtime host, its manifest argument and the
+    /// unflagged CreateProcessW call, and gets no Job Object. A change that reaches the headless launcher fails here.
+    /// </summary>
+    [Fact]
+    public void GenerateStandalone_HeadlessDirectLaunch_KeepsRuntimeHostManifestLauncher()
+    {
+        var source = GenerateDirectLaunchSource(windowedLaunch: null);
+
+        source.Should().Contain("\"runtime/runtime-host.json\"");
+        source.Should().Contain("\"PSXRecomp.RuntimeHost.exe\"");
+        source.Should().Contain("TRUE, 0, NULL, NULL, &si, &pi");
+        source.Should().NotContain("CREATE_NO_WINDOW");
+        source.Should().NotContain("CreateJobObjectW");
+    }
+
+    /// <summary>
+    /// Issue #830: the windowed direct launch starts the GUI host with the PS-X EXE copy, creates it without a console, and
+    /// ties it to a kill-on-close Job Object so closing the launcher reaps it.
+    /// </summary>
+    [Fact]
+    public void GenerateStandalone_WindowedDirectLaunch_StartsGuiHostWithoutConsoleAndReapsIt()
+    {
+        var source = GenerateDirectLaunchSource(
+            new RecompiledArtifactCodeGen.WindowedLaunch("PSXRecomp.GameWindow.exe", "runtime/program.exe"));
+
+        source.Should().Contain("\"PSXRecomp.GameWindow.exe\"");
+        source.Should().Contain("\"runtime/program.exe\"");
+        source.Should().NotContain("\"runtime/runtime-host.json\"");
+        source.Should().NotContain("\"PSXRecomp.RuntimeHost.exe\"");
+        source.Should().Contain("TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi");
+        source.Should().Contain("CreateJobObjectW(NULL, NULL)");
+        source.Should().Contain("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE");
+        source.Should().Contain("AssignProcessToJobObject(job, pi.hProcess)");
+        source.Should().Contain("CloseHandle(job)");
+    }
+
+    private static string GenerateDirectLaunchSource(RecompiledArtifactCodeGen.WindowedLaunch? windowedLaunch)
+    {
+        var result = RecompiledArtifactCodeGen.GenerateStandalone(
+            GenerateDispatch(),
+            new uint[32],
+            0,
+            0,
+            0x80010000u,
+            1000,
+            [],
+            0x80010000u,
+            [0x00, 0x00, 0x02, 0x34],
+            hostBridge: true,
+            directLaunchHostRelativePath: "runtime/PSXRecomp.RuntimeHost",
+            windowedLaunch: windowedLaunch);
+
+        result.Success.Should().BeTrue();
+        return result.Source!;
+    }
     #pragma warning restore AARC003
 }
