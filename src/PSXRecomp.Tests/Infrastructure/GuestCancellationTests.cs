@@ -261,6 +261,7 @@ public sealed class GuestCancellationTests
         completed.FinalSnapshot.Should().NotBeNull($"{completed.DiagnosticCode} {completed.DiagnosticMessage}");
         completed.FinalSnapshot!.Gpr[(int)T0].Should().Be(0x1234u);
         completed.State.Should().NotBe(TitleExecutionState.Cancelled, "a run that finished before the stop keeps its result");
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.NotStopped, "no stop was processed; the natural end does not check residual children (Issue #829)");
     }
 
     /// <summary>An engine whose one segment fails on its own, then records a stop request that arrives after the failure.</summary>
@@ -420,7 +421,7 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public async Task SyntheticFrameRun_StopDuringFrameEmission_EndsCancelled_AndTouchesNoGpuAfterTheStop()
+    public async Task SyntheticFrameRun_StopDuringFrameEmission_EndsCancelled_AndPublishesNoFrameAfterTheRunReturns()
     {
         using var dir = new TempDirectory();
         var slot = new LiveFrameSlot();
@@ -598,7 +599,7 @@ public sealed class GuestCancellationTests
             result.State.Should().NotBe(TitleExecutionState.Cancelled, "a survivor means the stop is not confirmed");
             // Round 10: the run's result is its own, never rewritten to a stop result; the residual is in the diagnostics, and the shutdown is not clean.
             result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-            engine.ShutdownClean.Should().BeFalse("a residual process means the shutdown is not clean");
+            engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "a residual process means the shutdown is not clean");
             var pid = sleeper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
             (engine.LastStopDiagnostics!.Refused ?? engine.LastStopDiagnostics.Leftover).Should().Contain(pid);
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
@@ -1055,7 +1056,7 @@ public sealed class GuestCancellationTests
 
             result.State.Should().NotBe(TitleExecutionState.Cancelled, "an unchecked descendant is not confirmed");
             result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-            engine.ShutdownClean.Should().BeFalse();
+            engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual);
             engine.LastStopDiagnostics!.Refused.Should().Contain("could not be checked");
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
         }
@@ -1145,7 +1146,7 @@ public sealed class GuestCancellationTests
 
             result.State.Should().NotBe(TitleExecutionState.Cancelled, "a refused kill is not a confirmed stop");
             result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-            engine.ShutdownClean.Should().BeFalse("a refused kill is not a clean shutdown");
+            engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "a refused kill is not a clean shutdown");
             engine.LastStopDiagnostics!.Refused.Should().Contain("kill was refused");
             kills.Should().BeGreaterThanOrEqualTo(2, "the stop's own kill and the kill after the stop were both attempted");
             ArtifactProcessRunning(binary).Should().BeTrue("the OS refused the kill, so the child is still running, and the result says so");
@@ -1217,12 +1218,12 @@ public sealed class GuestCancellationTests
             biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
             embedImage: true,
             liveFrames: slot);
-        using var cts = new CancellationTokenSource();
-        engine.BeforeFrameCaptureForTest = () => cts.Cancel();
+        // The stop request is synchronous here (RequestCancel sets the flag at once), so the window is placed exactly, with no asynchronous callback.
+        engine.BeforeFrameCaptureForTest = () => engine.RequestCancel();
 
         // A short budget: the child ends by itself, so its pump ends and the frame decision is reached.
         var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 200_000u);
-        new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cts.Token);
+        new ExecutionOrchestrator().Execute(engine, handoff: null, request);
 
         engine.FrameCaptureCalls.Should().Be(0, "a stop was requested before the frame decision, so no frame is read");
         engine.LastFrameBgra32.Should().BeNull();
@@ -1250,14 +1251,22 @@ public sealed class GuestCancellationTests
             liveFrames: slot);
 
         Task? requestTask = null;
+        var requestThreadStarted = new ManualResetEventSlim(false);
         var requestWaitedForTheRead = false;
         var flagVisibleInsideTheRead = true;
         engine.DuringFrameReadForTest = () =>
         {
-            requestTask = Task.Run(() => engine.RequestCancel());
+            // The read section is open here: the check passed and the GPU read has not started. The request runs on another thread and signals
+            // that it has started; it must then be blocked inside RequestCancel while this section is open.
+            requestTask = Task.Run(() =>
+            {
+                requestThreadStarted.Set();
+                engine.RequestCancel();
+            });
+            requestThreadStarted.Wait(StopWait);
             SpinFor(TimeSpan.FromMilliseconds(300));
             flagVisibleInsideTheRead = engine.StopRequestFlagForTest;
-            requestWaitedForTheRead = !requestTask.IsCompleted;
+            requestWaitedForTheRead = requestThreadStarted.IsSet && !requestTask.IsCompleted;
         };
 
         var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 200_000u);
@@ -1269,6 +1278,87 @@ public sealed class GuestCancellationTests
         flagVisibleInsideTheRead.Should().BeFalse("the flag is not visible inside the read");
         engine.FrameCaptureCalls.Should().Be(1, "the read happened once, before the stop request was applied");
         engine.StopRequestFlagForTest.Should().BeTrue("the request is applied after the read");
+    }
+
+    /// <summary>
+    /// Runs the synthetic program with a reader polling the live slot (so the live VBlank path reads the VRAM), and stops it by <paramref name="stop"/>
+    /// once live reads have happened. Returns the reads so far and the reads at the stop request (Issue #827, owner requirement). The span checked
+    /// is the stop request up to the end of the pump: the run returns only after its pump has ended.
+    /// </summary>
+    private static (int Reads, int ReadsAtStop) RunLiveReadsUntilStop(Action<RecompiledHostExecutionEngine, CancellationTokenSource> stop)
+    {
+        using var dir = new TempDirectory();
+        var slot = new LiveFrameSlot();
+        var words = SyntheticLiveProgram.Words();
+        var entry = SyntheticLiveProgram.EntryPc;
+        var program = ReachableProgramBuilder.Build(entry, words, entry, []);
+        var engine = new RecompiledHostExecutionEngine(
+            program,
+            words,
+            entry,
+            new GeneratedHostBuildService(),
+            dir.FullPath,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
+            embedImage: true,
+            liveFrames: slot);
+        using var readerDone = new CancellationTokenSource();
+        var reader = Task.Run(() =>
+        {
+            var last = 0L;
+            var spin = new SpinWait();
+            while (!readerDone.IsCancellationRequested)
+            {
+                if (slot.TryGetNewer(last, out var frame))
+                {
+                    last = frame.Sequence;
+                    spin.Reset();
+                }
+                else
+                {
+                    spin.SpinOnce(sleep1Threshold: -1);
+                }
+            }
+        });
+        using var cts = new CancellationTokenSource();
+        var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 20_000_000u);
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cts.Token));
+        try
+        {
+            WaitUntil(() => engine.FrameReadStats.Reads >= 3 || run.IsCompleted, StopWait);
+            run.IsCompleted.Should().BeFalse("the run must still be emitting VBlank frames when the stop is requested");
+            stop(engine, cts);
+            run.Wait(StopWait).Should().BeTrue("the stopped run returns");
+        }
+        finally
+        {
+            readerDone.Cancel();
+            reader.Wait(StopWait);
+            engine.Dispose();
+        }
+
+        var stats = engine.FrameReadStats;
+        return (stats.Reads, stats.ReadsAtStop);
+    }
+
+    [Fact]
+    public void LiveVBlankReads_StopByToken_ReadNothingAfterTheStopRequest()
+    {
+        // The live path reads at VBlank on the pump thread. After the stop request, no VBlank reads: the count at the request equals the count at the
+        // end of the run (its pump has ended by then). Before the request there were reads, so the check is not vacuous.
+        var (reads, readsAtStop) = RunLiveReadsUntilStop((_, cts) => cts.Cancel());
+
+        reads.Should().BeGreaterThanOrEqualTo(3, "the live path read the VRAM while the run emitted frames");
+        reads.Should().Be(readsAtStop, "no VRAM read runs from the stop request until the pump ends");
+    }
+
+    [Fact]
+    public void LiveVBlankReads_StopByDispose_ReadNothingAfterTheStopRequest()
+    {
+        // The same check for the dispose path: Dispose sets the flag through the same gate as RequestCancel, then cancels the token on the pool.
+        var (reads, readsAtStop) = RunLiveReadsUntilStop((engine, _) => engine.Dispose());
+
+        reads.Should().BeGreaterThanOrEqualTo(3, "the live path read the VRAM while the run emitted frames");
+        reads.Should().Be(readsAtStop, "no VRAM read runs from the dispose until the pump ends");
     }
 
     /// <summary>Discards the guest's TTY bytes; the test only needs the Runtime to run.</summary>

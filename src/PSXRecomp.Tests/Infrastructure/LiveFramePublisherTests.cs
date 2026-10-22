@@ -15,6 +15,9 @@ public sealed class LiveFramePublisherTests
 {
     private const uint DisplayMode24Bit = 0x08000010u;
 
+    /// <summary>A read guard that always runs the read: these tests have no stop (the guard is the run's gate in production).</summary>
+    private static readonly Func<Action, bool> Unguarded = read => { read(); return true; };
+
     /// <summary>Uploads <paramref name="halfwords"/> into VRAM at (<paramref name="x"/>, <paramref name="y"/>) as a 1-row strip.</summary>
     private static void UploadRow(GpuDevice gpu, int x, int y, ushort[] halfwords)
     {
@@ -35,7 +38,7 @@ public sealed class LiveFramePublisherTests
         var slot = new LiveFrameSlot();
         slot.TryGetNewer(0, out _);
 
-        LiveFramePublisher.TryPublish(gpu, slot).Should().BeFalse();
+        LiveFramePublisher.TryPublish(gpu, slot, Unguarded).Should().BeFalse();
         slot.TryGetNewer(0, out _).Should().BeFalse();
     }
 
@@ -46,7 +49,7 @@ public sealed class LiveFramePublisherTests
         UploadRow(gpu, 0, 0, [0x7C00]);
         var slot = new LiveFrameSlot();
 
-        LiveFramePublisher.TryPublish(gpu, slot).Should().BeFalse("no reader asked for a frame");
+        LiveFramePublisher.TryPublish(gpu, slot, Unguarded).Should().BeFalse("no reader asked for a frame");
         slot.TryGetNewer(0, out _).Should().BeFalse();
     }
 
@@ -58,7 +61,7 @@ public sealed class LiveFramePublisherTests
         var slot = new LiveFrameSlot();
         slot.TryGetNewer(0, out _);
 
-        LiveFramePublisher.TryPublish(gpu, slot).Should().BeTrue();
+        LiveFramePublisher.TryPublish(gpu, slot, Unguarded).Should().BeTrue();
 
         slot.TryGetNewer(0, out var frame).Should().BeTrue();
         var expected = ScreenshotCapture.ToBgra32(gpu.CaptureFrame(), gpu);
@@ -77,7 +80,7 @@ public sealed class LiveFramePublisherTests
         var slot = new LiveFrameSlot();
         slot.TryGetNewer(0, out _);
 
-        LiveFramePublisher.TryPublish(gpu, slot).Should().BeTrue();
+        LiveFramePublisher.TryPublish(gpu, slot, Unguarded).Should().BeTrue();
 
         slot.TryGetNewer(0, out var frame).Should().BeTrue();
         // BGRA32 order: B, G, R, A.
@@ -93,7 +96,7 @@ public sealed class LiveFramePublisherTests
         var slot = new LiveFrameSlot();
         slot.TryGetNewer(0, out _);
         var reports = new List<Exception>();
-        var publisher = new LiveFrameVBlankPublisher(slot, () => gpu, reports.Add);
+        var publisher = new LiveFrameVBlankPublisher(slot, () => gpu, reports.Add, Unguarded);
 
         publisher.OnVBlank();
 
@@ -109,7 +112,7 @@ public sealed class LiveFramePublisherTests
         var slot = new LiveFrameSlot();
         slot.TryGetNewer(0, out _);
         var reports = new List<Exception>();
-        var publisher = new LiveFrameVBlankPublisher(slot, () => null!, reports.Add);
+        var publisher = new LiveFrameVBlankPublisher(slot, () => null!, reports.Add, Unguarded);
 
         publisher.OnVBlank();
         publisher.OnVBlank();
@@ -122,7 +125,7 @@ public sealed class LiveFramePublisherTests
     [Fact]
     public void VBlankPublisher_AFailingReport_DoesNotEscapeIntoTheVBlankPath()
     {
-        var publisher = new LiveFrameVBlankPublisher(new LiveFrameSlot(), () => null!, _ => throw new InvalidOperationException("report"));
+        var publisher = new LiveFrameVBlankPublisher(new LiveFrameSlot(), () => null!, _ => throw new InvalidOperationException("report"), Unguarded);
 
         var act = publisher.OnVBlank;
 
@@ -152,7 +155,7 @@ public sealed class LiveFramePublisherTests
         UploadRow(gpu, 0, 0, [0x7C00]);
         var slot = new LiveFrameSlot();
         var scheduler = graph.CreateScheduler();
-        scheduler.VblankCallback = _ => LiveFramePublisher.TryPublish(gpu, slot);
+        scheduler.VblankCallback = _ => LiveFramePublisher.TryPublish(gpu, slot, Unguarded);
 
         // A reader polls once before each VBlank, as the GUI does on its timer.
         for (var i = 0; i < 3; i++)
