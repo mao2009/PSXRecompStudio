@@ -83,6 +83,9 @@ internal sealed class StopRecord : IDisposable
     /// <summary>The OS process id of the child the run targets, or 0 before the child starts.</summary>
     internal int ProcessId { get; private set; }
 
+    /// <summary>The Stopwatch timestamp at which a stop arrived, or null when none has.</summary>
+    internal long? StoppedAt { get; private set; }
+
     /// <summary>True once a stop has finished its decision (confirmed, refused, or found the child already gone).</summary>
     public bool Settled => _settled;
 
@@ -214,6 +217,9 @@ internal sealed class StopRecord : IDisposable
                 return;
             }
 
+            // The instant the stop arrived: the output drains of this run are capped at the cleanup budget counted from here (Issue #827).
+            StoppedAt ??= Stopwatch.GetTimestamp();
+
             try
             {
                 Decide(process);
@@ -245,14 +251,7 @@ internal sealed class StopRecord : IDisposable
             // left running is a leftover, reaped and recorded (for a stop that found the child ended). It is never a confirmed stop.
             if (HasExitedOrGone(process))
             {
-                ChildEndedBeforeStop = true;
-                var (endedLeft, endedUnresolved) = ReapTracked(ConfirmTimeout);
-                var endedAll = endedLeft.Concat(endedUnresolved).ToList();
-                if (endedAll.Count > 0)
-                {
-                    _leftover = string.Join("; ", endedAll);
-                }
-
+                EndedBeforeStop();
                 return;
             }
 
@@ -280,12 +279,15 @@ internal sealed class StopRecord : IDisposable
             }
             catch (Exception exception)
             {
-                // The OS refused the kill: a refusal with its reason. A child that ended while the kill was sent is a natural end.
+                // The OS refused the kill: a refusal with its reason. A child that ended while the kill was sent ended before the stop could
+                // act: that is not a refusal, and what it left running is recorded as usual.
                 if (!HasExitedOrGone(process))
                 {
                     RefuseIfUnset($"the kill was refused: {exception.Message}");
+                    return;
                 }
 
+                EndedBeforeStop();
                 return;
             }
 
@@ -323,11 +325,27 @@ internal sealed class StopRecord : IDisposable
             // failure (a refused kill, a tree that could not be checked) is a refused stop, never a plain failure (Issue #827).
             if (listed && !killed && HasExitedOrGone(process))
             {
+                EndedBeforeStop();
                 return;
             }
 
             RefuseIfUnset($"the stop could not be confirmed: {exception.Message}");
             Trace.WriteLine($"Stopping the artifact process {ProcessId} failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The child ended before the stop could act on it (Issue #827 review). The stop did nothing to the child, so it is not a stop: it does not
+    /// refuse, and it does not confirm. What the child's tracked descendants left running is reaped and recorded as a diagnostic.
+    /// </summary>
+    private void EndedBeforeStop()
+    {
+        ChildEndedBeforeStop = true;
+        var (endedLeft, endedUnresolved) = ReapTracked(ConfirmTimeout);
+        var endedAll = endedLeft.Concat(endedUnresolved).ToList();
+        if (endedAll.Count > 0)
+        {
+            _leftover = string.Join("; ", endedAll);
         }
     }
 
@@ -360,7 +378,16 @@ internal sealed class StopRecord : IDisposable
 
                 if (_trackedIds.Add(pid))
                 {
-                    _tracked.Add(new Tracked(child, pid, StartOf(child), NameOf(child), 0));
+                    var childStart = StartOf(child);
+                    if (childStart is null)
+                    {
+                        // Without a start time the claim cannot be verified: the child is not claimed, and the stop is refused.
+                        RefuseIfUnset($"the start time of descendant process {pid} cannot be read, so it cannot be attributed");
+                        child.Dispose();
+                        continue;
+                    }
+
+                    _tracked.Add(new Tracked(child, pid, childStart, NameOf(child), 0));
                 }
                 else
                 {
@@ -439,6 +466,14 @@ internal sealed class StopRecord : IDisposable
                 }
 
                 var kidStart = StartOf(handle);
+                if (kidStart is null)
+                {
+                    // Without a start time the child cannot be verified, as for the root: it is not claimed, and the stop is refused.
+                    _unattributable ??= $"the start time of descendant process {kid} cannot be read, so it cannot be attributed";
+                    handle.Dispose();
+                    continue;
+                }
+
                 if (start is { } parentStart && kidStart is { } childStart && childStart < parentStart)
                 {
                     // Started before its parent: the id was reused, so this is not the parent's child.
@@ -506,6 +541,13 @@ internal sealed class StopRecord : IDisposable
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
                 unresolved.Add($"descendant process {tracked.Pid} could not be checked: {exception.Message}");
+                continue;
+            }
+
+            // A claim without a start time cannot be verified, so the process is not killed (the same rule as for the root).
+            if (tracked.Start is null)
+            {
+                unresolved.Add($"descendant process {tracked.Pid} still running; its start time is unknown, not killed");
                 continue;
             }
 

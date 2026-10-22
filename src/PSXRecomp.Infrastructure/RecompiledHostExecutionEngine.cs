@@ -209,6 +209,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public const string StopRefusedDiagnosticCode = "ARTIFACT_STOP_REFUSED";
 
     /// <summary>
+    /// Diagnostic code of a run whose stdout drain ran out of time: the child's output was not read, so its result cannot be read either
+    /// (Issue #827 review). It is reported as a failure, with this reason, and never as a silent failure.
+    /// </summary>
+    public const string OutputDrainTimeoutDiagnosticCode = "ARTIFACT_OUTPUT_DRAIN_TIMEOUT";
+
+    /// <summary>
+    /// Descendants that a stop found still running after its child had already ended on its own (Issue #827 review). A diagnostic only: the
+    /// child's result is not changed by it. Set by the last run of this engine.
+    /// </summary>
+    internal string? LeftoverDescendants { get; private set; }
+
+    /// <summary>
+    /// Test seam (Issue #827): the stdout drain budget of a child that ended on its own, in milliseconds. Null uses the run's timeout.
+    /// </summary>
+    internal int? OutputBudgetMsForTest { get; set; }
+
+    /// <summary>
     /// Test seam (Issue #827): replaces the descendant listing of a stop. A real child can then be reported with a survivor, which
     /// drives the refusal path. Null in production.
     /// </summary>
@@ -233,7 +250,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop)
     {
-        // A descendant left running by a stop is a refused stop, even for a completed run.
+        // A child that ended before the stop reached it is not a stop: the stop did nothing to it. Its result stands. Descendants it left
+        // running are a diagnostic (LeftoverDescendants), never a refusal (Issue #827 review).
+        if (stop.ChildEndedBeforeStop)
+        {
+            return classified;
+        }
+
+        // A descendant left running by a stop that reached a live child is a refused stop, even for a completed run.
         if (stop.Leftover is { } leftover)
         {
             return RecompilerExecutionResult.Failed(
@@ -749,9 +773,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
+        bool drainTimedOut;
         try
         {
-            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, out timedOut, bridge, stopToken, stopRecord);
+            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, bridge, stopToken, stopRecord);
         }
         catch (Exception exception) when (stopToken.IsCancellationRequested)
         {
@@ -788,8 +813,30 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
         LastFrameBgra32 = pumpEnded && !stopToken.IsCancellationRequested ? bridge?.CaptureFrameBgra32() : null;
 
-        // Issue #820/#827: the stop decides only the result of a stop. A completed run keeps its result unless the stop left a descendant.
-        return ApplyStopOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord);
+        LeftoverDescendants = stopRecord.Leftover;
+        return ResolveOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, drainTimedOut, OutputBudgetMsForTest ?? _runTimeoutMs);
+    }
+
+    /// <summary>
+    /// The result of a run after its child ended or was stopped (Issue #827). A stop that was refused, or confirmed, decides first. Next,
+    /// a stdout drain that ran out of time is reported as such: the output was not read, so the result cannot be read either.
+    /// Otherwise the classification stands.
+    /// </summary>
+    internal static RecompilerExecutionResult ResolveOutcome(RecompilerExecutionResult classified, StopRecord stop, bool drainTimedOut, int budgetMs)
+    {
+        var afterStop = ApplyStopOutcome(classified, stop);
+        if (afterStop.Status == RecompilerExecutionStatus.Cancelled
+            || afterStop.DiagnosticCode == StopRefusedDiagnosticCode)
+        {
+            return afterStop;
+        }
+
+        return drainTimedOut
+            ? RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed,
+                OutputDrainTimeoutDiagnosticCode,
+                $"The stdout drain timed out after {budgetMs} ms, so the artifact's output was not read.")
+            : afterStop;
     }
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
@@ -1020,9 +1067,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// pump outlived its drain budget and still owns the bridge's devices: the
     /// caller then neither reads nor disposes those devices (Issue #762).</returns>
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
-        string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge, CancellationToken stopToken,
-        StopRecord stopRecord)
+        string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs, out bool timedOut, out bool drainTimedOut,
+        HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord)
     {
+        // The stdout drain of a child that ended on its own is bounded by outputBudgetMs; drainTimedOut reports that it ran out (Issue #827).
+        drainTimedOut = false;
         var psi = new ProcessStartInfo(fileName)
         {
             RedirectStandardOutput = true,
@@ -1078,11 +1127,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
             timedOut = false;
 
-            // The child ended on its own: its pipes drain within the run's own budget (a console host may keep them open a moment longer). Only a
-            // stop, which is already waiting for the end of the run, drains within the short cleanup budget.
-            var drainBudget = stopToken.IsCancellationRequested ? PumpDrainTimeoutMs : timeoutMs;
-            var stdout = DrainWithin(stdoutTask, drainBudget);
-            var stderr = DrainWithin(stderrTask, drainBudget);
+            // The child ended on its own: its pipes drain within the run's output budget. A stop that arrives during the drain caps the rest
+            // of it at the cleanup budget (see DrainUntil).
+            var drainStart = Stopwatch.GetTimestamp();
+            var stdout = DrainUntil(stdoutTask, outputBudgetMs, stopRecord, drainStart, out drainTimedOut);
+            var stderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, drainStart, out _);
             RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
             return (process.ExitCode, stdout, stderr, false, true);
         }
@@ -1150,7 +1199,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         timedOut = false;
-        var bridgeStderr = DrainWithin(stderrTask, stopToken.IsCancellationRequested ? PumpDrainTimeoutMs : timeoutMs);
+        var bridgeStderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp(), out _);
         RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
@@ -1210,7 +1259,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Runs one child with a stop record and no artifact (Issue #827): the same bounded wait, drain and stop decision as a segment.
     /// Used by the stop tests with a real child process.
     /// </summary>
-    internal static (int ExitCode, string Stdout, bool TimedOut, bool Confirmed, string? Refused, string? Leftover) RunChildUntilStopped(
+    internal static (int ExitCode, string Stdout, bool TimedOut, bool Confirmed, string? Refused, string? Leftover, RecompilerExecutionResult Result) RunChildUntilStopped(
         string fileName,
         IReadOnlyList<string> arguments,
         int timeoutMs,
@@ -1218,7 +1267,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null,
         Func<StopRecord, Process, string, bool, bool>? observe = null,
         Action<Process>? kill = null,
-        Func<Process, DateTime?>? startTime = null)
+        Func<Process, DateTime?>? startTime = null,
+        int? outputBudgetMs = null)
     {
         var stopRecord = new StopRecord
         {
@@ -1229,9 +1279,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         };
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
+        bool drainTimedOut;
         try
         {
-            run = RunProcess(fileName, arguments, timeoutMs, out timedOut, bridge: null, stopToken, stopRecord);
+            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, bridge: null, stopToken, stopRecord);
         }
         finally
         {
@@ -1239,7 +1290,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         var (confirmed, refused) = stopRecord.Outcome;
-        return (run.exit, run.stdout, timedOut, confirmed, refused, stopRecord.Leftover);
+        // The same resolution the engine applies to a segment; the child's exit code stands for its classification here.
+        var classified = run.exit == 0
+            ? new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null)
+            : RecompilerExecutionResult.Failed(RecompilerExecutionStatus.ExecutionFailed, "EXIT_NONZERO", $"exit {run.exit}");
+        var result = ResolveOutcome(classified, stopRecord, drainTimedOut, outputBudgetMs ?? timeoutMs);
+        return (run.exit, run.stdout, timedOut, confirmed, refused, stopRecord.Leftover, result);
     }
 
     private static string TakeOutput(StringBuilder output, object gate)
@@ -1275,6 +1331,56 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// the fault verdict stands and these bytes never enter the result contract.
     /// </summary>
     private static string DrainWithinCleanupBudget(Task<string> readTask) => DrainWithin(readTask, PumpDrainTimeoutMs);
+
+    /// <summary>
+    /// Consumes a redirected stream within <paramref name="budgetMs"/>. A stop that arrives during the drain caps the rest of it at the
+    /// cleanup budget, measured from the stop, so a stop never waits for the full budget (Issue #827). <paramref name="timedOut"/> reports
+    /// that the budget ran out before the stream ended; the result is then empty, and the caller reports it.
+    /// </summary>
+    private static string DrainUntil(Task<string> readTask, int budgetMs, StopRecord stop, long drainStart, out bool timedOut)
+    {
+        timedOut = false;
+        var frequency = Stopwatch.Frequency;
+        var budgetEnd = drainStart + budgetMs * frequency / 1000;
+        try
+        {
+            while (true)
+            {
+                if (readTask.IsCompleted)
+                {
+                    return readTask.IsCompletedSuccessfully ? readTask.Result : string.Empty;
+                }
+
+                // The deadline is absolute and shared by the drains of one run. A stop caps it at the cleanup budget counted from the later of the
+                // drain's start and the stop: the stop's own work (ending the tree) is not charged to the drain.
+                var end = budgetEnd;
+                var capFrom = stop.StoppedAt is { } stoppedAt ? Math.Max(drainStart, stoppedAt) : drainStart;
+                if (stop.StoppedAt is not null)
+                {
+                    var cap = capFrom + PumpDrainTimeoutMs * frequency / 1000;
+                    if (cap < end)
+                    {
+                        end = cap;
+                    }
+                }
+
+                var now = Stopwatch.GetTimestamp();
+                if (now >= end)
+                {
+                    timedOut = true;
+                    return string.Empty;
+                }
+
+                var remainingMs = (end - now) * 1000.0 / frequency;
+                readTask.Wait((int)Math.Min(StopRecord.PollMs, Math.Max(1.0, remainingMs)));
+            }
+        }
+        catch (AggregateException)
+        {
+            // A stream read failure on the drain path is diagnostic-only.
+            return string.Empty;
+        }
+    }
 
     /// <summary>Consumes a redirected stream for at most <paramref name="budgetMs"/>; anything not consumed in time is dropped (Issue #827).</summary>
     private static string DrainWithin(Task<string> readTask, int budgetMs)
