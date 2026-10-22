@@ -221,11 +221,26 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Func<StopRecord, Process, string, bool, bool>? WaitObservedForTest { get; set; }
 
     /// <summary>
+    /// Test seam (Issue #827): replaces the kill of the child, so a test injects the OS refusal on the stop and timeout paths. Null
+    /// in production.
+    /// </summary>
+    internal Action<Process>? KillOverrideForTest { get; set; }
+
+    /// <summary>
     /// Decides the result of a run that was asked to stop (Issue #827). A run that completed keeps its result. A refused stop is a
     /// failure with the reason. A confirmed stop is Cancelled. Anything else keeps its own classification.
     /// </summary>
     internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop)
     {
+        // A descendant left running by a child that had ended on its own is a leak: it is reported, even for a completed run.
+        if (stop.Leftover is { } leftover)
+        {
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed,
+                StopRefusedDiagnosticCode,
+                $"The stop found descendants of process {stop.ProcessId} still running after it ended: {leftover}");
+        }
+
         if (classified.Status == RecompilerExecutionStatus.Completed)
         {
             return classified;
@@ -713,7 +728,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         // What a stop did to this child. It alone decides a Cancelled or refused result (see ApplyStopOutcome).
-        var stopRecord = new StopRecord { DescendantsProbe = StopDescendantsProbe, ObserveForTest = WaitObservedForTest };
+        var stopRecord = new StopRecord
+        {
+            DescendantsProbe = StopDescendantsProbe,
+            ObserveForTest = WaitObservedForTest,
+            KillForTest = KillOverrideForTest,
+        };
         CancellationToken stopToken;
         try
         {
@@ -731,6 +751,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         try
         {
             run = RunProcess(_binaryPath, arguments, _runTimeoutMs, out timedOut, bridge, stopToken, stopRecord);
+        }
+        catch (Exception exception) when (stopToken.IsCancellationRequested)
+        {
+            // Nothing escapes a run that was asked to stop: whatever failed while stopping is a refused stop, with its reason.
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed,
+                StopRefusedDiagnosticCode,
+                $"The stop request could not be completed for process {stopRecord.ProcessId}, which may still be running: {exception.Message}");
         }
         finally
         {
@@ -1042,7 +1070,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
             {
                 // The budget ran out, or a stop was refused or confirmed: the child is killed, and the stop (if any) decides the result.
-                TryKillTree(process);
+                TryKillTree(process, stopRecord, stopToken);
                 timedOut = !stopRecord.Settled;
                 return (int.MinValue, DrainWithinCleanupBudget(stdoutTask), DrainWithinCleanupBudget(stderrTask), false, true);
             }
@@ -1087,7 +1115,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // escape the launcher. This is distinct from a timeout or a normal
             // process-failure classification. A faulted pump has already stopped,
             // so its devices are free for the caller to read and dispose.
-            TryKillTree(process);
+            TryKillTree(process, stopRecord, stopToken);
             Trace.WriteLine($"Host-transfer pump failed: {exception}");
             timedOut = false;
             return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), true, true);
@@ -1100,7 +1128,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // bounded drain. If it still has not ended, the bridge's devices remain
             // under the pump's ownership: the caller neither reads nor disposes them
             // (Issue #762).
-            TryKillTree(process);
+            TryKillTree(process, stopRecord, stopToken);
             TryReleaseStdout(process);
             var pumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
             timedOut = !stopRecord.Settled;
@@ -1111,7 +1139,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             // The pump ended but the child has not exited: stop it. Nothing is using
             // the bridge's devices any more.
-            TryKillTree(process);
+            TryKillTree(process, stopRecord, stopToken);
             timedOut = !stopRecord.Settled;
             return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, true);
         }
@@ -1174,15 +1202,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Runs one child with a stop record and no artifact (Issue #827): the same bounded wait, drain and stop decision as a segment.
     /// Used by the stop tests with a real child process.
     /// </summary>
-    internal static (int ExitCode, string Stdout, bool TimedOut, bool Confirmed, string? Refused) RunChildUntilStopped(
+    internal static (int ExitCode, string Stdout, bool TimedOut, bool Confirmed, string? Refused, string? Leftover) RunChildUntilStopped(
         string fileName,
         IReadOnlyList<string> arguments,
         int timeoutMs,
         CancellationToken stopToken,
         Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null,
-        Func<StopRecord, Process, string, bool, bool>? observe = null)
+        Func<StopRecord, Process, string, bool, bool>? observe = null,
+        Action<Process>? kill = null)
     {
-        var stopRecord = new StopRecord { DescendantsProbe = descendantsProbe, ObserveForTest = observe };
+        var stopRecord = new StopRecord { DescendantsProbe = descendantsProbe, ObserveForTest = observe, KillForTest = kill };
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
         try
@@ -1195,7 +1224,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         var (confirmed, refused) = stopRecord.Outcome;
-        return (run.exit, run.stdout, timedOut, confirmed, refused);
+        return (run.exit, run.stdout, timedOut, confirmed, refused, stopRecord.Leftover);
     }
 
     private static string TakeOutput(StringBuilder output, object gate)
@@ -1245,9 +1274,29 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
     }
 
-    private static void TryKillTree(Process process)
+    /// <summary>
+    /// Kills the child's tree on a timeout or a stop path. An exited child is left alone. A kill the OS refuses is never a raw exception
+    /// out of the run: during a stop it is recorded as a refusal with its reason (Issue #827 review, MEDIUM 1).
+    /// </summary>
+    private static void TryKillTree(Process process, StopRecord stopRecord, CancellationToken stopToken)
     {
-        try { process.Kill(true); } catch (InvalidOperationException) { }
+        try
+        {
+            stopRecord.KillTree(process);
+        }
+        catch (InvalidOperationException)
+        {
+            // Already exited: nothing to kill.
+        }
+        catch (Exception exception)
+        {
+            if (stopToken.IsCancellationRequested && !StopRecord.HasExitedOrGone(process))
+            {
+                stopRecord.RefuseIfUnset($"the kill was refused: {exception.Message}");
+            }
+
+            Trace.WriteLine($"Killing the artifact process failed: {exception.Message}");
+        }
     }
 
     /// <summary>
