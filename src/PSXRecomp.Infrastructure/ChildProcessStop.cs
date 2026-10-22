@@ -212,8 +212,9 @@ internal sealed class StopRecord : IDisposable
     public void Dispose() => Seal();
 
     /// <summary>
-    /// The outcome of the stop, read after <see cref="Seal"/>. Confirmed means the live child was killed and its exit was seen, and the stop
-    /// itself was not refused. Residual processes do not affect it: the result is decided by the kill, and the residuals are reported apart.
+    /// The outcome of the stop, read after <see cref="Seal"/>. Confirmed means the live child was killed and its exit was seen: that alone decides
+    /// the Cancelled result. Uncertainties and residual processes never change it; they are diagnostics. Refused is set only when the child was
+    /// not killed (the stop itself failed).
     /// </summary>
     internal (bool Confirmed, string? Refused) Outcome
     {
@@ -221,7 +222,7 @@ internal sealed class StopRecord : IDisposable
         {
             lock (_gate)
             {
-                return (_rootKilled && _refused is null, _refused);
+                return (_rootKilled, _refused);
             }
         }
     }
@@ -232,6 +233,35 @@ internal sealed class StopRecord : IDisposable
         lock (_gate)
         {
             _refused ??= reason;
+        }
+    }
+
+    /// <summary>
+    /// Records an uncertainty of the stop's bookkeeping (a tree that cannot be listed, an identity that cannot be verified). It is a residual in the
+    /// diagnostics, with no process id: the process it concerns is unidentified. It does not change the result when the child was killed (Issue #827,
+    /// round 15).
+    /// </summary>
+    internal void NoteUncertainty(string reason)
+    {
+        lock (_gate)
+        {
+            _residuals.Add(new ResidualProcess(null, ResidualState.Unverified, reason));
+        }
+    }
+
+    /// <summary>
+    /// A stop failure. Before the child's kill it is a refusal (the child may still be running). After the kill it is an uncertainty, because the
+    /// child is already dead and the stop has succeeded for it.
+    /// </summary>
+    private void FailStop(string reason)
+    {
+        if (_rootKilled)
+        {
+            NoteUncertainty(reason);
+        }
+        else
+        {
+            RefuseIfUnset(reason);
         }
     }
 
@@ -284,8 +314,8 @@ internal sealed class StopRecord : IDisposable
             }
             catch (Exception exception)
             {
-                // Nothing escapes the stop thread, and nothing is left undecided: an unexpected failure is a refusal.
-                RefuseIfUnset($"the stop failed unexpectedly: {exception.Message}");
+                // Nothing escapes the stop thread, and nothing is left undecided: an unexpected failure is a refusal (an uncertainty after the kill).
+                FailStop($"the stop failed unexpectedly: {exception.Message}");
             }
             finally
             {
@@ -313,22 +343,22 @@ internal sealed class StopRecord : IDisposable
                 return;
             }
 
+            // Bookkeeping uncertainties (round 15): recorded as unidentified residuals. The child's kill still decides the result.
             if (!listed)
             {
-                RefuseIfUnset("the child's process tree cannot be listed on this platform");
+                NoteUncertainty("the child's process tree cannot be listed on this platform, so its descendants are unidentified");
             }
 
-            // Without the child's start time, no descendant can be attributed to it: the stop is refused, even if the kill succeeds.
+            // Without the child's start time, its descendants cannot be attributed to it: an uncertainty, not a refusal of the kill.
             if (_rootStart is null)
             {
-                RefuseIfUnset($"the start time of child process {ProcessId} cannot be read, so its descendants cannot be attributed");
+                NoteUncertainty("the start time of the child cannot be read, so its descendants cannot be attributed (unidentified)");
             }
 
-            // A tracked parent whose identity could not be verified while sampling: its children were not claimed, so the stop cannot be
-            // confirmed (Issue #827 review).
+            // A tracked parent whose identity could not be verified while sampling: its unclaimed children are unidentified.
             if (_unattributable is { } reason)
             {
-                RefuseIfUnset(reason);
+                NoteUncertainty(reason);
             }
 
             try
@@ -371,14 +401,14 @@ internal sealed class StopRecord : IDisposable
         catch (Exception exception)
         {
             // A kill that failed only because the child had already exited, after its tree was listed, is a natural end. Every other
-            // failure (a refused kill, a tree that could not be checked) is a refused stop, never a plain failure (Issue #827).
+            // failure is a refusal before the kill, and an uncertainty after it (FailStop).
             if (listed && !killed && HasExitedOrGone(process))
             {
                 EndedBeforeStop();
                 return;
             }
 
-            RefuseIfUnset($"the stop could not be confirmed: {exception.Message}");
+            FailStop($"the stop could not be confirmed: {exception.Message}");
             Trace.WriteLine($"Stopping the artifact process {ProcessId} failed: {exception.Message}");
         }
     }
@@ -416,8 +446,8 @@ internal sealed class StopRecord : IDisposable
                 }
                 catch (InvalidOperationException exception)
                 {
-                    // A handle that cannot be read is not known to be gone: the stop is refused, never confirmed.
-                    RefuseIfUnset($"a descendant process could not be checked: {exception.Message}");
+                    // A handle that cannot be read is not known to be gone: an unidentified residual, the kill still decides the result.
+                    NoteUncertainty($"a descendant process could not be checked, so it is unidentified: {exception.Message}");
                     continue;
                 }
 
@@ -426,8 +456,8 @@ internal sealed class StopRecord : IDisposable
                     var childStart = StartOf(child);
                     if (childStart is null)
                     {
-                        // Without a start time the claim cannot be verified: the child is not claimed, and the stop is refused.
-                        RefuseIfUnset($"the start time of descendant process {pid} cannot be read, so it cannot be attributed");
+                        // Without a start time the claim cannot be verified: the child is not claimed, and it is unidentified (no pid is reported).
+                        NoteUncertainty("the start time of a descendant process cannot be read, so it is unidentified and not claimed");
                         child.Dispose();
                         continue;
                     }
@@ -484,11 +514,15 @@ internal sealed class StopRecord : IDisposable
                 continue;
             }
 
-            // The parent's identity is checked before any of its children is claimed. A failed check means its children cannot be
-            // attributed: none is claimed, and the stop is refused (see Decide).
+            // The parent's identity is checked before any of its children is claimed. A failed check means its unclaimed children cannot be
+            // attributed: they are not claimed, and the uncertainty is recorded (see Decide). A parent that ended with nothing new below it is no uncertainty.
             if (!IdentityHolds(pid, start))
             {
-                _unattributable ??= $"the identity of tracked process {pid} could not be verified, so its children cannot be attributed";
+                if (kids.Any(kid => !_trackedIds.Contains(kid)))
+                {
+                    _unattributable ??= "the identity of a tracked process could not be verified, so its unclaimed children are unidentified";
+                }
+
                 continue;
             }
 
@@ -513,8 +547,8 @@ internal sealed class StopRecord : IDisposable
                 var kidStart = StartOf(handle);
                 if (kidStart is null)
                 {
-                    // Without a start time the child cannot be verified, as for the root: it is not claimed, and the stop is refused.
-                    _unattributable ??= $"the start time of descendant process {kid} cannot be read, so it cannot be attributed";
+                    // Without a start time the child cannot be verified, as for the root: it is not claimed, and it is unidentified (no pid is reported).
+                    _unattributable ??= "the start time of a descendant process cannot be read, so it is unidentified and not claimed";
                     handle.Dispose();
                     continue;
                 }
@@ -544,8 +578,8 @@ internal sealed class StopRecord : IDisposable
     }
 
     /// <summary>
-    /// True when the process id <paramref name="pid"/> is still the process that was seen with <paramref name="start"/>, or no process has
-    /// that id any more (its children then keep their parent id only, and nothing else can take it). A reused id fails the check.
+    /// True only when the process id <paramref name="pid"/> is still the process that was seen with <paramref name="start"/>. A process id that
+    /// no longer exists, or that was reused, cannot be verified: the check fails (Issue #827, round 15).
     /// </summary>
     private bool IdentityHolds(int pid, DateTime? start)
     {
@@ -556,7 +590,7 @@ internal sealed class StopRecord : IDisposable
         }
         catch (ArgumentException)
         {
-            return true;
+            return false;
         }
 
         using (current)
@@ -587,7 +621,8 @@ internal sealed class StopRecord : IDisposable
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Unverified, $"{who} could not be checked: {exception.Message}"));
+                // The identity was verified at the claim, not now: the id is not reported (round 15).
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"a tracked descendant (unidentified) could not be checked: {exception.Message}"));
                 continue;
             }
 
@@ -595,13 +630,13 @@ internal sealed class StopRecord : IDisposable
             // Identity is the pair (pid, start time). Without a matching start time the pid may belong to another process: the id is not reported.
             if (tracked.Start is null)
             {
-                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"{who} still running; its start time is unknown, so its identity is unidentified; not killed"));
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, "a tracked descendant still running; its start time is unknown, so it is unidentified; not killed"));
                 continue;
             }
 
             if (StartOf(tracked.Handle) != tracked.Start)
             {
-                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"{who} identity changed (pid reused?), so the process is unidentified; not killed"));
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, "a tracked descendant's identity changed (pid reused?), so it is unidentified; not killed"));
                 continue;
             }
 
@@ -625,7 +660,7 @@ internal sealed class StopRecord : IDisposable
             }
             catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                unresolved.Add(new ResidualProcess(tracked.Pid, ResidualState.Unverified, $"{who} could not be checked after its kill: {exception.Message}"));
+                unresolved.Add(new ResidualProcess(null, ResidualState.Unverified, $"a tracked descendant (unidentified) could not be checked after its kill: {exception.Message}"));
                 continue;
             }
 
@@ -713,6 +748,9 @@ internal enum ShutdownOutcome
 [Infrastructure]
 internal sealed record StopDiagnostics(int ProcessId, bool ChildEndedBeforeStop, bool Confirmed, string? Refused, IReadOnlyList<ResidualProcess> Residuals)
 {
+    /// <summary>When these diagnostics were taken (UTC).</summary>
+    public DateTime ObservedAtUtc { get; init; } = DateTime.UtcNow;
+
     /// <summary>True when the stop was not refused and left no residual process.</summary>
     public bool Clean => Refused is null && Residuals.Count == 0;
 
@@ -738,7 +776,11 @@ internal enum ResidualState
 /// claimed). The reason says what was seen.
 /// </summary>
 [Infrastructure]
-internal sealed record ResidualProcess(int? ProcessId, ResidualState State, string Reason);
+internal sealed record ResidualProcess(int? ProcessId, ResidualState State, string Reason)
+{
+    /// <summary>When the residual was observed (UTC).</summary>
+    public DateTime ObservedAtUtc { get; init; } = DateTime.UtcNow;
+}
 
 /// <summary>
 /// Reads process start times for the stop bookkeeping (Issue #827). The parent links come from <see cref="ProcessTreeInterop"/>.

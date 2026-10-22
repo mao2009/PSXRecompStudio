@@ -1452,14 +1452,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // A child that ended before the stop reached it is not a stop's failure: a pipe it leaves to a console host is the drain's business.
         if (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
         {
-            var alive = stopRecord.Residuals.Where(residual => residual.State == ResidualState.Alive && residual.ProcessId is not null).ToList();
-            var holder = alive.Count == 0
-                ? "its holder is not a tracked process, so no process id is known"
-                : $"tracked process(es) still alive: {string.Join(", ", alive.Select(residual => residual.ProcessId))}";
+            // The holder is not identified: the stop has no owner lookup for a pipe, so no pid is reported (a guess would be wrong).
             stopRecord.AddResidual(new ResidualProcess(
-                alive.Count == 1 ? alive[0].ProcessId : null,
+                null,
                 ResidualState.Unverified,
-                $"an output pipe is still held by a process that outlived the child; {holder}"));
+                "an output pipe is still held by a process that outlived the child; the holder is unidentified (pid not known)"));
         }
     }
 

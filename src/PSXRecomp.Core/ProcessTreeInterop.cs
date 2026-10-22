@@ -6,8 +6,8 @@ namespace PSXRecomp.Core;
 
 /// <summary>
 /// Reads the parent of every process (Issue #827), so a stop can list a child's descendants before it kills the tree. Windows reads
-/// the toolhelp process snapshot; Linux reads /proc. This is the interop boundary for that query. Other platforms report that it
-/// cannot be read.
+/// the toolhelp process snapshot; Linux reads /proc; macOS lists the processes with libproc. This is the interop boundary for that query.
+/// Other platforms report that it cannot be read.
 /// </summary>
 [Domain]
 public static class ProcessTreeInterop
@@ -16,7 +16,73 @@ public static class ProcessTreeInterop
     public static IReadOnlyList<(int Pid, int Ppid)>? TryReadParentIds()
     {
         if (OperatingSystem.IsWindows()) return WindowsParentIds();
+        if (OperatingSystem.IsMacOS()) return MacParentIds();
         return OperatingSystem.IsLinux() ? LinuxParentIds() : null;
+    }
+
+    private const string LibProc = "/usr/lib/libproc.dylib";
+    private const uint PROC_ALL_PIDS = 1;
+    private const int PROC_PIDTBSDINFO = 3;
+
+    // struct proc_bsdinfo (sys/proc_info.h): pbi_flags, pbi_status, pbi_xstatus, pbi_pid, pbi_ppid, ... ; 136 bytes.
+    private const int ProcBsdInfoSize = 136;
+    private const int PbiPpidOffset = 16;
+
+    [DllImport(LibProc)]
+    private static extern int proc_listpids(uint type, uint typeInfo, nint buffer, int bufferSize);
+
+    [DllImport(LibProc)]
+    private static extern int proc_pidinfo(int pid, int flavor, ulong arg, nint buffer, int bufferSize);
+
+    /// <summary>
+    /// Lists the processes with libproc (Issue #820 regression: macOS used to report "cannot be listed", refusing every stop). A process that
+    /// cannot be read (another user's, or one that ended while listed) is left out; its children are then not attributable, which the stop
+    /// reports as an uncertainty rather than a refusal.
+    /// </summary>
+    private static List<(int Pid, int Ppid)>? MacParentIds()
+    {
+        var needed = proc_listpids(PROC_ALL_PIDS, 0, 0, 0);
+        if (needed <= 0)
+        {
+            return null;
+        }
+
+        // A process may start between the two calls: room for a few more ids.
+        var capacity = needed + 64 * sizeof(int);
+        var pids = Marshal.AllocHGlobal(capacity);
+        var info = Marshal.AllocHGlobal(ProcBsdInfoSize);
+        try
+        {
+            var filled = proc_listpids(PROC_ALL_PIDS, 0, pids, capacity);
+            if (filled <= 0)
+            {
+                return null;
+            }
+
+            var map = new List<(int Pid, int Ppid)>();
+            for (var index = 0; index < filled / sizeof(int); index++)
+            {
+                var pid = Marshal.ReadInt32(pids, index * sizeof(int));
+                if (pid <= 0)
+                {
+                    continue;
+                }
+
+                if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, info, ProcBsdInfoSize) < ProcBsdInfoSize)
+                {
+                    continue;
+                }
+
+                map.Add((pid, Marshal.ReadInt32(info, PbiPpidOffset)));
+            }
+
+            return map;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(info);
+            Marshal.FreeHGlobal(pids);
+        }
     }
 
     private static List<(int Pid, int Ppid)> LinuxParentIds()
