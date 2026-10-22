@@ -355,14 +355,37 @@ public sealed class GuestCancellationTests
             using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(binary, blockEntryPcs: blockEntryPcs, imageWords: words, imageLoadAddress: Entry);
             using var cts = new CancellationTokenSource();
 
-            // Attempt 0 stops before the run starts: that one is deterministic and must be Cancelled, with nothing launched.
-            var stopBeforeStart = attempt == 0;
+            // Attempt 0 is deterministic (Issue #827 review). The child really runs and ends normally, and the stop settles in the window
+            // where the run's first wait still reports "not ended". The run must end Completed, never as a failure. Attempt 1 stops before
+            // the start: that must be Cancelled, with nothing launched. The other attempts race the stop with the program's own end.
+            var stopBeforeStart = attempt == 1;
+            var endsNormallyUnderStop = attempt == 0;
+            if (endsNormallyUnderStop)
+            {
+                var observed = false;
+                engine.WaitObservedForTest = (record, child, phase, ended) =>
+                {
+                    if (observed)
+                    {
+                        return ended;
+                    }
+
+                    observed = true;
+#pragma warning disable AARC003 // Test-layer observation of the child's end, to place the stop exactly (Issue #827 review)
+                    WaitUntil(() => child.HasExited, StopWait);
+#pragma warning restore AARC003
+                    cts.Cancel();
+                    WaitUntil(() => record.Settled, StopWait);
+                    return false;
+                };
+            }
+
             if (stopBeforeStart)
             {
                 cts.Cancel();
             }
 
-            var stopper = stopBeforeStart ? Task.CompletedTask : Task.Run(() =>
+            var stopper = stopBeforeStart || endsNormallyUnderStop ? Task.CompletedTask : Task.Run(() =>
             {
                 SpinFor(delay);
                 cts.Cancel();
@@ -376,6 +399,11 @@ public sealed class GuestCancellationTests
             if (stopBeforeStart)
             {
                 result.State.Should().Be(TitleExecutionState.Cancelled, "a stop before the start ends the run as Cancelled");
+            }
+            else if (endsNormallyUnderStop)
+            {
+                result.FinalSnapshot.Should().NotBeNull($"attempt 0: a child that ended normally keeps its result: {result.DiagnosticCode} {result.DiagnosticMessage}");
+                result.FinalSnapshot!.Gpr[(int)T0].Should().Be(0x1234u, "attempt 0");
             }
             else if (result.State == TitleExecutionState.Cancelled)
             {
@@ -636,6 +664,95 @@ public sealed class GuestCancellationTests
         var completed = new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null);
 
         RecompiledHostExecutionEngine.ApplyStopOutcome(completed, stop).Should().BeSameAs(completed);
+    }
+
+    [Fact]
+    public async Task RealArtifact_DescendantThatCannotBeChecked_EndsRefused_NotAsAPlainFailure()
+    {
+        // Failure injection (Issue #827 review): a descendant whose handle is no longer usable models an access the OS refuses. The
+        // stop cannot tell whether it is gone, so it must say so, not report a plain failure.
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+        var sleeper = StartSleeper(dir);
+        try
+        {
+            using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+                binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
+            engine.StopDescendantsProbe = _ =>
+            {
+                var handle = Process.GetProcessById(sleeper.Id);
+                handle.Dispose();
+                return [handle];
+            };
+            using var cts = new CancellationTokenSource();
+            var artifactName = Path.GetFileNameWithoutExtension(binary);
+            var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
+            try
+            {
+                WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+                run.IsCompleted.Should().BeFalse("the child must still be running when the stop is sent");
+            }
+            finally
+            {
+                cts.Cancel();
+            }
+
+            var result = await run.WaitAsync(StopWait);
+
+            result.State.Should().NotBe(TitleExecutionState.Cancelled, "an unchecked descendant is not confirmed");
+            result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            result.DiagnosticMessage.Should().Contain("could not be checked");
+            ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
+        }
+        finally
+        {
+            if (!sleeper.HasExited)
+            {
+                sleeper.Kill(true);
+            }
+
+            sleeper.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task RealArtifact_StopDuringTheRhostWait_EndsCancelled_AfterTheWaitIsObserved()
+    {
+        // Issue #827 acceptance: a stop during the RHOST wait. The artifact is a host-bridge child that never sends a protocol line, so
+        // the run waits on its output. The test counts those waits and sends the stop after three of them (about 300 ms).
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+
+        // A BIOS runtime factory attaches the host-transfer bridge, so the run waits on the child's protocol output (the RHOST wait).
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            binary,
+            blockEntryPcs: blockEntryPcs,
+            imageWords: SpinningGuest,
+            imageLoadAddress: Entry,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer));
+        using var cts = new CancellationTokenSource();
+        var hostWaits = 0;
+        engine.WaitObservedForTest = (_, _, phase, ended) =>
+        {
+            if (phase == "pump" && !ended)
+            {
+                hostWaits++;
+                if (hostWaits == 3)
+                {
+                    cts.Cancel();
+                }
+            }
+
+            return ended;
+        };
+
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
+        var result = await run.WaitAsync(StopWait);
+
+        result.State.Should().Be(TitleExecutionState.Cancelled);
+        result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
+        hostWaits.Should().BeGreaterThanOrEqualTo(3, "the stop was sent while the run was waiting for the host protocol");
+        ArtifactProcessRunning(binary).Should().BeFalse("the stopped artifact process must be gone when the run returns");
     }
 
 #pragma warning restore AARC003
