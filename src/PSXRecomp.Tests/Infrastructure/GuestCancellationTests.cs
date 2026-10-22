@@ -309,6 +309,33 @@ public sealed class GuestCancellationTests
         return engine;
     }
 
+    [SkippableFact]
+    public void RealEngine_BridgeEnabled_ChildAliveAtItsBudget_WithAStalledPump_IsOutputDrainTimeout()
+    {
+        // Owner spec B (round 17, MEDIUM 2): the same rule as the null-bridge path. The host-transfer bridge is enabled, so its pump reads the
+        // child's stdout. The child is still running at its budget and is killed, and a grandchild keeps stdout open: the pump does not end, so
+        // the result is ARTIFACT_OUTPUT_DRAIN_TIMEOUT, and the holder is a residual (unidentified).
+        Skip.If(OperatingSystem.IsWindows(), "a POSIX shell artifact whose grandchild holds stdout runs on Linux and macOS; the Windows residual path is covered by the child tests");
+        using var dir = new TempDirectory();
+        var binary = WriteStdoutHoldingArtifact(dir, "sleep 30");
+        uint[] words = [.. Li(T0, 0x1234u), Nop];
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            binary,
+            blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
+            imageWords: words,
+            imageLoadAddress: Entry,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
+            runTimeout: TimeSpan.FromSeconds(2));
+        engine.OutputBudgetMsForTest = 1_000;
+
+        var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64));
+
+        result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode, "the guest did not finish, and its output could not be drained");
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "the holder of the open pipe is a residual");
+        engine.LastStopDiagnostics!.Residuals.Should().Contain(r => r.ProcessId == null && r.Reason.Contains("holder is unidentified"));
+    }
+
     /// <summary>Ends the run at the handoff: the guest exited on its own, so the run is Completed.</summary>
     private sealed class ExitHandoff : ITitleExecutionHandoff
     {
