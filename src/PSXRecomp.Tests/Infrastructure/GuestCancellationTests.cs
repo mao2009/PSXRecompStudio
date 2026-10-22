@@ -578,7 +578,7 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public async Task RealArtifact_DescendantSurvivingTheKill_EndsRefused_AndIsNotReportedAsCancelled()
+    public async Task RealArtifact_DescendantSurvivingTheKill_EndsCancelled_WithTheSurvivorAsAResidual()
     {
         using var dir = new TempDirectory();
         var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
@@ -605,12 +605,14 @@ public sealed class GuestCancellationTests
 
             var result = await run.WaitAsync(StopWait);
 
-            result.State.Should().NotBe(TitleExecutionState.Cancelled, "a survivor means the stop is not confirmed");
-            // Round 10: the run's result is its own, never rewritten to a stop result; the residual is in the diagnostics, and the shutdown is not clean.
-            result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            // Owner spec (round 14): the live child was killed and its exit seen, so the result is Cancelled. The survivor is a residual, not a
+            // refusal: it does not change the result, and the shutdown is not clean.
+            result.State.Should().Be(TitleExecutionState.Cancelled, "the live child was killed: the stop succeeded, whatever the cleanup left");
             engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "a residual process means the shutdown is not clean");
-            var pid = sleeper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            (engine.LastStopDiagnostics!.Refused ?? engine.LastStopDiagnostics.Leftover).Should().Contain(pid);
+            engine.LastStopDiagnostics!.Refused.Should().BeNull("the stop itself was not refused");
+            var residual = engine.LastStopDiagnostics.Residuals.Should().ContainSingle().Subject;
+            residual.ProcessId.Should().Be(sleeper.Id, "the residual carries the survivor's process id");
+            residual.State.Should().Be(ResidualState.EndedAfterKill, "the stop killed the survivor and saw it exit");
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
 
             // The survivor is a tracked process, so the stop reaps it through its own handle and reports it as left running.
@@ -625,6 +627,79 @@ public sealed class GuestCancellationTests
 
             sleeper.Dispose();
         }
+    }
+
+    [Fact]
+    public void AliveGrandchild_IsReportedWithItsPid_AndStillRunning_WhileTheResultIsCancelled()
+    {
+        // Owner spec (round 14): a survivor the stop cannot end is a residual, reported with its process id and its live state. The live child
+        // was killed, so the result is Cancelled. The grandchild is a real sleeper; the OS kill refusal is the test seam (not constructible).
+        using var dir = new TempDirectory();
+        var root = NamedCopy(dir, SleepBinary, "aliveroot");
+        var rootName = Path.GetFileNameWithoutExtension(root);
+        var grandchild = StartSleeper(dir);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+                root,
+                SleepArguments,
+                60_000,
+                cts.Token,
+                descendantsProbe: _ => [Process.GetProcessById(grandchild.Id)],
+                descendantKill: _ => throw new InvalidOperationException("the OS refused the kill (test seam)")));
+            WaitUntil(() => ProcessNameProbe.IsRunning(rootName), StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(500));
+            cts.Cancel();
+
+            var outcome = run.Result;
+            outcome.Confirmed.Should().BeTrue("the root was killed and its exit was seen");
+            outcome.Refused.Should().BeNull("the stop itself was not refused");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child");
+            outcome.Leftover.Should().Contain($"descendant process {grandchild.Id} (", "the survivor is reported with its process id");
+            outcome.Leftover.Should().Contain("still running; kill refused", "its state is alive: the stop could not end it");
+            grandchild.HasExited.Should().BeFalse("the survivor really is still running, checked on the OS and not only in the record");
+        }
+        finally
+        {
+            if (!grandchild.HasExited)
+            {
+                grandchild.Kill(true);
+            }
+
+            grandchild.Dispose();
+            KillNamed(root);
+        }
+    }
+
+    [Fact]
+    public void StopRequestedAfterTheSeal_IsNotReportedAsNotStopped()
+    {
+        // Owner LOW (round 14): a stop that is requested after the record was sealed (never processed) is not NotStopped: its descendants were not
+        // checked, so the shutdown is a residual. The run's own result stands.
+        uint[] words = [.. Li(T0, 0x1234u), Nop];
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+        using var dir = new TempDirectory();
+        using (var builder = new RecompiledHostExecutionEngine(
+            program, words, Entry, new GeneratedHostBuildService(), dir.FullPath, embedImage: true))
+        {
+            new ExecutionOrchestrator().Execute(builder, handoff: null, Request(Entry, 64))
+                .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
+        }
+
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            BuiltBinary(dir),
+            blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
+            imageWords: words,
+            imageLoadAddress: Entry);
+
+        // The seam runs after the record is sealed and before the diagnostics are taken: the request arrives too late for the record.
+        engine.BeforeFrameCaptureForTest = () => engine.RequestCancel();
+        var completed = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64));
+
+        completed.State.Should().NotBe(TitleExecutionState.Cancelled, "the run finished on its own before the stop was processed");
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "a stop that was requested is never reported as NotStopped");
+        engine.LastStopDiagnostics!.Refused.Should().Contain("sealed", "the reason says the descendants were not checked");
     }
 
     [Fact]
@@ -785,7 +860,8 @@ public sealed class GuestCancellationTests
             var outcome = run.Result;
 
             outcome.Leftover.Should().Contain("still running after its owner ended (killed)", "the orphan is reaped and recorded");
-            outcome.Confirmed.Should().BeFalse();
+            outcome.Confirmed.Should().BeTrue("the root was killed and its exit seen: the orphan is a residual, not a refusal");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child");
             outcome.Refused.Should().BeNull("the reaped orphan released what it held");
             ProcessNameProbe.IsRunning(grandName).Should().BeFalse("the grandchild is reaped through its own handle");
         }
@@ -836,7 +912,8 @@ public sealed class GuestCancellationTests
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "capped");
         var name = Path.GetFileNameWithoutExtension(copy);
-        var middle = NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "capmid");
+        // The Windows middle is a copy of the shell (Linux has no cmd.exe: its middle is sh, named in the arguments below).
+        var middle = OperatingSystem.IsWindows() ? NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "capmid") : string.Empty;
         var (fileName, arguments) = OperatingSystem.IsWindows()
             ? ("cmd.exe", new[] { "/c", middle, "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul" })
             : ("/bin/sh", new[] { "-c", $"sh -c '{copy} 60 &'; sleep 30" });
@@ -862,11 +939,13 @@ public sealed class GuestCancellationTests
 
             // The stop lands about 0.5 s in; the cap allows five seconds after it. Ten seconds is the bound; the 60 s budget is not waited for.
             clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the drain of a live child at five seconds after it");
-            // The root's tree was killed, but the untracked grandchild still holds the stdout pipe: the stop is refused for it (not confirmed), so the
-            // run keeps its classification, and the drain that the cap ended is reported as the drain timeout.
-            outcome.Refused.Should().Contain("output pipe", "the grandchild outlived the child and still holds the stdout pipe");
-            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed, "a refused stop keeps the run's classification");
-            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode,"the capped drain timed out, so the output was not read");
+            // The live root was killed and its exit seen, so the stop succeeded: the result is Cancelled. The untracked grandchild still holds the
+            // stdout pipe, so the drain is cut at the stop's cap. Both facts are residuals in the diagnostics, not in the result.
+            outcome.Confirmed.Should().BeTrue("the live root was killed and its exit was seen");
+            outcome.Refused.Should().BeNull("the stop itself was not refused");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the stop succeeded for the live child, whatever the cleanup left");
+            outcome.Leftover.Should().Contain("an output pipe is still held", "the grandchild outlived the child and still holds the stdout pipe");
+            outcome.Leftover.Should().Contain("the stdout drain timed out after the stop", "the drain cut at the cap is recorded, not hidden");
         }
         finally
         {
@@ -1331,14 +1410,22 @@ public sealed class GuestCancellationTests
                 }
             }
         });
+        // The segment is driven directly, not through the orchestrator: the orchestrator would also call RequestCancel on a token cancel, and then
+        // the test could not tell the external token from the request (review round 14, LOW).
+        engine.Load(new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 20_000_000u));
         using var cts = new CancellationTokenSource();
-        var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 20_000_000u);
-        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cts.Token));
+        using var attachment = engine.AttachCancellation(cts.Token);
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        var run = Task.Run(() => engine.RunSegment(new TitleExecutionSegmentRequest(gpr, 0, 0, entry, 20_000_000u)));
+        int readsAtStop;
         try
         {
             WaitUntil(() => engine.FrameReadStats.Reads >= 3 || run.IsCompleted, StopWait);
             run.IsCompleted.Should().BeFalse("the run must still be emitting VBlank frames when the stop is requested");
             stop(engine, cts);
+
+            // Taken right after the stop: a read that had started before it is counted (the stats wait for the gate); every later read is refused.
+            readsAtStop = engine.FrameReadStats.Reads;
             run.Wait(StopWait).Should().BeTrue("the stopped run returns");
         }
         finally
@@ -1348,8 +1435,7 @@ public sealed class GuestCancellationTests
             engine.Dispose();
         }
 
-        var stats = engine.FrameReadStats;
-        return (stats.Reads, stats.ReadsAtStop);
+        return (engine.FrameReadStats.Reads, readsAtStop);
     }
 
     [Fact]
