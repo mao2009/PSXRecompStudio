@@ -299,8 +299,10 @@ internal sealed class StopRecord : IDisposable
                 return;
             }
 
-            // The tracked processes the tree kill did not reach (children of an intermediate process that already ended) are reaped by
-            // their own handles. Any that stays running refuses the stop.
+            // The tree kill ends the tracked processes it reaches, but their exit may still be in progress: they get the rest of the bound to
+            // end before anything is judged. Only what still runs after that (children of an intermediate process that already ended) is
+            // reaped through its own handle. Any that stays running refuses the stop.
+            WaitForNaturalEnds(Remaining(clock));
             var (reaped, unresolved) = ReapTracked(Remaining(clock));
             if (reaped.Count > 0)
             {
