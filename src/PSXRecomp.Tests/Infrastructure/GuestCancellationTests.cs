@@ -337,6 +337,111 @@ public sealed class GuestCancellationTests
         engine.LastStopDiagnostics!.Residuals.Should().Contain(r => r.ProcessId == null && r.Reason.Contains("holder is unidentified"));
     }
 
+    // Round 19, MEDIUM 2: the shutdown diagnostics of a run, derived from the stop's facts by one function. These unit tests state the facts and the
+    // expected shutdown directly, on every platform (the same function serves the engine's run and the Windows harness).
+
+    [Fact]
+    public void ShutdownDiagnostics_NaturalEndWithAHolder_IsResidual_WithTheHolderUnidentified()
+    {
+        // Owner spec: the child ended on its own; a grandchild holds the stdout. No stop was requested. The holder is a residual of the cleanup,
+        // unidentified, so the shutdown is Residual and never NotStopped.
+        var evidence = new RecompiledHostExecutionEngine.ShutdownEvidence(
+            ProcessId: 4242,
+            StopRecorded: false,
+            StopRequested: false,
+            ChildEndedBeforeStop: true,
+            KillConfirmed: false,
+            Refused: null,
+            Residuals: [new ResidualProcess(null, ResidualState.Unverified, "an output pipe is still held; the holder is unidentified (pid not known)")]);
+
+        var diagnostics = RecompiledHostExecutionEngine.ShutdownDiagnostics(evidence);
+
+        diagnostics.Should().NotBeNull("a residual is reported");
+        diagnostics!.Clean.Should().BeFalse();
+        diagnostics.Confirmed.Should().BeFalse("no stop was requested");
+        diagnostics.Refused.Should().BeNull();
+        diagnostics.Residuals.Should().ContainSingle().Which.ProcessId.Should().BeNull("the holder's pid is not reported");
+    }
+
+    [Fact]
+    public void ShutdownDiagnostics_StopSucceededWithAHolder_IsResidual_AndTheKillIsConfirmed()
+    {
+        // Owner spec: the live child was killed and its exit seen (the stop succeeded, the result is Cancelled elsewhere). The stdout drain that a
+        // holder kept open was cut: that is a residual reason, so the shutdown is Residual, while the kill is confirmed and nothing is refused.
+        var evidence = new RecompiledHostExecutionEngine.ShutdownEvidence(
+            ProcessId: 4242,
+            StopRecorded: true,
+            StopRequested: true,
+            ChildEndedBeforeStop: false,
+            KillConfirmed: true,
+            Refused: null,
+            Residuals: [new ResidualProcess(null, ResidualState.Unverified, "the stdout drain timed out after the stop; the holder is unidentified")]);
+
+        var diagnostics = RecompiledHostExecutionEngine.ShutdownDiagnostics(evidence);
+
+        diagnostics!.Confirmed.Should().BeTrue("the live child was killed and its exit was seen");
+        diagnostics.Refused.Should().BeNull("the stop itself was not refused");
+        diagnostics.Clean.Should().BeFalse("a holder left behind is a residual");
+        diagnostics.ProcessId.Should().Be(4242);
+    }
+
+    [Fact]
+    public void ShutdownDiagnostics_StopSucceededWithNothingLeft_IsClean()
+    {
+        // Owner spec: a stop that killed the live child, with nothing left behind, is a clean shutdown.
+        var evidence = new RecompiledHostExecutionEngine.ShutdownEvidence(
+            ProcessId: 4242,
+            StopRecorded: true,
+            StopRequested: true,
+            ChildEndedBeforeStop: false,
+            KillConfirmed: true,
+            Refused: null,
+            Residuals: []);
+
+        var diagnostics = RecompiledHostExecutionEngine.ShutdownDiagnostics(evidence);
+
+        diagnostics!.Clean.Should().BeTrue("the stop succeeded and left nothing");
+        diagnostics.Confirmed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShutdownDiagnostics_RefusedStop_IsResidual_WithTheRefusalRecorded()
+    {
+        // Owner spec: the kill was refused, so the child is still running. The refusal is a residual of the shutdown, with its reason; the kill is
+        // not confirmed. The result is the child's timeout (decided elsewhere), never a stop result.
+        var evidence = new RecompiledHostExecutionEngine.ShutdownEvidence(
+            ProcessId: 4242,
+            StopRecorded: true,
+            StopRequested: true,
+            ChildEndedBeforeStop: false,
+            KillConfirmed: false,
+            Refused: "the kill was refused: access is denied",
+            Residuals: []);
+
+        var diagnostics = RecompiledHostExecutionEngine.ShutdownDiagnostics(evidence);
+
+        diagnostics!.Clean.Should().BeFalse("a refused stop is not a clean shutdown");
+        diagnostics.Confirmed.Should().BeFalse("the child was not killed");
+        diagnostics.Refused.Should().Contain("kill was refused");
+        diagnostics.ProcessId.Should().Be(4242, "the diagnostics name the child that was refused");
+    }
+
+    [Fact]
+    public void ShutdownDiagnostics_NoStopAndNoResidual_IsNull_NotStopped()
+    {
+        // Owner spec: no stop was involved and nothing was left behind: there are no diagnostics, and the shutdown is NotStopped.
+        var evidence = new RecompiledHostExecutionEngine.ShutdownEvidence(
+            ProcessId: 4242,
+            StopRecorded: false,
+            StopRequested: false,
+            ChildEndedBeforeStop: false,
+            KillConfirmed: false,
+            Refused: null,
+            Residuals: []);
+
+        RecompiledHostExecutionEngine.ShutdownDiagnostics(evidence).Should().BeNull("no stop and no residual: NotStopped");
+    }
+
     /// <summary>Ends the run at the handoff: the guest exited on its own, so the run is Completed.</summary>
     private sealed class ExitHandoff : ITitleExecutionHandoff
     {
@@ -745,6 +850,32 @@ public sealed class GuestCancellationTests
         }
     }
 
+    /// <summary>
+    /// A harness child that prints a valid snapshot block first (the engine's own rule: exit 0 with a snapshot is the child's result), then runs the
+    /// given lines, and exits 0 when they do. On Windows it is a batch file run by cmd; on POSIX a shell script run by sh (round 19, MEDIUM 2).
+    /// </summary>
+    private static (string FileName, string[] Arguments) SnapshotChild(TempDirectory dir, string[] windowsLines, string[] posixLines)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var batch = Path.Combine(dir.FullPath, "snapshot.cmd");
+            var text = "@echo off\r\necho RSNAPSHOT_BEGIN\r\necho termination=0\r\necho pc=0x80010000\r\necho hi=0x0\r\necho lo=0x0\r\n"
+                + "for /L %%i in (0,1,31) do @echo gpr[%%i]=0x0\r\necho RSNAPSHOT_END\r\n"
+                + string.Concat(windowsLines.Select(line => line + "\r\n"))
+                + "exit /b 0\r\n";
+            File.WriteAllText(batch, text);
+            return ("cmd.exe", ["/c", batch]);
+        }
+
+        var script = Path.Combine(dir.FullPath, "snapshot.sh");
+        var body = "printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x80010000\\nhi=0x0\\nlo=0x0\\n'\n"
+            + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i; i=$((i+1)); done\n"
+            + "printf 'RSNAPSHOT_END\\n'\n"
+            + string.Concat(posixLines.Select(line => line + "\n"));
+        File.WriteAllText(script, body);
+        return ("/bin/sh", [script]);
+    }
+
     /// <summary>Starts a sleeper process: a real survivor for the tests that need one.</summary>
     private static Process StartSleeper(TempDirectory dir)
     {
@@ -926,9 +1057,10 @@ public sealed class GuestCancellationTests
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "orphan");
         var name = Path.GetFileNameWithoutExtension(copy);
-        var (fileName, arguments) = OperatingSystem.IsWindows()
-            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "2", "127.0.0.1", ">nul" })
-            : ("/bin/sh", new[] { "-c", $"{copy} 60 & sleep 2" });
+        var (fileName, arguments) = SnapshotChild(
+            dir,
+            [$"start /b \"\" \"{copy}\" -n 60 127.0.0.1", "ping -n 2 127.0.0.1 >nul"],
+            [$"\"{copy}\" 60 &", "sleep 2"]);
         try
         {
             using var cts = new CancellationTokenSource();
@@ -942,7 +1074,7 @@ public sealed class GuestCancellationTests
             });
 
             var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(fileName, arguments, timeoutMs: 60_000, cts.Token);
-            stopper.Wait(StopWait);
+            stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
 
             outcome.Leftover.Should().Contain("still running after its owner ended (killed)", "the sleeper is reaped and recorded");
             outcome.Refused.Should().BeNull("the reaped sleeper released the pipe, so the drain completed");
@@ -1069,13 +1201,67 @@ public sealed class GuestCancellationTests
             var outcome = ResultWithin(run);
             outcome.Confirmed.Should().BeFalse("the child was not killed");
             outcome.Refused.Should().Contain("the kill was refused", "the refusal is recorded with its reason");
+            // Owner spec (round 18, MEDIUM 1): the child is alive at the end of its wait, so its own result is its timeout; the refusal is a residual.
             outcome.TimedOut.Should().BeTrue("the child was alive when the wait ended, so the wait is a timeout");
-            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed, "a child with no exit code is a failure in this harness: it did not end");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.TimedOut, "a refused stop keeps the child's timeout as its result");
+            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.TimeoutDiagnosticCode);
             ProcessNameProbe.IsRunning(name).Should().BeTrue("the child is really still running");
         }
         finally
         {
             KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void ReapAfterTheBudgetIsSpent_ProcessesJustKilled_AreNotReportedAlive()
+    {
+        // Owner rule 7, round 19 (MEDIUM 1): the root's natural-end wait spends the reap's budget while two live grandchildren are tracked. Each is
+        // then killed with no budget left. Only the one shared second pass judges them: a process that dies just after its kill is reported as
+        // killed (ended), and a process still running after that would be alive. Neither is reported alive here.
+        using var dir = new TempDirectory();
+        var root = NamedCopy(dir, SleepBinary, "reaproot");
+        var rootName = Path.GetFileNameWithoutExtension(root);
+        // Each sleeper fixture names its copy after a fixed tag, so the second one lives in its own directory.
+        using var secondDir = new TempDirectory();
+        var first = StartSleeper(dir);
+        var second = StartSleeper(secondDir);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+                root,
+                SleepArguments,
+                60_000,
+                cts.Token,
+                descendantsProbe: _ => [Process.GetProcessById(first.Id), Process.GetProcessById(second.Id)]));
+            WaitUntil(() => ProcessNameProbe.IsRunning(rootName), StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(500));
+            var clock = Stopwatch.StartNew();
+            cts.Cancel();
+            var outcome = ResultWithin(run);
+
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(12), "the reap is bounded by its budget and one shared second pass");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Cancelled, "the root was killed and its exit was seen");
+            outcome.Leftover.Should().Contain($"descendant process {first.Id} (", "the first grandchild is reported");
+            outcome.Leftover.Should().Contain($"descendant process {second.Id} (", "the second grandchild is reported");
+            outcome.Leftover.Should().NotContain("still running after its kill", "no process killed by the reap is reported alive on the spent budget");
+            first.WaitForExit(StopWait).Should().BeTrue("the first grandchild is dead");
+            second.WaitForExit(StopWait).Should().BeTrue("the second grandchild is dead");
+        }
+        finally
+        {
+            foreach (var process in new[] { first, second })
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(true);
+                }
+
+                process.Dispose();
+            }
+
+            KillNamed(root);
         }
     }
 
@@ -1169,9 +1355,7 @@ public sealed class GuestCancellationTests
         // The budget is injected (500 ms), so the test does not wait for the run's real budget.
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "drain");
-        var (fileName, arguments) = OperatingSystem.IsWindows()
-            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1" })
-            : ("/bin/sh", new[] { "-c", $"{copy} 60 &" });
+        var (fileName, arguments) = SnapshotChild(dir, [$"start /b \"\" \"{copy}\" -n 60 127.0.0.1"], [$"\"{copy}\" 60 &"]);
         try
         {
             var clock = Stopwatch.StartNew();
@@ -1257,7 +1441,7 @@ public sealed class GuestCancellationTests
                 cts.Token,
                 descendantsProbe: _ => Array.Empty<Process>(),
                 outputBudgetMs: 60_000);
-            stopper.Wait(StopWait);
+            stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
 
             // The stop lands about 0.5 s in; the cap allows five seconds after it. Ten seconds is the bound; the 60 s budget is not waited for.
             clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the drain of a live child at five seconds after it");
@@ -1369,7 +1553,7 @@ public sealed class GuestCancellationTests
         });
         var clock = Stopwatch.StartNew();
         var completed = RecompiledHostExecutionEngine.WaitPumpWithinOutputBudget(pump, child, runTimeoutMs: 60_000, outputBudgetMs: 8_000, stop, out var drainTimedOut);
-        stopper.Wait(StopWait);
+        stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
 
         // The child ends about one second in; the output budget runs to about nine seconds. A cap from the stop would have ended the wait near 5.3 s.
         clock.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(7), "the child ended first: the stop does not cap the wait");
@@ -1400,7 +1584,7 @@ public sealed class GuestCancellationTests
             });
 
             var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(fileName, arguments, timeoutMs: 60_000, cts.Token);
-            stopper.Wait(StopWait);
+            stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
 
             outcome.Refused.Should().BeNull("every process of the tree was seen exited");
             outcome.Confirmed.Should().BeTrue();
@@ -1727,7 +1911,7 @@ public sealed class GuestCancellationTests
                 requestThreadStarted.Set();
                 engine.RequestCancel();
             });
-            requestThreadStarted.Wait(StopWait);
+            requestThreadStarted.Wait(StopWait).Should().BeTrue("the request thread started within the test's bound");
             SpinFor(TimeSpan.FromMilliseconds(300));
             flagVisibleInsideTheRead = engine.StopRequestFlagForTest;
             requestWaitedForTheRead = requestThreadStarted.IsSet && !requestTask.IsCompleted;
@@ -1804,7 +1988,7 @@ public sealed class GuestCancellationTests
         finally
         {
             readerDone.Cancel();
-            reader.Wait(StopWait);
+            reader.Wait(StopWait).Should().BeTrue("the reader ended within the test's bound");
             engine.Dispose();
         }
 
@@ -1896,7 +2080,7 @@ public sealed class GuestCancellationTests
         finally
         {
             readerDone.Cancel();
-            reader.Wait(StopWait);
+            reader.Wait(StopWait).Should().BeTrue("the reader ended within the test's bound");
         }
 
         readsAtCancel.Should().BeGreaterThanOrEqualTo(3, "the live path read the VRAM before the cancel");
@@ -1961,9 +2145,7 @@ public sealed class GuestCancellationTests
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "heldout");
         var name = Path.GetFileNameWithoutExtension(copy);
-        var (fileName, arguments) = OperatingSystem.IsWindows()
-            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "8", "127.0.0.1" })
-            : ("/bin/sh", new[] { "-c", $"{copy} 7 &" });
+        var (fileName, arguments) = SnapshotChild(dir, [$"start /b \"\" \"{copy}\" -n 8 127.0.0.1"], [$"\"{copy}\" 7 &"]);
         try
         {
             using var cts = new CancellationTokenSource();
@@ -1983,7 +2165,7 @@ public sealed class GuestCancellationTests
                 cts.Token,
                 descendantsProbe: _ => Array.Empty<Process>(),
                 outputBudgetMs: 60_000);
-            stopper.Wait(StopWait);
+            stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
 
             outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Completed, "the child ended first: its own result stands");
             outcome.Result.DiagnosticCode.Should().BeNull("the stop did not turn the output into a drain timeout");
