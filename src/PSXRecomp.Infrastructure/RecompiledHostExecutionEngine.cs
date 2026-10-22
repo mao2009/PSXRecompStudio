@@ -227,13 +227,19 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Action<Process>? KillOverrideForTest { get; set; }
 
     /// <summary>
+    /// What was left running by the child's descendants after its run ended (Issue #827), or null. A leftover from a natural end does not
+    /// change a completed result: it is reported here. Set by the last run of this engine.
+    /// </summary>
+    internal string? LeftoverDescendants { get; private set; }
+
+    /// <summary>
     /// Decides the result of a run that was asked to stop (Issue #827). A run that completed keeps its result. A refused stop is a
     /// failure with the reason. A confirmed stop is Cancelled. Anything else keeps its own classification.
     /// </summary>
-    internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop)
+    internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop, bool stopRequested = true)
     {
-        // A descendant left running by a child that had ended on its own is a leak: it is reported, even for a completed run.
-        if (stop.Leftover is { } leftover)
+        // A descendant left running after a stop was requested is a refused stop, even for a completed run.
+        if (stopRequested && stop.Leftover is { } leftover)
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed,
@@ -787,8 +793,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
         LastFrameBgra32 = pumpEnded && !stopToken.IsCancellationRequested ? bridge?.CaptureFrameBgra32() : null;
 
-        // Issue #820/#827: the stop decides only a run that did not complete. A completed run keeps its result.
-        return ApplyStopOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord);
+        LeftoverDescendants = stopRecord.Leftover;
+
+        // Issue #820/#827: the stop decides only a run that did not complete. A completed run keeps its result unless a stop was requested
+        // and left a descendant behind; a leftover from a natural end is recorded in LeftoverDescendants and keeps the result.
+        return ApplyStopOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, stopToken.IsCancellationRequested);
     }
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
@@ -1076,6 +1085,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             }
 
             timedOut = false;
+
+            // The child ended on its own: what it left running is reaped and recorded before the pipes are drained (Issue #827).
+            stopRecord.SweepAfterEnd(process);
             var stdout = DrainWithinCleanupBudget(stdoutTask);
             var stderr = DrainWithinCleanupBudget(stderrTask);
             RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
@@ -1145,6 +1157,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         timedOut = false;
+        stopRecord.SweepAfterEnd(process);
         var bridgeStderr = DrainWithinCleanupBudget(stderrTask);
         RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
@@ -1165,6 +1178,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return false;
             }
 
+            // The child's descendants are tracked while it is alive (Issue #827 review): a claim cannot be made after the child is gone.
+            stopRecord.SampleTree();
             if (stopRecord.Observe(process, phase, waitSlice(Math.Min(StopRecord.PollMs, remaining))))
             {
                 return true;
@@ -1209,9 +1224,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         CancellationToken stopToken,
         Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null,
         Func<StopRecord, Process, string, bool, bool>? observe = null,
-        Action<Process>? kill = null)
+        Action<Process>? kill = null,
+        Func<Process, bool>? reapGuard = null)
     {
-        var stopRecord = new StopRecord { DescendantsProbe = descendantsProbe, ObserveForTest = observe, KillForTest = kill };
+        var stopRecord = new StopRecord
+        {
+            DescendantsProbe = descendantsProbe,
+            ObserveForTest = observe,
+            KillForTest = kill,
+            ReapGuardForTest = reapGuard,
+        };
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
         try
