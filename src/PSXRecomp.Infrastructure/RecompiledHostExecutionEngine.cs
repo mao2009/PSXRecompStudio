@@ -1373,13 +1373,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // under the pump's ownership: the caller neither reads nor disposes them
             // (Issue #762).
             TryKillTree(process, stopRecord, stopToken);
-            TryReleaseStdout(process);
-            var pumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
-            timedOut = !stopRecord.Settled;
 
-            // The child was alive at its budget and killed, and its output still did not end: the same cut as the null-bridge path, so the
-            // guest did not finish and its output is unread (owner spec B; round 17, MEDIUM 2).
-            drainCutWhileAlive = !pumpEnded;
+            // The pump ends on its own only when the pipe closes. The stream is released after this wait: releasing it ends the pump whatever
+            // the pipe holder does, so checking afterwards would never see a stalled drain (round 17, MEDIUM 2).
+            var drainedOnItsOwn = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
+
+            // The child was alive at its budget and killed, and its output did not end on its own: the same cut as the null-bridge path, so the
+            // guest did not finish and its output is unread (owner spec B).
+            drainCutWhileAlive = !drainedOnItsOwn;
+            TryReleaseStdout(process);
+            var pumpEnded = drainedOnItsOwn || HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromSeconds(1));
+            timedOut = !stopRecord.Settled;
             return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, pumpEnded);
         }
 
