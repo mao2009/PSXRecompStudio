@@ -596,8 +596,11 @@ public sealed class GuestCancellationTests
             var result = await run.WaitAsync(StopWait);
 
             result.State.Should().NotBe(TitleExecutionState.Cancelled, "a survivor means the stop is not confirmed");
-            result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-            result.DiagnosticMessage.Should().Contain(sleeper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // Round 10: the run's result is its own, never rewritten to a stop result; the residual is in the diagnostics, and the shutdown is not clean.
+            result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            engine.ShutdownClean.Should().BeFalse("a residual process means the shutdown is not clean");
+            var pid = sleeper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            (engine.LastStopDiagnostics!.Refused ?? engine.LastStopDiagnostics.Leftover).Should().Contain(pid);
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
 
             // The survivor is a tracked process, so the stop reaps it through its own handle and reports it as left running.
@@ -649,6 +652,9 @@ public sealed class GuestCancellationTests
             // The child had ended on its own before the stop reached it: its result stands, and the descendant is a diagnostic, not a refusal.
             outcome.Result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
             outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Completed, "the child's own result is kept");
+
+            // The residual is reported apart from the result: the shutdown is not clean, although the result is the child's own.
+            (outcome.Refused is null && outcome.Leftover is null).Should().BeFalse("a residual process means the shutdown is not clean");
         }
         finally
         {
@@ -989,9 +995,9 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public void ACompletedRun_WithARecordedRefusal_IsReportedAsRefused_NotAbsorbed()
+    public void ACompletedRun_WithARecordedRefusal_KeepsItsResult_AndTheRefusalStaysInTheDiagnostics()
     {
-        // Issue #827 review (LOW 4): a refusal decides before a completed result is kept. A refused stop is never absorbed by a completed run.
+        // Issue #827, decided in review round 10: the run's result stands; a refusal is a diagnostic. It is not written into the result.
         var stop = new StopRecord();
         stop.RefuseIfUnset("a refusal recorded by a stop");
         stop.Seal();
@@ -999,8 +1005,8 @@ public sealed class GuestCancellationTests
 
         var result = RecompiledHostExecutionEngine.ApplyStopOutcome(completed, stop);
 
-        result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-        result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed);
+        result.Should().BeSameAs(completed, "the run's own result is kept");
+        stop.Outcome.Refused.Should().Be("a refusal recorded by a stop", "the refusal is reported in the diagnostics");
     }
 
     [Fact]
@@ -1048,8 +1054,9 @@ public sealed class GuestCancellationTests
             var result = await run.WaitAsync(StopWait);
 
             result.State.Should().NotBe(TitleExecutionState.Cancelled, "an unchecked descendant is not confirmed");
-            result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-            result.DiagnosticMessage.Should().Contain("could not be checked");
+            result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            engine.ShutdownClean.Should().BeFalse();
+            engine.LastStopDiagnostics!.Refused.Should().Contain("could not be checked");
             ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
         }
         finally
@@ -1137,8 +1144,9 @@ public sealed class GuestCancellationTests
             var result = await run.WaitAsync(StopWait);
 
             result.State.Should().NotBe(TitleExecutionState.Cancelled, "a refused kill is not a confirmed stop");
-            result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
-            result.DiagnosticMessage.Should().Contain("kill was refused");
+            result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            engine.ShutdownClean.Should().BeFalse("a refused kill is not a clean shutdown");
+            engine.LastStopDiagnostics!.Refused.Should().Contain("kill was refused");
             kills.Should().BeGreaterThanOrEqualTo(2, "the stop's own kill and the kill after the stop were both attempted");
             ArtifactProcessRunning(binary).Should().BeTrue("the OS refused the kill, so the child is still running, and the result says so");
         }
@@ -1218,6 +1226,49 @@ public sealed class GuestCancellationTests
 
         engine.FrameCaptureCalls.Should().Be(0, "a stop was requested before the frame decision, so no frame is read");
         engine.LastFrameBgra32.Should().BeNull();
+    }
+
+    [Fact]
+    public void StopRequestDuringAFrameRead_WaitsForTheRead_AndTheFlagIsNotVisibleInsideIt()
+    {
+        // Issue #827, decided in review round 10 (window between the flag check and the GPU read). The read section is the flag check and the
+        // read start under one lock. A stop requested from another thread while the section is open must wait for it: the flag is not visible
+        // inside the read, the read happens once, and the flag is set only after it.
+        using var dir = new TempDirectory();
+        var slot = new LiveFrameSlot();
+        var words = SyntheticLiveProgram.Words();
+        var entry = SyntheticLiveProgram.EntryPc;
+        var program = ReachableProgramBuilder.Build(entry, words, entry, []);
+        using var engine = new RecompiledHostExecutionEngine(
+            program,
+            words,
+            entry,
+            new GeneratedHostBuildService(),
+            dir.FullPath,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
+            embedImage: true,
+            liveFrames: slot);
+
+        Task? requestTask = null;
+        var requestWaitedForTheRead = false;
+        var flagVisibleInsideTheRead = true;
+        engine.DuringFrameReadForTest = () =>
+        {
+            requestTask = Task.Run(() => engine.RequestCancel());
+            SpinFor(TimeSpan.FromMilliseconds(300));
+            flagVisibleInsideTheRead = engine.StopRequestFlagForTest;
+            requestWaitedForTheRead = !requestTask.IsCompleted;
+        };
+
+        var request = new TitleExecutionRequest(entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 200_000u);
+        new ExecutionOrchestrator().Execute(engine, handoff: null, request);
+
+        requestTask.Should().NotBeNull("the stop was requested inside the read section");
+        requestTask!.Wait(StopWait).Should().BeTrue("the request completes once the read has ended");
+        requestWaitedForTheRead.Should().BeTrue("the stop request waited while the read section was open");
+        flagVisibleInsideTheRead.Should().BeFalse("the flag is not visible inside the read");
+        engine.FrameCaptureCalls.Should().Be(1, "the read happened once, before the stop request was applied");
+        engine.StopRequestFlagForTest.Should().BeTrue("the request is applied after the read");
     }
 
     /// <summary>Discards the guest's TTY bytes; the test only needs the Runtime to run.</summary>
