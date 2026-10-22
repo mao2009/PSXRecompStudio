@@ -645,6 +645,10 @@ public sealed class GuestCancellationTests
             outcome.Refused.Should().BeNull("the reaped sleeper released the pipe, so the drain completed");
             outcome.Confirmed.Should().BeFalse("a leftover is not a clean stop");
             ProcessNameProbe.IsRunning(name).Should().BeFalse("the sleeper is gone");
+
+            // The child had ended on its own before the stop reached it: its result stands, and the descendant is a diagnostic, not a refusal.
+            outcome.Result.DiagnosticCode.Should().NotBe(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Completed, "the child's own result is kept");
         }
         finally
         {
@@ -733,7 +737,7 @@ public sealed class GuestCancellationTests
     public void GrandchildOfAnIntermediateThatEndedFirst_IsTrackedWhileAliveAndReapedAtTheStop()
     {
         // Issue #827 review (three levels): root (cmd) -> middle (a copy of cmd) -> grandchild (sleeper). The root stays alive after the middle
-        // ends (its second command). The middle is killed by itself, so the grandchild is orphaned. The grandchild was tracked while the middle
+        // ends (its second command). The middle is ended alone (without its tree), so the grandchild is orphaned. The grandchild was tracked while the middle
         // was alive. The stop then finds it through its own handle and records it.
         Skip.IfNot(OperatingSystem.IsWindows(), "the three-level case depends on parent ids that Linux does not keep for orphans");
         using var dir = new TempDirectory();
@@ -754,7 +758,8 @@ public sealed class GuestCancellationTests
             WaitUntil(() => ProcessNameProbe.IsRunning(grandName), StopWait);
             SpinFor(TimeSpan.FromMilliseconds(500));
 
-            // The middle ends by itself (not its tree). The root is still alive, waiting on its second command.
+            // The test ends the middle alone, without its tree, so the grandchild is left running with no living parent. The root is still
+            // alive, waiting on its second command.
             KillOnlyNamed(middle);
             WaitUntil(() => !ProcessNameProbe.IsRunning(middleName), StopWait);
             run.IsCompleted.Should().BeFalse("the root is still alive when the stop is sent");
@@ -767,6 +772,118 @@ public sealed class GuestCancellationTests
             outcome.Confirmed.Should().BeFalse();
             outcome.Refused.Should().BeNull("the reaped orphan released what it held");
             ProcessNameProbe.IsRunning(grandName).Should().BeFalse("the grandchild is reaped through its own handle");
+        }
+        finally
+        {
+            KillNamed(grandchild);
+            KillNamed(middle);
+        }
+    }
+
+    [Fact]
+    public void OutputDrainTimeout_IsReportedAsItsOwnFailure_NotAsASilentOne()
+    {
+        // Issue #827 review (MEDIUM 2): the child ends with exit 0, but a grandchild it started holds its stdout, so the drain runs out of time.
+        // The output was not read, so the run is reported as a failure with its reason, not as a silent loss. The budget is injected (500 ms),
+        // so the test does not wait for the run's real budget.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "drain");
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60 &" });
+        try
+        {
+            var clock = Stopwatch.StartNew();
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                fileName, arguments, timeoutMs: 60_000, CancellationToken.None, outputBudgetMs: 500);
+
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+            outcome.TimedOut.Should().BeFalse("the child itself did not time out");
+            outcome.ExitCode.Should().Be(0, "the child ended normally");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed);
+            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode);
+            outcome.Result.DiagnosticMessage.Should().Contain("stdout drain timed out after 500 ms");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void StopDuringTheDrain_CapsTheRestOfTheDrainAtTheCleanupBudget()
+    {
+        // Issue #827 review (MEDIUM 3): the child ends on its own, and a stop arrives during its stdout drain, which is held by a grandchild the
+        // stop does not track (the probe lists nothing). The drain budget is 60 s; the stop must not wait for it. The cap runs from the stop, so
+        // the run returns about five seconds after the stop, not after the full budget.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "capped");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "2", "127.0.0.1", ">nul" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60 & sleep 2" });
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+
+                // The child ends about two seconds in and the drain starts; the stop lands at 2.5 s, during the drain.
+                SpinFor(TimeSpan.FromMilliseconds(2500));
+                cts.Cancel();
+            });
+
+            var clock = Stopwatch.StartNew();
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                fileName,
+                arguments,
+                timeoutMs: 60_000,
+                cts.Token,
+                descendantsProbe: _ => Array.Empty<Process>(),
+                outputBudgetMs: 60_000);
+            stopper.Wait(StopWait);
+
+            // The stop lands at 2.5 s; the cap allows five seconds after it, so the run ends at about 7.5 s. Ten seconds is the bound.
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the drain at five seconds after it; the 60 s budget is not waited for");
+            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode);
+            outcome.Refused.Should().BeNull("the child ended before the stop reached it, so the stop is not refused");
+            outcome.Leftover.Should().BeNull("nothing was tracked, so nothing was reaped");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [SkippableFact]
+    public void DescendantStartTimeUnreadable_RefusesTheStop_AndClaimsNothingBelowIt()
+    {
+        // Issue #827 review (LOW): a descendant without a start time is not claimed, as the root without one is not. The middle's start time
+        // cannot be read, so the grandchild below it is never claimed: nothing below the middle is reaped, and the stop is refused.
+        Skip.IfNot(OperatingSystem.IsWindows(), "the middle is a copy of the Windows shell");
+        using var dir = new TempDirectory();
+        var middle = NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "nullmid");
+        var grandchild = NamedCopy(dir, SleepBinary, "nullgrand");
+        var grandName = Path.GetFileNameWithoutExtension(grandchild);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+                "cmd.exe",
+                ["/c", middle, "/c", grandchild, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul"],
+                60_000,
+                cts.Token,
+                startTime: process => process.ProcessName.StartsWith("nullmid", StringComparison.OrdinalIgnoreCase) ? null : process.StartTime));
+
+            WaitUntil(() => ProcessNameProbe.IsRunning(grandName), StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(500));
+            cts.Cancel();
+            var outcome = run.Result;
+
+            outcome.Confirmed.Should().BeFalse();
+            outcome.Refused.Should().Contain("cannot be read", "a start time that cannot be read is refused, as for the root");
+            outcome.Leftover.Should().BeNull("nothing below the unattributable process is claimed or reaped");
         }
         finally
         {
