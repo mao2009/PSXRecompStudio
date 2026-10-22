@@ -28,22 +28,41 @@ public partial class MainWindow : Window
     private long _lastSequence;
     private int _framesShown;
     private WriteableBitmap? _bitmap;
+    private Task<TitleExecutionResult>? _run;
+    private bool _closeWhenRunEnds;
 
     public MainWindow()
     {
         InitializeComponent();
         _poll = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, (_, _) => PollFrame());
         Opened += (_, _) => Start();
+        Closing += OnClosing;
         Closed += (_, _) => _poll.Stop();
     }
 
     private void Start()
     {
         var outputDirectory = Path.Combine(Path.GetTempPath(), "psxrecomp-gamewindow", Guid.NewGuid().ToString("N"));
-        var run = LiveGameRunner.RunAsync(
+        _run = LiveGameRunner.RunAsync(
             SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory);
         _poll.Start();
-        _ = run.ContinueWith(task => Dispatcher.UIThread.Post(() => ShowRunEnd(task)));
+        _ = _run.ContinueWith(task => Dispatcher.UIThread.Post(() => ShowRunEnd(task)));
+    }
+
+    /// <summary>
+    /// The window does not close while the run is active: closing would leave the artifact process running, and there is no stop
+    /// request yet (Issue #820 integration is a follow-up). The synthetic run is finite, so the window closes itself when it ends.
+    /// </summary>
+    private void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_run is null || _run.IsCompleted)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        _closeWhenRunEnds = true;
+        Status.Text = "The program is still running; the window closes when it ends (stop is a follow-up).";
     }
 
     private void PollFrame()
@@ -63,8 +82,10 @@ public partial class MainWindow : Window
     {
         if (_bitmap is null || _bitmap.PixelSize.Width != frame.Width || _bitmap.PixelSize.Height != frame.Height)
         {
+            var previous = _bitmap;
             _bitmap = new WriteableBitmap(new PixelSize(frame.Width, frame.Height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
             Display.Source = _bitmap;
+            previous?.Dispose();
         }
 
         using var locked = _bitmap.Lock();
@@ -79,8 +100,15 @@ public partial class MainWindow : Window
 
     private void ShowRunEnd(Task<TitleExecutionResult> run)
     {
+        // The last frame published before the run ended is still shown, then polling stops.
+        PollFrame();
+        _poll.Stop();
         Status.Text = run.IsFaulted
             ? $"Run failed: {run.Exception?.GetBaseException().Message}"
             : $"Run ended: {run.Result.State} ({run.Result.DiagnosticCode}). Frames shown: {_framesShown}";
+        if (_closeWhenRunEnds)
+        {
+            Close();
+        }
     }
 }
