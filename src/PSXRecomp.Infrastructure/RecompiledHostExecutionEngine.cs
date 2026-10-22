@@ -227,19 +227,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Action<Process>? KillOverrideForTest { get; set; }
 
     /// <summary>
-    /// What was left running by the child's descendants after its run ended (Issue #827), or null. A leftover from a natural end does not
-    /// change a completed result: it is reported here. Set by the last run of this engine.
+    /// Decides the result of a run that was asked to stop (Issue #827). A run that completed keeps its result, unless the stop left a
+    /// descendant running. A refused stop is a failure with the reason. A confirmed stop is Cancelled. Anything else keeps its own
+    /// classification.
     /// </summary>
-    internal string? LeftoverDescendants { get; private set; }
-
-    /// <summary>
-    /// Decides the result of a run that was asked to stop (Issue #827). A run that completed keeps its result. A refused stop is a
-    /// failure with the reason. A confirmed stop is Cancelled. Anything else keeps its own classification.
-    /// </summary>
-    internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop, bool stopRequested = true)
+    internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop)
     {
-        // A descendant left running after a stop was requested is a refused stop, even for a completed run.
-        if (stopRequested && stop.Leftover is { } leftover)
+        // A descendant left running by a stop is a refused stop, even for a completed run.
+        if (stop.Leftover is { } leftover)
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed,
@@ -793,11 +788,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
         LastFrameBgra32 = pumpEnded && !stopToken.IsCancellationRequested ? bridge?.CaptureFrameBgra32() : null;
 
-        LeftoverDescendants = stopRecord.Leftover;
-
-        // Issue #820/#827: the stop decides only a run that did not complete. A completed run keeps its result unless a stop was requested
-        // and left a descendant behind; a leftover from a natural end is recorded in LeftoverDescendants and keeps the result.
-        return ApplyStopOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, stopToken.IsCancellationRequested);
+        // Issue #820/#827: the stop decides only the result of a stop. A completed run keeps its result unless the stop left a descendant.
+        return ApplyStopOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord);
     }
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
@@ -1086,10 +1078,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
             timedOut = false;
 
-            // The child ended on its own: what it left running is reaped and recorded before the pipes are drained (Issue #827).
-            stopRecord.SweepAfterEnd(process);
-            var stdout = DrainWithinCleanupBudget(stdoutTask);
-            var stderr = DrainWithinCleanupBudget(stderrTask);
+            // The child ended on its own: its pipes drain within the run's own budget (a console host may keep them open a moment longer). Only a
+            // stop, which is already waiting for the end of the run, drains within the short cleanup budget.
+            var drainBudget = stopToken.IsCancellationRequested ? PumpDrainTimeoutMs : timeoutMs;
+            var stdout = DrainWithin(stdoutTask, drainBudget);
+            var stderr = DrainWithin(stderrTask, drainBudget);
             RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
             return (process.ExitCode, stdout, stderr, false, true);
         }
@@ -1157,8 +1150,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         timedOut = false;
-        stopRecord.SweepAfterEnd(process);
-        var bridgeStderr = DrainWithinCleanupBudget(stderrTask);
+        var bridgeStderr = DrainWithin(stderrTask, stopToken.IsCancellationRequested ? PumpDrainTimeoutMs : timeoutMs);
         RefuseIfPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
@@ -1207,7 +1199,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     private static void RefuseIfPipeHeldAfterStop(CancellationToken stopToken, StopRecord stopRecord, params Task<string>[] pipes)
     {
-        if (stopToken.IsCancellationRequested && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
+        // A child that ended before the stop reached it is not a stop's failure: a pipe it leaves to a console host is the drain's business.
+        if (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
         {
             stopRecord.RefuseIfUnset("an output pipe is still held by a process that outlived the child");
         }
@@ -1225,14 +1218,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null,
         Func<StopRecord, Process, string, bool, bool>? observe = null,
         Action<Process>? kill = null,
-        Func<Process, bool>? reapGuard = null)
+        Func<Process, DateTime?>? startTime = null)
     {
         var stopRecord = new StopRecord
         {
             DescendantsProbe = descendantsProbe,
             ObserveForTest = observe,
             KillForTest = kill,
-            ReapGuardForTest = reapGuard,
+            StartTimeForTest = startTime,
         };
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
         bool timedOut;
@@ -1281,11 +1274,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// budget; anything that does not close in time is dropped. Diagnostics only —
     /// the fault verdict stands and these bytes never enter the result contract.
     /// </summary>
-    private static string DrainWithinCleanupBudget(Task<string> readTask)
+    private static string DrainWithinCleanupBudget(Task<string> readTask) => DrainWithin(readTask, PumpDrainTimeoutMs);
+
+    /// <summary>Consumes a redirected stream for at most <paramref name="budgetMs"/>; anything not consumed in time is dropped (Issue #827).</summary>
+    private static string DrainWithin(Task<string> readTask, int budgetMs)
     {
         try
         {
-            return readTask.Wait(PumpDrainTimeoutMs) && readTask.IsCompletedSuccessfully
+            return readTask.Wait(budgetMs) && readTask.IsCompletedSuccessfully
                 ? readTask.Result
                 : string.Empty;
         }

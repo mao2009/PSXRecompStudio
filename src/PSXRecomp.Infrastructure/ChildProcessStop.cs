@@ -15,8 +15,9 @@ namespace PSXRecomp.Infrastructure;
 /// <para>
 /// A stop is <em>confirmed</em> only when a live child was killed and every tracked process was seen exited. A kill the OS refused, a
 /// child or tracked process still running after the bounded wait, a process that could not be checked, or an output pipe still held after
-/// the stop is <em>refused</em>, with its reason. A tracked process left running when the child ended on its own is a <em>leftover</em>:
-/// it is reaped and recorded. Recording a leftover does not change a completed run's result unless a stop was requested.
+/// the stop is <em>refused</em>, with its reason. A tracked process left running when a stop reaches a child that has already ended is a
+/// <em>leftover</em>: it is reaped and recorded, and the stop is refused. A child that ends on its own, without a stop, is not handled
+/// here: its descendants are not reaped at its end (the natural end is out of scope, Issue #829).
 /// </para>
 /// </summary>
 /// <remarks>
@@ -28,9 +29,6 @@ internal sealed class StopRecord : IDisposable
 {
     /// <summary>The longest a stop (or a reap) waits for a process to be seen exited.</summary>
     internal static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(5);
-
-    /// <summary>How long a tracked process may take to end on its own after the child ended, before it is a leftover.</summary>
-    internal static readonly TimeSpan NaturalExitGrace = TimeSpan.FromSeconds(1);
 
     /// <summary>How often a bounded wait re-checks whether the stop has settled, and samples the process tree.</summary>
     internal const int PollMs = 100;
@@ -68,10 +66,19 @@ internal sealed class StopRecord : IDisposable
     internal Action<Process>? KillForTest { get; init; }
 
     /// <summary>
-    /// Decides whether a tracked process may be reaped (the test seam). It is consulted before each kill of a tracked process; false
-    /// means the process is not killed and is recorded as "identity changed". Null allows the kill.
+    /// Reads the start time of a process (the test seam): every identity comparison of the stop reads through it. Null reads the real
+    /// start time.
     /// </summary>
-    internal Func<Process, bool>? ReapGuardForTest { get; init; }
+    internal Func<Process, DateTime?>? StartTimeForTest { get; init; }
+
+    /// <summary>
+    /// Why a tracked parent's identity could not be verified, or null. Set while sampling; a stop that finds it set is refused, because the
+    /// children of that parent cannot be attributed.
+    /// </summary>
+    private string? _unattributable;
+
+    private DateTime? StartOf(Process process) =>
+        StartTimeForTest is { } read ? read(process) : ProcessTree.StartTimeOf(process);
 
     /// <summary>The OS process id of the child the run targets, or 0 before the child starts.</summary>
     internal int ProcessId { get; private set; }
@@ -115,7 +122,7 @@ internal sealed class StopRecord : IDisposable
     {
         ProcessId = process.Id;
         _rootId = process.Id;
-        _rootStart = ProcessTree.StartTimeOf(process);
+        _rootStart = StartOf(process);
         _registration = stopToken.Register(() => Stop(process));
         return this;
     }
@@ -182,32 +189,8 @@ internal sealed class StopRecord : IDisposable
         }
     }
 
-    /// <summary>
-    /// Ends the bookkeeping of a child that ended on its own (the run's normal end): the tracked processes still running are reaped and
-    /// recorded as leftovers.
-    /// </summary>
-    internal void SweepAfterEnd(Process root)
-    {
-        lock (_gate)
-        {
-            if (_sealed)
-            {
-                return;
-            }
-
-            CollectAtEnd(root);
-
-            // A tracked process that is still ending (a helper that exits a few milliseconds after its owner) is not a leftover: it gets
-            // a grace period to end on its own before it is reaped or recorded.
-            WaitForNaturalEnds(NaturalExitGrace);
-            var (leftovers, unresolved) = ReapTracked(ConfirmTimeout);
-            var all = leftovers.Concat(unresolved).ToList();
-            if (all.Count > 0)
-            {
-                _leftover = string.Join("; ", all);
-            }
-        }
-    }
+    /// <summary>True once a stop has found the child already ended on its own (no kill was needed).</summary>
+    internal bool ChildEndedBeforeStop { get; private set; }
 
     /// <summary>True when the child has exited, or its handle is no longer usable (the run already released it).</summary>
     internal static bool HasExitedOrGone(Process process)
@@ -259,9 +242,10 @@ internal sealed class StopRecord : IDisposable
             listed = ClaimForStop(process);
 
             // Checked again after the claim: the child may have ended while its tree was listed. Then it is a natural end, and what it
-            // left running is a leftover, reaped and recorded. It is never a confirmed stop.
+            // left running is a leftover, reaped and recorded (for a stop that found the child ended). It is never a confirmed stop.
             if (HasExitedOrGone(process))
             {
+                ChildEndedBeforeStop = true;
                 var (endedLeft, endedUnresolved) = ReapTracked(ConfirmTimeout);
                 var endedAll = endedLeft.Concat(endedUnresolved).ToList();
                 if (endedAll.Count > 0)
@@ -275,6 +259,19 @@ internal sealed class StopRecord : IDisposable
             if (!listed)
             {
                 RefuseIfUnset("the child's process tree cannot be listed on this platform");
+            }
+
+            // Without the child's start time, no descendant can be attributed to it: the stop is refused, even if the kill succeeds.
+            if (_rootStart is null)
+            {
+                RefuseIfUnset($"the start time of child process {ProcessId} cannot be read, so its descendants cannot be attributed");
+            }
+
+            // A tracked parent whose identity could not be verified while sampling: its children were not claimed, so the stop cannot be
+            // confirmed (Issue #827 review).
+            if (_unattributable is { } reason)
+            {
+                RefuseIfUnset(reason);
             }
 
             try
@@ -363,7 +360,7 @@ internal sealed class StopRecord : IDisposable
 
                 if (_trackedIds.Add(pid))
                 {
-                    _tracked.Add(new Tracked(child, pid, ProcessTree.StartTimeOf(child), NameOf(child), 0));
+                    _tracked.Add(new Tracked(child, pid, StartOf(child), NameOf(child), 0));
                 }
                 else
                 {
@@ -375,18 +372,6 @@ internal sealed class StopRecord : IDisposable
         }
 
         return ClaimFromSnapshot();
-    }
-
-    /// <summary>Claims the children at the run's end, from the snapshot only (the root has ended, so only its tracked children are kept).</summary>
-    private void CollectAtEnd(Process root)
-    {
-        if (DescendantsProbe is { } probe)
-        {
-            ClaimForStop(root);
-            return;
-        }
-
-        ClaimFromSnapshot();
     }
 
     /// <summary>
@@ -422,8 +407,16 @@ internal sealed class StopRecord : IDisposable
         while (queue.Count > 0)
         {
             var (pid, start) = queue.Dequeue();
-            if (!children.TryGetValue(pid, out var kids) || !IdentityHolds(pid, start))
+            if (!children.TryGetValue(pid, out var kids))
             {
+                continue;
+            }
+
+            // The parent's identity is checked before any of its children is claimed. A failed check means its children cannot be
+            // attributed: none is claimed, and the stop is refused (see Decide).
+            if (!IdentityHolds(pid, start))
+            {
+                _unattributable ??= $"the identity of tracked process {pid} could not be verified, so its children cannot be attributed";
                 continue;
             }
 
@@ -445,7 +438,7 @@ internal sealed class StopRecord : IDisposable
                     continue;
                 }
 
-                var kidStart = ProcessTree.StartTimeOf(handle);
+                var kidStart = StartOf(handle);
                 if (start is { } parentStart && kidStart is { } childStart && childStart < parentStart)
                 {
                     // Started before its parent: the id was reused, so this is not the parent's child.
@@ -455,8 +448,8 @@ internal sealed class StopRecord : IDisposable
 
                 if (IsConsoleHost(handle))
                 {
-                    // Windows starts the console host as a child of a console program. Its lifetime belongs to the console, not to the
-                    // program: it is neither claimed nor killed (a console host lingering after the program is not a leftover).
+                    // Windows starts the console host as a child of a console program, and its lifetime belongs to the console. It is not
+                    // claimed here, so it is never reaped on its own. A stop's tree kill may still end it, because it is in the tree then.
                     handle.Dispose();
                     continue;
                 }
@@ -474,7 +467,7 @@ internal sealed class StopRecord : IDisposable
     /// True when the process id <paramref name="pid"/> is still the process that was seen with <paramref name="start"/>, or no process has
     /// that id any more (its children then keep their parent id only, and nothing else can take it). A reused id fails the check.
     /// </summary>
-    private static bool IdentityHolds(int pid, DateTime? start)
+    private bool IdentityHolds(int pid, DateTime? start)
     {
         Process current;
         try
@@ -488,13 +481,13 @@ internal sealed class StopRecord : IDisposable
 
         using (current)
         {
-            return start is { } expected && ProcessTree.StartTimeOf(current) == expected;
+            return start is { } expected && StartOf(current) == expected;
         }
     }
 
     /// <summary>
     /// Reaps every tracked process still running. Each one is killed through its own handle, only when its start time still matches the
-    /// claim and the reap guard allows it. Returns the processes reaped and the ones that could not be confirmed gone.
+    /// claim. Returns the processes reaped and the ones that could not be confirmed gone.
     /// </summary>
     private (List<string> Reaped, List<string> Unresolved) ReapTracked(TimeSpan wait)
     {
@@ -516,13 +509,7 @@ internal sealed class StopRecord : IDisposable
                 continue;
             }
 
-            if (ReapGuardForTest is { } guard && !guard(tracked.Handle))
-            {
-                unresolved.Add($"descendant process {tracked.Pid} still running; identity changed, not killed");
-                continue;
-            }
-
-            if (ProcessTree.StartTimeOf(tracked.Handle) != tracked.Start)
+            if (StartOf(tracked.Handle) != tracked.Start)
             {
                 unresolved.Add($"descendant process {tracked.Pid} still running; identity changed, not killed");
                 continue;
@@ -581,7 +568,10 @@ internal sealed class StopRecord : IDisposable
         }
     }
 
-    /// <summary>True for the Windows console host (conhost), which belongs to the console rather than to the program that started it.</summary>
+    /// <summary>
+    /// True for the Windows console host (conhost). It is not claimed as a descendant, so the run never reaps it on its own. Its exit is
+    /// part of the console's lifetime. A tree kill of the child does end it when it is in the tree, as the kill does for any process there.
+    /// </summary>
     private static bool IsConsoleHost(Process process) =>
         string.Equals(NameOf(process), "conhost", StringComparison.OrdinalIgnoreCase);
 
