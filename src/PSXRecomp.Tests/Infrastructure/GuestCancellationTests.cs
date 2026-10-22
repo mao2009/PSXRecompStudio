@@ -354,7 +354,15 @@ public sealed class GuestCancellationTests
             var delay = TimeSpan.FromMilliseconds(attempt * 7 % 40);
             using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(binary, blockEntryPcs: blockEntryPcs, imageWords: words, imageLoadAddress: Entry);
             using var cts = new CancellationTokenSource();
-            var stopper = Task.Run(() =>
+
+            // Attempt 0 stops before the run starts: that one is deterministic and must be Cancelled, with nothing launched.
+            var stopBeforeStart = attempt == 0;
+            if (stopBeforeStart)
+            {
+                cts.Cancel();
+            }
+
+            var stopper = stopBeforeStart ? Task.CompletedTask : Task.Run(() =>
             {
                 SpinFor(delay);
                 cts.Cancel();
@@ -363,8 +371,13 @@ public sealed class GuestCancellationTests
             var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64), cancellationToken: cts.Token);
             await stopper;
 
-            // Either the program finished first and keeps its result, or the stop won and the run is Cancelled. A failure is never acceptable.
-            if (result.State == TitleExecutionState.Cancelled)
+            // The other attempts race the stop with the program's own end: either the program finished first and keeps its result,
+            // or the stop won and the run is Cancelled. A failure is never acceptable.
+            if (stopBeforeStart)
+            {
+                result.State.Should().Be(TitleExecutionState.Cancelled, "a stop before the start ends the run as Cancelled");
+            }
+            else if (result.State == TitleExecutionState.Cancelled)
             {
                 result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode, $"attempt {attempt}");
             }
@@ -415,10 +428,217 @@ public sealed class GuestCancellationTests
         result.State.Should().Be(TitleExecutionState.Cancelled);
         result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
         engine.LastFrameBgra32.Should().BeNull("a stopped run does not read the GPU/VRAM after the stop");
-        slot.TryGetNewer(0, out var latest).Should().BeTrue();
+        slot.TryGetNewer(0, out var atReturn).Should().BeTrue("the run emitted frames before the stop");
         SpinFor(TimeSpan.FromMilliseconds(300));
-        slot.TryGetNewer(latest!.Sequence, out _).Should().BeFalse("no frame is published after the run has returned");
+        slot.TryGetNewer(0, out var afterWait).Should().BeTrue();
+        afterWait!.Sequence.Should().Be(atReturn!.Sequence, "no new frame is published after the run has returned");
     }
+
+#pragma warning disable AARC003 // Test-layer process control for verification (as TestToolchain does); no product code path uses it.
+
+    /// <summary>A private copy of a system binary under a unique name, so a test finds and stops only the processes it started.</summary>
+    private static string NamedCopy(TempDirectory dir, string source, string tag)
+    {
+        var copy = Path.Combine(dir.FullPath, $"{tag}-{Path.GetFileNameWithoutExtension(dir.FullPath)[..6]}{Path.GetExtension(source)}");
+        File.Copy(source, copy);
+        return copy;
+    }
+
+    /// <summary>A binary that keeps running for about a minute: ping on Windows, sleep on Linux.</summary>
+    private static string SleepBinary =>
+        OperatingSystem.IsWindows() ? Path.Combine(Environment.SystemDirectory, "PING.EXE") : "/bin/sleep";
+
+    private static string[] SleepArguments =>
+        OperatingSystem.IsWindows() ? ["-n", "60", "127.0.0.1"] : ["60"];
+
+    /// <summary>Stops the processes named like a test's private copy (never another process).</summary>
+    private static void KillNamed(string copyPath)
+    {
+        foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(copyPath)))
+        {
+            try
+            {
+                process.Kill(true);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                // Already gone.
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+    }
+
+    /// <summary>Starts a sleeper process: a real survivor for the tests that need one.</summary>
+    private static Process StartSleeper(TempDirectory dir)
+    {
+        var copy = NamedCopy(dir, SleepBinary, "sleeper");
+        var startInfo = new ProcessStartInfo(copy) { UseShellExecute = false, CreateNoWindow = true };
+        foreach (var argument in SleepArguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        return Process.Start(startInfo)!;
+    }
+
+    [Fact]
+    public async Task RealArtifact_DisposeDuringARun_DoesNotBlockTheCaller_AndStopsTheChild()
+    {
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+        var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
+        var artifactName = Path.GetFileNameWithoutExtension(binary);
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue)));
+        try
+        {
+            WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+            run.IsCompleted.Should().BeFalse("the child must still be running when the caller disposes the engine");
+
+            // The UI thread disposes the engine; the stop of the live child waits up to 5 s, so Dispose must not wait for it.
+            var clock = Stopwatch.StartNew();
+            engine.Dispose();
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1), "Dispose must not wait for the child");
+        }
+        finally
+        {
+            engine.Dispose();
+        }
+
+        var result = await run.WaitAsync(StopWait);
+
+        result.State.Should().Be(TitleExecutionState.Cancelled);
+        result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
+        ArtifactProcessRunning(binary).Should().BeFalse("the disposed engine must not leave its child running");
+    }
+
+    [Fact]
+    public async Task RealArtifact_DescendantSurvivingTheKill_EndsRefused_AndIsNotReportedAsCancelled()
+    {
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+        var sleeper = StartSleeper(dir);
+        try
+        {
+            using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+                binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
+
+            // The seam reports the sleeper as a descendant of the child. It is still running after the kill, so the stop is refused.
+            engine.StopDescendantsProbe = _ => [Process.GetProcessById(sleeper.Id)];
+            using var cts = new CancellationTokenSource();
+            var artifactName = Path.GetFileNameWithoutExtension(binary);
+            var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
+            try
+            {
+                WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+                run.IsCompleted.Should().BeFalse("the child must still be running when the stop is sent");
+            }
+            finally
+            {
+                cts.Cancel();
+            }
+
+            var result = await run.WaitAsync(StopWait);
+
+            result.State.Should().NotBe(TitleExecutionState.Cancelled, "a survivor means the stop is not confirmed");
+            result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.StopRefusedDiagnosticCode);
+            result.DiagnosticMessage.Should().Contain(sleeper.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            ArtifactProcessRunning(binary).Should().BeFalse("the artifact itself was killed");
+            sleeper.HasExited.Should().BeFalse("the survivor is still running, which is why the stop is refused");
+        }
+        finally
+        {
+            if (!sleeper.HasExited)
+            {
+                sleeper.Kill(true);
+            }
+
+            sleeper.Dispose();
+        }
+    }
+
+    [Fact]
+    public void OrphanGrandchildHoldingTheOutputPipe_StopReturnsWithinItsBound_AndIsRefused()
+    {
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "orphan");
+        // The shell exits at once and leaves the sleeper running, holding the pipe the stop must drain.
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", "start", "", "/b", copy, "-n", "60", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60 &" });
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                WaitUntil(() => ProcessNameProbe.IsRunning(Path.GetFileNameWithoutExtension(copy)), StopWait);
+
+                // The shell has exited by then, so the stop reaches no live root: the orphan is outside any tree the stop can kill.
+                SpinFor(TimeSpan.FromSeconds(1));
+                cts.Cancel();
+            });
+
+            var clock = Stopwatch.StartNew();
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(fileName, arguments, timeoutMs: 60_000, cts.Token);
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "a pipe held by a grandchild must not hold the stop past its bound");
+            stopper.Wait(StopWait);
+
+            outcome.Confirmed.Should().BeFalse("the orphan that holds the pipe was not stopped");
+            outcome.Refused.Should().Contain("output pipe");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void StoppedTreeWithRealDescendants_IsConfirmedOnlyOnceTheyAreGone()
+    {
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "tree");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", copy, "-n", "60", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60; :" });
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                // The stop is sent only once the descendant exists, so the tree really has one to confirm.
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+                cts.Cancel();
+            });
+
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(fileName, arguments, timeoutMs: 60_000, cts.Token);
+            stopper.Wait(StopWait);
+
+            outcome.Refused.Should().BeNull("every process of the tree was seen exited");
+            outcome.Confirmed.Should().BeTrue();
+            ProcessNameProbe.IsRunning(name).Should().BeFalse("the descendant must be gone when the stop is confirmed");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void ACompletedRun_KeepsItsResult_EvenWhenAStopIsRefusedAfterIt()
+    {
+        var stop = new StopRecord();
+        stop.RefuseIfUnset("a refusal that arrived after the run had completed");
+        stop.Seal();
+        var completed = new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null);
+
+        RecompiledHostExecutionEngine.ApplyStopOutcome(completed, stop).Should().BeSameAs(completed);
+    }
+
+#pragma warning restore AARC003
 
     /// <summary>Discards the guest's TTY bytes; the test only needs the Runtime to run.</summary>
     private sealed class DiscardSink : IRuntimeOutputSink
