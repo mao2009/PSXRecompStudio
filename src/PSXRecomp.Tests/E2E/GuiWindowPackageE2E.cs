@@ -49,7 +49,8 @@ public sealed class GuiWindowPackageE2E : IDisposable
         var runtimeDir = Path.Join(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
         var artifactBytes = File.ReadAllBytes(Path.Join(outputDir, "gui-game.exe"));
         PeImageInfo.Subsystem(artifactBytes).Should().Be(PeImageInfo.SubsystemWindowsGui, "the game executable must not open a console");
-        CompilerImports(artifactBytes).Should().BeEmpty("the game executable is linked with -static-libgcc and imports no compiler runtime");
+        CompilerImports(artifactBytes).Should().BeEmpty("the game executable imports no GCC runtime library (exact names)");
+        NonWindowsImports(artifactBytes).Should().BeEmpty("the game executable imports only Windows libraries");
 
         File.Exists(Path.Join(runtimeDir, RuntimeHostLayout.GuiHostFileName)).Should().BeTrue("the window host ships under runtime/");
         File.Exists(Path.Join(runtimeDir, "PSXRecomp.RuntimeHost.exe")).Should().BeFalse("a window package runs the artifact itself");
@@ -105,11 +106,26 @@ public sealed class GuiWindowPackageE2E : IDisposable
     }
 
     /// <summary>The imported DLLs that come from the compiler (not from Windows).</summary>
+    /// <summary>The GCC runtime libraries of the toolchain, by exact file name (Issue #830).</summary>
+    private static readonly string[] CompilerRuntimeNames =
+    [
+        "libgcc_s_seh-1.dll",
+        "libgcc_s_dw2-1.dll",
+        "libgcc_s_sjlj-1.dll",
+        "libstdc++-6.dll",
+        "libwinpthread-1.dll",
+    ];
+
+    /// <summary>The imports that are exactly one of the GCC runtime libraries.</summary>
     private static IReadOnlyList<string> CompilerImports(byte[] image) =>
         PeImageInfo.ImportedDllNames(image)
-            .Where(name => name.StartsWith("libgcc_", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("libstdc++", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("libwinpthread", StringComparison.OrdinalIgnoreCase))
+            .Where(name => CompilerRuntimeNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+
+    /// <summary>The imports that are not Windows libraries at all: whatever the package would have to carry.</summary>
+    private static IReadOnlyList<string> NonWindowsImports(byte[] image) =>
+        PeImageInfo.ImportedDllNames(image)
+            .Where(name => !PeImageInfo.IsWindowsLibrary(name))
             .ToArray();
 
     private static void RuntimePublishGate() => RuntimeHostPublishE2E.RequireGcc();

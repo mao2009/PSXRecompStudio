@@ -1009,7 +1009,11 @@ public sealed class RecompiledArtifactCodeGenTests
         source.Should().Contain("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE");
         // Fail closed: the job is assigned before the host runs, and every job failure stops the launch with a message box.
         source.Should().Contain("AssignProcessToJobObject(job, pi.hProcess)");
-        source.Should().Contain("ResumeThread(pi.hThread)");
+        source.Should().Contain("ResumeThread(pi.hThread) == (DWORD)-1");
+        // Every failure before the game runs reaches the message box; none is left to stderr, which a windowed launcher never shows.
+        source.Should().NotContain("error: could not start the runtime host");
+        source.Should().NotContain("error: cannot build command line");
+        source.Should().Contain("report_window_launch_failure(L\"The launcher could not build the window host's command line\"");
         source.Should().Contain("report_window_launch_failure(");
         source.Should().Contain("MessageBoxW(NULL, text, L\"PSXRecomp\", MB_OK | MB_ICONERROR)");
         source.Should().Contain("CloseHandle(job)");

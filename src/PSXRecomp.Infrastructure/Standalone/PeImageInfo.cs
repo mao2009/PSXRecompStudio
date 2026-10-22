@@ -76,7 +76,12 @@ public static class PeImageInfo
 
     private static int OptionalHeaderOffset(byte[] image)
     {
-        var peOffset = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(Slice(image, 0x3C, 4)));
+        var peOffset = ToOffset(BinaryPrimitives.ReadUInt32LittleEndian(Slice(image, 0x3C, 4)));
+        if (peOffset > image.Length - 24)
+        {
+            throw new InvalidDataException("The PE header is outside the file.");
+        }
+
         var signature = Slice(image, peOffset, 4);
         if (signature[0] != (byte)'P' || signature[1] != (byte)'E' || signature[2] != 0 || signature[3] != 0)
         {
@@ -102,7 +107,7 @@ public static class PeImageInfo
             var span = Math.Max(virtualSize, rawSize);
             if (rva >= virtualAddress && rva - virtualAddress < span)
             {
-                return checked((int)(rawPointer + (rva - virtualAddress)));
+                return ToOffset((long)rawPointer + (rva - virtualAddress));
             }
         }
 
@@ -124,6 +129,12 @@ public static class PeImageInfo
 
         return Encoding.ASCII.GetString(image, offset, end - offset);
     }
+
+    /// <summary>A file offset read from the image, refused as invalid data when it does not fit an int (a malformed image).</summary>
+    private static int ToOffset(long value) =>
+        value < 0 || value > int.MaxValue
+            ? throw new InvalidDataException("The image has an offset outside the file.")
+            : (int)value;
 
     private static ReadOnlySpan<byte> Slice(byte[] image, int offset, int length)
     {

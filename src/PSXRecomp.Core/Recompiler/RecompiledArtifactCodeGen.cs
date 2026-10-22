@@ -633,11 +633,9 @@ public static class RecompiledArtifactCodeGen
     /// </summary>
     private static string WindowedLauncherPatch(string prologue, WindowedLaunch windowed)
     {
-        var text = Patch(prologue, "\"PSXRecomp.RuntimeHost.exe\"", "\"" + windowed.HostBinaryName + "\"");
-        text = Patch(text, "\"runtime/runtime-host.json\"", "\"" + windowed.ArgumentRelativePath + "\"");
-        // Fail closed (Issue #830): when the job cannot be created, configured, or assigned, the game is not started and the
-        // reason is shown in a message box. The launcher is a windowed program, so stderr would not be visible.
-        text = Patch(text, "static int run_via_runtime_host(void) {", @"static void report_window_launch_failure(const wchar_t* what, DWORD error) {
+        // Fail closed (Issue #830): every way the launcher can fail to start the window host shows its reason in a message box and
+        // does not start the game. The launcher is a windowed program, so stderr would not be visible.
+        var text = Patch(prologue, "static int run_via_runtime_host(void) {", @"static void report_window_launch_failure(const wchar_t* what, DWORD error) {
     wchar_t text[512];
     swprintf(text, 512, L""%ls (Windows error %lu). The game was not started."", what, (unsigned long)error);
     OutputDebugStringW(text);
@@ -645,6 +643,17 @@ public static class RecompiledArtifactCodeGen
 }
 
     static int run_via_runtime_host(void) {");
+        text = Patch(text, "\"PSXRecomp.RuntimeHost.exe\"", "\"" + windowed.HostBinaryName + "\"");
+        text = Patch(text, "\"runtime/runtime-host.json\"", "\"" + windowed.ArgumentRelativePath + "\"");
+        text = Patch(text, @"fprintf(stderr, ""error: cannot resolve this executable path (error %lu)\n"", (unsigned long)GetLastError());",
+            @"report_window_launch_failure(L""The launcher could not find its own path"", GetLastError());");
+        text = Patch(text, @"if (!utf8) return MissingRuntimeHostExitCode;",
+            @"if (!utf8) { report_window_launch_failure(L""The launcher ran out of memory"", 0); return MissingRuntimeHostExitCode; }");
+        text = Patch(text, @"fprintf(stderr, ""error: cannot encode runtime host paths (error %lu)\n"", (unsigned long)GetLastError());",
+            @"report_window_launch_failure(L""The launcher could not encode the window host's path"", GetLastError());");
+        text = Patch(text, @"fprintf(stderr, ""error: cannot build command line\n"");",
+            @"report_window_launch_failure(L""The launcher could not build the window host's command line"", 0);");
+        // Fail closed for the job object (Issue #830): when the job cannot be created, configured, or assigned, the game is not started.
         text = Patch(text, "TRUE, 0, NULL, NULL, &si, &pi", "TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi");
         text = Patch(text, "STARTUPINFOW si = { sizeof(si) };", @"HANDLE job = CreateJobObjectW(NULL, NULL);
         if (!job) {
@@ -661,7 +670,15 @@ public static class RecompiledArtifactCodeGen
             return 1;
         }
         STARTUPINFOW si = { sizeof(si) };");
+        // The job exists from here on, so each failure after it closes it as well.
+        text = Patch(text, @"fprintf(stderr, ""error: could not start the runtime host (error %lu)\n"", (unsigned long)GetLastError());",
+            @"CloseHandle(job);
+            report_window_launch_failure(L""The window host could not be started"", GetLastError());");
         // The window host starts suspended, is placed in the job, and only then runs, so no part of it runs outside the job.
+        // A failed resume leaves the host suspended forever, so it is terminated and reported rather than waited for.
+        // The launcher's wait below has no timeout on purpose: the launcher lives as long as the window host, and the job's
+        // kill-on-close would stop the window if the launcher ended first. The host's own run timeout (4 hours for a window
+        // package) and its window-close stop path bound that wait; it is not an unbounded wait on a silent failure.
         text = Patch(text, "WaitForSingleObject(pi.hProcess, INFINITE);", @"if (!AssignProcessToJobObject(job, pi.hProcess)) {
             DWORD assign_error = GetLastError();
             TerminateProcess(pi.hProcess, 1);
@@ -671,7 +688,15 @@ public static class RecompiledArtifactCodeGen
             report_window_launch_failure(L""The window host could not be placed in the job object"", assign_error);
             return 1;
         }
-        ResumeThread(pi.hThread);
+        if (ResumeThread(pi.hThread) == (DWORD)-1) {
+            DWORD resume_error = GetLastError();
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            CloseHandle(job);
+            report_window_launch_failure(L""The window host could not be resumed"", resume_error);
+            return 1;
+        }
         WaitForSingleObject(pi.hProcess, INFINITE);
         // Closing the last handle of the job ends any process still in it, so a child left behind is reaped.
         CloseHandle(job);");
