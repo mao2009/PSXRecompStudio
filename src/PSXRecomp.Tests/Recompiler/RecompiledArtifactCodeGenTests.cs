@@ -999,11 +999,10 @@ public sealed class RecompiledArtifactCodeGenTests
     public void GenerateStandalone_WindowedDirectLaunch_StartsGuiHostWithoutConsoleAndReapsIt()
     {
         var source = GenerateDirectLaunchSource(
-            new RecompiledArtifactCodeGen.WindowedLaunch("PSXRecomp.GameWindow.exe", "runtime/program.exe"));
+            new RecompiledArtifactCodeGen.WindowedLaunch("PSXRecomp.GameWindow.exe", "runtime/runtime-host.json"));
 
         source.Should().Contain("\"PSXRecomp.GameWindow.exe\"");
-        source.Should().Contain("\"runtime/program.exe\"");
-        source.Should().NotContain("\"runtime/runtime-host.json\"");
+        source.Should().Contain("\"runtime/runtime-host.json\"");
         source.Should().NotContain("\"PSXRecomp.RuntimeHost.exe\"");
         source.Should().Contain("TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi");
         source.Should().Contain("CreateJobObjectW(NULL, NULL)");

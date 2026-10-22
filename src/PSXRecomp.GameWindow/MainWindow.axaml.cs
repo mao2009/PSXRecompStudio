@@ -21,9 +21,6 @@ namespace PSXRecomp.GameWindow;
 /// </summary>
 public partial class MainWindow : Window
 {
-    /// <summary>The segment budget of the synthetic program run, in dispatch steps.</summary>
-    private const uint SegmentBudget = 20_000_000u;
-
     private readonly LiveFrameSlot _slot = new();
     private readonly DispatcherTimer _poll;
     private long _lastSequence;
@@ -51,16 +48,20 @@ public partial class MainWindow : Window
 
     private void Start()
     {
-        var outputDirectory = Path.Combine(Path.GetTempPath(), "psxrecomp-gamewindow", Guid.NewGuid().ToString("N"));
+        if (App.ManifestPath is null)
+        {
+            Status.Text = "No packaged game was given. Start the packaged game EXE, or pass its runtime/runtime-host.json.";
+            return;
+        }
+
         try
         {
-            _run = App.GameFilePath is { } gameFile
-                ? LiveGameRunner.RunPsxExeAsync(File.ReadAllBytes(gameFile), Path.GetFileName(gameFile), SegmentBudget, _slot, outputDirectory, _stop.Token)
-                : LiveGameRunner.RunAsync(SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
+            // The packaged AOT artifact runs in this process's Runtime engine. No compiler runs at this point (Issue #830).
+            _run = PackagedArtifactLiveRunner.RunAsync(App.ManifestPath, _slot, _stop.Token);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or InvalidOperationException)
         {
-            // A missing file or an invalid PS-X EXE is reported in the window, not thrown out of the UI event.
+            // A missing or invalid package is reported in the window, not thrown out of the UI event.
             Status.Text = $"The game could not be opened: {exception.Message}";
             return;
         }

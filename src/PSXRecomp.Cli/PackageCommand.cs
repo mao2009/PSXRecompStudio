@@ -110,22 +110,22 @@ public static class PackageCommand
             var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
             var binaryName = artifactName + (windows ? ".exe" : "");
 
-            // Issue #830: --gui packages a window that runs the PS-X EXE through the Runtime in its own process. It is
-            // Windows-only and needs the PS-X EXE file itself, which is copied into runtime/.
+            // Issue #830: --gui packages a game window. Its launcher starts the window with the manifest, and the window runs the
+            // packaged AOT artifact itself (no compiler at run time). It is Windows-only.
             var gui = arguments.Gui;
-            if (gui && (!windows || !Path.GetExtension(arguments.Input!).Equals(".exe", StringComparison.OrdinalIgnoreCase)))
+            if (gui && !windows)
             {
                 return Fail(
-                    "GUI_UNSUPPORTED_INPUT",
+                    "GUI_UNSUPPORTED_PLATFORM",
                     arguments.EntryRoots,
-                    "--gui needs a PS-X EXE input (.exe) on Windows.");
+                    "--gui packages a Windows game window; it is available on Windows only.");
             }
 
             var hostRelativePath = RuntimeHostLayout.HostRelativePath;
             var windowedLaunch = gui
                 ? new RecompiledArtifactCodeGen.WindowedLaunch(
                     RuntimeHostLayout.GuiHostFileName,
-                    RuntimeHostLayout.RuntimeDirectoryName + "/" + RuntimeHostLayout.GuiGameFileName)
+                    RuntimeHostLayout.ManifestRelativePath)
                 : null;
             var artifactSource = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch,
@@ -133,7 +133,9 @@ public static class PackageCommand
                 initialHi,
                 initialLo,
                 entryPc,
-                segmentBudget,
+                // Issue #830: a window runs until it is closed (or the manifest's run timeout), so a --gui artifact is not given the
+                // headless package's finite budget, which would end a synthetic program partway through its fills.
+                gui ? uint.MaxValue : segmentBudget,
                 initialMemory,
                 imageLoadAddress,
                 ProgramImageBytes(input.InstructionWords),
@@ -157,7 +159,9 @@ public static class PackageCommand
                     artifactSource.Source!,
                     outputDir,
                     binaryName,
-                    ExtraLinkerArguments: gui ? new[] { "-mwindows" } : null));
+                    // -static-libgcc: the artifact must run on a machine without the compiler, so the GCC runtime is linked in
+                    // rather than loaded from the toolchain's bin directory (Issue #830).
+                    ExtraLinkerArguments: gui ? new[] { "-mwindows", "-static-libgcc" } : null));
             if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {
                 return Fail(
@@ -191,7 +195,8 @@ public static class PackageCommand
                         ex.Message);
                 }
 
-                File.Copy(arguments.Input!, Path.Combine(runtimeDir, RuntimeHostLayout.GuiGameFileName), overwrite: true);
+                CopyNativeRuntimeLibraries(runtimeDir);
+
             }
             else
             {
@@ -322,6 +327,41 @@ public static class PackageCommand
         }
 
         return RecompiledArtifactExitCode.Failure;
+    }
+
+    /// <summary>
+    /// The GCC runtime libraries that <c>PSXRecomp.Native.dll</c> imports (Issue #830). The window loads that library, and it is built
+    /// with GCC, so it needs these from the toolchain's bin directory. The window's package carries them next to the window, so it runs on
+    /// a machine without the compiler.
+    /// </summary>
+    private static readonly string[] NativeRuntimeLibraries = ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"];
+
+    private static void CopyNativeRuntimeLibraries(string runtimeDir)
+    {
+        var compilerDirectory = Path.GetDirectoryName(FindOnPath("gcc.exe")
+            ?? throw new InvalidOperationException("The window package needs the GCC runtime libraries, but gcc.exe was not found on PATH."));
+        foreach (var name in NativeRuntimeLibraries)
+        {
+            var source = Path.Combine(compilerDirectory!, name);
+            if (File.Exists(source))
+            {
+                File.Copy(source, Path.Combine(runtimeDir, name), overwrite: true);
+            }
+        }
+    }
+
+    private static string? FindOnPath(string fileName)
+    {
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(directory, fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     private static void WriteReadme(

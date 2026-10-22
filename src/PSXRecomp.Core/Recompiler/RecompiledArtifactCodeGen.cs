@@ -642,9 +642,21 @@ public static class RecompiledArtifactCodeGen
             memset(&job_limits, 0, sizeof(job_limits));
             job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             SetInformationJobObject(job, JobObjectExtendedLimitInformation, &job_limits, sizeof(job_limits));
+        } else {
+            char msg[256];
+            snprintf(msg, sizeof(msg), ""warning: no job object (error %lu): if this launcher is killed, the window host and its guest are not reaped by a job.\n"", (unsigned long)GetLastError());
+            OutputDebugStringA(msg);
+            fprintf(stderr, ""%s"", msg);
         }
         STARTUPINFOW si = { sizeof(si) };");
-        text = Patch(text, "WaitForSingleObject(pi.hProcess, INFINITE);", @"if (job) AssignProcessToJobObject(job, pi.hProcess);
+        // A failed assignment is reported, not ignored: the window then runs without the kill-on-close guarantee, and its own stop
+        // path (window close, Issue #820) still ends the guest. The launcher is a windowed program, so the report also goes to the debugger.
+        text = Patch(text, "WaitForSingleObject(pi.hProcess, INFINITE);", @"if (job && !AssignProcessToJobObject(job, pi.hProcess)) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), ""warning: the window host is not in the job object (error %lu): if this launcher is killed, its guest child is not reaped by the job and ends only through the window's stop path.\n"", (unsigned long)GetLastError());
+            OutputDebugStringA(msg);
+            fprintf(stderr, ""%s"", msg);
+        }
         WaitForSingleObject(pi.hProcess, INFINITE);");
         // Closing the last handle of the job ends any process still in it, so a child left behind is reaped.
         text = Patch(text, "CloseHandle(pi.hProcess);", @"if (job) CloseHandle(job);
