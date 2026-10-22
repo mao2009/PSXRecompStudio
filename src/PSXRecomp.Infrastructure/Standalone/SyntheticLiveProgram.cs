@@ -21,10 +21,10 @@ public static class SyntheticLiveProgram
 
     /// <summary>The instruction words of the program, placed at <see cref="EntryPc"/>. The program ends in a self-branch, so the
     /// run ends only when its segment budget does.</summary>
-    public static uint[] Words()
+    public static uint[] Words(uint entryPc = EntryPc)
     {
         var words = new List<uint>();
-        uint Here() => EntryPc + (uint)words.Count * 4u;
+        uint Here() => entryPc + (uint)words.Count * 4u;
         void Emit(params uint[] emitted) => words.AddRange(emitted);
         void Li(uint register, uint value)
         {

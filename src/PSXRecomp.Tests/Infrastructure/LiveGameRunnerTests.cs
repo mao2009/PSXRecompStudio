@@ -1,4 +1,5 @@
 using FluentAssertions;
+using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
@@ -107,5 +108,58 @@ public sealed class LiveGameRunnerTests
             await reader;
         }
 
+    }
+
+    [Fact]
+    public void SyntheticPsxExe_ParsesWithTheExistingLoader_AndPointsAtItsProgram()
+    {
+        var exe = PsxExe.Load(SyntheticPsxExe.Build(), "synthetic.exe");
+
+        exe.Header.EntryPoint.Should().Be(SyntheticPsxExe.LoadAddress);
+        exe.Header.TextStart.Should().Be(SyntheticPsxExe.LoadAddress);
+        exe.DecodedInstructionCount.Should().Be(SyntheticLiveProgram.Words(SyntheticPsxExe.LoadAddress).Length);
+        exe.Header.SpInitial.Should().NotBe(0u, "the stack pointer is set from the header's base");
+    }
+
+    [Fact]
+    public async Task PsxExeFileOnDisk_RunsThroughTheRuntime_AndItsFillsReachTheSlotInOrder()
+    {
+        using var dir = new TempDirectory();
+        var path = Path.Combine(dir.FullPath, "synthetic.exe");
+#pragma warning disable AARC003 // Test-layer I/O for verification: the EXE is written to disk and read back, as a game file is.
+        File.WriteAllBytes(path, SyntheticPsxExe.Build());
+        var fileBytes = File.ReadAllBytes(path);
+#pragma warning restore AARC003
+        var slot = new LiveFrameSlot();
+        var pixels = new List<(byte R, byte G, byte B)>();
+        using var readerStop = new CancellationTokenSource();
+        var reader = Task.Run(() => CollectFrames(slot, readerStop.Token, pixels));
+
+        var result = await LiveGameRunner.RunPsxExeAsync(fileBytes, "synthetic.exe", SegmentBudget, slot, dir.FullPath);
+        readerStop.Cancel();
+        await reader;
+
+        result.State.Should().Be(TitleExecutionState.BudgetExhausted, "the program never ends; its finite budget does");
+        List<(byte R, byte G, byte B)> distinct = [];
+        foreach (var pixel in pixels)
+        {
+            if (distinct.Count == 0 || distinct[^1] != pixel)
+            {
+                distinct.Add(pixel);
+            }
+        }
+
+        distinct.Should().ContainInOrder((0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0x00, 0x00, 0xFF));
+    }
+
+    [Fact]
+    public void TruncatedPsxExe_IsRejectedBeforeAnythingRuns()
+    {
+        var file = SyntheticPsxExe.Build();
+        var truncated = file[..^4];
+
+        Action act = () => _ = LiveGameRunner.RunPsxExeAsync(truncated, "truncated.exe", SegmentBudget, new LiveFrameSlot(), Path.GetTempPath());
+
+        act.Should().Throw<ArgumentException>().WithMessage("*truncated*");
     }
 }
