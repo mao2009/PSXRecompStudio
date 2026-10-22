@@ -52,9 +52,19 @@ public partial class MainWindow : Window
     private void Start()
     {
         var outputDirectory = Path.Combine(Path.GetTempPath(), "psxrecomp-gamewindow", Guid.NewGuid().ToString("N"));
-        _run = App.GameFilePath is { } gameFile
-            ? LiveGameRunner.RunPsxExeAsync(File.ReadAllBytes(gameFile), Path.GetFileName(gameFile), SegmentBudget, _slot, outputDirectory, _stop.Token)
-            : LiveGameRunner.RunAsync(SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
+        try
+        {
+            _run = App.GameFilePath is { } gameFile
+                ? LiveGameRunner.RunPsxExeAsync(File.ReadAllBytes(gameFile), Path.GetFileName(gameFile), SegmentBudget, _slot, outputDirectory, _stop.Token)
+                : LiveGameRunner.RunAsync(SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException)
+        {
+            // A missing file or an invalid PS-X EXE is reported in the window, not thrown out of the UI event.
+            Status.Text = $"The game could not be opened: {exception.Message}";
+            return;
+        }
+
         _poll.Start();
         _ = _run.ContinueWith(task => Dispatcher.UIThread.Post(() => ShowRunEnd(task)));
     }

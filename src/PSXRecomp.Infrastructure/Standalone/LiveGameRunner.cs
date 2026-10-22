@@ -1,6 +1,4 @@
-using System.Buffers.Binary;
 using PSXRecomp.Architecture;
-using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
@@ -33,12 +31,15 @@ public static class LiveGameRunner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(imageWords);
-        return RunCore(imageWords, entryPc, new uint[TitleExecutionRequest.GprCount], segmentBudget, slot, outputDirectory, cancellationToken);
+        var request = new TitleExecutionRequest(
+            entryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: segmentBudget);
+        return RunCore(imageWords, loadAddress: entryPc, request, slot, outputDirectory, cancellationToken);
     }
 
     /// <summary>
-    /// Runs a PS-X EXE file (Issue #630): its header gives the entry PC, the GP and SP, and its text is the program image. The
-    /// file is parsed by the existing <see cref="PsxExe"/> loader; the run is the same as <see cref="RunAsync"/>.
+    /// Runs a PS-X EXE file (Issue #630). The file is parsed and validated by the repository's canonical PS-X EXE input
+    /// (<see cref="PsxExeTitleInput"/>), which places the text at the header's text address and starts at its entry PC, with GP
+    /// and SP from the header. Throws for a file that is not a valid PS-X EXE; nothing is run in that case.
     /// </summary>
     public static Task<TitleExecutionResult> RunPsxExeAsync(
         byte[] exeFile,
@@ -50,23 +51,14 @@ public static class LiveGameRunner
     {
         ArgumentNullException.ThrowIfNull(exeFile);
         var exe = PsxExe.Load(exeFile, fileName);
-        var words = new uint[exe.DecodedInstructionCount];
-        for (var i = 0; i < words.Length; i++)
-        {
-            words[i] = BinaryPrimitives.ReadUInt32LittleEndian(exe.TextSegment.AsSpan(i * sizeof(uint)));
-        }
-
-        var gpr = new uint[TitleExecutionRequest.GprCount];
-        gpr[(int)R3000aRegister.Gp] = exe.Header.GpInitial;
-        gpr[(int)R3000aRegister.Sp] = exe.Header.SpInitial;
-        return RunCore(words, exe.Header.EntryPoint, gpr, segmentBudget, slot, outputDirectory, cancellationToken);
+        var input = PsxExeTitleInput.Build(exe, outerBudget: 1, segmentBudget: segmentBudget);
+        return RunCore(input.InstructionWords, input.LoadAddress, input.Request, slot, outputDirectory, cancellationToken);
     }
 
     private static Task<TitleExecutionResult> RunCore(
         IReadOnlyList<uint> imageWords,
-        uint entryPc,
-        uint[] initialGpr,
-        uint segmentBudget,
+        uint loadAddress,
+        TitleExecutionRequest request,
         LiveFrameSlot slot,
         string outputDirectory,
         CancellationToken cancellationToken)
@@ -76,18 +68,16 @@ public static class LiveGameRunner
 
         return Task.Run(() =>
         {
-            var program = ReachableProgramBuilder.Build(entryPc, imageWords, entryPc, []);
+            var program = ReachableProgramBuilder.Build(loadAddress, imageWords, request.EntryPc, []);
             using var engine = new RecompiledHostExecutionEngine(
                 program,
                 imageWords,
-                entryPc,
+                loadAddress,
                 new GeneratedHostBuildService(),
                 outputDirectory,
                 biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardOutput(), reader, writer),
                 embedImage: true,
                 liveFrames: slot);
-            var request = new TitleExecutionRequest(
-                entryPc, initialGpr, 0, 0, [], outerBudget: 1, segmentBudget: segmentBudget);
             return new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cancellationToken);
         });
     }

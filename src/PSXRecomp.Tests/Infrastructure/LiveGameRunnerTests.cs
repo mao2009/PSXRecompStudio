@@ -151,4 +151,15 @@ public sealed class LiveGameRunnerTests
 
         distinct.Should().ContainInOrder((0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0x00, 0x00, 0xFF));
     }
+
+    [Fact]
+    public void TruncatedPsxExe_IsRejectedBeforeAnythingRuns()
+    {
+        var file = SyntheticPsxExe.Build();
+        var truncated = file[..^4];
+
+        Action act = () => _ = LiveGameRunner.RunPsxExeAsync(truncated, "truncated.exe", SegmentBudget, new LiveFrameSlot(), Path.GetTempPath());
+
+        act.Should().Throw<ArgumentException>().WithMessage("*truncated*");
+    }
 }
