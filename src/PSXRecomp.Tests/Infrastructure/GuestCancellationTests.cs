@@ -132,6 +132,15 @@ public sealed class GuestCancellationTests
             return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.Cancelled, "ARTIFACT_CANCELLED", "stopped");
         }
 
+        public IDisposable AttachCancellation(CancellationToken cancellationToken) => new NoAttachment();
+
+        private sealed class NoAttachment : IDisposable
+        {
+            public void Dispose()
+            {
+            }
+        }
+
         public void RequestCancel()
         {
             RequestCancelCalls++;
@@ -820,25 +829,24 @@ public sealed class GuestCancellationTests
     [Fact]
     public void StopDuringTheDrain_CapsTheRestOfTheDrainAtTheCleanupBudget()
     {
-        // Issue #827 review (MEDIUM 3): the child ends on its own, and a stop arrives during its stdout drain, which is held by a grandchild the
-        // stop does not track (the probe lists nothing). The drain budget is 60 s; the stop must not wait for it. The cap runs from the stop, so
-        // the run returns about five seconds after the stop, not after the full budget.
+        // Review round 12 (MEDIUM 3): a stop caps the drain only for a child that is alive when the stop arrives. Here the root stays alive, while a
+        // grandchild it started through a middle process (which exits at once) holds the stdout: the grandchild is not in the root's tree. The stop
+        // finds the root alive, kills its tree, and the drain is still held: the cap applies (five seconds from the stop), so the run ends soon after.
+        // The grandchild is not tracked (the probe lists nothing), so the stop does not reap it.
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "capped");
         var name = Path.GetFileNameWithoutExtension(copy);
+        var middle = NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "capmid");
         var (fileName, arguments) = OperatingSystem.IsWindows()
-            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1" })
-            : ("/bin/sh", new[] { "-c", $"{copy} 60 &" });
+            ? ("cmd.exe", new[] { "/c", middle, "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul" })
+            : ("/bin/sh", new[] { "-c", $"sh -c '{copy} 60 &'; sleep 30" });
         try
         {
             using var cts = new CancellationTokenSource();
             var stopper = Task.Run(() =>
             {
                 WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
-
-                // The child ends at once, so the drain starts at once; the stop lands 2.5 s later, well inside the drain (the drain's cap runs from
-                // the later of its start and the stop, so a late drain start would not test the cap).
-                SpinFor(TimeSpan.FromMilliseconds(2500));
+                SpinFor(TimeSpan.FromMilliseconds(500));
                 cts.Cancel();
             });
 
@@ -852,11 +860,13 @@ public sealed class GuestCancellationTests
                 outputBudgetMs: 60_000);
             stopper.Wait(StopWait);
 
-            // The stop lands at 2.5 s; the cap allows five seconds after it, so the run ends at about 7.5 s. Ten seconds is the bound.
-            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the drain at five seconds after it; the 60 s budget is not waited for");
-            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode);
-            outcome.Refused.Should().BeNull("the child ended before the stop reached it, so the stop is not refused");
-            outcome.Leftover.Should().BeNull("nothing was tracked, so nothing was reaped");
+            // The stop lands about 0.5 s in; the cap allows five seconds after it. Ten seconds is the bound; the 60 s budget is not waited for.
+            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the drain of a live child at five seconds after it");
+            // The root's tree was killed, but the untracked grandchild still holds the stdout pipe: the stop is refused for it (not confirmed), so the
+            // run keeps its classification, and the drain that the cap ended is reported as the drain timeout.
+            outcome.Refused.Should().Contain("output pipe", "the grandchild outlived the child and still holds the stdout pipe");
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.ExecutionFailed, "a refused stop keeps the run's classification");
+            outcome.Result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.OutputDrainTimeoutDiagnosticCode,"the capped drain timed out, so the output was not read");
         }
         finally
         {
@@ -934,9 +944,10 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public void HostTransferPump_OpenAfterTheChildEnded_WithAStop_ReturnsWithinTheCleanupBudgetFromTheStop()
+    public void HostTransferPump_OpenAfterTheChildEnded_WithAStop_KeepsTheOutputBudget_NotCappedByTheStop()
     {
-        // The same case with a stop during the wait: the wait ends five seconds after the stop (the output budget of 60 s is not waited for).
+        // Review round 12 (MEDIUM 3): the same case with a stop during the wait. The child ended first, so the stop does not cap the wait: the wait
+        // keeps the output budget (8 s here), counted from the child's end. Capped from the stop it would end about five seconds after the stop.
         using var dir = new TempDirectory();
         using var child = StartShortLivedChild(dir);
         using var cts = new CancellationTokenSource();
@@ -952,11 +963,12 @@ public sealed class GuestCancellationTests
             cts.Cancel();
         });
         var clock = Stopwatch.StartNew();
-        var completed = RecompiledHostExecutionEngine.WaitPumpWithinOutputBudget(pump, child, runTimeoutMs: 60_000, outputBudgetMs: 60_000, stop, out var drainTimedOut);
+        var completed = RecompiledHostExecutionEngine.WaitPumpWithinOutputBudget(pump, child, runTimeoutMs: 60_000, outputBudgetMs: 8_000, stop, out var drainTimedOut);
         stopper.Wait(StopWait);
 
-        // The stop lands about 0.3 s after the child ends; the cap is five seconds from the stop, so the wait ends about 5.3 s after the child.
-        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the stop caps the wait at five seconds; the 60 s budget is not waited for");
+        // The child ends about one second in; the output budget runs to about nine seconds. A cap from the stop would have ended the wait near 5.3 s.
+        clock.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(7), "the child ended first: the stop does not cap the wait");
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(15), "the wait ends by the output budget");
         completed.Should().BeFalse();
         drainTimedOut.Should().BeTrue("the output did not end before the cleanup budget from the stop ran out");
         stop.Settled.Should().BeTrue();
@@ -1359,6 +1371,188 @@ public sealed class GuestCancellationTests
 
         reads.Should().BeGreaterThanOrEqualTo(3, "the live path read the VRAM while the run emitted frames");
         reads.Should().Be(readsAtStop, "no VRAM read runs from the dispose until the pump ends");
+    }
+
+    /// <summary>A synthetic engine with the live frame slot, for tests that drive the engine's gate or segment directly.</summary>
+    private static RecompiledHostExecutionEngine SyntheticEngine(TempDirectory dir, LiveFrameSlot? slot)
+    {
+        var words = SyntheticLiveProgram.Words();
+        var entry = SyntheticLiveProgram.EntryPc;
+        var program = ReachableProgramBuilder.Build(entry, words, entry, []);
+        return new RecompiledHostExecutionEngine(
+            program,
+            words,
+            entry,
+            new GeneratedHostBuildService(),
+            dir.FullPath,
+            biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardSink(), reader, writer),
+            embedImage: true,
+            liveFrames: slot);
+    }
+
+    [Fact]
+    public void ExternalCancelAlone_ReadsNothingAfterTheCancel_WithoutAnyRequestCancel()
+    {
+        // Review round 12 (MEDIUM 1): the window close cancels the external token only. The engine is driven directly (no orchestrator), so no
+        // RequestCancel ever runs. The live VBlank reads still stop at the cancel: the gate checks the external token under its lock.
+        using var dir = new TempDirectory();
+        var slot = new LiveFrameSlot();
+        using var engine = SyntheticEngine(dir, slot);
+        var entry = SyntheticLiveProgram.EntryPc;
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        engine.Load(new TitleExecutionRequest(entry, gpr, 0, 0, [], outerBudget: 1, segmentBudget: 20_000_000u));
+        using var cts = new CancellationTokenSource();
+        using var attachment = engine.AttachCancellation(cts.Token);
+        using var readerDone = new CancellationTokenSource();
+        var reader = Task.Run(() =>
+        {
+            var last = 0L;
+            var spin = new SpinWait();
+            while (!readerDone.IsCancellationRequested)
+            {
+                if (slot.TryGetNewer(last, out var frame))
+                {
+                    last = frame.Sequence;
+                    spin.Reset();
+                }
+                else
+                {
+                    spin.SpinOnce(sleep1Threshold: -1);
+                }
+            }
+        });
+
+        var segment = Task.Run(() => engine.RunSegment(new TitleExecutionSegmentRequest(gpr, 0, 0, entry, 20_000_000u)));
+        int readsAtCancel;
+        try
+        {
+            WaitUntil(() => engine.FrameReadStats.Reads >= 3 || segment.IsCompleted, StopWait);
+            segment.IsCompleted.Should().BeFalse("the segment still emits VBlank frames when the external token is cancelled");
+            cts.Cancel();
+
+            // Taken after the cancel: a read that had started before it is counted (the stats wait for the gate); every later read is refused.
+            readsAtCancel = engine.FrameReadStats.Reads;
+            segment.Wait(StopWait).Should().BeTrue("the segment ends by its own budget (nothing kills it here)");
+        }
+        finally
+        {
+            readerDone.Cancel();
+            reader.Wait(StopWait);
+        }
+
+        readsAtCancel.Should().BeGreaterThanOrEqualTo(3, "the live path read the VRAM before the cancel");
+        engine.FrameReadStats.Reads.Should().Be(readsAtCancel, "no VRAM read runs after the external cancel, through the end of the segment");
+    }
+
+    [Fact]
+    public void LiveReadGuard_RefusesEveryRead_AfterAnExternalCancelAlone()
+    {
+        // Review round 12 (MEDIUM 2): the guard called directly. It reads before the cancel and refuses after it, with the external token alone.
+        using var dir = new TempDirectory();
+        using var engine = SyntheticEngine(dir, new LiveFrameSlot());
+        using var cts = new CancellationTokenSource();
+        using var attachment = engine.AttachCancellation(cts.Token);
+        var reads = 0;
+
+        engine.LiveReadGuardForTest(() => reads++).Should().BeTrue("before the cancel the guard reads");
+        cts.Cancel();
+        engine.LiveReadGuardForTest(() => reads++).Should().BeFalse("after the external cancel the guard refuses");
+
+        reads.Should().Be(1, "only the read before the cancel ran");
+        engine.FrameReadStats.Reads.Should().Be(1);
+    }
+
+    [Fact]
+    public void LiveReadGuard_RefusesEveryRead_AfterDispose()
+    {
+        // Review round 12 (MEDIUM 2): Dispose sets the flag through the gate, so the guard refuses at once.
+        using var dir = new TempDirectory();
+        var engine = SyntheticEngine(dir, new LiveFrameSlot());
+        var reads = 0;
+
+        engine.LiveReadGuardForTest(() => reads++).Should().BeTrue("before the dispose the guard reads");
+        engine.Dispose();
+        engine.LiveReadGuardForTest(() => reads++).Should().BeFalse("after the dispose the guard refuses");
+
+        reads.Should().Be(1);
+    }
+
+    [Fact]
+    public void LiveReadGuard_RefusesEveryRead_AfterRequestCancel()
+    {
+        // Review round 12 (MEDIUM 2): the request flag alone refuses the guard's reads.
+        using var dir = new TempDirectory();
+        using var engine = SyntheticEngine(dir, new LiveFrameSlot());
+        var reads = 0;
+
+        engine.LiveReadGuardForTest(() => reads++).Should().BeTrue("before the request the guard reads");
+        engine.RequestCancel();
+        engine.LiveReadGuardForTest(() => reads++).Should().BeFalse("after the request the guard refuses");
+
+        reads.Should().Be(1);
+        engine.FrameReadStats.Reads.Should().Be(1);
+    }
+
+    [Fact]
+    public void StopDuringADrain_OfAChildThatEndedFirst_KeepsItsCompletedResult()
+    {
+        // Review round 12 (MEDIUM 3): the child ends first, and a grandchild holds its stdout for about seven seconds. The stop arrives during the drain,
+        // while the child is already gone. The drain keeps the run's own budget (60 s here): the output arrives at about seven seconds, and the result
+        // stays Completed. A stop cap of five seconds would have timed the drain out at about 5.3 s.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "heldout");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "8", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 7 &" });
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                // The stop lands after the child has started and ended: its grandchild (the holder of stdout) is running, and the child has exited.
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+                SpinFor(TimeSpan.FromMilliseconds(300));
+                cts.Cancel();
+            });
+
+            var clock = Stopwatch.StartNew();
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                fileName,
+                arguments,
+                timeoutMs: 60_000,
+                cts.Token,
+                descendantsProbe: _ => Array.Empty<Process>(),
+                outputBudgetMs: 60_000);
+            stopper.Wait(StopWait);
+
+            outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Completed, "the child ended first: its own result stands");
+            outcome.Result.DiagnosticCode.Should().BeNull("the stop did not turn the output into a drain timeout");
+            outcome.Refused.Should().BeNull("the child ended before the stop reached it");
+            clock.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(5.5), "the drain waited past the five-second cap: the output had not arrived yet");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void PreStartStop_IsRecordedAsACleanShutdown()
+    {
+        // Review round 12 (LOW): a stop that began before the child started is Cancelled, and its diagnostics say that nothing was left behind.
+        using var dir = new TempDirectory();
+        using var engine = SyntheticEngine(dir, null);
+        var entry = SyntheticLiveProgram.EntryPc;
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        engine.Load(new TitleExecutionRequest(entry, gpr, 0, 0, [], outerBudget: 1, segmentBudget: 20_000u));
+        engine.RequestCancel();
+        WaitUntil(() => engine.StopIsRequestedForTest, StopWait);
+
+        var result = engine.RunSegment(new TitleExecutionSegmentRequest(gpr, 0, 0, entry, 20_000u));
+
+        result.Status.Should().Be(RecompilerExecutionStatus.Cancelled);
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.Clean, "a stop was processed, and it left nothing behind");
     }
 
     /// <summary>Discards the guest's TTY bytes; the test only needs the Runtime to run.</summary>

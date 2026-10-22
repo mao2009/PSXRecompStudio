@@ -1,6 +1,7 @@
 using FluentAssertions;
 using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.Gpu;
+using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Runtime.Gpu;
 using PSXRecomp.Infrastructure.Standalone;
 
@@ -17,6 +18,42 @@ public sealed class LiveFramePublisherTests
 
     /// <summary>A read guard that always runs the read: these tests have no stop (the guard is the run's gate in production).</summary>
     private static readonly Func<Action, bool> Unguarded = read => { read(); return true; };
+
+    [Fact]
+    public void GuardRefusesTheRead_AfterARequestStop_AndNothingIsPublished()
+    {
+        // Review round 12 (MEDIUM 2): the refusal path of the publisher. Before the stop the guard reads and a frame is published; after it the guard
+        // refuses, TryPublish returns false, and no frame is published.
+        using var gpu = new GpuDevice();
+        UploadRow(gpu, 0, 0, [0x7C00, 0x001F]);
+        var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
+        var gate = new FrameReadGate();
+
+        LiveFramePublisher.TryPublish(gpu, slot, read => gate.TryRead(() => false, read)).Should().BeTrue("before the stop the guard reads");
+        slot.TryGetNewer(0, out var first).Should().BeTrue();
+
+        gate.RequestStop();
+        LiveFramePublisher.TryPublish(gpu, slot, read => gate.TryRead(() => false, read)).Should().BeFalse("after the stop the guard refuses the read");
+        slot.TryGetNewer(first!.Sequence, out _).Should().BeFalse("nothing was published after the refusal");
+    }
+
+    [Fact]
+    public void GuardRefusesTheRead_AfterAnExternalCancel_AndNothingIsPublished()
+    {
+        // Review round 12 (MEDIUM 2): the external token alone (no request flag) refuses the publisher's read.
+        using var gpu = new GpuDevice();
+        UploadRow(gpu, 0, 0, [0x7C00, 0x001F]);
+        var slot = new LiveFrameSlot();
+        slot.TryGetNewer(0, out _);
+        var gate = new FrameReadGate();
+        using var cts = new CancellationTokenSource();
+        gate.SetExternalStop(cts.Token);
+
+        cts.Cancel();
+        LiveFramePublisher.TryPublish(gpu, slot, read => gate.TryRead(() => false, read)).Should().BeFalse("the external cancel refuses the read");
+        slot.TryGetNewer(0, out _).Should().BeFalse("nothing was published");
+    }
 
     /// <summary>Uploads <paramref name="halfwords"/> into VRAM at (<paramref name="x"/>, <paramref name="y"/>) as a 1-row strip.</summary>
     private static void UploadRow(GpuDevice gpu, int x, int y, ushort[] halfwords)
