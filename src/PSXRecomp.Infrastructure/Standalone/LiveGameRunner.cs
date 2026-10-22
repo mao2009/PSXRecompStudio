@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
 using PSXRecomp.Architecture;
+using PSXRecomp.Core.Cpu;
+using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Core.Runtime;
@@ -30,6 +33,44 @@ public static class LiveGameRunner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(imageWords);
+        return RunCore(imageWords, entryPc, new uint[TitleExecutionRequest.GprCount], segmentBudget, slot, outputDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs a PS-X EXE file (Issue #630): its header gives the entry PC, the GP and SP, and its text is the program image. The
+    /// file is parsed by the existing <see cref="PsxExe"/> loader; the run is the same as <see cref="RunAsync"/>.
+    /// </summary>
+    public static Task<TitleExecutionResult> RunPsxExeAsync(
+        byte[] exeFile,
+        string fileName,
+        uint segmentBudget,
+        LiveFrameSlot slot,
+        string outputDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(exeFile);
+        var exe = PsxExe.Load(exeFile, fileName);
+        var words = new uint[exe.DecodedInstructionCount];
+        for (var i = 0; i < words.Length; i++)
+        {
+            words[i] = BinaryPrimitives.ReadUInt32LittleEndian(exe.TextSegment.AsSpan(i * sizeof(uint)));
+        }
+
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        gpr[(int)R3000aRegister.Gp] = exe.Header.GpInitial;
+        gpr[(int)R3000aRegister.Sp] = exe.Header.SpInitial;
+        return RunCore(words, exe.Header.EntryPoint, gpr, segmentBudget, slot, outputDirectory, cancellationToken);
+    }
+
+    private static Task<TitleExecutionResult> RunCore(
+        IReadOnlyList<uint> imageWords,
+        uint entryPc,
+        uint[] initialGpr,
+        uint segmentBudget,
+        LiveFrameSlot slot,
+        string outputDirectory,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(slot);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
 
@@ -46,7 +87,7 @@ public static class LiveGameRunner
                 embedImage: true,
                 liveFrames: slot);
             var request = new TitleExecutionRequest(
-                entryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: segmentBudget);
+                entryPc, initialGpr, 0, 0, [], outerBudget: 1, segmentBudget: segmentBudget);
             return new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cancellationToken);
         });
     }

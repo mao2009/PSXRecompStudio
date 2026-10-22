@@ -52,8 +52,9 @@ public partial class MainWindow : Window
     private void Start()
     {
         var outputDirectory = Path.Combine(Path.GetTempPath(), "psxrecomp-gamewindow", Guid.NewGuid().ToString("N"));
-        _run = LiveGameRunner.RunAsync(
-            SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
+        _run = App.GameFilePath is { } gameFile
+            ? LiveGameRunner.RunPsxExeAsync(File.ReadAllBytes(gameFile), Path.GetFileName(gameFile), SegmentBudget, _slot, outputDirectory, _stop.Token)
+            : LiveGameRunner.RunAsync(SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
         _poll.Start();
         _ = _run.ContinueWith(task => Dispatcher.UIThread.Post(() => ShowRunEnd(task)));
     }
