@@ -1,0 +1,18 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PSXRecomp.GameWindow.MainWindow"
+        Title="PSXRecomp Game Window"
+        Width="768" Height="560" MinWidth="320" MinHeight="260"
+        Background="Black">
+  <Grid RowDefinitions="*,Auto">
+    <Image x:Name="Display"
+           Grid.Row="0"
+           Stretch="Uniform"
+           RenderOptions.BitmapInterpolationMode="None" />
+    <TextBlock x:Name="Status"
+               Grid.Row="1"
+               Margin="8,4"
+               Foreground="#DDDDDD"
+               Text="Starting the synthetic program..." />
+  </Grid>
+</Window>
