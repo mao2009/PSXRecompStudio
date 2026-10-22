@@ -55,6 +55,8 @@ public static class RecompiledArtifactExitCode
         TitleExecutionState.UnsupportedTransfer => RecompiledArtifactOutcome.Blocked,
         TitleExecutionState.RuntimeFailure => RecompiledArtifactOutcome.Failure,
         TitleExecutionState.InvalidState => RecompiledArtifactOutcome.Failure,
+        // A stop request is neither a success nor a defect: a valid, diagnosable stop point (Issue #820).
+        TitleExecutionState.Cancelled => RecompiledArtifactOutcome.Blocked,
         _ => RecompiledArtifactOutcome.Failure,
     };
 

@@ -43,6 +43,10 @@ public enum TitleExecutionState : byte
     /// decision that contradicts the execution contract (e.g. an invalid
     /// continuation target). Not a guest failure — a caller/handoff failure.</summary>
     InvalidState,
+
+    /// <summary>The run was stopped by a cancellation request (Issue #820) before the guest reached a classified end.
+    /// It is never Completed: the stopped run's result is incomplete, and no diagnostic from it reads as a finished run.</summary>
+    Cancelled,
 }
 
 /// <summary>

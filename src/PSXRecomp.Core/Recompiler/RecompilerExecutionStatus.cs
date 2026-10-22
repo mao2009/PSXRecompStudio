@@ -30,6 +30,9 @@ public enum RecompilerExecutionStatus : byte
 
     /// <summary>The host process produced output that could not be parsed into a snapshot.</summary>
     MalformedResult,
+
+    /// <summary>The run was stopped by a cancellation request (Issue #820) before the guest reached a classified end.</summary>
+    Cancelled,
 }
 
 /// <summary>
