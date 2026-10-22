@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -28,12 +29,19 @@ public partial class MainWindow : Window
     private long _lastSequence;
     private int _framesShown;
     private WriteableBitmap? _bitmap;
+    /// <summary>How long a requested stop may take before the window reports that the process may still be running.</summary>
+    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
+
+    private readonly CancellationTokenSource _stop = new();
+    private readonly DispatcherTimer _stopTimeout;
     private Task<TitleExecutionResult>? _run;
     private bool _closeWhenRunEnds;
+    private bool _stopRequested;
 
     public MainWindow()
     {
         InitializeComponent();
+        _stopTimeout = new DispatcherTimer(StopTimeout, DispatcherPriority.Normal, (_, _) => OnStopTimeout());
         _poll = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, (_, _) => PollFrame());
         Opened += (_, _) => Start();
         Closing += OnClosing;
@@ -44,14 +52,14 @@ public partial class MainWindow : Window
     {
         var outputDirectory = Path.Combine(Path.GetTempPath(), "psxrecomp-gamewindow", Guid.NewGuid().ToString("N"));
         _run = LiveGameRunner.RunAsync(
-            SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory);
+            SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
         _poll.Start();
         _ = _run.ContinueWith(task => Dispatcher.UIThread.Post(() => ShowRunEnd(task)));
     }
 
     /// <summary>
-    /// The window does not close while the run is active: closing would leave the artifact process running, and there is no stop
-    /// request yet (Issue #820 integration is a follow-up). The synthetic run is finite, so the window closes itself when it ends.
+    /// Closing the window requests a stop of the run (Issue #820). The window closes once the run has ended, so the artifact
+    /// process is not left running. The request is sent once; the stop returns on its own, and the UI thread never waits for it.
     /// </summary>
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
@@ -62,7 +70,25 @@ public partial class MainWindow : Window
 
         e.Cancel = true;
         _closeWhenRunEnds = true;
-        Status.Text = "The program is still running; the window closes when it ends (stop is a follow-up).";
+        if (_stopRequested)
+        {
+            return;
+        }
+
+        _stopRequested = true;
+        _stop.Cancel();
+        Status.Text = "Stopping the program...";
+        _stopTimeout.Start();
+    }
+
+    /// <summary>Reports a stop that has not ended the run within the bound, instead of waiting forever.</summary>
+    private void OnStopTimeout()
+    {
+        _stopTimeout.Stop();
+        if (_run is not null && !_run.IsCompleted)
+        {
+            Status.Text = $"The stop has not ended the program within {StopTimeout.TotalSeconds:0} s. The process may still be running.";
+        }
     }
 
     private void PollFrame()

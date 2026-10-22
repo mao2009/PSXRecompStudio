@@ -65,4 +65,41 @@ public sealed class LiveGameRunnerTests
         // The fills are red, green, blue. Each must reach the slot, in that order, as the frame the GPU showed at that VBlank.
         distinct.Should().ContainInOrder((0xFF, 0x00, 0x00), (0x00, 0xFF, 0x00), (0x00, 0x00, 0xFF));
     }
+
+    [Fact]
+    public async Task StopDuringTheRun_EndsCancelled_AfterAFrameWasShown()
+    {
+        using var dir = new TempDirectory();
+        var slot = new LiveFrameSlot();
+        var pixels = new List<(byte R, byte G, byte B)>();
+        using var readerStop = new CancellationTokenSource();
+        var reader = Task.Run(() => CollectFrames(slot, readerStop.Token, pixels));
+        using var stop = new CancellationTokenSource();
+
+        // The budget is unbounded for this run, so only the stop can end it. A frame proves the run was live when it was stopped.
+        var run = LiveGameRunner.RunAsync(
+            SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, uint.MaxValue, slot, dir.FullPath, stop.Token);
+        var spin = new SpinWait();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.Elapsed < TimeSpan.FromSeconds(60))
+        {
+            lock (pixels)
+            {
+                if (pixels.Count > 0)
+                {
+                    break;
+                }
+            }
+
+            spin.SpinOnce(sleep1Threshold: -1);
+        }
+
+        stop.Cancel();
+        var result = await run;
+        readerStop.Cancel();
+        await reader;
+
+        pixels.Should().NotBeEmpty("the run must have shown a frame before it was stopped");
+        result.State.Should().Be(TitleExecutionState.Cancelled, "a stop is a Cancelled outcome, never a completed run");
+    }
 }

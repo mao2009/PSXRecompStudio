@@ -22,7 +22,12 @@ public static class LiveGameRunner
     /// steps. The returned task completes when the run ends.
     /// </summary>
     public static Task<TitleExecutionResult> RunAsync(
-        IReadOnlyList<uint> imageWords, uint entryPc, uint segmentBudget, LiveFrameSlot slot, string outputDirectory)
+        IReadOnlyList<uint> imageWords,
+        uint entryPc,
+        uint segmentBudget,
+        LiveFrameSlot slot,
+        string outputDirectory,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(imageWords);
         ArgumentNullException.ThrowIfNull(slot);
@@ -42,7 +47,7 @@ public static class LiveGameRunner
                 liveFrames: slot);
             var request = new TitleExecutionRequest(
                 entryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: segmentBudget);
-            return new ExecutionOrchestrator().Execute(engine, handoff: null, request);
+            return new ExecutionOrchestrator().Execute(engine, handoff: null, request, cancellationToken: cancellationToken);
         });
     }
 
