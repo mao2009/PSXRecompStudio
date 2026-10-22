@@ -254,6 +254,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // running are a diagnostic (LeftoverDescendants), never a refusal (Issue #827 review).
         if (stop.ChildEndedBeforeStop)
         {
+            // A refusal that was recorded anyway is never dropped silently: it is reported as the stop's refusal.
+            if (stop.Outcome.Refused is { } refusedAnyway)
+            {
+                return RecompilerExecutionResult.Failed(
+                    RecompilerExecutionStatus.ExecutionFailed,
+                    StopRefusedDiagnosticCode,
+                    $"The stop request was refused for process {stop.ProcessId}, which may still be running: {refusedAnyway}");
+            }
+
             return classified;
         }
 
@@ -811,7 +820,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         FallbackInFlight = bridge?.FallbackInFlight;
         FallbackReturns = bridge?.FallbackReturns;
         // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
-        LastFrameBgra32 = pumpEnded && !stopToken.IsCancellationRequested ? bridge?.CaptureFrameBgra32() : null;
+        // The record, not the token, decides: a stop that has begun is recorded before its kill, and the record is sealed at this point.
+        LastFrameBgra32 = pumpEnded && stopRecord.StoppedAt is null ? bridge?.CaptureFrameBgra32() : null;
 
         LeftoverDescendants = stopRecord.Leftover;
         return ResolveOutcome(ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge), stopRecord, drainTimedOut, OutputBudgetMsForTest ?? _runTimeoutMs);
@@ -1122,7 +1132,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 // The budget ran out, or a stop was refused or confirmed: the child is killed, and the stop (if any) decides the result.
                 TryKillTree(process, stopRecord, stopToken);
                 timedOut = !stopRecord.Settled;
-                return (int.MinValue, DrainWithinCleanupBudget(stdoutTask), DrainWithinCleanupBudget(stderrTask), false, true);
+                // Both pipes share one cleanup budget (and a stop caps it), so the two drains do not add up.
+                var cleanupStart = Stopwatch.GetTimestamp();
+                return (
+                    int.MinValue,
+                    DrainUntil(stdoutTask, PumpDrainTimeoutMs, stopRecord, cleanupStart, out _),
+                    DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, cleanupStart, out _),
+                    false,
+                    true);
             }
 
             timedOut = false;
@@ -1158,7 +1175,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool pumpCompleted;
         try
         {
-            pumpCompleted = WaitBounded(milliseconds => pump.Wait(milliseconds), timeoutMs, stopRecord, process, "pump");
+            pumpCompleted = WaitPumpWithinOutputBudget(pump, process, timeoutMs, outputBudgetMs, stopRecord, out drainTimedOut);
         }
         catch (Exception exception)
         {
@@ -1172,7 +1189,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryKillTree(process, stopRecord, stopToken);
             Trace.WriteLine($"Host-transfer pump failed: {exception}");
             timedOut = false;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), true, true);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), true, true);
+        }
+
+        if (!pumpCompleted && drainTimedOut)
+        {
+            // The child ended on its own, but its output did not reach its end within the output budget (a grandchild holds the pipe). The output
+            // was not read, so the result is a drain timeout, never a silent failure or a plain timeout (Issue #827 review, MEDIUM 1).
+            TryReleaseStdout(process);
+            var drainedPumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
+            timedOut = false;
+            return (process.ExitCode, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, drainedPumpEnded);
         }
 
         if (!pumpCompleted)
@@ -1186,7 +1213,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryReleaseStdout(process);
             var pumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
             timedOut = !stopRecord.Settled;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, pumpEnded);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, pumpEnded);
         }
 
         if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
@@ -1195,7 +1222,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // the bridge's devices any more.
             TryKillTree(process, stopRecord, stopToken);
             timedOut = !stopRecord.Settled;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, true);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, true);
         }
 
         timedOut = false;
@@ -1239,6 +1266,61 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             }
 
             return StopRecord.HasExitedOrGone(process) && waitSlice(PumpDrainTimeoutMs);
+        }
+    }
+
+    /// <summary>
+    /// Waits for the host-transfer pump to reach the end of the child's output (Issue #827 review, MEDIUM 1). While the child is alive, the
+    /// run's budget applies. Once the child has ended, the pump has the output budget (a grandchild may hold the pipe open after the child's
+    /// exit); a stop caps that from the stop, as for the other drains. A pump that is still open when its budget ends is reported through
+    /// <paramref name="drainTimedOut"/>: the child's output was not read.
+    /// </summary>
+    internal static bool WaitPumpWithinOutputBudget(Task pump, Process process, int runTimeoutMs, int outputBudgetMs, StopRecord stop, out bool drainTimedOut)
+    {
+        drainTimedOut = false;
+        var frequency = Stopwatch.Frequency;
+        var start = Stopwatch.GetTimestamp();
+        long? childEnded = null;
+        while (true)
+        {
+            var now = Stopwatch.GetTimestamp();
+            if (childEnded is null && StopRecord.HasExitedOrGone(process))
+            {
+                childEnded = now;
+            }
+
+            long end = start + runTimeoutMs * frequency / 1000;
+            if (childEnded is { } ended)
+            {
+                end = ended + outputBudgetMs * frequency / 1000;
+                if (stop.StoppedAt is { } stoppedAt)
+                {
+                    var cap = Math.Max(ended, stoppedAt) + PumpDrainTimeoutMs * frequency / 1000;
+                    if (cap < end)
+                    {
+                        end = cap;
+                    }
+                }
+
+                if (now >= end)
+                {
+                    drainTimedOut = true;
+                    return false;
+                }
+            }
+            else if (stop.Settled || now >= end)
+            {
+                return false;
+            }
+
+            // The descendants are tracked while the child is alive, and each wait is observed, as in WaitBounded.
+            stop.SampleTree();
+            var remainingMs = (end - now) * 1000.0 / frequency;
+            var pumpEnded = pump.Wait((int)Math.Min(StopRecord.PollMs, Math.Max(1.0, remainingMs)));
+            if (stop.Observe(process, "pump", pumpEnded))
+            {
+                return true;
+            }
         }
     }
 
@@ -1324,15 +1406,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Consumes a redirected stream within a bounded budget for the pump-fault
-    /// path. After the child is killed, a descendant that inherited the pipe
-    /// handle could otherwise keep the stream open past the promised drain
-    /// budget; anything that does not close in time is dropped. Diagnostics only —
-    /// the fault verdict stands and these bytes never enter the result contract.
-    /// </summary>
-    private static string DrainWithinCleanupBudget(Task<string> readTask) => DrainWithin(readTask, PumpDrainTimeoutMs);
-
-    /// <summary>
     /// Consumes a redirected stream within <paramref name="budgetMs"/>. A stop that arrives during the drain caps the rest of it at the
     /// cleanup budget, measured from the stop, so a stop never waits for the full budget (Issue #827). <paramref name="timedOut"/> reports
     /// that the budget ran out before the stream ended; the result is then empty, and the caller reports it.
@@ -1382,21 +1455,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
     }
 
-    /// <summary>Consumes a redirected stream for at most <paramref name="budgetMs"/>; anything not consumed in time is dropped (Issue #827).</summary>
-    private static string DrainWithin(Task<string> readTask, int budgetMs)
-    {
-        try
-        {
-            return readTask.Wait(budgetMs) && readTask.IsCompletedSuccessfully
-                ? readTask.Result
-                : string.Empty;
-        }
-        catch
-        {
-            // A stream read failure on the drain path is likewise diagnostic-only.
-            return string.Empty;
-        }
-    }
 
     /// <summary>
     /// Kills the child's tree on a timeout or a stop path. An exited child is left alone. A kill the OS refuses is never a raw exception

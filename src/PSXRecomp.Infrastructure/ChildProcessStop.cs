@@ -83,8 +83,19 @@ internal sealed class StopRecord : IDisposable
     /// <summary>The OS process id of the child the run targets, or 0 before the child starts.</summary>
     internal int ProcessId { get; private set; }
 
-    /// <summary>The Stopwatch timestamp at which a stop arrived, or null when none has.</summary>
-    internal long? StoppedAt { get; private set; }
+    private long? _stoppedAt;
+
+    /// <summary>The Stopwatch timestamp at which a stop arrived, or null when none has (read under the record's lock).</summary>
+    internal long? StoppedAt
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _stoppedAt;
+            }
+        }
+    }
 
     /// <summary>True once a stop has finished its decision (confirmed, refused, or found the child already gone).</summary>
     public bool Settled => _settled;
@@ -218,7 +229,7 @@ internal sealed class StopRecord : IDisposable
             }
 
             // The instant the stop arrived: the output drains of this run are capped at the cleanup budget counted from here (Issue #827).
-            StoppedAt ??= Stopwatch.GetTimestamp();
+            _stoppedAt ??= Stopwatch.GetTimestamp();
 
             try
             {
