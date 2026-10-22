@@ -680,6 +680,19 @@ internal sealed class StopRecord : IDisposable
     }
 }
 
+/// <summary>The shutdown of a run, apart from its result (Issue #827, round 10).</summary>
+internal enum ShutdownOutcome
+{
+    /// <summary>No stop was processed for the run (the natural end is not checked for residual children).</summary>
+    NotStopped,
+
+    /// <summary>A stop was processed and left no refusal and no residual process.</summary>
+    Clean,
+
+    /// <summary>A stop was processed and left a refusal or a residual process.</summary>
+    Residual,
+}
+
 /// <summary>
 /// What a stop left behind, reported apart from the run's result (Issue #827, decided in review round 10). The result of the run stands on its own;
 /// this record says whether the child's process cleanup was confirmed. A refusal or a residual process is reported here with the process id and

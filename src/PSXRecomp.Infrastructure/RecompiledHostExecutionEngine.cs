@@ -221,10 +221,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal StopDiagnostics? LastStopDiagnostics { get; private set; }
 
     /// <summary>
-    /// Whether the last run's shutdown was clean: no refused stop and no residual process (Issue #827, round 10). It is separate from the run's
-    /// result: a completed run with a residual child is not a clean shutdown, and the caller must not treat the shutdown as a success.
+    /// The shutdown of the last run, separate from its result (Issue #827, round 10). <see cref="ShutdownOutcome.NotStopped"/> means no stop was
+    /// processed for the run: it says nothing about residual children, which the natural end does not check (that is Issue #829).
+    /// <see cref="ShutdownOutcome.Clean"/> means a stop was processed and left no refusal and no residual process.
+    /// <see cref="ShutdownOutcome.Residual"/> means a stop left a refusal or a residual process (see <see cref="LastStopDiagnostics"/>). A residual
+    /// shutdown is not a success, whatever the run's result is.
     /// </summary>
-    public bool ShutdownClean => LastStopDiagnostics?.Clean ?? true;
+    internal ShutdownOutcome ShutdownStatus => LastStopDiagnostics is not { } diagnostics
+        ? ShutdownOutcome.NotStopped
+        : diagnostics.Clean ? ShutdownOutcome.Clean : ShutdownOutcome.Residual;
 
     /// <summary>How many times the last run read a frame from the bridge (Issue #827 review): zero after a stop is the check.</summary>
     internal int FrameCaptureCalls { get; private set; }
@@ -283,42 +288,31 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     public void RequestCancel()
     {
-        // The flag is set under the frame lock. A frame read holds that lock from its check of the flag to the end of the GPU read, so the flag
-        // cannot change between them, and no read starts after the flag is visible (Issue #827, review round 10). The lock covers the flag only.
-        lock (_frameGate)
-        {
-            _cancelRequested = true;
-        }
-
+        // The request flag is set through the frame gate (owner requirement). A read in progress finishes first, and no read starts after
+        // the flag is set. The wait is bounded by one frame read (see FrameReadGate). The stop is then applied on the pool.
+        _frameReads.RequestStop();
         ThreadPool.QueueUserWorkItem(_ => CancelStopSource());
     }
 
-    /// <summary>Set by <see cref="RequestCancel"/> under <see cref="_frameGate"/>, before the stop is applied on the pool.</summary>
-    private bool _cancelRequested;
-
     /// <summary>
-    /// Guards the stop request flag and the frame read together: a frame is read only while the flag is clear, and the flag is set only between
-    /// reads. The GPU/VRAM is read by the run's own thread only (the pump has ended), so the lock never contends with a pump.
+    /// Every read of this engine's GPU/VRAM goes through this gate (the run-end frame and the live VBlank frames). It holds the stop request flag.
     /// </summary>
-    private readonly object _frameGate = new();
+    private readonly FrameReadGate _frameReads = new();
 
     /// <summary>
-    /// Test seam (Issue #827, review round 10): runs inside the frame lock, after the flag check and before the GPU read starts. A test starts
+    /// Test seam (Issue #827, review round 10): runs inside the frame gate, after the flag check and before the GPU read starts. A test starts
     /// a stop from here to show that the stop waits for the read. Null in production.
     /// </summary>
     internal Action? DuringFrameReadForTest { get; set; }
 
-    /// <summary>Whether the flag is set (read under the frame lock). For tests.</summary>
-    internal bool StopRequestFlagForTest
-    {
-        get
-        {
-            lock (_frameGate)
-            {
-                return _cancelRequested;
-            }
-        }
-    }
+    /// <summary>Whether the stop request flag is set. For tests.</summary>
+    internal bool StopRequestFlagForTest => _frameReads.StopRequested;
+
+    /// <summary>
+    /// The reads of this engine's GPU/VRAM so far, and how many had been done when the stop was requested (Issue #827, owner requirement). After a
+    /// stop, the second number must not change: no read runs between the stop and the end of the pump. For tests.
+    /// </summary>
+    internal (int Reads, int ReadsAtStop) FrameReadStats => _frameReads.Stats;
 
     private void CancelStopSource()
     {
@@ -691,6 +685,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest)
     {
         ArgumentNullException.ThrowIfNull(segmentRequest);
+
+        // Each run starts with no frame and no stop diagnostics of the previous run (Issue #827, review round 11).
+        LastFrameBgra32 = null;
+        LastStopDiagnostics = null;
         if (!_loaded)
         {
             throw new InvalidOperationException("RunSegment called before Load.");
@@ -801,6 +799,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
+        // The bridge reads the GPU only through the frame gate, and only while no stop was requested: its live VBlank publisher uses both (Issue
+        // #827, owner requirement). Set before the pump starts, so no VBlank can read without them.
+        if (bridge is not null)
+        {
+            bridge.FrameReads = _frameReads;
+            bridge.StopNow = () => stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null;
+        }
+
         bool timedOut;
         bool drainTimedOut;
         try
@@ -847,19 +853,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         (byte[] Bgra, int Width, int Height)? frame = null;
         if (pumpEnded && bridge is not null)
         {
-            // A frame is read only while no stop was requested. The flag check and the read start are one section under the frame lock
-            // (RequestCancel sets the flag under the same lock), so a stop cannot land between them. The token and the stop record are read too:
-            // they cover a stop that began on another path (Issue #827, review round 10).
-            lock (_frameGate)
-            {
-                var stopRequestedNow = _cancelRequested || stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null;
-                if (!stopRequestedNow)
+            // The run-end frame is read through the frame gate like every other read: only while no stop was requested, with the check and
+            // the read start in one section (Issue #827, owner requirement). The token and the stop record are checked too.
+            _frameReads.TryRead(
+                () => stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null,
+                () =>
                 {
                     DuringFrameReadForTest?.Invoke();
                     FrameCaptureCalls++;
                     frame = bridge.CaptureFrameBgra32();
-                }
-            }
+                });
         }
 
         LastFrameBgra32 = frame;
@@ -974,9 +977,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     {
         GC.SuppressFinalize(this);
 
-        // A run still in progress is stopped rather than left to its timeout. The stop waits for the child's exit (up to
-        // StopRecord.ConfirmTimeout), so it runs on the thread pool: a caller on the UI thread is never blocked (Issue #827).
-        // After a finished run this does nothing.
+        // Same route as RequestCancel (owner requirement): the request flag is set through the frame gate first; the token is cancelled after
+        // it, on the pool. A run still in progress is stopped rather than left to its timeout. The stop waits for the child's exit (up to
+        // StopRecord.ConfirmTimeout), so it runs on the thread pool: a caller on the UI thread is never blocked (Issue #827). After a finished
+        // run this does nothing.
+        _frameReads.RequestStop();
         var source = _stopRequested;
         ThreadPool.QueueUserWorkItem(_ =>
         {
@@ -1651,6 +1656,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         /// </summary>
         public LiveFrameSlot? LiveFrames { get; init; }
 
+        /// <summary>
+        /// The gate every read of this run's GPU/VRAM goes through, and the stop predicate it checks (Issue #827, owner requirement). Set by the
+        /// engine before the pump starts. Without them the live publisher reads nothing (it fails closed).
+        /// </summary>
+        public FrameReadGate? FrameReads { get; set; }
+
+        /// <summary>The stop predicate of the run's gate (see <see cref="FrameReads"/>).</summary>
+        public Func<bool>? StopNow { get; set; }
+
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
         {
@@ -1756,7 +1770,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                     var livePublisher = new LiveFrameVBlankPublisher(
                         liveFrames,
                         () => _devices!.GpuDevice,
-                        exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"));
+                        exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"),
+                        // Every live read goes through the run's gate, which refuses it once a stop was requested (fails closed without one).
+                        action => FrameReads is { } gate && StopNow is { } stopNow && gate.TryRead(stopNow, action));
                     _scheduler.VblankCallback = _ => livePublisher.OnVBlank();
                 }
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
