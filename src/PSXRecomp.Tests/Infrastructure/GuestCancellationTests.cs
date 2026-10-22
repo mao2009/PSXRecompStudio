@@ -274,6 +274,106 @@ public sealed class GuestCancellationTests
         engine.ShutdownStatus.Should().Be(ShutdownOutcome.NotStopped, "no stop was processed; the natural end does not check residual children (Issue #829)");
     }
 
+    /// <summary>
+    /// A shell "artifact" for the real engine path (Linux): it prints a valid snapshot block, starts a grandchild that keeps its stdout open (the
+    /// grandchild is not in the tree once its parent ends), and then runs <paramref name="tail"/>.
+    /// </summary>
+    private static string WriteStdoutHoldingArtifact(TempDirectory dir, string tail)
+    {
+        var path = Path.Combine(dir.FullPath, "holder.sh");
+        var script = "#!/bin/sh\n"
+            + "printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x0\\nhi=0x0\\nlo=0x0\\n'\n"
+            + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i; i=$((i+1)); done\n"
+            + "printf 'RSNAPSHOT_END\\n'\n"
+            + "sh -c 'sleep 60 &'\n"
+            + tail + "\n";
+        File.WriteAllText(path, script);
+#pragma warning disable AARC003 // Test-layer fixture: the shell artifact must be executable to be launched as the prebuilt child
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+#pragma warning restore AARC003
+        return path;
+    }
+
+    private static RecompiledHostExecutionEngine HoldingEngine(string binary)
+    {
+        uint[] words = [.. Li(T0, 0x1234u), Nop];
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+        var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
+            binary,
+            blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
+            imageWords: words,
+            imageLoadAddress: Entry,
+            runTimeout: TimeSpan.FromSeconds(60));
+        engine.OutputBudgetMsForTest = 1_000;
+        return engine;
+    }
+
+    [SkippableFact]
+    public void RealEngine_NaturalEnd_WithAGrandchildHoldingStdout_ShutdownIsResidual_AndTheChildsResultStands()
+    {
+        // Owner spec (round 17), written from the spec: the child ended on its own and printed a valid snapshot, so its result (Completed) stands.
+        // A grandchild keeps stdout open past the drain budget: a residual of the cleanup, with an unidentified holder. No stop was requested, so
+        // the shutdown is not NotStopped. This goes through the real engine's RunSegment, not a test copy of it.
+        Skip.If(OperatingSystem.IsWindows(), "a shell artifact whose grandchild holds stdout is Linux-only; the Windows residual path is covered by the child tests");
+        using var dir = new TempDirectory();
+        using var engine = HoldingEngine(WriteStdoutHoldingArtifact(dir, "exit 0"));
+
+        var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64));
+
+        result.FinalSnapshot.Should().NotBeNull("the child printed its snapshot and ended on its own");
+        result.DiagnosticCode.Should().BeNull("the stalled stdout is a cleanup residual, not the guest's result");
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "the held pipe is a residual, so the shutdown is not clean or NotStopped");
+        engine.LastStopDiagnostics!.Confirmed.Should().BeFalse("no stop was requested");
+        engine.LastStopDiagnostics.Refused.Should().BeNull("no stop was refused");
+        var residual = engine.LastStopDiagnostics.Residuals.Should().ContainSingle().Subject;
+        residual.ProcessId.Should().BeNull("the holder is not identified: no pid is reported");
+        residual.Reason.Should().Contain("holder is unidentified");
+    }
+
+    [SkippableFact]
+    public async Task RealEngine_StopSucceeded_WithAGrandchildHoldingStdout_IsCancelled_AndShutdownIsResidual()
+    {
+        // Owner spec (round 17): a stop that killed the live child and saw its exit has succeeded, so the result is Cancelled, whatever the
+        // cleanup left. The grandchild that holds stdout is a residual with an unidentified holder, so the shutdown is Residual.
+        Skip.If(OperatingSystem.IsWindows(), "a shell artifact whose grandchild holds stdout is Linux-only; the Windows residual path is covered by the child tests");
+        using var dir = new TempDirectory();
+        using var engine = HoldingEngine(WriteStdoutHoldingArtifact(dir, "sleep 30"));
+        using var cts = new CancellationTokenSource();
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64), cancellationToken: cts.Token));
+
+        // The root is alive (it sleeps) and its grandchild holds stdout by then; a second is enough for both.
+        SpinFor(TimeSpan.FromSeconds(1));
+        run.IsCompleted.Should().BeFalse("the artifact must still be running when the stop is sent");
+        cts.Cancel();
+        var result = await run.WaitAsync(StopWait);
+
+        result.State.Should().Be(TitleExecutionState.Cancelled, "the live artifact was killed and its exit was seen");
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.Residual, "the stdout holder is a residual, so the shutdown is not clean");
+        engine.LastStopDiagnostics!.Confirmed.Should().BeTrue("the kill of the live child was confirmed");
+        engine.LastStopDiagnostics.Refused.Should().BeNull("the stop itself was not refused");
+        engine.LastStopDiagnostics.Residuals.Should().Contain(r => r.ProcessId == null && r.Reason.Contains("holder is unidentified"));
+    }
+
+    [Fact]
+    public async Task RealArtifact_StopSucceeded_WithNoResidual_ShutdownIsClean()
+    {
+        // Owner spec (round 17): a stop that killed the live artifact, with nothing left behind, is a clean shutdown on every platform.
+        using var dir = new TempDirectory();
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
+        var artifactName = Path.GetFileNameWithoutExtension(binary);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
+        using var cts = new CancellationTokenSource();
+        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
+        WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+        run.IsCompleted.Should().BeFalse("the artifact must still be running when the stop is sent");
+        cts.Cancel();
+        var result = await run.WaitAsync(StopWait);
+
+        result.State.Should().Be(TitleExecutionState.Cancelled);
+        engine.ShutdownStatus.Should().Be(ShutdownOutcome.Clean, "a stop that left nothing behind is clean");
+        engine.LastStopDiagnostics!.Residuals.Should().BeEmpty();
+    }
+
     /// <summary>An engine whose one segment fails on its own, then records a stop request that arrives after the failure.</summary>
     private sealed class FailingThenStoppedEngine(CancellationTokenSource stop) : IRecompiledExecutionEngine
     {
@@ -426,9 +526,47 @@ public sealed class GuestCancellationTests
                 result.FinalSnapshot!.Gpr[(int)T0].Should().Be(0x1234u, $"attempt {attempt}");
             }
 
-            ProcessNameProbe.IsRunning(artifactName).Should().BeFalse($"attempt {attempt}: no artifact process may outlive its run");
+            // Bounded poll (round 17): the OS may list an exited process a moment longer. A survivor after five seconds is named with its id.
+            var survivors = SurvivingProcesses(artifactName);
+            survivors.Should().BeEmpty($"attempt {attempt}: no artifact process may outlive its run (still running: {string.Join(", ", survivors)})");
         }
     }
+
+    /// <summary>
+    /// The processes still running under an artifact's name, after a bounded poll (up to five seconds, every 100 ms). Each survivor is
+    /// reported with its process id and its name; the list is empty when none is left.
+    /// </summary>
+#pragma warning disable AARC003 // Test-layer process observation for verification (as the other process helpers): the survivors are listed by name and id.
+    private static IReadOnlyList<string> SurvivingProcesses(string artifactName)
+    {
+        var clock = Stopwatch.StartNew();
+        while (ProcessNameProbe.IsRunning(artifactName) && clock.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            SpinFor(TimeSpan.FromMilliseconds(100));
+        }
+
+        var survivors = new List<string>();
+        foreach (var process in Process.GetProcessesByName(artifactName))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        survivors.Add($"pid {process.Id} ({artifactName})");
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // Gone while it was read.
+                }
+            }
+        }
+
+        return survivors;
+    }
+#pragma warning restore AARC003
 
     [Fact]
     public async Task SyntheticFrameRun_StopDuringFrameEmission_EndsCancelled_AndPublishesNoFrameAfterTheRunReturns()
