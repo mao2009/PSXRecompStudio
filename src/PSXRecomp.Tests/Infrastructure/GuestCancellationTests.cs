@@ -37,6 +37,26 @@ public sealed class GuestCancellationTests
     }
 
     /// <summary>
+    /// Builds the spinning guest as a prebuilt artifact whose budget is unbounded. The engine's embedded build bakes its budget
+    /// into the artifact, and a prebuilt run ignores the budget of a later request, so a budget set on the request would not
+    /// reach the child: the guest would end on its own within milliseconds (Issue #820). The budget is therefore set here, at
+    /// build time, with the same codegen calls the engine's embedded build makes.
+    /// </summary>
+    private static string BuildSpinningArtifact(TempDirectory dir, out HashSet<uint> blockEntryPcs)
+    {
+        var program = ReachableProgramBuilder.Build(Entry, SpinningGuest, Entry, []);
+        blockEntryPcs = new HashSet<uint>(program.Blocks.Select(b => b.EntryPc));
+        var dispatch = RecompilerHostCodeGen.Generate(program, loadedCode: null, traceUnits: false, guardStats: false);
+        var image = SpinningGuest.SelectMany(BitConverter.GetBytes).ToArray();
+        var artifact = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, Entry, uint.MaxValue, [], Entry, image, hostBridge: true);
+        artifact.Success.Should().BeTrue(artifact.DiagnosticMessage);
+        var build = new GeneratedHostBuildService().Build(new GeneratedHostBuildRequest(artifact.Source!, dir.FullPath, "recompiled-artifact"));
+        build.Status.Should().Be(GeneratedHostBuildStatus.Succeeded);
+        return build.Artifact!.BinaryPath;
+    }
+
+    /// <summary>
     /// A private copy of the built artifact under a unique name. Every test builds the same artifact, so the process name of a
     /// shared binary would match other tests' children; a unique name makes the child this test launched the only match.
     /// </summary>
@@ -158,21 +178,10 @@ public sealed class GuestCancellationTests
     [Fact]
     public void RealArtifact_StopRequestedBeforeTheRun_LaunchesNoProcess()
     {
-        var program = ReachableProgramBuilder.Build(Entry, SpinningGuest, Entry, []);
         using var dir = new TempDirectory();
-        using (var builder = new RecompiledHostExecutionEngine(
-            program, SpinningGuest, Entry, new GeneratedHostBuildService(), dir.FullPath, embedImage: true))
-        {
-            new ExecutionOrchestrator().Execute(builder, handoff: null, Request(Entry, 64))
-                .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
-        }
-
-        var binary = UniqueArtifactCopy(BuiltBinary(dir), dir);
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
         using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
-            binary,
-            blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
-            imageWords: SpinningGuest,
-            imageLoadAddress: Entry);
+            binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -185,29 +194,26 @@ public sealed class GuestCancellationTests
     [Fact]
     public async Task RealArtifact_StopDuringASpinningGuest_EndsCancelled_AndLeavesNoProcess()
     {
-        var program = ReachableProgramBuilder.Build(Entry, SpinningGuest, Entry, []);
         using var dir = new TempDirectory();
-        using (var builder = new RecompiledHostExecutionEngine(
-            program, SpinningGuest, Entry, new GeneratedHostBuildService(), dir.FullPath, embedImage: true))
-        {
-            new ExecutionOrchestrator().Execute(builder, handoff: null, Request(Entry, 64))
-                .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
-        }
-
-        var binary = UniqueArtifactCopy(BuiltBinary(dir), dir);
+        var binary = UniqueArtifactCopy(BuildSpinningArtifact(dir, out var blockEntryPcs), dir);
         using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
-            binary,
-            blockEntryPcs: new HashSet<uint>(program.Blocks.Select(b => b.EntryPc)),
-            imageWords: SpinningGuest,
-            imageLoadAddress: Entry);
+            binary, blockEntryPcs: blockEntryPcs, imageWords: SpinningGuest, imageLoadAddress: Entry);
         using var cts = new CancellationTokenSource();
 
-        // The budget is effectively unbounded, so only the stop can end this run. The stop is sent only once this test's own
-        // child is seen running, so the kill of a live child is what ends the run.
+        // The artifact's budget is unbounded (see BuildSpinningArtifact), so only the stop can end this run. The stop is sent only
+        // once this test's own child is seen running. If the run ends before that, the run's own result is reported instead.
         var artifactName = Path.GetFileNameWithoutExtension(binary);
         var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, uint.MaxValue), cancellationToken: cts.Token));
-        WaitUntil(() => ProcessNameProbe.IsRunning(artifactName), StopWait);
-        cts.Cancel();
+        try
+        {
+            WaitUntil(() => run.IsCompleted || ProcessNameProbe.IsRunning(artifactName), StopWait);
+            run.IsCompleted.Should().BeFalse("the child must still be running when the stop is sent; the run ended before its child was seen");
+        }
+        finally
+        {
+            // Even when the wait fails, the spinning child must not outlive the test.
+            cts.Cancel();
+        }
 
         var result = await run.WaitAsync(StopWait);
 
