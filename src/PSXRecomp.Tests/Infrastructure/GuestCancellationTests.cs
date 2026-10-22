@@ -615,38 +615,163 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
-    public void OrphanGrandchildHoldingTheOutputPipe_StopReturnsWithinItsBound_AndIsRefused()
+    public void OrphanGrandchildHoldingTheOutputPipe_IsReapedAtTheStopAndRecorded()
     {
+        // The shell starts a sleeper with the output inherited (so it holds the pipe), stays alive for two seconds, and exits. The sleeper
+        // is tracked while the shell is alive. The stop arrives after the shell has ended and while the run waits for the pipe to drain: it
+        // reaps the tracked sleeper through its own handle, which closes the pipe. The one outcome: a recorded leftover, no refusal, no confirmation.
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "orphan");
-        // The shell exits at once and leaves the sleeper running, holding the pipe the stop must drain.
+        var name = Path.GetFileNameWithoutExtension(copy);
         var (fileName, arguments) = OperatingSystem.IsWindows()
-            ? ("cmd.exe", new[] { "/c", "start", "", "/b", copy, "-n", "60", "127.0.0.1" })
-            : ("/bin/sh", new[] { "-c", $"{copy} 60 &" });
+            ? ("cmd.exe", new[] { "/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "&", "ping", "-n", "2", "127.0.0.1", ">nul" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60 & sleep 2" });
         try
         {
             using var cts = new CancellationTokenSource();
             var stopper = Task.Run(() =>
             {
-                WaitUntil(() => ProcessNameProbe.IsRunning(Path.GetFileNameWithoutExtension(copy)), StopWait);
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
 
-                // The shell has exited by then, so the stop reaches no live root: the orphan is outside any tree the stop can kill.
-                SpinFor(TimeSpan.FromSeconds(1));
+                // The shell ends about two seconds after it starts; the stop lands three seconds in, inside the pipe drain.
+                SpinFor(TimeSpan.FromSeconds(3));
                 cts.Cancel();
             });
 
-            var clock = Stopwatch.StartNew();
             var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(fileName, arguments, timeoutMs: 60_000, cts.Token);
-            clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "a pipe held by a grandchild must not hold the stop past its bound");
             stopper.Wait(StopWait);
 
-            // The orphan is either found and reaped (a leftover, on Windows) or it keeps the pipe (a refusal). Either way it is recorded.
-            outcome.Confirmed.Should().BeFalse("a leftover or a held pipe is not a clean stop");
-            (outcome.Leftover ?? outcome.Refused).Should().NotBeNull("the surviving orphan must be recorded, not reported as a clean end");
+            outcome.Leftover.Should().Contain("still running after its owner ended (killed)", "the sleeper is reaped and recorded");
+            outcome.Refused.Should().BeNull("the reaped sleeper released the pipe, so the drain completed");
+            outcome.Confirmed.Should().BeFalse("a leftover is not a clean stop");
+            ProcessNameProbe.IsRunning(name).Should().BeFalse("the sleeper is gone");
         }
         finally
         {
             KillNamed(copy);
+        }
+    }
+
+    [SkippableFact]
+    public void ClaimTimeIdentityMismatch_RefusesTheStop_AndClaimsNothingBelowIt()
+    {
+        // Issue #827 review (2b): the claim-time identity comparison is what is tested. The middle process's start time reads back as a
+        // different value after it was claimed, so its identity cannot be verified: its child (the grandchild) is not claimed, and the stop
+        // is refused with that reason. The seam only changes the value read for the middle; the comparison itself runs as in production.
+        Skip.IfNot(OperatingSystem.IsWindows(), "the middle is a copy of the Windows shell");
+        using var dir = new TempDirectory();
+        var middle = NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "mismatch");
+        var grandchild = NamedCopy(dir, SleepBinary, "mgrand");
+        var middleName = Path.GetFileNameWithoutExtension(middle);
+        var grandName = Path.GetFileNameWithoutExtension(grandchild);
+        var reads = 0;
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+                "cmd.exe",
+                ["/c", middle, "/c", grandchild, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul"],
+                60_000,
+                cts.Token,
+                startTime: process =>
+                {
+                    // The first read of the middle (its claim) is real; every later read names a different start time.
+                    if (process.ProcessName != middleName)
+                    {
+                        return process.StartTime;
+                    }
+
+                    reads++;
+                    return reads == 1 ? process.StartTime : DateTime.MinValue;
+                }));
+
+            WaitUntil(() => ProcessNameProbe.IsRunning(grandName), StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(500));
+            cts.Cancel();
+            var outcome = run.Result;
+
+            outcome.Confirmed.Should().BeFalse("the stop must not be confirmed while a tracked identity is unverifiable");
+            outcome.Refused.Should().Contain("could not be verified, so its children cannot be attributed");
+        }
+        finally
+        {
+            KillNamed(grandchild);
+            KillNamed(middle);
+        }
+    }
+
+    [SkippableFact]
+    public void StartTimeUnreadable_RefusesTheStop_AndConfirmsNothing()
+    {
+        // Issue #827 review (2a): with no start time for the child, no descendant can be attributed to it. The stop must be refused and
+        // must not be confirmed, even though the kill succeeds.
+        Skip.IfNot(OperatingSystem.IsWindows(), "the sleeper fixture is started through the Windows test copy");
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "nostart");
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                copy,
+                SleepArguments,
+                30_000,
+                cts.Token,
+                startTime: _ => null);
+
+            outcome.Confirmed.Should().BeFalse("no descendant can be attributed without the child's start time");
+            outcome.Refused.Should().Contain("start time of child process");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [SkippableFact]
+    public void GrandchildOfAnIntermediateThatEndedFirst_IsTrackedWhileAliveAndReapedAtTheStop()
+    {
+        // Issue #827 review (three levels): root (cmd) -> middle (a copy of cmd) -> grandchild (sleeper). The root stays alive after the middle
+        // ends (its second command). The middle is killed by itself, so the grandchild is orphaned. The grandchild was tracked while the middle
+        // was alive. The stop then finds it through its own handle and records it.
+        Skip.IfNot(OperatingSystem.IsWindows(), "the three-level case depends on parent ids that Linux does not keep for orphans");
+        using var dir = new TempDirectory();
+        var middle = NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "middle");
+        var grandchild = NamedCopy(dir, SleepBinary, "grand");
+        var grandName = Path.GetFileNameWithoutExtension(grandchild);
+        var middleName = Path.GetFileNameWithoutExtension(middle);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+                "cmd.exe",
+                ["/c", middle, "/c", grandchild, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul"],
+                60_000,
+                cts.Token));
+
+            // The grandchild runs under the middle; the tree is sampled for half a second while both are alive.
+            WaitUntil(() => ProcessNameProbe.IsRunning(grandName), StopWait);
+            SpinFor(TimeSpan.FromMilliseconds(500));
+
+            // The middle ends by itself (not its tree). The root is still alive, waiting on its second command.
+            KillOnlyNamed(middle);
+            WaitUntil(() => !ProcessNameProbe.IsRunning(middleName), StopWait);
+            run.IsCompleted.Should().BeFalse("the root is still alive when the stop is sent");
+            ProcessNameProbe.IsRunning(grandName).Should().BeTrue("the grandchild is an orphan, still running");
+
+            cts.Cancel();
+            var outcome = run.Result;
+
+            outcome.Leftover.Should().Contain("still running after its owner ended (killed)", "the orphan is reaped and recorded");
+            outcome.Confirmed.Should().BeFalse();
+            outcome.Refused.Should().BeNull("the reaped orphan released what it held");
+            ProcessNameProbe.IsRunning(grandName).Should().BeFalse("the grandchild is reaped through its own handle");
+        }
+        finally
+        {
+            KillNamed(grandchild);
+            KillNamed(middle);
         }
     }
 
@@ -865,107 +990,6 @@ public sealed class GuestCancellationTests
         }
     }
 
-    /// <summary>
-    /// The shell starts the sleeper detached and then stays alive for about three seconds, so the sleeper is a tracked child of a live root
-    /// (Windows; Linux reparents an orphan to init, which the tracking does not follow: unverified, see the PR).
-    /// </summary>
-    private static string[] DetachedSleeperThenRootStaysAlive(string copy) =>
-        ["/c", "start", "/b", copy, "-n", "60", "127.0.0.1", "1>nul", "&", "ping", "-n", "3", "127.0.0.1", ">nul"];
-
-    [SkippableFact]
-    public void LeftoverDescendant_OfARootThatEndedOnItsOwn_IsReapedAndRecorded()
-    {
-        // Issue #827 review (MEDIUM 3, natural end): the root ends on its own while a child it started is still running. The child was tracked
-        // while the root was alive; at the root's end it is reaped through its own handle and recorded. The run keeps its own exit (0).
-        Skip.IfNot(OperatingSystem.IsWindows(), "a child is found by its parent's id on Windows only; Linux reparents an orphan");
-        using var dir = new TempDirectory();
-        var copy = NamedCopy(dir, SleepBinary, "leftover");
-        var name = Path.GetFileNameWithoutExtension(copy);
-        try
-        {
-            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped("cmd.exe", DetachedSleeperThenRootStaysAlive(copy), 60_000, CancellationToken.None);
-
-            outcome.TimedOut.Should().BeFalse();
-            outcome.Leftover.Should().NotBeNull("a child still running after its root ended must be recorded");
-            outcome.Leftover.Should().Contain("still running after its owner ended (killed)");
-            outcome.Confirmed.Should().BeFalse("no stop was requested");
-            ProcessNameProbe.IsRunning(name).Should().BeFalse("the leftover is reaped at the root's end");
-        }
-        finally
-        {
-            KillNamed(copy);
-        }
-    }
-
-    [SkippableFact]
-    public void LeftoverDescendant_WhoseIdentityChanged_IsNotKilled()
-    {
-        // Issue #827 review (MEDIUM 1): a tracked process is killed only when its identity still holds. The guard stands in for a process id
-        // that has been reused: the tracked process is not killed, and the run records why.
-        Skip.IfNot(OperatingSystem.IsWindows(), "a child is found by its parent's id on Windows only; Linux reparents an orphan");
-        using var dir = new TempDirectory();
-        var copy = NamedCopy(dir, SleepBinary, "identity");
-        var name = Path.GetFileNameWithoutExtension(copy);
-        try
-        {
-            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
-                "cmd.exe",
-                DetachedSleeperThenRootStaysAlive(copy),
-                60_000,
-                CancellationToken.None,
-                reapGuard: _ => false);
-
-            outcome.Leftover.Should().Contain("identity changed, not killed");
-            ProcessNameProbe.IsRunning(name).Should().BeTrue("a process whose identity changed is not killed");
-        }
-        finally
-        {
-            KillNamed(copy);
-        }
-    }
-
-    [SkippableFact]
-    public void GrandchildOfAnIntermediateThatEndedFirst_IsTrackedWhileAliveAndReaped()
-    {
-        // Issue #827 review (three levels): root (cmd) -> middle (a copy of cmd) -> grandchild (sleeper). The middle ends first, while the root
-        // is alive; the grandchild's parent id then names nothing the root can reach. The grandchild was tracked while the middle was alive,
-        // so it is found at the root's end, reaped through its own handle, and recorded.
-        Skip.IfNot(OperatingSystem.IsWindows(), "the three-level case depends on parent ids that Linux does not keep for orphans");
-        using var dir = new TempDirectory();
-#pragma warning disable AARC003 // Test-layer process fixture: the system shell is copied under a unique name (as the other fixtures do)
-        var middle = NamedCopy(dir, Path.Combine(Environment.SystemDirectory, "cmd.exe"), "middle");
-#pragma warning restore AARC003
-        var grandchild = NamedCopy(dir, SleepBinary, "grand");
-        var grandName = Path.GetFileNameWithoutExtension(grandchild);
-        var middleName = Path.GetFileNameWithoutExtension(middle);
-        try
-        {
-            var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
-                "cmd.exe",
-                ["/c", middle, "/c", grandchild, "-n", "60", "127.0.0.1"],
-                60_000,
-                CancellationToken.None));
-
-            // The grandchild runs under the middle; the sampling runs for half a second while both are alive.
-            WaitUntil(() => ProcessNameProbe.IsRunning(grandName), StopWait);
-            SpinFor(TimeSpan.FromMilliseconds(500));
-
-            // The middle ends first, by itself only (not its tree): the grandchild is orphaned and keeps running. The root ends with the
-            // middle, as its only child.
-            KillOnlyNamed(middle);
-            var outcome = run.Result;
-
-            outcome.Leftover.Should().NotBeNull("the grandchild outlived its middle and must be recorded");
-            outcome.Leftover.Should().Contain($"descendant process");
-            outcome.Confirmed.Should().BeFalse();
-            ProcessNameProbe.IsRunning(grandName).Should().BeFalse("the grandchild is reaped through its own handle");
-        }
-        finally
-        {
-            KillNamed(grandchild);
-            KillNamed(middle);
-        }
-    }
 
 #pragma warning restore AARC003
 
