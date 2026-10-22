@@ -309,6 +309,13 @@ public sealed class GuestCancellationTests
         return engine;
     }
 
+    /// <summary>Ends the run at the handoff: the guest exited on its own, so the run is Completed.</summary>
+    private sealed class ExitHandoff : ITitleExecutionHandoff
+    {
+        public TitleExecutionHandoffResult? Decide(RecompilerStateSnapshot segmentState) =>
+            new(TitleExecutionHandoffAction.Exit);
+    }
+
     [SkippableFact]
     public void RealEngine_NaturalEnd_WithAGrandchildHoldingStdout_ShutdownIsResidual_AndTheChildsResultStands()
     {
@@ -319,7 +326,8 @@ public sealed class GuestCancellationTests
         using var dir = new TempDirectory();
         using var engine = HoldingEngine(WriteStdoutHoldingArtifact(dir, "exit 0"));
 
-        var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64));
+        // A snapshot whose termination is Success is a transfer the engine has no code for, so the handoff decides; this one exits.
+        var result = new ExecutionOrchestrator().Execute(engine, handoff: new ExitHandoff(), Request(Entry, 64));
 
         result.FinalSnapshot.Should().NotBeNull("the child printed its snapshot and ended on its own");
         result.DiagnosticCode.Should().BeNull("the stalled stdout is a cleanup residual, not the guest's result");
