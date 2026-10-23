@@ -283,8 +283,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Asks the run to stop (Issue #820). It is idempotent and returns at once: the child process tree is killed on a
-    /// thread-pool thread, so a caller on the UI thread never waits for the process to exit.
+    /// Asks the run to stop (Issue #820). It is idempotent. It waits only for a frame read already in progress, which is bounded to one
+    /// read (see FrameReadGate), and then returns; the child process tree is killed on a thread-pool thread, so a caller on the UI thread
+    /// never waits for the process to exit.
     /// </summary>
     public void RequestCancel()
     {

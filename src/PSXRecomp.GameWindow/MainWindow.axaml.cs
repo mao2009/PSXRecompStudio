@@ -81,7 +81,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Closing the window requests a stop of the run (Issue #820). The window closes once the run has ended, so the artifact
-    /// process is not left running. The request is sent once; the stop returns on its own, and the UI thread never waits for it.
+    /// process is not left running. The request is sent once. The UI thread waits only for a frame read already in progress, which is bounded
+    /// to one read (a few milliseconds, see FrameReadGate); it never waits for the child process to exit.
     /// </summary>
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
