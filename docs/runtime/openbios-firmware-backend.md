@@ -724,7 +724,7 @@ too: the `firmware-run` line reports `aotBiosBlocks` (BIOS blocks in the plan th
   and excused; 104,155 occurrences of low-entropy (mostly `0x00`/`0xFF`) BIOS windows in the packaged output are all excused
   by the baseline; leaks: 0.
 
-**Runtime evidence** (real image, HEAD `…`): the packaging and run plan report `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0.
+**Runtime evidence** (real image, HEAD `07fdad0`): the packaging and run plan report `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0.
 A bounded run with a finite fallback budget ends with `state` = `RuntimeFailure` and `diagnosticCode` =
 `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`. That is a classified stop, not a clean run. Its `fallbackInstructions` = 1,999,999
 (the interpreter executed the BIOS from the reset vector), `nativeInstructions` = 0. The unbounded run reports no fallback
