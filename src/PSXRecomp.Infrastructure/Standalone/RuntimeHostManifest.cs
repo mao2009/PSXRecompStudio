@@ -62,24 +62,17 @@ public sealed record RuntimeHostManifest(
     /// <summary>The provenance of a test or synthetic BIOS-shaped image. It is never a real OpenBIOS build.</summary>
     public const string BiosProvenanceSynthetic = "synthetic";
 
-    /// <summary>The BIOS mode label of a real, user-supplied OpenBIOS ROM running as guest firmware.</summary>
-    public const string BiosModeOpenBiosRom = "openbios-rom";
+    /// <summary>
+    /// The BIOS mode of a firmware run is not decided at packaging time (Issue #B2, MAJOR-1): the run classifies the image it loads
+    /// by SHA-256 (<see cref="BiosProvenance"/>) and reports the label on its <c>firmware-run</c> line.
+    /// </summary>
+    public const string BiosModeClassifiedAtRun = "classified-at-run";
 
-    /// <summary>The BIOS mode label of a synthetic BIOS-shaped image running as guest firmware. Never a real OpenBIOS run.</summary>
-    public const string BiosModeOpenBiosSynthetic = "openbios-synthetic";
-
-    /// <summary>The BIOS mode label of the project's HLE BIOS bridge. Never conflated with the OpenBIOS modes.</summary>
+    /// <summary>The BIOS mode of the project's HLE BIOS bridge. Never a firmware label.</summary>
     public const string BiosModeHle = "hle";
 
-    /// <summary>
-    /// The derived BIOS mode, written into the manifest and the run output so an HLE run, a synthetic firmware run and
-    /// a real-ROM OpenBIOS run are never mistaken for one another. It is derived from <see cref="GuestFirmware"/> and
-    /// <see cref="BiosProvenance"/>. Firmware is labelled <c>openbios-rom</c> only when its provenance is explicitly
-    /// <see cref="BiosProvenanceUserSupplied"/>; any other provenance is labelled <c>openbios-synthetic</c>.
-    /// </summary>
-    public string BiosMode => !GuestFirmware
-        ? BiosModeHle
-        : BiosProvenance == BiosProvenanceUserSupplied ? BiosModeOpenBiosRom : BiosModeOpenBiosSynthetic;
+    /// <summary>The BIOS mode field: HLE for the legacy bridge; for guest firmware, classified at run time.</summary>
+    public string BiosMode => GuestFirmware ? BiosModeClassifiedAtRun : BiosModeHle;
 }
 
 /// <summary>Canonical JSON reading/writing for <see cref="RuntimeHostManifest"/>, with fail-closed validation.</summary>

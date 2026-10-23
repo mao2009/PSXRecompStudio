@@ -138,8 +138,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         File.ReadAllText(Path.Combine(runtime, "firmware", "images.txt")).Should().Be("# no RAM-placed code images\n",
             "the images sidecar is the packaged copy the run rebuilds the plan from");
         File.ReadAllText(Path.Combine(output, RuntimeHostLayout.ReadmeFileName)).Should().Contain("#730");
-        File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)).Should().Contain("\"biosMode\": \"openbios-synthetic\"",
-            "a synthetic BIOS is labelled openbios-synthetic, never openbios-rom or HLE");
+        File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)).Should().Contain("\"biosProvenance\": \"synthetic\"",
+            "the packaging records the declaration; the label is decided at run time");
         AssertNoBiosBytes(output, rom);
         AssertNoAbsoluteDeveloperPaths(output);
 
@@ -430,8 +430,9 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 #pragma warning restore AARC003
         var report = JsonDocument.Parse(line!).RootElement;
         report.GetProperty("bios").GetString().Should().Be("openbios");
-        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
-        report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run verified the user's ROM by digest");
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-unverified",
+            "the local build is not in the verified allowlist: it runs, but it is not a verified OpenBIOS run");
+        report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run reports the digest of the image it loaded");
         report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "no BIOS code is translated, and the timed-out run reached no native block (Issue #B2)");
         report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)");
         report.GetProperty("aotLoadedBlocks").GetInt32().Should().Be(0, "this gate loads no RAM-placed code image");
@@ -568,9 +569,13 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
 #pragma warning disable AARC003 // Test-layer evidence: the bounded run's line is echoed for the run log
         Console.WriteLine("b2-real-openbios-bounded-evidence " + line);
+        foreach (var hostLine in stderr.Split('\n').Where(static l => l.StartsWith("runtime host:", StringComparison.Ordinal)))
+        {
+            Console.WriteLine("b2-real-openbios-bounded-stop " + hostLine.TrimEnd());
+        }
 #pragma warning restore AARC003
         var report = JsonDocument.Parse(line!).RootElement;
-        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-unverified", "the local build is not a verified OpenBIOS run");
         report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "no BIOS block was ahead-of-time translated");
         report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "the interpreted BIOS runs no native block");
         report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0,
@@ -593,16 +598,16 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 #pragma warning disable AARC003 // Test-layer inspection of the generated runtime manifest
         var manifest = File.ReadAllText(Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName, RuntimeHostLayout.ManifestFileName));
 #pragma warning restore AARC003
-        manifest.Should().Contain("\"biosMode\": \"openbios-synthetic\"");
+        manifest.Should().Contain("\"biosProvenance\": \"synthetic\"", "the default declaration is the conservative one");
         manifest.Should().NotContain("openbios-rom");
     }
 
     /// <summary>
-    /// Issue #B2 (LOW-1): an image declared user-supplied is labelled openbios-rom, and the run reports the digest of the image
-    /// it actually loaded. The image here is BIOS-shaped, so the digest is the check that the label and the content correspond.
+    /// Issue #B2 (MAJOR-1): a stub declared user-supplied is never labelled openbios-rom. The run classifies it by its digest,
+    /// the registered stub digest gives openbios-synthetic, and the declaration mismatch is reported as a warning.
     /// </summary>
     [SkippableFact]
-    public void UserSuppliedLabel_OnAnImage_ReportsThatImagesOwnDigest()
+    public void UserSuppliedDeclaration_OnARegisteredStub_IsNeverVerified_AndWarns()
     {
         RuntimeHostPublishE2E.RequireGcc();
         var bios = BiosShapedImage();
@@ -633,7 +638,9 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var line = stderr.Split('\n').FirstOrDefault(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal));
         line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
         var report = JsonDocument.Parse(line!).RootElement;
-        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom", "declared user-supplied");
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic", "the stub is classified by its own digest");
+        report.GetProperty("declaredProvenance").GetString().Should().Be("user-supplied");
+        stderr.Should().Contain("warning: the image was declared 'user-supplied'", "the declaration is not confirmed by the run");
         report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(bios), "the run reports the digest of the image it loaded");
     }
 }

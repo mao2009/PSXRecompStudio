@@ -5,8 +5,8 @@ using Xunit;
 namespace PSXRecomp.Tests.Infrastructure;
 
 /// <summary>
-/// Issue #B2: an HLE run, a synthetic firmware run and a real-ROM OpenBIOS run are separate, labelled modes in the
-/// runtime manifest. <c>openbios-rom</c> is only ever written for a user-supplied BIOS.
+/// Issue #B2 (MAJOR-1): the packaging-time declaration does not label a firmware run. The manifest carries the declaration and
+/// reports the BIOS mode as classified at run time; HLE stays HLE.
 /// </summary>
 [Test]
 public sealed class BiosModeLabelTests
@@ -16,36 +16,30 @@ public sealed class BiosModeLabelTests
         0x80010000u, string.Empty, [0x80010000u], 0x80010010u, 2, 1000, 0x80010000u, provenance);
 
     [Fact]
-    public void UserSuppliedFirmwareManifest_IsLabelledOpenBiosRom_AndNotHle()
+    public void FirmwareManifest_IsClassifiedAtRun_WhateverWasDeclared()
     {
-        var manifest = Manifest(guestFirmware: true, RuntimeHostManifest.BiosProvenanceUserSupplied);
-        manifest.BiosMode.Should().Be("openbios-rom");
-        RuntimeHostManifestJson.Serialize(manifest).Should().Contain("\"biosMode\": \"openbios-rom\"");
+        foreach (var declared in new[] { RuntimeHostManifest.BiosProvenanceUserSupplied, RuntimeHostManifest.BiosProvenanceSynthetic, null })
+        {
+            Manifest(guestFirmware: true, declared).BiosMode.Should().Be(RuntimeHostManifest.BiosModeClassifiedAtRun);
+        }
     }
 
     [Fact]
-    public void SyntheticFirmwareManifest_IsLabelledOpenBiosSynthetic_NeverOpenBiosRom()
+    public void FirmwareManifest_RecordsTheDeclarationForComparisonOnly()
     {
-        var manifest = Manifest(guestFirmware: true, RuntimeHostManifest.BiosProvenanceSynthetic);
-        manifest.BiosMode.Should().Be("openbios-synthetic");
-        RuntimeHostManifestJson.Serialize(manifest).Should().Contain("\"biosMode\": \"openbios-synthetic\"")
-            .And.NotContain("openbios-rom");
+        var text = RuntimeHostManifestJson.Serialize(Manifest(guestFirmware: true, RuntimeHostManifest.BiosProvenanceUserSupplied));
+
+        text.Should().Contain("\"biosProvenance\": \"user-supplied\"");
+        text.Should().NotContain("openbios-rom", "the packaging never writes a verified label");
     }
 
     [Fact]
-    public void FirmwareManifestWithoutProvenance_IsNeverLabelledOpenBiosRom()
-    {
-        Manifest(guestFirmware: true).BiosMode.Should().Be("openbios-synthetic",
-            "only an explicitly user-supplied image may claim the real-ROM label");
-    }
-
-    [Fact]
-    public void HleManifest_IsLabelledHle_AndNeverOpenBios()
+    public void HleManifest_IsHle_AndNeverAFirmwareLabel()
     {
         var manifest = Manifest(guestFirmware: false);
-        manifest.BiosMode.Should().Be("hle");
-        RuntimeHostManifestJson.Serialize(manifest).Should().Contain("\"biosMode\": \"hle\"")
-            .And.NotContain("openbios");
+
+        manifest.BiosMode.Should().Be(RuntimeHostManifest.BiosModeHle);
+        RuntimeHostManifestJson.Serialize(manifest).Should().Contain("\"biosMode\": \"hle\"");
     }
 
     [Fact]

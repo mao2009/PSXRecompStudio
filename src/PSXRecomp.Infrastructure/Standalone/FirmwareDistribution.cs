@@ -45,13 +45,13 @@ public sealed record FirmwareAotPlan(
         // images it names) is translated, exactly as before.
         _ = LoadImageManifest.ReadRootsFile(rootsFile);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
-        BiosAddressGuard.RequireNoBiosImage(manifest);
+        BiosGuardWiring.Run(BiosGuardWiring.Manifest, () => BiosAddressGuard.RequireNoBiosImage(manifest, firmware));
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
         var program = new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>());
-        BiosAddressGuard.RequireNoBiosCode(program, loaded);
+        BiosGuardWiring.Run(BiosGuardWiring.Plan, () => BiosAddressGuard.RequireNoBiosCode(program, loaded));
         return new FirmwareAotPlan(program, loaded, observed);
     }
 }
@@ -394,7 +394,7 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
             }
 
-            BiosAddressGuard.RequireNoBiosCode(plan.Program, plan.LoadedCode);
+            BiosGuardWiring.Run(BiosGuardWiring.Dispatch, () => BiosAddressGuard.RequireNoBiosCode(plan.Program, plan.LoadedCode));
             var source = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
                 OpenBiosFirmware.ResetVector, [], hostBridge: true,
@@ -404,7 +404,7 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
             }
 
-            BiosAddressGuard.RequireNoBiosSource(source.Source!);
+            BiosGuardWiring.Run(BiosGuardWiring.Source, () => BiosAddressGuard.RequireNoBiosSource(source.Source!));
 
             // The ROM + RAM-image dispatch is large; the build gets the request's per-step toolchain timeout
             // (--build-timeout-seconds), or the same bounded three minutes the probe uses by default.
@@ -614,6 +614,12 @@ public static class FirmwareRuntimeLauncher
             }
 
             var (rom, romSha256) = OpenBiosRomInput.Read(biosPath);
+            var biosClassification = BiosProvenance.Classify(romSha256);
+            var declarationWarning = BiosProvenance.DeclarationWarning(host.BiosProvenance, biosClassification);
+            if (declarationWarning is not null)
+            {
+                error.WriteLine(declarationWarning);
+            }
             var firmware = OpenBiosFirmware.FromBytes(rom);
             var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
@@ -722,7 +728,8 @@ public static class FirmwareRuntimeLauncher
             {
                 kind = "firmware-run",
                 bios = boot.BiosBackend,
-                biosMode = host.BiosMode,
+                biosMode = biosClassification,
+                declaredProvenance = host.BiosProvenance,
                 romSha256,
                 // The generation-stage audit (Issue #B2): no BIOS block is translated; loaded RAM blocks are the game's code.
                 aotBiosBlocks = BiosAddressGuard.BiosBlockCount(plan.Program),

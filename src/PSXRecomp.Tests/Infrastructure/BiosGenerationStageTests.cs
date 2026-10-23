@@ -75,7 +75,7 @@ public sealed class BiosGenerationStageTests : IDisposable
             [new LoadedImageSpec("injected", OpenBiosFirmware.ResetVector, BiosWords(4, seed: 1), [], "exe-file")],
             new HashSet<uint>());
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(injected)))
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(injected, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]))))
             .Should().Throw<InvalidDataException>().WithMessage("*loads into the BIOS range*");
     }
 

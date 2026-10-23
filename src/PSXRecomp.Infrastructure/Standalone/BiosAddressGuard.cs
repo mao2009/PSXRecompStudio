@@ -1,9 +1,57 @@
+using System.Buffers.Binary;
+using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Infrastructure.Standalone;
+
+/// <summary>
+/// The wiring of the generation-stage guards. Production never disables a stage. A mutation test disables one stage in its own
+/// async flow (<see cref="DisableStages"/>) to prove that the stage is load-bearing (Issue #B2, MEDIUM-2).
+/// </summary>
+[Infrastructure]
+public static class BiosGuardWiring
+{
+    /// <summary>The stage names: <c>manifest</c>, <c>plan</c>, <c>dispatch</c>, <c>source</c>.</summary>
+    public const string Manifest = "manifest";
+
+    /// <summary>The plan stage (<see cref="BiosAddressGuard.RequireNoBiosCode"/> on the firmware plan).</summary>
+    public const string Plan = "plan";
+
+    /// <summary>The dispatch stage (the program and loaded blocks the artifact is generated from).</summary>
+    public const string Dispatch = "dispatch";
+
+    /// <summary>The generated-source stage (the generated C).</summary>
+    public const string Source = "source";
+
+    private static readonly AsyncLocal<ImmutableHashSet<string>> Disabled = new();
+
+    /// <summary>Runs <paramref name="check"/> unless <paramref name="stage"/> is disabled in the current async flow.</summary>
+    public static void Run(string stage, Action check)
+    {
+        ArgumentNullException.ThrowIfNull(check);
+        if (!(Disabled.Value?.Contains(stage) ?? false))
+        {
+            check();
+        }
+    }
+
+    /// <summary>Disables the named stages in the current async flow until the returned scope is disposed. Tests only.</summary>
+    public static IDisposable DisableStages(params string[] stages)
+    {
+        var previous = Disabled.Value;
+        Disabled.Value = (previous ?? ImmutableHashSet<string>.Empty).Union(stages);
+        return new Restore(previous);
+    }
+
+    private sealed class Restore(ImmutableHashSet<string>? previous) : IDisposable
+    {
+        public void Dispose() => Disabled.Value = previous;
+    }
+}
 
 /// <summary>
 /// The BIOS is never an input of ahead-of-time code generation (owner ruling, Issue #B2, option 3). This guard is the
@@ -47,13 +95,23 @@ public static class BiosAddressGuard
         return physical < PhysicalEnd && physical + length > PhysicalBase;
     }
 
+    /// <summary>The image kinds whose bytes come from the disc or from a named PS-X EXE file (the source is recorded per image).</summary>
+    public static IReadOnlySet<string> AllowedAotSourceKinds { get; } =
+        new HashSet<string>(StringComparer.Ordinal) { "boot-exe", "disc-exe", "exe-file" };
+
+    /// <summary>A copy of BIOS code is recognised by a run of this many words that the BIOS holds too (256 bytes).</summary>
+    public const int CopyWindowWords = 64;
+
     /// <summary>
-    /// The manifest stage: a <c>rom</c> image copies BIOS bytes into RAM to be translated, which is BIOS-derived code, so it is
-    /// refused; any other image whose range overlaps the BIOS is refused as well.
+    /// The manifest stage (Issue #B2, MEDIUM-3): an AOT input must come from an allowed source kind, a <c>rom</c> image (BIOS bytes
+    /// copied to RAM to be translated) is refused, an image overlapping the BIOS range is refused, and an image holding a copy of a
+    /// BIOS run of <see cref="CopyWindowWords"/> words is refused. A shorter overlap is not a copy and is allowed: disc code that
+    /// happens to share bytes with the BIOS is not evidence of its origin.
     /// </summary>
-    public static void RequireNoBiosImage(LoadImageManifest manifest)
+    public static void RequireNoBiosImage(LoadImageManifest manifest, OpenBiosFirmware firmware)
     {
         ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(firmware);
         foreach (var image in manifest.Images)
         {
             if (image.Kind == "rom-image")
@@ -63,11 +121,80 @@ public static class BiosAddressGuard
                     "Such code runs in the interpreter fallback instead.");
             }
 
+            if (!AllowedAotSourceKinds.Contains(image.Kind))
+            {
+                throw new InvalidDataException(
+                    $"image '{image.Name}' has the source kind '{image.Kind}', which is not an allowed AOT source (Issue #B2).");
+            }
+
             if (OverlapsBios(image.LoadAddress, (ulong)image.Words.Length * 4))
             {
                 throw new InvalidDataException($"image '{image.Name}' loads into the BIOS range; no code there is translated (Issue #B2).");
             }
+
+            if (ContainsBiosCopy(image.Words, firmware))
+            {
+                throw new InvalidDataException(
+                    $"image '{image.Name}' holds a copy of BIOS code ({CopyWindowWords} words or more); BIOS-derived code is never translated (Issue #B2).");
+            }
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="words"/> holds a run of <see cref="CopyWindowWords"/> words that the BIOS holds at some offset. Uniform
+    /// runs (padding such as all-zero words) are not evidence and are skipped.
+    /// </summary>
+    public static bool ContainsBiosCopy(IReadOnlyList<uint> words, OpenBiosFirmware firmware)
+    {
+        ArgumentNullException.ThrowIfNull(words);
+        ArgumentNullException.ThrowIfNull(firmware);
+        if (words.Count < CopyWindowWords || firmware.Words.Count < CopyWindowWords)
+        {
+            return false;
+        }
+
+        var biosKeys = new HashSet<ulong>();
+        for (var j = 0; j + CopyWindowWords <= firmware.Words.Count; j++)
+        {
+            if (!IsUniform(firmware.Words, j))
+            {
+                biosKeys.Add(WindowKey(firmware.Words, j));
+            }
+        }
+
+        for (var i = 0; i + CopyWindowWords <= words.Count; i++)
+        {
+            if (!IsUniform(words, i) && biosKeys.Contains(WindowKey(words, i)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsUniform(IReadOnlyList<uint> words, int start)
+    {
+        for (var k = 1; k < CopyWindowWords; k++)
+        {
+            if (words[start + k] != words[start])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static ulong WindowKey(IReadOnlyList<uint> words, int start)
+    {
+        var bytes = new byte[CopyWindowWords * 4];
+        for (var k = 0; k < CopyWindowWords; k++)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(k * 4), words[start + k]);
+        }
+
+        return BinaryPrimitives.ReadUInt64LittleEndian(SHA256.HashData(bytes));
     }
 
     /// <summary>The plan and dispatch stage: no static or loaded block may start inside the BIOS range.</summary>
