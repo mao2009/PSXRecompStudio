@@ -733,7 +733,7 @@ packaging-time declaration (`--bios-provenance`) is recorded for comparison only
 - An unregistered image is never classified synthetic automatically. A declaration that the run does not confirm produces a
   `runtime host: warning:` line.
 
-**Run evidence (real image, HEAD `…`, `openbios-unverified` as classified):**
+**Run evidence (real image, HEAD `989afce`, classified `openbios-unverified`):**
 
 - Generation stage: `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0 on the `firmware-run` line.
 - Unbounded run: `RuntimeFailure` with `ARTIFACT_TIMEOUT` at the 300-second bound. The fallback count is null: the interpreter's single
