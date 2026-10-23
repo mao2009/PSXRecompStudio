@@ -8,24 +8,25 @@ namespace PSXRecomp.Tests.Infrastructure;
 /// byte arrays, so the same checks run in CI on synthetic inputs and on a real BIOS when the user supplies one.
 /// </summary>
 /// <remarks>
-/// The BIOS check has zero tolerance. A BIOS 16-byte window is a leak when it occurs in a candidate file, unless the
-/// identical window also occurs in a <em>baseline</em>: material that is not the BIOS (a synthetic run's output, the
-/// game disc). No window is excluded for looking like text or padding, because either kind also appears in ordinary
-/// binaries and proves nothing either way; only a baseline may excuse one.
+/// The BIOS check has zero tolerance. Every 8-byte window of the BIOS (at every byte offset) is a leak when it occurs in a
+/// candidate file, unless the identical window also occurs in a <em>baseline</em>: material that is not the BIOS (a
+/// synthetic run's output, the game disc). Nothing is excused for looking like text or padding. An 8-byte window catches
+/// any BIOS fragment of 8 bytes or more; a shorter fragment cannot be matched by a window of this length.
 /// </remarks>
 [Test]
 internal static class DistributionLeakScanner
 {
-    /// <summary>The window length the BIOS is matched by (a 16-byte window at every byte offset).</summary>
-    public const int WindowLength = 16;
+    /// <summary>The BIOS window length: 8 bytes, at every byte offset. A fragment of 8 bytes or more contains one.</summary>
+    public const int WindowLength = 8;
 
     /// <summary>
-    /// A developer or user absolute path: a drive-letter path with at least one directory (<c>C:\Prog\winlibs</c>,
-    /// <c>D:/src/</c>), or a Unix home, mount or users path. The drive letter may not follow a letter or digit, so
-    /// URLs such as <c>https://x</c> do not match.
+    /// A developer or user absolute path, in Windows (<c>C:\Prog\winlibs</c>, <c>D:/src/</c>), MSYS (<c>/c/Users/</c>) or Unix
+    /// (<c>/home/</c>, <c>/mnt/</c>, <c>/Users/</c>) form. A drive or MSYS letter may not follow a letter or digit, so URLs such
+    /// as <c>https://x</c> do not match.
     /// </summary>
     private static readonly Regex AbsolutePath = new(
         @"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[A-Za-z0-9_.\- ]+[\\/])+" +
+        @"|(?<![A-Za-z0-9_.\-])/[A-Za-z]/(?:[A-Za-z0-9_.\- ]+/)+" +
         @"|(?<![A-Za-z0-9_.\-])/(?:home|mnt|Users|users)/[A-Za-z0-9_.\-]",
         RegexOptions.CultureInvariant);
 
@@ -36,17 +37,34 @@ internal static class DistributionLeakScanner
     /// </summary>
     private const string SdkApphostBuildRoot = @"D:\a\_work\1\s\";
 
-    /// <summary>The first file that names an absolute developer path, or null.</summary>
+    /// <summary>
+    /// The text a file may hold under each encoding a path can appear in: Latin-1 (byte-per-character, every offset), and
+    /// UTF-16LE (a wide string at an even and at an odd offset). A Windows toolchain writes its paths in UTF-16 in some places.
+    /// </summary>
+    private static IEnumerable<string> TextViews(byte[] bytes)
+    {
+        yield return Encoding.Latin1.GetString(bytes);
+        yield return Encoding.Unicode.GetString(bytes, 0, bytes.Length - (bytes.Length % 2));
+        if (bytes.Length > 1)
+        {
+            yield return Encoding.Unicode.GetString(bytes, 1, bytes.Length - 1 - ((bytes.Length - 1) % 2));
+        }
+    }
+
+    /// <summary>The first file that names an absolute developer path under any text view, or null.</summary>
     public static string? FindAbsolutePath(IEnumerable<(string Name, byte[] Bytes)> files)
     {
         ArgumentNullException.ThrowIfNull(files);
         foreach (var (name, bytes) in files)
         {
-            foreach (Match match in AbsolutePath.Matches(Encoding.Latin1.GetString(bytes)))
+            foreach (var text in TextViews(bytes))
             {
-                if (!match.Value.StartsWith(SdkApphostBuildRoot, StringComparison.OrdinalIgnoreCase))
+                foreach (Match match in AbsolutePath.Matches(text))
                 {
-                    return $"{name} names an absolute developer path: '{match.Value}'";
+                    if (!match.Value.StartsWith(SdkApphostBuildRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return $"{name} names an absolute developer path: '{match.Value}'";
+                    }
                 }
             }
         }
@@ -55,10 +73,10 @@ internal static class DistributionLeakScanner
     }
 
     /// <summary>Every BIOS window, keyed by its contents, mapped to the first offset it occurs at.</summary>
-    public static Dictionary<(ulong, ulong), int> BiosWindows(byte[] bios)
+    public static Dictionary<ulong, int> BiosWindows(byte[] bios)
     {
         ArgumentNullException.ThrowIfNull(bios);
-        var windows = new Dictionary<(ulong, ulong), int>();
+        var windows = new Dictionary<ulong, int>();
         for (var i = 0; i + WindowLength <= bios.Length; i++)
         {
             windows.TryAdd(KeyAt(bios, i), i);
@@ -68,19 +86,23 @@ internal static class DistributionLeakScanner
     }
 
     /// <summary>
-    /// The first candidate file holding a BIOS window that the baseline does not also hold, or null. The message names the
-    /// file, its offset, the BIOS offset and the window's bytes.
+    /// The outcome of a BIOS window scan. <see cref="ExcusedByBaseline"/> counts the distinct BIOS windows that a non-BIOS
+    /// baseline also holds: the coincidental matches the baseline absorbs. <see cref="Leaks"/> counts candidate occurrences of
+    /// a BIOS window that the baseline does not hold; any of them fails the check.
     /// </summary>
-    public static string? FindBiosLeak(
+    public sealed record BiosScanReport(int BiosWindows, int ExcusedByBaseline, int Leaks, string? FirstLeak);
+
+    /// <summary>Scans the candidates for BIOS windows that the baseline does not also hold.</summary>
+    public static BiosScanReport Scan(
         IEnumerable<(string Name, byte[] Bytes)> candidates,
-        IReadOnlyDictionary<(ulong, ulong), int> biosWindows,
+        IReadOnlyDictionary<ulong, int> biosWindows,
         IEnumerable<(string Name, byte[] Bytes)> baseline)
     {
         ArgumentNullException.ThrowIfNull(candidates);
         ArgumentNullException.ThrowIfNull(biosWindows);
         ArgumentNullException.ThrowIfNull(baseline);
 
-        var excused = new HashSet<(ulong, ulong)>();
+        var excused = new HashSet<ulong>();
         foreach (var (_, bytes) in baseline)
         {
             for (var i = 0; i + WindowLength <= bytes.Length; i++)
@@ -90,6 +112,8 @@ internal static class DistributionLeakScanner
             }
         }
 
+        var leaks = 0;
+        string? first = null;
         foreach (var (name, bytes) in candidates)
         {
             for (var i = 0; i + WindowLength <= bytes.Length; i++)
@@ -97,15 +121,22 @@ internal static class DistributionLeakScanner
                 var key = KeyAt(bytes, i);
                 if (biosWindows.TryGetValue(key, out var biosOffset) && !excused.Contains(key))
                 {
-                    return $"{name} contains a 16-byte window of the BIOS: file offset 0x{i:X}, BIOS offset 0x{biosOffset:X}, " +
-                           $"bytes {Convert.ToHexString(bytes, i, WindowLength)}";
+                    leaks++;
+                    first ??= $"{name} contains an {WindowLength}-byte window of the BIOS: file offset 0x{i:X}, " +
+                              $"BIOS offset 0x{biosOffset:X}, bytes {Convert.ToHexString(bytes, i, WindowLength)}";
                 }
             }
         }
 
-        return null;
+        return new BiosScanReport(biosWindows.Count, excused.Count, leaks, first);
     }
 
-    private static (ulong, ulong) KeyAt(byte[] bytes, int offset) =>
-        (BitConverter.ToUInt64(bytes, offset), BitConverter.ToUInt64(bytes, offset + 8));
+    /// <summary>The first leak, or null: the check that fails a distribution.</summary>
+    public static string? FindBiosLeak(
+        IEnumerable<(string Name, byte[] Bytes)> candidates,
+        IReadOnlyDictionary<ulong, int> biosWindows,
+        IEnumerable<(string Name, byte[] Bytes)> baseline) =>
+        Scan(candidates, biosWindows, baseline).FirstLeak;
+
+    private static ulong KeyAt(byte[] bytes, int offset) => BitConverter.ToUInt64(bytes, offset);
 }

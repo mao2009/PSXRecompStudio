@@ -121,4 +121,59 @@ public sealed class DistributionLeakScannerTests
         DistributionLeakScanner.FindAbsolutePath([("runtime/host.exe", Latin1(@"C:\Prog\winlibs_staging_ucrt\bin"))])
             .Should().NotBeNull("the MinGW toolchain path is never exempt");
     }
+
+    [Fact]
+    public void TwelveByteFragment_IsDetected_BelowTheOldSixteenByteWindow()
+    {
+        var bios = Bios(4096, seed: 4);
+        var file = Bios(1024, seed: 5);
+        Array.Copy(bios, 0x800, file, 0x100, 12);
+
+        DistributionLeakScanner.FindBiosLeak([("game.exe", file)], DistributionLeakScanner.BiosWindows(bios), [])
+            .Should().NotBeNull("a 12-byte BIOS fragment contains 8-byte windows and must fail the check");
+    }
+
+    [Fact]
+    public void AccidentalMatches_AreCountedAndAbsorbedOnlyByTheBaseline()
+    {
+        // 64 random bytes have 57 windows of 8 bytes; the baseline holds the first 16 bytes, which are the windows at 0..8.
+        var bios = Bios(64, seed: 6);
+        var baseline = bios.AsSpan(0, 16).ToArray();
+        var file = bios.AsSpan(0, 64).ToArray();
+
+        var report = DistributionLeakScanner.Scan(
+            [("game.exe", file)], DistributionLeakScanner.BiosWindows(bios), [("synthetic/game.exe", baseline)]);
+
+        report.BiosWindows.Should().Be(57);
+        report.ExcusedByBaseline.Should().Be(9, "the baseline absorbs exactly the windows it holds");
+        report.Leaks.Should().Be(48, "every BIOS window the baseline does not hold is a leak in this file");
+    }
+
+    [Theory]
+    [InlineData("C:\\Prog\\winlibs_staging_ucrt\\bin", 0)]
+    [InlineData("C:\\Prog\\winlibs_staging_ucrt\\bin", 1)]
+    [InlineData("C:\\Prog\\winlibs_staging_ucrt\\bin", 2)]
+    public void Utf16LeToolchainPath_IsFlagged_AtEitherByteAlignment(string path, int prefixBytes)
+    {
+        var file = new byte[prefixBytes].Concat(Encoding.Unicode.GetBytes(path)).ToArray();
+
+        DistributionLeakScanner.FindAbsolutePath([("game.exe", file)]).Should().NotBeNull("a UTF-16LE path is still a path");
+    }
+
+    [Theory]
+    [InlineData("/c/Users/Hobart/AppData/Local/Temp")]
+    [InlineData("/d/src/PSXRecompStudio/out")]
+    public void MsysAbsolutePath_IsFlagged(string path)
+    {
+        DistributionLeakScanner.FindAbsolutePath([("game.exe", Latin1(path))]).Should().NotBeNull(path);
+    }
+
+    [Theory]
+    [InlineData("ab/c/")]
+    [InlineData("http://example.com/c/d/")]
+    [InlineData("x/c/")]
+    public void MsysLookalike_IsNotFlagged(string text)
+    {
+        DistributionLeakScanner.FindAbsolutePath([("game.exe", Latin1(text))]).Should().BeNull(text);
+    }
 }

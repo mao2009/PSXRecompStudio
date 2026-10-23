@@ -343,9 +343,15 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     /// Zero tolerance (Issue #B2, MEDIUM-1): no 16-byte window of the BIOS appears in the distribution unless the same window
     /// appears in <paramref name="baseline"/>, material that is not the BIOS (a synthetic run's output, the game disc).
     /// </summary>
-    private static void AssertNoBiosWindows(string root, byte[] rom, IEnumerable<(string Name, byte[] Bytes)> baseline) =>
-        DistributionLeakScanner.FindBiosLeak(ReadTree(root), DistributionLeakScanner.BiosWindows(rom), baseline).Should().BeNull(
-            "no 16-byte window of the BIOS may appear in the distribution");
+    private static void AssertNoBiosWindows(string root, byte[] rom, IEnumerable<(string Name, byte[] Bytes)> baseline)
+    {
+        var report = DistributionLeakScanner.Scan(ReadTree(root), DistributionLeakScanner.BiosWindows(rom), baseline);
+#pragma warning disable AARC003 // Test-layer evidence: the window-scan counts are echoed for the run log
+        Console.WriteLine($"b2-bios-window-scan windowLength={DistributionLeakScanner.WindowLength} biosWindows={report.BiosWindows} " +
+                          $"excusedByBaseline={report.ExcusedByBaseline} leaks={report.Leaks}");
+#pragma warning restore AARC003
+        report.FirstLeak.Should().BeNull("no 8-byte window of the BIOS may appear in the distribution unless the baseline holds it");
+    }
 
     /// <summary>
     /// Issue #B2: the same packaged path with a REAL OpenBIOS image the user supplies by path at run time. The ROM is
@@ -483,22 +489,30 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         AssertNoAbsoluteDeveloperPaths(output);
         AssertNoBiosBytes(output, bios);
         AssertNoBiosWindows(output, bios, Array.Empty<(string Name, byte[] Bytes)>());
+        var clean = DistributionLeakScanner.Scan(files, DistributionLeakScanner.BiosWindows(bios), Array.Empty<(string Name, byte[] Bytes)>());
+        clean.Leaks.Should().Be(0, "a clean package holds no BIOS window; coincidental matches are counted, not excused");
 #pragma warning disable AARC003 // Test-layer inspection: the Runtime host ships no PDB, so no build path rides along in one
         Directory.EnumerateFiles(output, "*.pdb", SearchOption.AllDirectories).Should().BeEmpty("the Runtime host is published with DebugType=none");
 #pragma warning restore AARC003
 
-        // Plant 64 bytes of the BIOS into a copy of the game executable: the check must fail on it.
+        // Plant a 12-byte BIOS fragment into a copy of the game executable: the check must fail on it.
         var artifactName = "game" + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ".exe" : "");
         var planted = files.Select(f =>
         {
             if (f.Name != artifactName) return f;
             var copy = (byte[])f.Bytes.Clone();
-            Array.Copy(bios, 0x4000, copy, 0x100, 64);
+            Array.Copy(bios, 0x4000, copy, 0x100, 12);
             return (f.Name, copy);
         }).ToArray();
         var leak = DistributionLeakScanner.FindBiosLeak(planted, DistributionLeakScanner.BiosWindows(bios), Array.Empty<(string Name, byte[] Bytes)>());
-        leak.Should().NotBeNull("a planted 64-byte BIOS fragment must be detected");
+        leak.Should().NotBeNull("a planted 12-byte BIOS fragment must be detected");
         leak.Should().Contain(artifactName);
+
+        // Plant a UTF-16LE toolchain path into a copy of the game executable: the path check must fail on it (MEDIUM-2).
+        var wide = (byte[])files.Single(f => f.Name == artifactName).Bytes.Clone();
+        var widePath = System.Text.Encoding.Unicode.GetBytes(@"C:\Prog\winlibs_staging_ucrt\bin");
+        Array.Copy(widePath, 0, wide, 0x200, widePath.Length);
+        DistributionLeakScanner.FindAbsolutePath([(artifactName, wide)]).Should().NotBeNull("a UTF-16LE toolchain path must be detected");
     }
 
     /// <summary>Issue #B2 (LOW-1): without --bios-provenance the firmware is labelled as synthetic, never as a real ROM.</summary>

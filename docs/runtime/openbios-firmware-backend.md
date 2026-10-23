@@ -714,8 +714,9 @@ and on the `firmware-run` line (`"biosMode"`).
 
 Packaged E2E checks (`OpenBiosStandalonePackageE2E`):
 
-- No file under the distribution contains the first 256 bytes of the BIOS, its SHA-256, or any 16-byte window of the
-  BIOS (uniform padding windows excluded).
+- No file under the distribution contains the first 256 bytes of the BIOS, its SHA-256, or any 8-byte window of the
+  BIOS. Nothing is excused for looking like text or padding; only a window that the non-BIOS baseline (the synthetic run's
+  output and the game disc) also holds is excused, and the scan reports how many.
 - No file under the distribution (any extension, the Runtime host and its PDB included) names a user or home path.
   The generated executable is stripped (`-s`) so that no toolchain build path survives.
 - The generated source names no block at a ROM address (`TheBiosIsNeverAheadOfTimeTranslated_...`).
