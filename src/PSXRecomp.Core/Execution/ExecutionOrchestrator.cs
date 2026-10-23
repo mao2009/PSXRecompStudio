@@ -76,6 +76,7 @@ public sealed class ExecutionOrchestrator
         }
 
         // The engine is asked to stop only when it supports it. Registration is removed when this call returns.
+        using var cancellationAttachment = (engine as ICancellableExecutionEngine)?.AttachCancellation(cancellationToken);
         using var stopRegistration = cancellationToken.Register(() => (engine as ICancellableExecutionEngine)?.RequestCancel());
 
         engine.Load(request);
@@ -107,6 +108,7 @@ public sealed class ExecutionOrchestrator
     {
         ArgumentNullException.ThrowIfNull(engine);
         ArgumentNullException.ThrowIfNull(from);
+        using var cancellationAttachment = (engine as ICancellableExecutionEngine)?.AttachCancellation(cancellationToken);
         using var stopRegistration = cancellationToken.Register(() => (engine as ICancellableExecutionEngine)?.RequestCancel());
         return Run(engine, handoff, from.Gpr.ToArray(), from.HI, from.LO, from.PC, outerBudget, segmentBudget, segmentCallback, cancellationToken);
     }

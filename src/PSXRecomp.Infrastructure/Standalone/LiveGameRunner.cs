@@ -13,8 +13,8 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// </summary>
 /// <remarks>
 /// The run owns the GPU/VRAM on the pump thread. A caller on the UI thread only polls the slot, which never touches the GPU.
-/// A stop is requested through the <paramref name="cancellationToken"/> of the run (Issue #820), which the engine honors through
-/// <c>RequestCancel</c>. The segment budget bounds how long a run without a stop can last.
+/// A stop request (the cancellation token, Issue #820) ends the run as Cancelled and kills its child; the segment budget bounds a
+/// run that is not stopped.
 /// </remarks>
 [Infrastructure]
 public static class LiveGameRunner

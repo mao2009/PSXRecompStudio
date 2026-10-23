@@ -205,11 +205,150 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// <summary>Diagnostic code of a segment stopped by <see cref="RequestCancel"/> (Issue #820).</summary>
     public const string CancelledDiagnosticCode = "ARTIFACT_CANCELLED";
 
+    /// <summary>Diagnostic code of a stop the OS refused, or whose child did not confirm its exit (Issue #820).</summary>
+    public const string StopRefusedDiagnosticCode = "ARTIFACT_STOP_REFUSED";
+
+    /// <summary>
+    /// Diagnostic code of a run whose stdout drain ran out of time: the child's output was not read, so its result cannot be read either
+    /// (Issue #827 review). It is reported as a failure, with this reason, and never as a silent failure.
+    /// </summary>
+    public const string OutputDrainTimeoutDiagnosticCode = "ARTIFACT_OUTPUT_DRAIN_TIMEOUT";
+
+    /// <summary>
+    /// Descendants that a stop found still running after its child had already ended on its own (Issue #827 review). A diagnostic only: the
+    /// child's result is not changed by it. Set by the last run of this engine.
+    /// </summary>
+    internal StopDiagnostics? LastStopDiagnostics { get; private set; }
+
+    /// <summary>
+    /// The shutdown of the last run, separate from its result (Issue #827, round 10). <see cref="ShutdownOutcome.NotStopped"/> means no stop was
+    /// processed for the run: it says nothing about residual children, which the natural end does not check (that is Issue #829).
+    /// <see cref="ShutdownOutcome.Clean"/> means a stop was processed and left no refusal and no residual process.
+    /// <see cref="ShutdownOutcome.Residual"/> means a stop left a refusal or a residual process (see <see cref="LastStopDiagnostics"/>). A residual
+    /// shutdown is not a success, whatever the run's result is.
+    /// </summary>
+    internal ShutdownOutcome ShutdownStatus => LastStopDiagnostics is not { } diagnostics
+        ? ShutdownOutcome.NotStopped
+        : diagnostics.Clean ? ShutdownOutcome.Clean : ShutdownOutcome.Residual;
+
+    /// <summary>How many times the last run read a frame from the bridge (Issue #827 review): zero after a stop is the check.</summary>
+    internal int FrameCaptureCalls { get; private set; }
+
+    /// <summary>
+    /// Test seam (Issue #827 review): runs just before the frame decision of a segment, after the stop record is sealed. A test requests a
+    /// stop here to place it in that window. Null in production.
+    /// </summary>
+    internal Action? BeforeFrameCaptureForTest { get; set; }
+
+    /// <summary>
+    /// Test seam (Issue #827): the stdout drain budget of a child that ended on its own, in milliseconds. Null uses the run's timeout.
+    /// </summary>
+    internal int? OutputBudgetMsForTest { get; set; }
+
+    /// <summary>
+    /// Test seam (Issue #827): replaces the descendant listing of a stop. A real child can then be reported with a survivor, which
+    /// drives the refusal path. Null in production.
+    /// </summary>
+    internal Func<Process, IReadOnlyList<Process>?>? StopDescendantsProbe { get; set; }
+
+    /// <summary>
+    /// Test seam (Issue #827): observes each wait of a segment (see <see cref="StopRecord.ObserveForTest"/>). It can force a
+    /// reported state, which lets a test place a stop at an exact point of the wait. Null in production.
+    /// </summary>
+    internal Func<StopRecord, Process, string, bool, bool>? WaitObservedForTest { get; set; }
+
+    /// <summary>
+    /// Test seam (Issue #827): replaces the kill of the child, so a test injects the OS refusal on the stop and timeout paths. Null
+    /// in production.
+    /// </summary>
+    internal Action<Process>? KillOverrideForTest { get; set; }
+
+    /// <summary>
+    /// The result of a run that was asked to stop (Issue #827, decided in review round 10). The run's own result always stands unless the stop
+    /// came first and was confirmed: a child that ended before the stop reached it keeps its result (completed, or the failure it had), and a
+    /// stop that was refused or left a residual keeps the classification too. Each refusal and residual goes to the stop's diagnostics
+    /// (<see cref="StopDiagnostics"/>), not into the result. Only a confirmed stop of a live child is <c>Cancelled</c>.
+    /// </summary>
+    internal static RecompilerExecutionResult ApplyStopOutcome(RecompilerExecutionResult classified, StopRecord stop)
+    {
+        if (stop.StoppedAt is null || stop.ChildEndedBeforeStop)
+        {
+            return classified;
+        }
+
+        var (confirmed, _) = stop.Outcome;
+        return confirmed
+            ? RecompilerExecutionResult.Failed(RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.")
+            : classified;
+    }
+
     /// <summary>
     /// Asks the run to stop (Issue #820). It is idempotent and returns at once: the child process tree is killed on a
     /// thread-pool thread, so a caller on the UI thread never waits for the process to exit.
     /// </summary>
-    public void RequestCancel() => ThreadPool.QueueUserWorkItem(_ => CancelStopSource());
+    public void RequestCancel()
+    {
+        // The request flag is set through the frame gate (owner requirement). A read in progress finishes first, and no read starts after
+        // the flag is set. The wait is bounded by one frame read (see FrameReadGate). The stop is then applied on the pool.
+        _frameReads.RequestStop();
+        ThreadPool.QueueUserWorkItem(_ => CancelStopSource());
+    }
+
+    /// <summary>
+    /// Every read of this engine's GPU/VRAM goes through this gate (the run-end frame and the live VBlank frames). It holds the stop request flag
+    /// and the external cancellation of the run.
+    /// </summary>
+    private readonly FrameReadGate _frameReads = new();
+
+    /// <summary>Attaches the run's external cancellation to the gate (see <see cref="ICancellableExecutionEngine.AttachCancellation"/>).</summary>
+    public IDisposable AttachCancellation(CancellationToken cancellationToken)
+    {
+        _frameReads.SetExternalStop(cancellationToken);
+        return new ExternalStopScope(_frameReads);
+    }
+
+    /// <summary>Ends an attachment: the gate stops watching the run's external token.</summary>
+    private sealed class ExternalStopScope(FrameReadGate gate) : IDisposable
+    {
+        public void Dispose() => gate.SetExternalStop(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The live VBlank read guard of this engine, as the bridge builds it (no stop record in the predicate, so the flag and the external token alone
+    /// decide). Test seam (review round 12): a guard call after a stop must read nothing.
+    /// </summary>
+    internal Func<Action, bool> LiveReadGuardForTest => read => _frameReads.TryRead(() => false, read);
+
+    /// <summary>Whether the engine's stop token has been cancelled (after any dispose, false). Test seam.</summary>
+    internal bool StopIsRequestedForTest
+    {
+        get
+        {
+            try
+            {
+                return _stopRequested.IsCancellationRequested;
+            }
+            catch (ObjectDisposedException)
+            {
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Test seam (Issue #827, review round 10): runs inside the frame gate, after the flag check and before the GPU read starts. A test starts
+    /// a stop from here to show that the stop waits for the read. Null in production.
+    /// </summary>
+    internal Action? DuringFrameReadForTest { get; set; }
+
+    /// <summary>Whether the stop request flag is set. For tests.</summary>
+    internal bool StopRequestFlagForTest => _frameReads.StopRequested;
+
+    /// <summary>
+    /// The reads of this engine's GPU/VRAM so far, and how many had been done when the stop was requested (Issue #827, owner requirement). After a
+    /// stop, the second number must not change: no read runs between the stop and the end of the pump. For tests.
+    /// </summary>
+    internal (int Reads, int ReadsAtStop) FrameReadStats => _frameReads.Stats;
 
     private void CancelStopSource()
     {
@@ -582,6 +721,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public RecompilerExecutionResult RunSegment(TitleExecutionSegmentRequest segmentRequest)
     {
         ArgumentNullException.ThrowIfNull(segmentRequest);
+
+        // Each run starts with no frame and no stop diagnostics of the previous run (Issue #827, review round 11).
+        LastFrameBgra32 = null;
+        LastStopDiagnostics = null;
         if (!_loaded)
         {
             throw new InvalidOperationException("RunSegment called before Load.");
@@ -603,6 +746,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stop requested before the child starts ends the segment without launching anything.
         if (_stopRequested.IsCancellationRequested)
         {
+            // A stop that began before the child started: there is no child to stop, so nothing is left behind. The diagnostics say so, which keeps
+            // the shutdown status in line with the Cancelled result (review round 12).
+            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Residuals: []);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the artifact started.");
         }
@@ -672,8 +818,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
         }
 
-        // Set only when a stop reached a child that was still running (see StopChild). It alone decides a Cancelled result.
-        var stopDelivered = new System.Runtime.CompilerServices.StrongBox<bool>();
+        // What a stop did to this child. It alone decides a Cancelled or refused result (see ApplyStopOutcome).
+        var stopRecord = new StopRecord
+        {
+            DescendantsProbe = StopDescendantsProbe,
+            ObserveForTest = WaitObservedForTest,
+            KillForTest = KillOverrideForTest,
+        };
         CancellationToken stopToken;
         try
         {
@@ -681,12 +832,46 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
         catch (ObjectDisposedException)
         {
-            // Disposed while this segment was being prepared: the run is stopped before any child starts.
+            // Disposed while this segment was being prepared: the run is stopped before any child starts (no child, nothing left behind).
+            LastStopDiagnostics = new StopDiagnostics(0, ChildEndedBeforeStop: false, Confirmed: true, Refused: null, Residuals: []);
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The engine was disposed before the artifact started.");
         }
 
-        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = RunProcess(_binaryPath, arguments, _runTimeoutMs, out var timedOut, bridge, stopToken, stopDelivered);
+        (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
+        // The bridge reads the GPU only through the frame gate, and only while no stop was requested: its live VBlank publisher uses both (Issue
+        // #827, owner requirement). Set before the pump starts, so no VBlank can read without them.
+        if (bridge is not null)
+        {
+            bridge.FrameReads = _frameReads;
+            bridge.StopNow = () => stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null;
+        }
+
+        bool timedOut;
+        bool drainTimedOut;
+        bool drainCutWhileAlive;
+        try
+        {
+            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord);
+        }
+        catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop)
+        {
+            // A failure while a live child was being stopped is the run's result, and what the stop could not do is in the diagnostics. A child that
+            // ended on its own before the stop reached it is not a stop failure: the exception is not converted into ARTIFACT_RUN_EXCEPTION, which
+            // would replace its own result (owner rule 3). The exception then propagates (round 18, LOW 4); no result is fabricated for it.
+            stopRecord.RefuseIfUnset($"the stop could not be completed for process {stopRecord.ProcessId}, which may still be running: {exception.Message}");
+            LastStopDiagnostics = new StopDiagnostics(stopRecord.ProcessId, false, false, stopRecord.Outcome.Refused, stopRecord.Residuals);
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed,
+                "ARTIFACT_RUN_EXCEPTION",
+                $"The run failed while it was being stopped: {exception.Message}");
+        }
+        finally
+        {
+            stopRecord.Seal();
+        }
+
+        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = run;
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
         // guest's console output (the boot/TTY text before the engine's
@@ -705,20 +890,189 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         FallbackTimings = pumpEnded ? bridge?.FallbackTimings : null;
         FallbackInFlight = bridge?.FallbackInFlight;
         FallbackReturns = bridge?.FallbackReturns;
-        LastFrameBgra32 = pumpEnded ? bridge?.CaptureFrameBgra32() : null;
-
-        var classified = ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge);
-
-        // Issue #820: a failure caused by stopping a live child is Cancelled. A child that had already finished on its own keeps
-        // its own result, and so does a completed run, whatever stop request arrives afterwards.
-        if (classified.Status != RecompilerExecutionStatus.Completed && stopDelivered.Value)
+        // Issue #820: a stopped run does not read the GPU/VRAM after the stop. The frame is captured only for a run that was not stopped.
+        // The record, not the token, decides: a stop that has begun is recorded before its kill, and the record is sealed at this point.
+        BeforeFrameCaptureForTest?.Invoke();
+        (byte[] Bgra, int Width, int Height)? frame = null;
+        if (pumpEnded && bridge is not null)
         {
-            return RecompilerExecutionResult.Failed(
-                RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.");
+            // The run-end frame is read through the frame gate like every other read: only while no stop was requested, with the check and
+            // the read start in one section (Issue #827, owner requirement). The token and the stop record are checked too.
+            _frameReads.TryRead(
+                () => stopToken.IsCancellationRequested || stopRecord.StoppedAt is not null,
+                () =>
+                {
+                    DuringFrameReadForTest?.Invoke();
+                    FrameCaptureCalls++;
+                    frame = bridge.CaptureFrameBgra32();
+                });
         }
 
-        return classified;
+        LastFrameBgra32 = frame;
+
+        // What the stop left behind is reported apart from the result (round 10): a refusal or a residual process is in the diagnostics, and the
+        // result stays as the run had it.
+        // A stop that was requested but never processed by the record (the registration was sealed before the request arrived) is not reported as
+        // NotStopped: its descendants were not checked, so it is a refusal of the shutdown, never a clean one (Issue #827, round 14).
+        // The outcome first: ResolveOutcome adds the residuals of the output drains (a pipe holder, a cut drain). The diagnostics are taken after
+        // it, so they include every residual (owner spec, round 17; a snapshot taken earlier missed them).
+        var result = ResolveOutcome(
+            ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge),
+            stopRecord,
+            drainTimedOut,
+            drainCutWhileAlive,
+            OutputBudgetMsForTest ?? _runTimeoutMs);
+
+        var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
+        LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested);
+        if (LastStopDiagnostics is { Clean: false } residual)
+        {
+            Trace.WriteLine($"Stop of artifact process {residual.ProcessId} left a residual: refused={residual.Refused}; residuals={residual.ResidualText}");
+        }
+
+        return result;
     }
+
+    /// <summary>
+    /// The instant from which a stop caps the output drains and the pump wait (Issue #827, review round 12). Only a stop that found its child alive,
+    /// with its decision settled, caps them. A child that ended on its own before the stop keeps the run's own output budget: a stop must not turn
+    /// its completed output into a drain timeout. Null when no cap applies.
+    /// </summary>
+    private static long? StopCapInstant(StopRecord stop) =>
+        stop.Settled && !stop.ChildEndedBeforeStop ? stop.StoppedAt : null;
+
+    /// <summary>
+    /// The one place where a run's result is decided after its child ended or was stopped (Issue #827). Four branches, in this order:
+    /// <list type="number">
+    /// <item>A confirmed stop (the live child was killed and its exit seen): Cancelled. A stdout drain cut short is a residual reason only.</item>
+    /// <item>A refused stop (the kill was refused, so the child is still running): the run's own result, which is the timeout of the live child
+    /// (<see cref="TimeoutDiagnosticCode"/>). The refusal and any cut drain are residuals; no stop or drain code replaces the result.</item>
+    /// <item>A child killed at its own budget whose stdout could not be drained: ExecutionFailed with
+    /// <see cref="OutputDrainTimeoutDiagnosticCode"/> (the guest did not finish, and its output is unread).</item>
+    /// <item>A child that ended on its own: its own classification stands, with the output read up to the cut. A grandchild that still holds
+    /// the stdout pipe is a residual of the cleanup (holder unidentified), not a guest result.</item>
+    /// </list>
+    /// </summary>
+    internal static RecompilerExecutionResult ResolveOutcome(
+        RecompilerExecutionResult classified, StopRecord stop, bool drainTimedOut, bool drainCutWhileAlive, int budgetMs)
+    {
+        var afterStop = ApplyStopOutcome(classified, stop);
+
+        // 1. A confirmed stop decides.
+        if (afterStop.Status == RecompilerExecutionStatus.Cancelled)
+        {
+            if (drainTimedOut || drainCutWhileAlive)
+            {
+                stop.AddResidual(new ResidualProcess(
+                    null,
+                    ResidualState.Unverified,
+                    $"the stdout drain timed out after the stop (budget {budgetMs} ms), so the artifact's output was not read; the holder is unidentified"));
+            }
+
+            return afterStop;
+        }
+
+        // 2. A refused stop: the child is still running, so the run's own result is its timeout. Neither the refusal nor the cut drain changes it.
+        if (stop.Outcome.Refused is { } refusal)
+        {
+            if (drainCutWhileAlive)
+            {
+                stop.AddResidual(new ResidualProcess(
+                    null,
+                    ResidualState.Unverified,
+                    $"the stdout was not drained after the refused stop ({refusal}); the holder is unidentified (pid not known)"));
+            }
+
+            return afterStop;
+        }
+
+        // 3. A child killed at its own budget, whose output could not be drained.
+        if (drainCutWhileAlive)
+        {
+            stop.AddResidual(new ResidualProcess(
+                null,
+                ResidualState.Unverified,
+                $"an output pipe is still held after the artifact was killed at its budget ({budgetMs} ms); the holder is unidentified (pid not known)"));
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.ExecutionFailed,
+                OutputDrainTimeoutDiagnosticCode,
+                $"The stdout drain timed out after {budgetMs} ms while the artifact was still running, so the artifact's output was not read.");
+        }
+
+        // 4. The child ended on its own: its own result stands; a held pipe is a residual of the cleanup.
+        if (drainTimedOut)
+        {
+            stop.AddResidual(new ResidualProcess(
+                null,
+                ResidualState.Unverified,
+                $"an output pipe is still held after the child ended on its own (drain budget {budgetMs} ms); the holder is unidentified (pid not known)"));
+        }
+
+        return afterStop;
+    }
+
+    /// <summary>
+    /// The facts a run's stop left, as plain values (Issue #827, round 19). The shutdown and its diagnostics are derived from these alone: the engine's
+    /// run and the test harness call the same function, and unit tests state the facts directly, on every platform.
+    /// </summary>
+    /// <param name="ProcessId">The child's process id (0 before it started).</param>
+    /// <param name="StopRecorded">The stop record processed a stop (its instant was set).</param>
+    /// <param name="StopRequested">A stop was requested during the run or before its end.</param>
+    /// <param name="ChildEndedBeforeStop">The child ended on its own before the stop reached it.</param>
+    /// <param name="KillConfirmed">The live child was killed and its exit was seen.</param>
+    /// <param name="Refused">The reason the stop itself failed, or null.</param>
+    /// <param name="Residuals">What the stop or the drains left behind.</param>
+    [Infrastructure]
+    internal sealed record ShutdownEvidence(
+        int ProcessId,
+        bool StopRecorded,
+        bool StopRequested,
+        bool ChildEndedBeforeStop,
+        bool KillConfirmed,
+        string? Refused,
+        IReadOnlyList<ResidualProcess> Residuals);
+
+    /// <summary>
+    /// The shutdown diagnostics of a run (Issue #827, rules 2, 3 and 7): a processed stop reports its own facts; a stop that was requested but not
+    /// processed is a refusal of the shutdown (its descendants were not checked), never NotStopped; a natural end that left a residual reports it with
+    /// the child ended before any stop; otherwise there are no diagnostics (NotStopped). The result of the run is not an input: the diagnostics
+    /// cannot rewrite it.
+    /// </summary>
+    internal static StopDiagnostics? ShutdownDiagnostics(ShutdownEvidence evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        if (evidence.StopRecorded)
+        {
+            return new StopDiagnostics(evidence.ProcessId, evidence.ChildEndedBeforeStop, evidence.KillConfirmed, evidence.Refused, evidence.Residuals);
+        }
+
+        if (evidence.StopRequested)
+        {
+            return new StopDiagnostics(
+                evidence.ProcessId,
+                false,
+                false,
+                "the stop was requested after the run's stop record was sealed, so the child's descendants were not checked",
+                evidence.Residuals);
+        }
+
+        if (evidence.Residuals.Count > 0)
+        {
+            return new StopDiagnostics(evidence.ProcessId, true, false, null, evidence.Residuals);
+        }
+
+        return null;
+    }
+
+    private static StopDiagnostics? ShutdownDiagnostics(StopRecord stop, bool stopRequested) =>
+        ShutdownDiagnostics(new ShutdownEvidence(
+            stop.ProcessId,
+            stop.StoppedAt is not null,
+            stopRequested,
+            stop.ChildEndedBeforeStop,
+            stop.Outcome.Confirmed,
+            stop.Outcome.Refused,
+            stop.Residuals));
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
     private static RecompilerExecutionResult ClassifyArtifactRun(
@@ -795,17 +1149,32 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public void Dispose()
     {
         GC.SuppressFinalize(this);
-        // A run still in progress is stopped rather than left to its timeout. After a finished run this does nothing.
-        try
-        {
-            _stopRequested.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Already disposed.
-        }
 
-        _stopRequested.Dispose();
+        // Same route as RequestCancel (owner requirement): the request flag is set through the frame gate first; the token is cancelled after
+        // it, on the pool. A run still in progress is stopped rather than left to its timeout. The stop waits for the child's exit (up to
+        // StopRecord.ConfirmTimeout), so it runs on the thread pool: a caller on the UI thread is never blocked (Issue #827). After a finished
+        // run this does nothing.
+        _frameReads.RequestStop();
+        var source = _stopRequested;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                source.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already disposed by an earlier Dispose call.
+            }
+            catch (AggregateException exception)
+            {
+                Trace.WriteLine($"Stop on dispose failed: {exception}");
+            }
+            finally
+            {
+                source.Dispose();
+            }
+        });
     }
 
     private void WriteInputFile(
@@ -935,9 +1304,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// pump outlived its drain budget and still owns the bridge's devices: the
     /// caller then neither reads nor disposes those devices (Issue #762).</returns>
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
-        string fileName, IReadOnlyList<string> arguments, int timeoutMs, out bool timedOut, HostTransferBridge? bridge, CancellationToken stopToken,
-        System.Runtime.CompilerServices.StrongBox<bool> stopDelivered)
+        string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs, out bool timedOut, out bool drainTimedOut,
+        out bool drainCutWhileAlive, HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord)
     {
+        // The stdout drain of a child that ended on its own is bounded by outputBudgetMs; drainTimedOut reports that it ran out (Issue #827).
+        // drainCutWhileAlive reports that the child was still alive (it was killed at its budget) and its output could not be drained.
+        drainTimedOut = false;
+        drainCutWhileAlive = false;
         var psi = new ProcessStartInfo(fileName)
         {
             RedirectStandardOutput = true,
@@ -976,22 +1349,45 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Issue #820: a stop request kills the child tree. That closes its pipes, so a read blocked on the RHOST
         // protocol (or on stderr) returns, and the existing timeout path below does the cleanup and classification.
         // If the request arrived before this point, the registration runs at once and the child is killed here.
-        using var stopRegistration = stopToken.Register(() => StopChild(process, stopDelivered));
+        // Declared after the process, so it is sealed before the process is disposed on any return path (Issue #827).
+        using var stopSeal = stopRecord.Attach(process, stopToken);
         var stderrTask = process.StandardError.ReadToEndAsync();
 
         if (bridge is null)
         {
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            if (!process.WaitForExit(timeoutMs))
+            // The stdout is collected as it arrives, so a drain that is cut short still has the text read so far.
+            var stdoutSink = new OutputSink();
+            var stdoutTask = stdoutSink.Pump(process.StandardOutput);
+            if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
             {
-                TryKillTree(process);
+                // The budget ran out, or a stop was refused or confirmed: the child is killed, and the stop (if any) decides the result.
+                TryKillTree(process, stopRecord, stopToken);
+                // The child had not exited when the wait ended: it is a timeout, whatever the stop decided (a confirmed stop is Cancelled in
+                // ResolveOutcome; a refused one keeps this timeout). Round 18, MEDIUM 1.
                 timedOut = true;
-                return (int.MinValue, DrainWithinCleanupBudget(stdoutTask), DrainWithinCleanupBudget(stderrTask), false, true);
+                // Both pipes share one cleanup budget (and a stop caps it), so the two drains do not add up. A stdout drain that is cut here
+                // is reported as cut while alive: the child did not end, so its output was not read.
+                var cleanupStart = Stopwatch.GetTimestamp();
+                WaitForDrain(stdoutTask, PumpDrainTimeoutMs, stopRecord, cleanupStart, out drainCutWhileAlive);
+                return (
+                    int.MinValue,
+                    stdoutSink.Text,
+                    DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, cleanupStart, out _),
+                    false,
+                    true);
             }
 
-            process.WaitForExit();
             timedOut = false;
-            return (process.ExitCode, stdoutTask.Result, stderrTask.Result, false, true);
+
+            // The child ended on its own: its pipes drain within the run's output budget. A stop that arrives during the drain caps the rest
+            // of it at the cleanup budget (see DrainUntil). A stdout drain cut here is reported through drainTimedOut: the child's own result
+            // stands, and the holder of the open pipe is a residual (see ResolveOutcome).
+            var drainStart = Stopwatch.GetTimestamp();
+            WaitForDrain(stdoutTask, outputBudgetMs, stopRecord, drainStart, out drainTimedOut);
+            var stdout = stdoutSink.Text;
+            var stderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, drainStart, out _);
+            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
+            return (process.ExitCode, stdout, stderr, false, true);
         }
 
         process.StandardInput.AutoFlush = true;
@@ -1016,7 +1412,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool pumpCompleted;
         try
         {
-            pumpCompleted = pump.Wait(timeoutMs);
+            pumpCompleted = WaitPumpWithinOutputBudget(pump, process, timeoutMs, outputBudgetMs, stopRecord, out drainTimedOut);
         }
         catch (Exception exception)
         {
@@ -1027,10 +1423,20 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // escape the launcher. This is distinct from a timeout or a normal
             // process-failure classification. A faulted pump has already stopped,
             // so its devices are free for the caller to read and dispose.
-            TryKillTree(process);
+            TryKillTree(process, stopRecord, stopToken);
             Trace.WriteLine($"Host-transfer pump failed: {exception}");
             timedOut = false;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), true, true);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), true, true);
+        }
+
+        if (!pumpCompleted && drainTimedOut)
+        {
+            // The child ended on its own, but its output did not reach its end within the output budget (a grandchild holds the pipe). The output
+            // was not read, so the result is a drain timeout, never a silent failure or a plain timeout (Issue #827 review, MEDIUM 1).
+            TryReleaseStdout(process);
+            var drainedPumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
+            timedOut = false;
+            return (process.ExitCode, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, drainedPumpEnded);
         }
 
         if (!pumpCompleted)
@@ -1040,25 +1446,194 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // bounded drain. If it still has not ended, the bridge's devices remain
             // under the pump's ownership: the caller neither reads nor disposes them
             // (Issue #762).
-            TryKillTree(process);
+            TryKillTree(process, stopRecord, stopToken);
+
+            // The pump ends on its own only when the pipe closes. The stream is released after this wait: releasing it ends the pump whatever
+            // the pipe holder does, so checking afterwards would never see a stalled drain (round 17, MEDIUM 2).
+            var drainedOnItsOwn = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
+
+            // The child was alive at its budget and killed, and its output did not end on its own: the same cut as the null-bridge path, so the
+            // guest did not finish and its output is unread (owner spec B).
+            drainCutWhileAlive = !drainedOnItsOwn;
             TryReleaseStdout(process);
-            var pumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
+            var pumpEnded = drainedOnItsOwn || HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromSeconds(1));
             timedOut = true;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, pumpEnded);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, pumpEnded);
         }
 
-        if (!process.WaitForExit(timeoutMs))
+        if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
         {
             // The pump ended but the child has not exited: stop it. Nothing is using
             // the bridge's devices any more.
-            TryKillTree(process);
+            TryKillTree(process, stopRecord, stopToken);
             timedOut = true;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainWithinCleanupBudget(stderrTask), false, true);
+            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, true);
         }
 
-        process.WaitForExit();
         timedOut = false;
-        return (process.ExitCode, TakeOutput(output, outputGate), stderrTask.Result, false, true);
+        var bridgeStderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp(), out _);
+        RecordPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
+        return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="waitSlice"/> to report the end within <paramref name="timeoutMs"/>, but returns early once a stop has
+    /// settled (Issue #827): a refused or confirmed stop must not wait out the run's whole budget. Returns true only when the end was seen.
+    /// </summary>
+    private static bool WaitBounded(Func<int, bool> waitSlice, int timeoutMs, StopRecord stopRecord, Process process, string phase)
+    {
+        var clock = Stopwatch.StartNew();
+        while (true)
+        {
+            var remaining = timeoutMs - (int)clock.ElapsedMilliseconds;
+            if (remaining <= 0)
+            {
+                return false;
+            }
+
+            // The child's descendants are tracked while it is alive (Issue #827 review): a claim cannot be made after the child is gone.
+            stopRecord.SampleTree();
+            if (stopRecord.Observe(process, phase, waitSlice(Math.Min(StopRecord.PollMs, remaining))))
+            {
+                return true;
+            }
+
+            if (!stopRecord.Settled)
+            {
+                continue;
+            }
+
+            // A stop has settled. A child that already ended normally is not a timeout: its end is taken, and its output is drained
+            // within the drain bound (Issue #827 review). A live child ends the wait with the stop's own decision.
+            if (waitSlice(0))
+            {
+                return true;
+            }
+
+            return StopRecord.HasExitedOrGone(process) && waitSlice(PumpDrainTimeoutMs);
+        }
+    }
+
+    /// <summary>
+    /// Waits for the host-transfer pump to reach the end of the child's output (Issue #827 review, MEDIUM 1). While the child is alive, the
+    /// run's budget applies. Once the child has ended, the pump has the output budget (a grandchild may hold the pipe open after the child's
+    /// exit); a stop caps that from the stop, as for the other drains. A pump that is still open when its budget ends is reported through
+    /// <paramref name="drainTimedOut"/>: the child's output was not read.
+    /// </summary>
+    internal static bool WaitPumpWithinOutputBudget(Task pump, Process process, int runTimeoutMs, int outputBudgetMs, StopRecord stop, out bool drainTimedOut)
+    {
+        drainTimedOut = false;
+        var frequency = Stopwatch.Frequency;
+        var start = Stopwatch.GetTimestamp();
+        long? childEnded = null;
+        while (true)
+        {
+            var now = Stopwatch.GetTimestamp();
+            if (childEnded is null && StopRecord.HasExitedOrGone(process))
+            {
+                childEnded = now;
+            }
+
+            long end = start + runTimeoutMs * frequency / 1000;
+            if (childEnded is { } ended)
+            {
+                end = ended + outputBudgetMs * frequency / 1000;
+
+                // A stop caps the wait only when it found the child alive (round 12): a child that ended first keeps the output budget.
+                if (StopCapInstant(stop) is { } stoppedAt)
+                {
+                    var cap = Math.Max(ended, stoppedAt) + PumpDrainTimeoutMs * frequency / 1000;
+                    if (cap < end)
+                    {
+                        end = cap;
+                    }
+                }
+
+                if (now >= end)
+                {
+                    drainTimedOut = true;
+                    return false;
+                }
+            }
+            else if (stop.Settled || now >= end)
+            {
+                return false;
+            }
+
+            // The descendants are tracked while the child is alive, and each wait is observed, as in WaitBounded.
+            stop.SampleTree();
+            var remainingMs = (end - now) * 1000.0 / frequency;
+            var pumpEnded = pump.Wait((int)Math.Min(StopRecord.PollMs, Math.Max(1.0, remainingMs)));
+            if (stop.Observe(process, "pump", pumpEnded))
+            {
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A stop that reached its child can still leave an output pipe open: a grandchild that outlived the child holds it. The child was killed
+    /// (the result is Cancelled), so the holder is a residual, reported with the tracked processes still alive (Issue #827, round 14). The
+    /// holder's id is known only when it is a tracked process; the OS gives no cheap owner lookup for a pipe.
+    /// </summary>
+    private static void RecordPipeHeldAfterStop(CancellationToken stopToken, StopRecord stopRecord, params Task[] pipes)
+    {
+        // A child that ended before the stop reached it is not a stop's failure: a pipe it leaves to a console host is the drain's business.
+        if (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
+        {
+            // The holder is not identified: the stop has no owner lookup for a pipe, so no pid is reported (a guess would be wrong).
+            stopRecord.AddResidual(new ResidualProcess(
+                null,
+                ResidualState.Unverified,
+                "an output pipe is still held by a process that outlived the child; the holder is unidentified (pid not known)"));
+        }
+    }
+
+    /// <summary>
+    /// Runs one child with a stop record and no artifact (Issue #827): the same bounded wait, drain and stop decision as a segment.
+    /// Used by the stop tests with a real child process.
+    /// </summary>
+    internal static (int ExitCode, string Stdout, bool TimedOut, bool Confirmed, string? Refused, string? Leftover, RecompilerExecutionResult Result) RunChildUntilStopped(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        int timeoutMs,
+        CancellationToken stopToken,
+        Func<Process, IReadOnlyList<Process>?>? descendantsProbe = null,
+        Func<StopRecord, Process, string, bool, bool>? observe = null,
+        Action<Process>? kill = null,
+        Func<Process, DateTime?>? startTime = null,
+        int? outputBudgetMs = null,
+        Action<Process>? descendantKill = null)
+    {
+        var stopRecord = new StopRecord
+        {
+            DescendantsProbe = descendantsProbe,
+            ObserveForTest = observe,
+            KillForTest = kill,
+            StartTimeForTest = startTime,
+            DescendantKillForTest = descendantKill,
+        };
+        (int exit, string stdout, string stderr, bool hostProtocolFaulted, bool pumpEnded) run;
+        bool timedOut;
+        bool drainTimedOut;
+        bool drainCutWhileAlive;
+        try
+        {
+            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord);
+        }
+        finally
+        {
+            stopRecord.Seal();
+        }
+
+        var (confirmed, refused) = stopRecord.Outcome;
+
+        // The harness classifies its child by the engine's own rule (round 19, MEDIUM 2): an exit 0 without a snapshot is a failure, exactly as in
+        // a segment. Then the same resolution and the same shutdown diagnostics as RunSegment, so the Windows tests check the same contract.
+        var classified = ClassifyArtifactRun(run.exit, run.stdout, run.hostProtocolFaulted, timedOut, bridge: null);
+        var result = ResolveOutcome(classified, stopRecord, drainTimedOut, drainCutWhileAlive, outputBudgetMs ?? timeoutMs);
+        var diagnostics = ShutdownDiagnostics(stopRecord, stopToken.IsCancellationRequested);
+        return (run.exit, run.stdout, timedOut, confirmed, refused, diagnostics?.ResidualText, result);
     }
 
     private static string TakeOutput(StringBuilder output, object gate)
@@ -1087,54 +1662,125 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Consumes a redirected stream within a bounded budget for the pump-fault
-    /// path. After the child is killed, a descendant that inherited the pipe
-    /// handle could otherwise keep the stream open past the promised drain
-    /// budget; anything that does not close in time is dropped. Diagnostics only —
-    /// the fault verdict stands and these bytes never enter the result contract.
+    /// Consumes a redirected stream within <paramref name="budgetMs"/>. A stop that arrives during the drain caps the rest of it at the
+    /// cleanup budget, measured from the stop, so a stop never waits for the full budget (Issue #827). <paramref name="timedOut"/> reports
+    /// that the budget ran out before the stream ended; the result is then empty, and the caller reports it.
     /// </summary>
-    private static string DrainWithinCleanupBudget(Task<string> readTask)
+    private static string DrainUntil(Task<string> readTask, int budgetMs, StopRecord stop, long drainStart, out bool timedOut)
     {
-        try
-        {
-            return readTask.Wait(PumpDrainTimeoutMs) && readTask.IsCompletedSuccessfully
-                ? readTask.Result
-                : string.Empty;
-        }
-        catch
-        {
-            // A stream read failure on the drain path is likewise diagnostic-only.
-            return string.Empty;
-        }
-    }
-
-    private static void TryKillTree(Process process)
-    {
-        try { process.Kill(true); } catch (InvalidOperationException) { }
+        var completed = WaitForDrain(readTask, budgetMs, stop, drainStart, out timedOut);
+        return completed && readTask.IsCompletedSuccessfully ? readTask.Result : string.Empty;
     }
 
     /// <summary>
-    /// Kills a child on a stop request (Issue #820). It runs on whatever thread requested the stop, so it never throws: a child
-    /// that already exited is left alone, and an OS failure to kill is traced. <paramref name="stopDelivered"/> records that a
-    /// stop reached a live child, which is what makes the run's failure a Cancelled result.
+    /// Collects a stream as it is read, so a drain that is cut short still has the text read so far (Issue #827, round 16). The whole text
+    /// is available once the stream has ended.
     /// </summary>
-    private static void StopChild(Process process, System.Runtime.CompilerServices.StrongBox<bool> stopDelivered)
+    private sealed class OutputSink
+    {
+        private readonly StringBuilder _text = new();
+        private readonly object _gate = new();
+
+        /// <summary>The text read so far.</summary>
+        public string Text
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _text.ToString();
+                }
+            }
+        }
+
+        /// <summary>Reads the stream to its end, appending each chunk as it arrives.</summary>
+        public async Task Pump(StreamReader reader)
+        {
+            var buffer = new char[4096];
+            int read;
+            while ((read = await reader.ReadAsync(buffer.AsMemory())) > 0)
+            {
+                lock (_gate)
+                {
+                    _text.Append(buffer, 0, read);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Waits for a drain within its budget. Returns true when the read task has finished (in any state), false when the budget ran out first;
+    /// <paramref name="timedOut"/> is the negation.
+    /// </summary>
+    private static bool WaitForDrain(Task readTask, int budgetMs, StopRecord stop, long drainStart, out bool timedOut)
+    {
+        timedOut = false;
+        var frequency = Stopwatch.Frequency;
+        var budgetEnd = drainStart + budgetMs * frequency / 1000;
+        try
+        {
+            while (true)
+            {
+                if (readTask.IsCompleted)
+                {
+                    return true;
+                }
+
+                // The deadline is absolute and shared by the drains of one run. A stop caps it at the cleanup budget counted from the later of the
+                // drain's start and the stop: the stop's own work (ending the tree) is not charged to the drain.
+                var end = budgetEnd;
+                var capStop = StopCapInstant(stop);
+                var capFrom = capStop is { } stoppedAt ? Math.Max(drainStart, stoppedAt) : drainStart;
+                if (capStop is not null)
+                {
+                    var cap = capFrom + PumpDrainTimeoutMs * frequency / 1000;
+                    if (cap < end)
+                    {
+                        end = cap;
+                    }
+                }
+
+                var now = Stopwatch.GetTimestamp();
+                if (now >= end)
+                {
+                    timedOut = true;
+                    return false;
+                }
+
+                var remainingMs = (end - now) * 1000.0 / frequency;
+                readTask.Wait((int)Math.Min(StopRecord.PollMs, Math.Max(1.0, remainingMs)));
+            }
+        }
+        catch (AggregateException)
+        {
+            // A stream read failure on the drain path is diagnostic-only: the read has finished (faulted).
+            return true;
+        }
+    }
+
+
+    /// <summary>
+    /// Kills the child's tree on a timeout or a stop path. An exited child is left alone. A kill the OS refuses is never a raw exception
+    /// out of the run: during a stop it is recorded as a refusal with its reason (Issue #827 review, MEDIUM 1).
+    /// </summary>
+    private static void TryKillTree(Process process, StopRecord stopRecord, CancellationToken stopToken)
     {
         try
         {
-            if (process.HasExited)
-            {
-                return;
-            }
-
-            // Recorded only once the kill succeeded: a child that exits on its own just before, or a kill the OS refused,
-            // must not be reported as a failure caused by the stop.
-            process.Kill(true);
-            stopDelivered.Value = true;
+            stopRecord.KillTree(process);
+        }
+        catch (InvalidOperationException)
+        {
+            // Already exited: nothing to kill.
         }
         catch (Exception exception)
         {
-            Trace.WriteLine($"Stopping the artifact process failed: {exception.Message}");
+            if (stopToken.IsCancellationRequested && !StopRecord.HasExitedOrGone(process))
+            {
+                stopRecord.RefuseIfUnset($"the kill was refused: {exception.Message}");
+            }
+
+            Trace.WriteLine($"Killing the artifact process failed: {exception.Message}");
         }
     }
 
@@ -1259,6 +1905,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         /// </summary>
         public LiveFrameSlot? LiveFrames { get; init; }
 
+        /// <summary>
+        /// The gate every read of this run's GPU/VRAM goes through, and the stop predicate it checks (Issue #827, owner requirement). Set by the
+        /// engine before the pump starts. Without them the live publisher reads nothing (it fails closed).
+        /// </summary>
+        public FrameReadGate? FrameReads { get; set; }
+
+        /// <summary>The stop predicate of the run's gate (see <see cref="FrameReads"/>).</summary>
+        public Func<bool>? StopNow { get; set; }
+
         /// <summary>The displayed frame of this run's GPU device as BGRA32, or null when nothing was drawn (Issue #762).</summary>
         public (byte[] Bgra, int Width, int Height)? CaptureFrameBgra32()
         {
@@ -1364,7 +2019,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                     var livePublisher = new LiveFrameVBlankPublisher(
                         liveFrames,
                         () => _devices!.GpuDevice,
-                        exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"));
+                        exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"),
+                        // Every live read goes through the run's gate, which refuses it once a stop was requested (fails closed without one).
+                        action => FrameReads is { } gate && StopNow is { } stopNow && gate.TryRead(stopNow, action));
                     _scheduler.VblankCallback = _ => livePublisher.OnVBlank();
                 }
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
