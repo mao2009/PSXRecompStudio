@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Cli;
@@ -137,6 +138,9 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         File.ReadAllText(Path.Combine(runtime, "firmware", "images.txt")).Should().Be("# no RAM-placed code images\n",
             "the images sidecar is the packaged copy the run rebuilds the plan from");
         File.ReadAllText(Path.Combine(output, RuntimeHostLayout.ReadmeFileName)).Should().Contain("#730");
+        File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)).Should().Contain("\"biosMode\": \"openbios-rom\"",
+            "the runtime manifest labels the run as a real OpenBIOS ROM, never as HLE");
+        AssertNoAbsoluteDeveloperPaths(output);
 
         using var process = Process.Start(new ProcessStartInfo(artifact)
         {
@@ -155,6 +159,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         processExit.Should().Be(2, "the instruction budget ends the run: " + stderr);
         var report = JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement;
         report.GetProperty("bios").GetString().Should().Be("openbios");
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
         report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(rom));
         report.GetProperty("state").GetString().Should().Be("BudgetExhausted");
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue("the manifest's fallback policy is reported on the firmware-run line");
@@ -285,5 +290,83 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         diagnostic.GetProperty("aotRetiredInstructions").GetUInt64().Should().BeGreaterThan(0);
         diagnostic.GetProperty("finalPc").ValueKind.Should().Be(JsonValueKind.Number, "the budget stop has a known guest PC");
 #pragma warning restore AARC003
+    }
+
+    /// <summary>Environment variable naming a locally built OpenBIOS ROM. The file is read in place, never copied or committed.</summary>
+    public const string UserOpenBiosRomVariable = "PSXRECOMP_OPENBIOS_ROM";
+
+    private static readonly Regex AbsolutePathPattern = new(@"(?<![A-Za-z])[A-Za-z]:(\\|[\/])|/(home|Users)/", RegexOptions.CultureInvariant);
+
+    /// <summary>No text file the packaging writes may name an absolute developer path (the output must be relocatable).</summary>
+    private static void AssertNoAbsoluteDeveloperPaths(string root)
+    {
+#pragma warning disable AARC003 // Test-layer inspection of the produced distribution text
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                     .Where(static f => Path.GetExtension(f) is ".json" or ".txt" or ".md"))
+        {
+            AbsolutePathPattern.IsMatch(File.ReadAllText(file)).Should().BeFalse(
+                $"{Path.GetFileName(file)} must not contain an absolute path");
+        }
+#pragma warning restore AARC003
+    }
+
+    /// <summary>
+    /// Issue #B2: the same packaged path with a REAL OpenBIOS image the user supplies by path at run time. The ROM is
+    /// read in place from <see cref="UserOpenBiosRomVariable"/> and is never copied into the repository, the test output
+    /// or the distribution beyond the runtime sidecar the packager already writes. Skipped with its reason when the
+    /// variable is unset or does not name a file. The disc is synthetic; only the BIOS is real.
+    /// </summary>
+    [SkippableFact]
+    public void UserSuppliedOpenBiosRom_PackagesAndRunsNativelyThroughTheRuntimeHost()
+    {
+#pragma warning disable AARC003 // The real-ROM gate reads its user-supplied path from the environment
+        var romSource = Environment.GetEnvironmentVariable(UserOpenBiosRomVariable);
+#pragma warning restore AARC003
+        Skip.If(string.IsNullOrWhiteSpace(romSource),
+            $"real-ROM gate skipped: set {UserOpenBiosRomVariable} to a locally built openbios.bin (never committed)");
+        Skip.IfNot(File.Exists(romSource), $"real-ROM gate skipped: {UserOpenBiosRomVariable} does not name an existing file");
+        RuntimeHostPublishE2E.RequireGcc();
+
+#pragma warning disable AARC003 // Test-layer read of the user-supplied ROM to pin its digest
+        var romSha256 = OpenBiosRomInput.Sha256Hex(File.ReadAllBytes(romSource!));
+#pragma warning restore AARC003
+        var disc = SyntheticDiscBuilder.Bootable(SyntheticPsxExeBuilder.BuildValid(instructionCount: 6, textStart: GameEntry));
+        var aot = _dir.CreateSubdirectory("aot");
+        _dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
+        _dir.WriteFile("aot/images.txt", Text("# no RAM-placed code images\n"));
+        var discPath = _dir.WriteFile("disc.bin", disc);
+        var output = _dir.CreateSubdirectory("game");
+
+        var error = new StringWriter();
+        var exit = Program.Execute(
+            ["package", discPath, "--bios", "openbios", "--bios-rom", romSource!, "--aot-dir", aot,
+             "--instruction-budget", "2000000", "--run-timeout-seconds", "300", "--build-timeout-seconds", "900", "--output", output],
+            new StringWriter(), error);
+        exit.Should().Be(0, error.ToString());
+        AssertNoAbsoluteDeveloperPaths(output);
+
+        var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        var artifact = Path.Combine(output, "game" + (windows ? ".exe" : ""));
+#pragma warning disable AARC003 // Test-layer process use to drive the bundled game executable
+        using var process = Process.Start(new ProcessStartInfo(artifact)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })!;
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        process.StandardOutput.ReadToEndAsync();
+        process.WaitForExit(600_000).Should().BeTrue("the bounded real-ROM run must finish");
+        var stderr = stderrTask.GetAwaiter().GetResult();
+#pragma warning restore AARC003
+
+        var line = stderr.Split('\n').FirstOrDefault(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal));
+        line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
+        var report = JsonDocument.Parse(line!).RootElement;
+        report.GetProperty("bios").GetString().Should().Be("openbios");
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
+        report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run verified the user's ROM by digest");
+        report.GetProperty("nativeInstructions").GetUInt64().Should().BeGreaterThan(0, "the real OpenBIOS ROM runs natively");
     }
 }

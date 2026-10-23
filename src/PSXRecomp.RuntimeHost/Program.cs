@@ -216,6 +216,7 @@ public static class Program
         try
         {
             manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            Console.Error.WriteLine($"runtime host: bios mode {manifest.BiosMode}");
 
             if (!Directory.Exists(manifestDirectory))
             {

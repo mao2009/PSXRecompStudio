@@ -53,6 +53,18 @@ public sealed record RuntimeHostManifest(
 {
     /// <summary>The schema version this runtime host understands.</summary>
     public const int CurrentSchemaVersion = 1;
+
+    /// <summary>The BIOS mode label of a real, user-supplied OpenBIOS ROM running as guest firmware (Issue #B2).</summary>
+    public const string BiosModeOpenBiosRom = "openbios-rom";
+
+    /// <summary>The BIOS mode label of the project's HLE BIOS bridge. Never conflated with <see cref="BiosModeOpenBiosRom"/>.</summary>
+    public const string BiosModeHle = "hle";
+
+    /// <summary>
+    /// The derived BIOS mode, written into the manifest and the run output so an HLE run and a real-ROM OpenBIOS run
+    /// are never mistaken for one another. It is derived from <see cref="GuestFirmware"/>, never configured separately.
+    /// </summary>
+    public string BiosMode => GuestFirmware ? BiosModeOpenBiosRom : BiosModeHle;
 }
 
 /// <summary>Canonical JSON reading/writing for <see cref="RuntimeHostManifest"/>, with fail-closed validation.</summary>

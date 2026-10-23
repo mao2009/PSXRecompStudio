@@ -687,6 +687,23 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
+#### BIOS mode labels and the real-ROM gate (Issue #B2)
+
+The runtime manifest and the run output label the BIOS mode so that an HLE run and a real-ROM OpenBIOS run are never
+conflated. The label is derived from `GuestFirmware`:
+
+- `runtime-host.json` carries `"biosMode": "openbios-rom"` for the firmware distribution and `"biosMode": "hle"` for
+  the legacy HLE-bridge distribution. The parser ignores the field, which is informational.
+- The Runtime host prints `runtime host: bios mode <mode>` on every run, and the `firmware-run` line carries
+  `"biosMode"` next to `"bios"`.
+- The distribution contains no absolute developer path in its text files (`.json`, `.txt`, `.md`); the packaged E2E
+  asserts this.
+
+The real-ROM gate (`UserSuppliedOpenBiosRom_PackagesAndRunsNativelyThroughTheRuntimeHost`) packages a synthetic disc
+with a user-supplied OpenBIOS image and runs it. The image is read in place from the `PSXRECOMP_OPENBIOS_ROM`
+environment variable and is never copied into the repository, the tests or the output beyond the runtime sidecar the
+packager already writes. Without the variable (or when it does not name a file) the test is skipped with its reason.
+
 ### Remaining acceptance gates
 
 1. Run this against the audited pinned Nugget build on Windows/Linux/macOS.

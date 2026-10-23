@@ -701,6 +701,7 @@ public static class FirmwareRuntimeLauncher
             {
                 kind = "firmware-run",
                 bios = boot.BiosBackend,
+                biosMode = host.BiosMode,
                 romSha256 = boot.RomSha256,
                 state = result.State.ToString(),
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
