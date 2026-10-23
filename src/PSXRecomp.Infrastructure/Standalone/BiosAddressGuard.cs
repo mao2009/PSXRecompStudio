@@ -132,50 +132,103 @@ public static class BiosAddressGuard
                 throw new InvalidDataException($"image '{image.Name}' loads into the BIOS range; no code there is translated (Issue #B2).");
             }
 
-            if (ContainsBiosCopy(image.Words, firmware))
-            {
-                throw new InvalidDataException(
-                    $"image '{image.Name}' holds a copy of BIOS code ({CopyWindowWords} words or more); BIOS-derived code is never translated (Issue #B2).");
-            }
+        }
+
+        // Cumulative (Issue #B2, owner ruling): the BIOS coverage of all AOT inputs together, each BIOS word counted once.
+        var inputs = manifest.Images.Select(static image => image.Words).ToArray();
+        var copiedBytes = BiosCopyBytes(inputs, firmware);
+        if (copiedBytes > CopyThresholdBytes)
+        {
+            throw new InvalidDataException(
+                $"the AOT inputs together hold {copiedBytes} bytes of BIOS code (threshold {CopyThresholdBytes} bytes); " +
+                "BIOS-derived code is never translated (Issue #B2).");
         }
     }
 
     /// <summary>
-    /// True when <paramref name="words"/> holds a run of <see cref="CopyWindowWords"/> words that the BIOS holds at some offset. Uniform
-    /// runs (padding such as all-zero words) are not evidence and are skipped.
+    /// A match shorter than this many words is a coincidence, not a copy. Single-word and short matches are never counted (Issue #B2).
     /// </summary>
-    public static bool ContainsBiosCopy(IReadOnlyList<uint> words, OpenBiosFirmware firmware)
+    public const int MinRunWords = 16;
+
+    /// <summary>
+    /// The cumulative threshold: the BIOS code the AOT inputs hold, all together, may not exceed this many bytes (Issue #B2, owner
+    /// ruling). 224 bytes is 56 words. The measured accidental coverage of non-BIOS binaries (runs of 16 words) peaks at 192 bytes (docs).
+    /// </summary>
+    public const int CopyThresholdBytes = 224;
+
+    /// <summary>
+    /// The BIOS word offsets covered by matching runs of at least <see cref="MinRunWords"/> words that the candidate images hold.
+    /// A BIOS word covered by several runs, in one image or in several, is counted once: the measure is a union, not a sum.
+    /// Uniform runs (padding, such as zero words) are never evidence and are not counted.
+    /// </summary>
+    public static IReadOnlySet<int> BiosCoveredWords(IEnumerable<IReadOnlyList<uint>> images, OpenBiosFirmware firmware, int minRunWords = MinRunWords)
     {
-        ArgumentNullException.ThrowIfNull(words);
+        ArgumentOutOfRangeException.ThrowIfLessThan(minRunWords, MinRunWords);
+        ArgumentNullException.ThrowIfNull(images);
         ArgumentNullException.ThrowIfNull(firmware);
-        if (words.Count < CopyWindowWords || firmware.Words.Count < CopyWindowWords)
+        var bios = firmware.Words;
+        var index = new Dictionary<(uint, uint, uint, uint), List<int>>();
+        for (var j = 0; j + MinRunWords <= bios.Count; j++)
         {
-            return false;
-        }
-
-        var biosKeys = new HashSet<ulong>();
-        for (var j = 0; j + CopyWindowWords <= firmware.Words.Count; j++)
-        {
-            if (!IsUniform(firmware.Words, j))
+            if (!IsUniformRun(bios, j))
             {
-                biosKeys.Add(WindowKey(firmware.Words, j));
+                var key = Key(bios, j);
+                if (!index.TryGetValue(key, out var starts))
+                {
+                    index[key] = starts = [];
+                }
+
+                starts.Add(j);
             }
         }
 
-        for (var i = 0; i + CopyWindowWords <= words.Count; i++)
+        var covered = new HashSet<int>();
+        foreach (var image in images)
         {
-            if (!IsUniform(words, i) && biosKeys.Contains(WindowKey(words, i)))
+            for (var i = 0; i + MinRunWords <= image.Count; i++)
             {
-                return true;
+                if (IsUniformRun(image, i) || !index.TryGetValue(Key(image, i), out var starts))
+                {
+                    continue;
+                }
+
+                foreach (var j in starts)
+                {
+                    var run = 0;
+                    while (i + run < image.Count && j + run < bios.Count && image[i + run] == bios[j + run])
+                    {
+                        run++;
+                    }
+
+                    if (run >= minRunWords)
+                    {
+                        for (var k = 0; k < run; k++)
+                        {
+                            covered.Add(j + k);
+                        }
+                    }
+                }
             }
         }
 
-        return false;
+        return covered;
     }
 
-    private static bool IsUniform(IReadOnlyList<uint> words, int start)
+    /// <summary>The BIOS code the candidate images hold together, in bytes, each BIOS word counted once.</summary>
+    public static int BiosCopyBytes(IEnumerable<IReadOnlyList<uint>> images, OpenBiosFirmware firmware) =>
+        BiosCoveredWords(images, firmware).Count * 4;
+
+    /// <summary>True when the candidate images together hold more BIOS code than <see cref="CopyThresholdBytes"/>.</summary>
+    public static bool ExceedsCopyThreshold(IEnumerable<IReadOnlyList<uint>> images, OpenBiosFirmware firmware) =>
+        BiosCopyBytes(images, firmware) > CopyThresholdBytes;
+
+    /// <summary>A single image's verdict, for a single input.</summary>
+    public static bool ContainsBiosCopy(IReadOnlyList<uint> words, OpenBiosFirmware firmware) =>
+        ExceedsCopyThreshold([words], firmware);
+
+    private static bool IsUniformRun(IReadOnlyList<uint> words, int start)
     {
-        for (var k = 1; k < CopyWindowWords; k++)
+        for (var k = 1; k < MinRunWords; k++)
         {
             if (words[start + k] != words[start])
             {
@@ -186,27 +239,21 @@ public static class BiosAddressGuard
         return true;
     }
 
-    private static ulong WindowKey(IReadOnlyList<uint> words, int start)
-    {
-        var bytes = new byte[CopyWindowWords * 4];
-        for (var k = 0; k < CopyWindowWords; k++)
-        {
-            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(k * 4), words[start + k]);
-        }
-
-        return BinaryPrimitives.ReadUInt64LittleEndian(SHA256.HashData(bytes));
-    }
+    private static (uint, uint, uint, uint) Key(IReadOnlyList<uint> words, int start) =>
+        (words[start], words[start + 1], words[start + 2], words[start + 3]);
 
     /// <summary>The plan and dispatch stage: no static or loaded block may start inside the BIOS range.</summary>
-    public static void RequireNoBiosCode(RecompilerIrProgram program, LoadedCodeTable loaded)
+    public static void RequireNoBiosCode(RecompilerIrProgram program, LoadedCodeTable loaded, string stage)
     {
         ArgumentNullException.ThrowIfNull(program);
         ArgumentNullException.ThrowIfNull(loaded);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stage);
         foreach (var block in program.Blocks)
         {
             if (IsBiosAddress(block.EntryPc))
             {
-                throw new InvalidOperationException($"a compiled block at 0x{block.EntryPc:X8} lies in the BIOS (Issue #B2); the BIOS is never translated.");
+                throw new InvalidOperationException(
+                    $"a compiled block at 0x{block.EntryPc:X8} lies in the BIOS (Issue #B2); the BIOS is never translated. [stage: {stage}]");
             }
         }
 
@@ -215,7 +262,8 @@ public static class BiosAddressGuard
             var block = version.Block;
             if (OverlapsBios(block.EntryPc, (ulong)Math.Max(1, block.RetiredInstructionCount) * 4))
             {
-                throw new InvalidOperationException($"a loaded block at 0x{block.EntryPc:X8} overlaps the BIOS (Issue #B2); the BIOS is never translated.");
+                throw new InvalidOperationException(
+                    $"a loaded block at 0x{block.EntryPc:X8} overlaps the BIOS (Issue #B2); the BIOS is never translated. [stage: {stage}]");
             }
         }
     }

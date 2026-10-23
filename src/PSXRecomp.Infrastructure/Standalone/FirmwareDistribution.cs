@@ -51,7 +51,7 @@ public sealed record FirmwareAotPlan(
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
         var program = new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>());
-        BiosGuardWiring.Run(BiosGuardWiring.Plan, () => BiosAddressGuard.RequireNoBiosCode(program, loaded));
+        BiosGuardWiring.Run(BiosGuardWiring.Plan, () => BiosAddressGuard.RequireNoBiosCode(program, loaded, BiosGuardWiring.Plan));
         return new FirmwareAotPlan(program, loaded, observed);
     }
 }
@@ -394,7 +394,7 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
             }
 
-            BiosGuardWiring.Run(BiosGuardWiring.Dispatch, () => BiosAddressGuard.RequireNoBiosCode(plan.Program, plan.LoadedCode));
+            BiosGuardWiring.Run(BiosGuardWiring.Dispatch, () => BiosAddressGuard.RequireNoBiosCode(plan.Program, plan.LoadedCode, BiosGuardWiring.Dispatch));
             var source = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
                 OpenBiosFirmware.ResetVector, [], hostBridge: true,
@@ -588,6 +588,31 @@ public static class FirmwareRuntimeLauncher
             : null;
     }
 
+    /// <summary>
+    /// Reads the BIOS the run was given and classifies it from the bytes it loaded (Issue #B2, MAJOR-1, MEDIUM-3). The label is
+    /// decided by the digest alone; the packaging-time declaration only produces a warning when the run does not confirm it. The
+    /// registries are parameters so a test can inject them; the run passes none.
+    /// </summary>
+    public static (byte[] Bytes, string Sha256, string Label) LoadAndClassify(
+        string biosPath,
+        string? declared,
+        TextWriter error,
+        IReadOnlySet<string>? verified = null,
+        IReadOnlySet<string>? synthetic = null)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        var (bytes, sha256) = OpenBiosRomInput.Read(biosPath);
+        var label = BiosProvenance.Classify(
+            sha256, verified ?? BiosProvenance.VerifiedOpenBiosSha256, synthetic ?? BiosProvenance.KnownSyntheticSha256);
+        var warning = BiosProvenance.DeclarationWarning(declared, label);
+        if (warning is not null)
+        {
+            error.WriteLine(warning);
+        }
+
+        return (bytes, sha256, label);
+    }
+
     public static int Run(
         RuntimeHostManifest host,
         string runtimeDirectory,
@@ -613,13 +638,7 @@ public static class FirmwareRuntimeLauncher
                     $"Set {RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable} to the path of your own OpenBIOS image; none is shipped with this distribution.");
             }
 
-            var (rom, romSha256) = OpenBiosRomInput.Read(biosPath);
-            var biosClassification = BiosProvenance.Classify(romSha256);
-            var declarationWarning = BiosProvenance.DeclarationWarning(host.BiosProvenance, biosClassification);
-            if (declarationWarning is not null)
-            {
-                error.WriteLine(declarationWarning);
-            }
+            var (rom, romSha256, biosClassification) = FirmwareRuntimeLauncher.LoadAndClassify(biosPath, host.BiosProvenance, error);
             var firmware = OpenBiosFirmware.FromBytes(rom);
             var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
@@ -737,6 +756,7 @@ public static class FirmwareRuntimeLauncher
                 state = result.State.ToString(),
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
                 diagnosticCode = result.DiagnosticCode,
+                diagnosticMessage = result.DiagnosticMessage,
                 mixedFallback = host.MixedFallback,
                 fallbackSegmentInstructionBudget = host.MixedFallback ? host.FallbackSegmentInstructionBudget : (uint?)null,
                 fallbackMaxTransitions = host.MixedFallback ? host.FallbackMaxTransitions : (uint?)null,

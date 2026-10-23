@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Infrastructure.Standalone;
@@ -34,18 +35,19 @@ public static class BiosProvenance
     /// because its provenance and reproducibility have not been independently verified. Register a value only with its procedure
     /// and its independent verification recorded in the docs.
     /// </summary>
-    public static IReadOnlySet<string> VerifiedOpenBiosSha256 { get; } = new HashSet<string>(StringComparer.Ordinal);
+    public static IReadOnlySet<string> VerifiedOpenBiosSha256 { get; } =
+        ImmutableHashSet<string>.Empty.WithComparer(StringComparer.Ordinal);
 
     /// <summary>
     /// The digests of this project's deterministic test stubs (not BIOS images): the SyntheticRom test image, the reproducible
     /// BIOS-shaped random image, and the RomWithGame stub. These are the only images labelled <c>openbios-synthetic</c>.
     /// </summary>
-    public static IReadOnlySet<string> KnownSyntheticSha256 { get; } = new HashSet<string>(StringComparer.Ordinal)
+    public static IReadOnlySet<string> KnownSyntheticSha256 { get; } = ImmutableHashSet.CreateRange(StringComparer.Ordinal, new[]
     {
         "09948e1cfb2a76480f75179545ebe88f7bc4e40b3a6d0e946fe15e28a46d5d58",
         "53e39c65cc96541f8f6dc4f31de32e7ba47c48b271f30387b0396580fe1fe5a4",
         "085070b4ceede85ce720083b1d3c4e6363a683f3b0a0351f3d354539669e852e",
-    };
+    });
 
     /// <summary>The product classification, with the registries above.</summary>
     public static string Classify(string sha256) => Classify(sha256, VerifiedOpenBiosSha256, KnownSyntheticSha256);

@@ -87,7 +87,7 @@ public sealed class BiosGenerationStageTests : IDisposable
             OpenBiosFirmware.ResetVector, words, OpenBiosFirmware.ResetVector, [OpenBiosFirmware.ResetVector]).Program;
         injected.Blocks.Should().NotBeEmpty("the injection carries real BIOS blocks");
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosCode(injected, LoadedCodeTable.Empty)))
+        ((Action)(() => BiosAddressGuard.RequireNoBiosCode(injected, LoadedCodeTable.Empty, "plan")))
             .Should().Throw<InvalidOperationException>().WithMessage("*lies in the BIOS*");
     }
 
@@ -100,7 +100,7 @@ public sealed class BiosGenerationStageTests : IDisposable
         var loaded = new LoadedCodeTable([block]);
         loaded.Blocks.Should().NotBeEmpty("the injection carries a real loaded block in the BIOS range");
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosCode(new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>()), loaded)))
+        ((Action)(() => BiosAddressGuard.RequireNoBiosCode(new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>()), loaded, "plan")))
             .Should().Throw<InvalidOperationException>().WithMessage("*overlaps the BIOS*");
     }
 
