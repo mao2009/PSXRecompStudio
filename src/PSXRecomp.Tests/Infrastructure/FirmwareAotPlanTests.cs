@@ -138,6 +138,42 @@ public sealed class FirmwareAotPlanTests
         dispatch.Source!.Should().NotContain("recompiler_block_0xBFC", "no BIOS block function reaches the generated source");
     }
 
+    /// <summary>
+    /// Issue #B2 (review: the exclusion is checked at the generation entry, not only in the output): the standalone source
+    /// generated for an external BIOS names no BIOS block at a ROM address, in either the physical or the mapped range, and
+    /// carries the external-image flag with an empty embedded image. The BIOS load address and the reset PC appear only as
+    /// data (the image's load address and the initial PC), never as a block.
+    /// </summary>
+    [Fact]
+    public void TheStandaloneSource_ForAnExternalBios_NamesNoBiosBlockInEitherRomRange()
+    {
+        using var dir = new TempDirectory();
+        var rom = SyntheticRom();
+        dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
+        dir.WriteFile("aot/images.txt", Text("# no images\n"));
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom), dir.Combine("aot", "rom.roots"), 64, dir.Combine("aot", "images.txt"),
+            new RawCdSectorSource(new byte[2352]));
+
+        var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
+        dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
+        var standalone = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, 1000, [],
+            OpenBiosFirmware.ResetVector, [], hostBridge: true, directLaunchHostRelativePath: "runtime/host", externalBios: true);
+        standalone.Success.Should().BeTrue(standalone.DiagnosticMessage);
+
+        var source = standalone.Source!;
+        source.Should().Contain("static const int embedded_bios_external = 1;");
+        source.Should().Contain("static const uint32_t embedded_image_len = 0u;");
+        foreach (var block in new[] { "recompiler_block_0xBFC", "recompiler_block_0x1FC", "recompiler_block_0x9FC" })
+        {
+            source.Should().NotContain(block, "no BIOS block function reaches the generated standalone source");
+        }
+
+        dispatch.Source!.Should().NotContain("recompiler_block_0xBFC");
+        dispatch.Source!.Should().NotContain("recompiler_block_0x1FC");
+    }
+
     [Fact]
     public void RootsFile_RejectsAnInvalidLineAsInvalidData()
     {

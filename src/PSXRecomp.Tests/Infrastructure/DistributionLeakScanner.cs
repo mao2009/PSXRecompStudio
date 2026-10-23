@@ -31,11 +31,14 @@ internal static class DistributionLeakScanner
         RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// The build root the .NET SDK's own apphost template was produced under (Microsoft's CI). The template is copied verbatim
-    /// into every framework-dependent host, and it is not a developer's path. It is the single exemption, and it is reported
-    /// as a residual (the host would need <c>UseAppHost=false</c> to drop it).
+    /// The single exemption (owner ruling, Issue #B2). The .NET SDK's apphost template, copied verbatim into
+    /// <c>runtime/PSXRecomp.RuntimeHost.exe</c>, names the Microsoft CI build root <c>D:\a\_work\1\s\</c> where it was produced.
+    /// That is not a developer's path. The exemption is the exact template path string below, matched case-insensitively and
+    /// only in that one file; any other string under that root, and the same string in any other file, is flagged.
+    /// Residual: removing it needs <c>UseAppHost=false</c>, which is not done.
     /// </summary>
-    private const string SdkApphostBuildRoot = @"D:\a\_work\1\s\";
+    internal const string ApphostFileName = "PSXRecomp.RuntimeHost.exe";
+    internal const string ApphostTemplatePath = @"D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\";
 
     /// <summary>
     /// The text a file may hold under each encoding a path can appear in: Latin-1 (byte-per-character, every offset), and
@@ -51,6 +54,14 @@ internal static class DistributionLeakScanner
         }
     }
 
+    /// <summary>True when <paramref name="match"/> is the exempt apphost template path, in the one file that carries it.</summary>
+    private static bool IsExemptApphostPath(string name, string match)
+    {
+        var normalized = name.Replace('\\', '/');
+        return normalized.EndsWith("runtime/" + ApphostFileName, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(match, ApphostTemplatePath, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>The first file that names an absolute developer path under any text view, or null.</summary>
     public static string? FindAbsolutePath(IEnumerable<(string Name, byte[] Bytes)> files)
     {
@@ -61,7 +72,7 @@ internal static class DistributionLeakScanner
             {
                 foreach (Match match in AbsolutePath.Matches(text))
                 {
-                    if (!match.Value.StartsWith(SdkApphostBuildRoot, StringComparison.OrdinalIgnoreCase))
+                    if (!IsExemptApphostPath(name, match.Value))
                     {
                         return $"{name} names an absolute developer path: '{match.Value}'";
                     }

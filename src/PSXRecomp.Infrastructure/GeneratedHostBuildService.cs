@@ -95,6 +95,9 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");
         }
 
+        // The object file is an internal step of the build: once linked, it is not left in the output (Issue #B2).
+        File.Delete(objectPath);
+
         var resolvedBinaryPath = ResolveBinaryPath(binaryPath);
         if (!File.Exists(resolvedBinaryPath))
         {

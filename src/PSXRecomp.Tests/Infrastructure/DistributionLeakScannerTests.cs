@@ -112,14 +112,37 @@ public sealed class DistributionLeakScannerTests
     }
 
     [Fact]
-    public void TheSdkApphostTemplatePath_IsTheOnlyExemption_AndOnlyItsOwnRoot()
+    public void TheApphostTemplatePath_IsExemptOnlyInTheApphostFile_ExactAndCaseInsensitive()
     {
-        DistributionLeakScanner.FindAbsolutePath([("runtime/host.exe", Latin1(@"D:\a\_work\1\s\src\runtime\artifacts\obj\standalone\"))])
-            .Should().BeNull("the .NET SDK apphost template's own build root is exempt");
-        DistributionLeakScanner.FindAbsolutePath([("runtime/host.exe", Latin1(@"D:\a\_work\2\s\x"))])
-            .Should().NotBeNull("another root on the same machine is not the template");
-        DistributionLeakScanner.FindAbsolutePath([("runtime/host.exe", Latin1(@"C:\Prog\winlibs_staging_ucrt\bin"))])
-            .Should().NotBeNull("the MinGW toolchain path is never exempt");
+        var template = DistributionLeakScanner.ApphostTemplatePath;
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", Latin1(template))])
+            .Should().BeNull("the exact SDK apphost template path, in its own file, is the one exemption");
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", Latin1(template.ToLowerInvariant()))])
+            .Should().BeNull("the match is case-insensitive");
+        DistributionLeakScanner.FindAbsolutePath([("runtime/other.exe", Latin1(template))])
+            .Should().NotBeNull("the same string in any other file is flagged");
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", Latin1(@"D:\a\_work\1\s\src\other\x\"))])
+            .Should().NotBeNull("another path under the same root is not the template");
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", Latin1(@"D:\a\_work\2\s\x\"))])
+            .Should().NotBeNull("another CI root is not exempt");
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", Latin1(@"C:\Prog\winlibs_staging_ucrt\bin"))])
+            .Should().NotBeNull("a toolchain path is never exempt");
+    }
+
+    [Fact]
+    public void TheApphostTemplatePath_IsExemptInUtf16Too_OnlyInItsOwnFile()
+    {
+        var wide = Encoding.Unicode.GetBytes(DistributionLeakScanner.ApphostTemplatePath);
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", wide)]).Should().BeNull();
+        DistributionLeakScanner.FindAbsolutePath([("runtime/other.exe", wide)]).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ApphostExemption_DoesNotCoverAPrefixOfTheTemplate()
+    {
+        var truncated = DistributionLeakScanner.ApphostTemplatePath[..^"standalone\\".Length];
+        DistributionLeakScanner.FindAbsolutePath([("runtime/PSXRecomp.RuntimeHost.exe", Latin1(truncated))])
+            .Should().NotBeNull("the exemption is the full template path, not its root");
     }
 
     [Fact]
