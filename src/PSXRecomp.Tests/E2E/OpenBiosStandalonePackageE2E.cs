@@ -329,21 +329,28 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 #pragma warning restore AARC003
     }
 
-    /// <summary>A window carries BIOS content only when it holds at least eight distinct byte values; padding and sparse words do not.</summary>
+    /// <summary>
+    /// A window carries BIOS content only when it is neither padding nor text: fewer than eight distinct byte values, or
+    /// at least twelve printable ASCII bytes, is common to any binary (a digit table, a string) and proves nothing.
+    /// </summary>
     private static bool IsPaddingWindow(byte[] bytes, int offset)
     {
         Span<bool> seen = stackalloc bool[256];
         var distinct = 0;
+        var printable = 0;
         for (var k = 0; k < 16; k++)
         {
-            if (!seen[bytes[offset + k]])
+            var b = bytes[offset + k];
+            if (!seen[b])
             {
-                seen[bytes[offset + k]] = true;
+                seen[b] = true;
                 distinct++;
             }
+
+            if (b is >= 0x20 and <= 0x7E) printable++;
         }
 
-        return distinct < 8;
+        return distinct < 8 || printable >= 12;
     }
 
     /// <summary>
@@ -357,11 +364,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         needle.Should().Contain(static b => b != 0, "the probe window must hold BIOS code, not padding");
         var digest = OpenBiosRomInput.Sha256Hex(rom);
 
-        // Every 16-byte window of the BIOS (uniform windows such as padding are skipped) as a set.
-        var romWindows = new HashSet<(ulong, ulong)>();
+        // Every informative 16-byte window of the BIOS, with the offset it occurs at in the BIOS.
+        var romWindows = new Dictionary<(ulong, ulong), int>();
         for (var i = 0; i + 16 <= rom.Length; i++)
         {
-            if (!IsPaddingWindow(rom, i)) romWindows.Add((BitConverter.ToUInt64(rom, i), BitConverter.ToUInt64(rom, i + 8)));
+            if (!IsPaddingWindow(rom, i)) romWindows.TryAdd((BitConverter.ToUInt64(rom, i), BitConverter.ToUInt64(rom, i + 8)), i);
         }
 
         foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
@@ -370,16 +377,17 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             bytes.AsSpan().IndexOf(needle.AsSpan()).Should().Be(-1, $"{Path.GetFileName(file)} must not contain BIOS bytes");
             Encoding.Latin1.GetString(bytes).Should().NotContain(digest, $"{Path.GetFileName(file)} must not contain the BIOS digest");
 
-            var hits = 0;
-            for (var i = 0; i + 16 <= bytes.Length && hits == 0; i++)
+            for (var i = 0; i + 16 <= bytes.Length; i++)
             {
-                if (!IsPaddingWindow(bytes, i) && romWindows.Contains((BitConverter.ToUInt64(bytes, i), BitConverter.ToUInt64(bytes, i + 8))))
+                if (IsPaddingWindow(bytes, i)) continue;
+                var key = (BitConverter.ToUInt64(bytes, i), BitConverter.ToUInt64(bytes, i + 8));
+                if (romWindows.TryGetValue(key, out var romOffset))
                 {
-                    hits++;
+                    Assert.Fail(
+                        $"{Path.GetFileName(file)} contains a 16-byte window of the BIOS: file offset 0x{i:X}, BIOS offset 0x{romOffset:X}, " +
+                        $"bytes {Convert.ToHexString(bytes, i, 16)}");
                 }
             }
-
-            hits.Should().Be(0, $"{Path.GetFileName(file)} must not contain any 16-byte window of the BIOS image");
         }
 #pragma warning restore AARC003
     }
@@ -414,10 +422,14 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var error = new StringWriter();
         var exit = Program.Execute(
             ["package", discPath, "--bios", "openbios", "--bios-rom", romSource!, "--aot-dir", aot,
-             "--instruction-budget", "2000000", "--run-timeout-seconds", "300", "--build-timeout-seconds", "900", "--output", output],
+             "--instruction-budget", "2000000", "--run-timeout-seconds", "300", "--build-timeout-seconds", "900",
+             "--bios-provenance", "user-supplied", "--output", output],
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
         AssertNoAbsoluteDeveloperPaths(output);
+#pragma warning disable AARC003 // Test-layer inspection: the ROM is read in place to check that the distribution holds none of it
+        AssertDistributionHoldsNoBios(output, File.ReadAllBytes(romSource!));
+#pragma warning restore AARC003
 
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         var artifact = Path.Combine(output, "game" + (windows ? ".exe" : ""));
@@ -438,18 +450,17 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 
         var line = stderr.Split('\n').FirstOrDefault(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal));
         line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
+#pragma warning disable AARC003 // Test-layer evidence: the real-ROM gate's run line is echoed for the run log
+        Console.WriteLine("b2-real-openbios-evidence " + line);
+#pragma warning restore AARC003
         var report = JsonDocument.Parse(line!).RootElement;
         report.GetProperty("bios").GetString().Should().Be("openbios");
         report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
         report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run verified the user's ROM by digest");
-        report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the real BIOS runs in the interpreter (Issue #B2); no BIOS code is translated");
+        report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "no BIOS code is translated, and the timed-out run reached no native block (Issue #B2)");
         // Run outcome, reported apart from the wiring above. This is the measured result, not a clean run: the instance
         // hit the wall-clock bound. The test pins it so that any change in the outcome is noticed.
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "measured run outcome (wiring PASS, run RuntimeFailure)");
         report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_TIMEOUT", "measured run outcome: the wall-clock bound");
-#pragma warning disable AARC003 // Test-layer evidence: the real-ROM gate's run line is echoed for the run log, and the ROM is read in place
-        Console.WriteLine("b2-real-openbios-evidence " + line);
-        AssertDistributionHoldsNoBios(output, File.ReadAllBytes(romSource!));
-#pragma warning restore AARC003
     }
 }
