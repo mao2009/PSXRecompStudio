@@ -542,7 +542,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 #pragma warning disable AARC003 // Test-layer: the synthetic disc is written for the packaging run
         var discPath = _dir.WriteFile("disc.bin", disc);
 #pragma warning restore AARC003
-        var output = _dir.Combine("game-bounded");
+        var output = Path.Combine(_dir.CreateSubdirectory("bounded"), "game"); // the artifact is named after its directory
         var (exit, error) = PackageFirmware(
             discPath, romSource!, AotInputs("aot-bounded"), output, "user-supplied",
             "--run-timeout-seconds", "300", "--fallback-segment-budget", "2000000", "--fallback-max-transitions", "1000");
