@@ -718,7 +718,7 @@ Packaged E2E checks (`OpenBiosStandalonePackageE2E`):
   BIOS. Nothing is excused for looking like text or padding; only a window that the non-BIOS baseline (the synthetic run's
   output and the game disc) also holds is excused, and the scan reports how many.
 - No file under the distribution (any extension, the Runtime host and its PDB included) names a user or home path.
-  The generated executable is stripped (`-s`) so that no toolchain build path survives.
+  The generated executable is stripped (`-s`) so that no toolchain build path survives. The one exemption is the .NET SDK apphost template path `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\` in `runtime/PSXRecomp.RuntimeHost.exe`: a Microsoft CI build path, not a developer path. It is matched exactly (case-insensitive) in that one file only, and the tests pin the range (`TheApphostTemplatePath_*`). Removing it needs `UseAppHost=false`, which is not done (owner decision pending).
 - The generated source names no block at a ROM address (`TheBiosIsNeverAheadOfTimeTranslated_...`).
 
 The real-ROM gate (`UserSuppliedOpenBiosRom_WiresTheRealRomAndPinsTheMeasuredRunOutcome`) packages a synthetic disc
