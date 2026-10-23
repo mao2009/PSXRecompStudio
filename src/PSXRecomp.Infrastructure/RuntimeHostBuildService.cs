@@ -85,6 +85,25 @@ public static class RuntimeHostBuildService
         bool selfContained,
         string? targetRid = null,
         TimeSpan? provisionTimeout = null)
+        => Provision("PSXRecomp.RuntimeHost", targetDirectory, selfContained, targetRid, provisionTimeout);
+
+    /// <summary>
+    /// Publishes the packaged GUI host (<c>PSXRecomp.GameWindow</c>, Issue #830) into <paramref name="targetDirectory"/> the same way
+    /// <see cref="ProvisionRuntimeHost"/> publishes the Runtime host. The GUI host is a Windows-subsystem executable.
+    /// </summary>
+    public static RuntimeHostProvisionResult ProvisionGameWindow(
+        string targetDirectory,
+        bool selfContained,
+        string? targetRid = null,
+        TimeSpan? provisionTimeout = null)
+        => Provision("PSXRecomp.GameWindow", targetDirectory, selfContained, targetRid, provisionTimeout);
+
+    private static RuntimeHostProvisionResult Provision(
+        string projectName,
+        string targetDirectory,
+        bool selfContained,
+        string? targetRid,
+        TimeSpan? provisionTimeout)
     {
         if (string.IsNullOrWhiteSpace(targetDirectory))
         {
@@ -100,9 +119,9 @@ public static class RuntimeHostBuildService
         var rid = targetRid ?? RuntimeInformation.RuntimeIdentifier;
         Directory.CreateDirectory(targetDirectory);
 
-        var hostProject = LocateRuntimeHostProject()
+        var hostProject = LocateProject(projectName)
             ?? throw new RuntimeHostProvisionFailed(
-                "The PSXRecomp.RuntimeHost project could not be located; the runtime host must be published from its csproj.",
+                $"The {projectName} project could not be located; it must be published from its csproj.",
                 "RUNTIME_HOST_NOT_FOUND");
 
         // Isolate each provision operation to a unique artifacts output directory to avoid
@@ -177,7 +196,7 @@ public static class RuntimeHostBuildService
 
             // Validate the published layout: the launcher execs the host at the layout's
             // canonical name relative to the distribution root.
-            var hostName = RuntimeHostLayout.HostFileName(rid.StartsWith("win"));
+            var hostName = projectName + (rid.StartsWith("win") ? ".exe" : string.Empty);
             var hostPath = Path.Combine(targetDirectory, hostName);
             if (!File.Exists(hostPath))
             {
@@ -194,20 +213,21 @@ public static class RuntimeHostBuildService
         }
     }
 
-    private static string? LocateRuntimeHostProject()
+    private static string? LocateProject(string projectName)
     {
-        // Walk upward from this assembly's location until a PSXRecomp.RuntimeHost.csproj is found.
+        var csprojName = projectName + ".csproj";
+        // Walk upward from this assembly's location until the project's csproj is found.
         var dir = Path.GetDirectoryName(typeof(RuntimeHostBuildService).Assembly.Location)
             ?? Environment.CurrentDirectory;
         while (dir != null && dir != Path.GetPathRoot(dir))
         {
-            var candidate = Path.Combine(dir, "PSXRecomp.RuntimeHost.csproj");
+            var candidate = Path.Combine(dir, csprojName);
             if (File.Exists(candidate))
             {
                 return candidate;
             }
-            // Also check in PSXRecomp.RuntimeHost subdirectory
-            var subCandidate = Path.Combine(dir, "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj");
+            // Also check in the project's own subdirectory
+            var subCandidate = Path.Combine(dir, projectName, csprojName);
             if (File.Exists(subCandidate))
             {
                 return subCandidate;
@@ -221,13 +241,13 @@ public static class RuntimeHostBuildService
         var relatives = new[]
         {
             // From test project output: bin/Debug/net10.0 -> ../../../../src/PSXRecompRuntimeHost/PSXRecomp.RuntimeHost.csproj
-            Path.Combine(baseDir, "..", "..", "..", "..", "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            Path.Combine(baseDir, "..", "..", "..", "..", "src", projectName, csprojName),
             // From CLI output: bin/Release/net10.0 -> ../../../../src/PSXRecompRuntimeHost/PSXRecomp.RuntimeHost.csproj
-            Path.Combine(baseDir, "..", "..", "..", "..", "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            Path.Combine(baseDir, "..", "..", "..", "..", "src", projectName, csprojName),
             // From solution root
-            Path.Combine(baseDir, "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            Path.Combine(baseDir, "src", projectName, csprojName),
             // Direct from source tree
-            Path.Combine(baseDir, "..", "..", "..", "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"),
+            Path.Combine(baseDir, "..", "..", "..", "src", projectName, csprojName),
         };
         foreach (var rel in relatives)
         {

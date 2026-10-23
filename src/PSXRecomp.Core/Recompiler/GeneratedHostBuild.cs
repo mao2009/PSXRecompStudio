@@ -50,7 +50,8 @@ public sealed record GeneratedHostBuildRequest(
     string OutputDirectory,
     string BinaryName,
     string? CompilerExecutable = null,
-    IReadOnlyList<string>? ExtraCompilerArguments = null);
+    IReadOnlyList<string>? ExtraCompilerArguments = null,
+    IReadOnlyList<string>? ExtraLinkerArguments = null);
 
 /// <summary>The outcome of one <see cref="IGeneratedHostBuildService"/> build.</summary>
 [Domain]

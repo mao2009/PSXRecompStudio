@@ -975,5 +975,80 @@ public sealed class RecompiledArtifactCodeGenTests
             }
         }
     }
+    /// <summary>
+    /// Issue #830 regression guard: the headless direct launch keeps the Runtime host, its manifest argument and the
+    /// unflagged CreateProcessW call, and gets no Job Object. A change that reaches the headless launcher fails here.
+    /// </summary>
+    [Fact]
+    public void GenerateStandalone_HeadlessDirectLaunch_KeepsRuntimeHostManifestLauncher()
+    {
+        var source = GenerateDirectLaunchSource(windowedLaunch: null);
+
+        source.Should().Contain("\"runtime/runtime-host.json\"");
+        source.Should().Contain("\"PSXRecomp.RuntimeHost.exe\"");
+        source.Should().Contain("TRUE, 0, NULL, NULL, &si, &pi");
+        source.Should().NotContain("CREATE_NO_WINDOW");
+        source.Should().NotContain("CreateJobObjectW");
+    }
+
+    /// <summary>
+    /// Issue #830: the windowed direct launch starts the GUI host with the PS-X EXE copy, creates it without a console, and
+    /// ties it to a kill-on-close Job Object so closing the launcher reaps it.
+    /// </summary>
+    [Fact]
+    public void GenerateStandalone_WindowedDirectLaunch_StartsGuiHostWithoutConsoleAndReapsIt()
+    {
+        var source = GenerateDirectLaunchSource(
+            new RecompiledArtifactCodeGen.WindowedLaunch("PSXRecomp.GameWindow.exe", "runtime/runtime-host.json", 15_000_000));
+
+        // The launcher's wait is bounded by the limit it was given, and an unbounded wait is never emitted (Issue #830, MAJOR-1).
+        source.Should().Contain("WaitForSingleObject(pi.hProcess, 15000000u)");
+        source.Should().NotContain("WaitForSingleObject(pi.hProcess, INFINITE)");
+        source.Should().Contain("WAIT_TIMEOUT");
+        source.Should().Contain("report_window_message(L\"The window host did not end within its wait limit");
+        source.Should().Contain("The window host ended with exit code");
+
+        source.Should().Contain("\"PSXRecomp.GameWindow.exe\"");
+        source.Should().Contain("\"runtime/runtime-host.json\"");
+        source.Should().NotContain("\"PSXRecomp.RuntimeHost.exe\"");
+        source.Should().Contain("TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi");
+        source.Should().Contain("CreateJobObjectW(NULL, NULL)");
+        source.Should().Contain("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE");
+        // Fail closed: the job is assigned before the host runs, and every job failure stops the launch with a message box.
+        source.Should().Contain("AssignProcessToJobObject(job, pi.hProcess)");
+        source.Should().Contain("ResumeThread(pi.hThread) == (DWORD)-1");
+        // Every failure before the game runs reaches the message box; none is left to stderr, which a windowed launcher never shows.
+        source.Should().NotContain("error: could not start the runtime host");
+        source.Should().NotContain("error: cannot build command line");
+        source.Should().Contain("report_window_launch_failure(L\"The launcher could not build the window host's command line\"");
+        source.Should().Contain("report_window_launch_failure(");
+        // The dialog is never shown on the launcher's own thread: it runs on a helper thread that the launcher waits for a bounded time
+        // (Issue #830, MEDIUM-1), so an unanswered dialog cannot keep the launcher alive.
+        source.Should().Contain("MessageBoxW(NULL, (const wchar_t*)param, L\"PSXRecomp\", MB_OK | MB_ICONERROR)");
+        source.Should().Contain("dialog = CreateThread(NULL, 0, window_message_thread, (LPVOID)message, 0, NULL);");
+        source.Should().Contain("WaitForSingleObject(dialog, PSX_LAUNCHER_DIALOG_WAIT_MS);");
+        source.Should().Contain("#define PSX_LAUNCHER_DIALOG_WAIT_MS 30000u");
+        source.Should().Contain("CloseHandle(job)");
+    }
+
+    private static string GenerateDirectLaunchSource(RecompiledArtifactCodeGen.WindowedLaunch? windowedLaunch)
+    {
+        var result = RecompiledArtifactCodeGen.GenerateStandalone(
+            GenerateDispatch(),
+            new uint[32],
+            0,
+            0,
+            0x80010000u,
+            1000,
+            [],
+            0x80010000u,
+            [0x00, 0x00, 0x02, 0x34],
+            hostBridge: true,
+            directLaunchHostRelativePath: "runtime/PSXRecomp.RuntimeHost",
+            windowedLaunch: windowedLaunch);
+
+        result.Success.Should().BeTrue();
+        return result.Source!;
+    }
     #pragma warning restore AARC003
 }

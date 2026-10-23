@@ -8,8 +8,8 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
-        // The first argument, if any, is a PS-X EXE file to run; without one the built-in synthetic program runs.
-        App.GameFilePath = args.Length > 0 ? args[0] : null;
+        // The first argument is the packaged distribution's runtime-host.json (Issue #830): the window runs the packaged AOT artifact.
+        App.ManifestPath = args.Length > 0 ? args[0] : null;
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

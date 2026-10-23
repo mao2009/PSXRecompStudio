@@ -44,6 +44,9 @@ public static class RuntimeHostLayout
     /// <summary>The embedded program image sidecar file name, inside <see cref="RuntimeDirectoryName"/>.</summary>
     public const string ImageFileName = "artifact-image.bin";
 
+    /// <summary>The windowed (GUI) host's executable name inside <see cref="RuntimeDirectoryName"/> (Issue #830), with the Windows suffix.</summary>
+    public const string GuiHostFileName = "PSXRecomp.GameWindow.exe";
+
     /// <summary>The human-readable dependency/launch note shipped next to the game executable.</summary>
     public const string ReadmeFileName = "README.txt";
 
