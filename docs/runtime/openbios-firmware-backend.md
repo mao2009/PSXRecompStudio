@@ -687,22 +687,28 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
-#### BIOS mode labels and the real-ROM gate (Issue #B2)
+#### BIOS is never in the distribution; BIOS mode labels (Issue #B2)
 
-The runtime manifest and the run output label the BIOS mode so that an HLE run and a real-ROM OpenBIOS run are never
-conflated. The label is derived from `GuestFirmware`:
+The packaged distribution contains no BIOS bytes, no sidecar image and no BIOS digest. `package --bios openbios` reads
+the ROM once at packaging time to compile its code ahead of time. The generated executable then loads the BIOS at run
+time from the path named by the `PSXRECOMP_BIOS_ROM` environment variable (a 512 KiB image; any other size fails
+closed with exit code 95). The Runtime host reads the same path, and the run reports the SHA-256 of the image it
+actually loaded (`romSha256` on the `firmware-run` line).
 
-- `runtime-host.json` carries `"biosMode": "openbios-rom"` for the firmware distribution and `"biosMode": "hle"` for
-  the legacy HLE-bridge distribution. The parser ignores the field, which is informational.
-- The Runtime host prints `runtime host: bios mode <mode>` on every run, and the `firmware-run` line carries
-  `"biosMode"` next to `"bios"`.
-- The distribution contains no absolute developer path in its text files (`.json`, `.txt`, `.md`); the packaged E2E
-  asserts this.
+- `package --bios-provenance user-supplied|synthetic` records the image's provenance in `runtime-host.json` (default
+  `user-supplied`). The BIOS mode label derives from it:
+  - `openbios-rom`: user-supplied firmware, the real-ROM gate.
+  - `openbios-synthetic`: any other firmware, such as a test stub. It is never labelled as a real OpenBIOS run.
+  - `hle`: the legacy HLE-bridge distribution.
+- The label appears in `runtime-host.json` (`"biosMode"`), in the Runtime host's first line (`runtime host: bios mode <mode>`),
+  and on the `firmware-run` line (`"biosMode"`).
+- The packaged E2E asserts that no file under the distribution contains the first 256 bytes of the supplied BIOS or
+  its SHA-256, and that no text file or the generated executable names a user or home path.
 
-The real-ROM gate (`UserSuppliedOpenBiosRom_PackagesAndRunsNativelyThroughTheRuntimeHost`) packages a synthetic disc
-with a user-supplied OpenBIOS image and runs it. The image is read in place from the `PSXRECOMP_OPENBIOS_ROM`
-environment variable and is never copied into the repository, the tests or the output beyond the runtime sidecar the
-packager already writes. Without the variable (or when it does not name a file) the test is skipped with its reason.
+The real-ROM gate (`UserSuppliedOpenBiosRom_PackagesAndRunsNativelyThroughTheRuntimeHost`) packages a synthetic disc with
+a user-supplied OpenBIOS image, then runs it with `PSXRECOMP_BIOS_ROM` pointing at that same file. The image is read in
+place and is never copied into the repository, the tests or the output. Without `PSXRECOMP_OPENBIOS_ROM` the test is
+skipped with its reason.
 
 ### Remaining acceptance gates
 

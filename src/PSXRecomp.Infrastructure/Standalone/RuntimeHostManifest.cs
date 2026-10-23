@@ -32,6 +32,7 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// <param name="ProgramEnd">The guest PC one past the program image, the natural-exit handoff boundary.</param>
 /// <param name="ResultRegister">The GPR index reported as the observable result (V0 = 2), or null for none.</param>
 /// <param name="RunTimeoutMs">The bounded per-run timeout in milliseconds.</param>
+/// <param name="BiosProvenance">For guest firmware: <see cref="BiosProvenanceUserSupplied"/> or <see cref="BiosProvenanceSynthetic"/>. Null for HLE.</param>
 /// <param name="EntryPc">The guest PC at which the guest's own program begins (the PS-X EXE header entry point for games, or the
 /// firmware load address for guest firmware). The runtime host's run request starts here; it is used for
 /// diagnostics and, on guest firmware, as the execution entry so the firmware's own vectors run first.</param>
@@ -49,22 +50,36 @@ public sealed record RuntimeHostManifest(
     uint ProgramEnd,
     int? ResultRegister,
     int RunTimeoutMs,
-    uint EntryPc)
+    uint EntryPc,
+    string? BiosProvenance = null)
 {
     /// <summary>The schema version this runtime host understands.</summary>
     public const int CurrentSchemaVersion = 1;
 
-    /// <summary>The BIOS mode label of a real, user-supplied OpenBIOS ROM running as guest firmware (Issue #B2).</summary>
+    /// <summary>The provenance of a firmware BIOS the user supplied at packaging time (Issue #B2).</summary>
+    public const string BiosProvenanceUserSupplied = "user-supplied";
+
+    /// <summary>The provenance of a test or synthetic BIOS-shaped image. It is never a real OpenBIOS build.</summary>
+    public const string BiosProvenanceSynthetic = "synthetic";
+
+    /// <summary>The BIOS mode label of a real, user-supplied OpenBIOS ROM running as guest firmware.</summary>
     public const string BiosModeOpenBiosRom = "openbios-rom";
 
-    /// <summary>The BIOS mode label of the project's HLE BIOS bridge. Never conflated with <see cref="BiosModeOpenBiosRom"/>.</summary>
+    /// <summary>The BIOS mode label of a synthetic BIOS-shaped image running as guest firmware. Never a real OpenBIOS run.</summary>
+    public const string BiosModeOpenBiosSynthetic = "openbios-synthetic";
+
+    /// <summary>The BIOS mode label of the project's HLE BIOS bridge. Never conflated with the OpenBIOS modes.</summary>
     public const string BiosModeHle = "hle";
 
     /// <summary>
-    /// The derived BIOS mode, written into the manifest and the run output so an HLE run and a real-ROM OpenBIOS run
-    /// are never mistaken for one another. It is derived from <see cref="GuestFirmware"/>, never configured separately.
+    /// The derived BIOS mode, written into the manifest and the run output so an HLE run, a synthetic firmware run and
+    /// a real-ROM OpenBIOS run are never mistaken for one another. It is derived from <see cref="GuestFirmware"/> and
+    /// <see cref="BiosProvenance"/>. Firmware is labelled <c>openbios-rom</c> only when its provenance is explicitly
+    /// <see cref="BiosProvenanceUserSupplied"/>; any other provenance is labelled <c>openbios-synthetic</c>.
     /// </summary>
-    public string BiosMode => GuestFirmware ? BiosModeOpenBiosRom : BiosModeHle;
+    public string BiosMode => !GuestFirmware
+        ? BiosModeHle
+        : BiosProvenance == BiosProvenanceUserSupplied ? BiosModeOpenBiosRom : BiosModeOpenBiosSynthetic;
 }
 
 /// <summary>Canonical JSON reading/writing for <see cref="RuntimeHostManifest"/>, with fail-closed validation.</summary>
@@ -124,7 +139,11 @@ public static class RuntimeHostManifestJson
         }
 
         RuntimeHostLayout.ValidateManifestArtifactPath(manifest.Artifact);
-        RuntimeHostLayout.ValidateManifestImagePath(manifest.Image);
+        // Guest firmware carries no sidecar image: the BIOS is supplied at run time (Issue #B2).
+        if (!(manifest.GuestFirmware && string.IsNullOrEmpty(manifest.Image)))
+        {
+            RuntimeHostLayout.ValidateManifestImagePath(manifest.Image);
+        }
 
         if (manifest.BlockEntryPcs is not null)
         {

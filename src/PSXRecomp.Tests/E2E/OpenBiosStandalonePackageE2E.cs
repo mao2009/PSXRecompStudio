@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.Infrastructure;
@@ -105,7 +106,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var error = new StringWriter();
         var exit = Program.Execute(
             ["package", discPath, "--bios", "openbios", "--bios-rom", romPath, "--aot-dir", aot, "--code-bytes", "64",
-             "--instruction-budget", "2000", "--run-timeout-seconds", "120", "--output", output],
+             "--instruction-budget", "2000", "--run-timeout-seconds", "120", "--bios-provenance", "synthetic", "--output", output],
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
 
@@ -120,7 +121,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 #pragma warning disable AARC003 // Test-layer inspection of the produced distribution layout
         File.Exists(artifact).Should().BeTrue("the game executable sits at the distribution root");
         File.Exists(Path.Combine(runtime, RuntimeHostLayout.HostFileName(windows))).Should().BeTrue("the shared Runtime host is bundled");
-        File.ReadAllBytes(Path.Combine(runtime, RuntimeHostLayout.ImageFileName)).Should().Equal(rom, "the ROM sidecar is exactly the supplied ROM");
+        File.Exists(Path.Combine(runtime, RuntimeHostLayout.ImageFileName)).Should().BeFalse("the BIOS is never copied into the distribution (Issue #B2)");
         File.Exists(Path.Combine(runtime, "disc", "disc.bin")).Should().BeTrue();
         var host = RuntimeHostManifestJson.Parse(File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)));
         host.GuestFirmware.Should().BeTrue();
@@ -131,16 +132,16 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         host.BlockEntryPcs.Should().NotBeEmpty().And.NotContain(GameEntry, "block entry PCs are the ROM's static blocks only; RAM-placed entries are guarded versions");
         var boot = FirmwareBootManifestJson.Parse(File.ReadAllText(Path.Combine(runtime, FirmwareBootManifest.FileName)));
         boot.BiosBackend.Should().Be("openbios");
-        boot.RomSha256.Should().Be(OpenBiosRomInput.Sha256Hex(rom));
         boot.AotInputs.Select(static i => i.Path).Should().Equal(
             ["firmware/images.txt", "firmware/rom.roots"],
             "every AOT input — rom.roots, images.txt and the files they reference — is copied into the distribution and pinned by digest");
         File.ReadAllText(Path.Combine(runtime, "firmware", "images.txt")).Should().Be("# no RAM-placed code images\n",
             "the images sidecar is the packaged copy the run rebuilds the plan from");
         File.ReadAllText(Path.Combine(output, RuntimeHostLayout.ReadmeFileName)).Should().Contain("#730");
-        File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)).Should().Contain("\"biosMode\": \"openbios-rom\"",
-            "the runtime manifest labels the run as a real OpenBIOS ROM, never as HLE");
-        AssertNoAbsoluteDeveloperPaths(output);
+        File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)).Should().Contain("\"biosMode\": \"openbios-synthetic\"",
+            "a synthetic BIOS is labelled openbios-synthetic, never openbios-rom or HLE");
+        AssertDistributionHoldsNoBios(output, rom);
+        AssertNoAbsoluteDeveloperPaths(output, artifact);
 
         using var process = Process.Start(new ProcessStartInfo(artifact)
         {
@@ -148,10 +149,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romPath },
         })!;
         var stderrTask = process.StandardError.ReadToEndAsync();
         process.StandardOutput.ReadToEndAsync();
-        process.WaitForExit(120_000).Should().BeTrue("the bounded run must finish");
+        WaitOrKill(process, 120_000, "the bounded run must finish");
         var stderr = stderrTask.GetAwaiter().GetResult();
         var processExit = process.ExitCode;
 #pragma warning restore AARC003
@@ -159,7 +161,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         processExit.Should().Be(2, "the instruction budget ends the run: " + stderr);
         var report = JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement;
         report.GetProperty("bios").GetString().Should().Be("openbios");
-        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic");
         report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(rom));
         report.GetProperty("state").GetString().Should().Be("BudgetExhausted");
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue("the manifest's fallback policy is reported on the firmware-run line");
@@ -208,7 +210,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var exit = Program.Execute(
             ["package", discPath, "--bios", "openbios", "--bios-rom", romPath, "--aot-dir", aot, "--code-bytes", "256",
              "--instruction-budget", "2000", "--run-timeout-seconds", "120", "--build-timeout-seconds", "180",
-             "--fallback-segment-budget", "5000", "--fallback-max-transitions", "40", "--output", output],
+             "--fallback-segment-budget", "5000", "--fallback-max-transitions", "40", "--bios-provenance", "synthetic", "--output", output],
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
 
@@ -239,10 +241,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romPath },
         })!;
         var stderrTask = process.StandardError.ReadToEndAsync();
         process.StandardOutput.ReadToEndAsync();
-        process.WaitForExit(120_000).Should().BeTrue("the bounded run must finish");
+        WaitOrKill(process, 120_000, "the bounded run must finish");
         var stderr = stderrTask.GetAwaiter().GetResult();
         var processExit = process.ExitCode;
 
@@ -274,10 +277,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             UseShellExecute = false,
             CreateNoWindow = true,
             ArgumentList = { "--diagnostics", diagnosticsPath, hostDiagnostics },
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romPath },
         })!;
         var hostStderrTask = hostProcess.StandardError.ReadToEndAsync();
         hostProcess.StandardOutput.ReadToEndAsync();
-        hostProcess.WaitForExit(120_000).Should().BeTrue("the bounded host run must finish");
+        WaitOrKill(hostProcess, 120_000, "the bounded host run must finish");
         var hostStderr = hostStderrTask.GetAwaiter().GetResult();
         hostProcess.ExitCode.Should().Be(2, "the host classifies the budget stop identically: " + hostStderr);
         File.Exists(diagnosticsPath).Should().BeTrue("the host wrote the Issue #763 stop diagnostic for the firmware run");
@@ -295,17 +299,54 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     /// <summary>Environment variable naming a locally built OpenBIOS ROM. The file is read in place, never copied or committed.</summary>
     public const string UserOpenBiosRomVariable = "PSXRECOMP_OPENBIOS_ROM";
 
-    private static readonly Regex AbsolutePathPattern = new(@"(?<![A-Za-z])[A-Za-z]:(\\|[\/])|/(home|Users)/", RegexOptions.CultureInvariant);
-
-    /// <summary>No text file the packaging writes may name an absolute developer path (the output must be relocatable).</summary>
-    private static void AssertNoAbsoluteDeveloperPaths(string root)
+#pragma warning disable AARC003 // Test-layer process control: a run that does not finish is killed, never left behind
+    private static void WaitOrKill(Process process, int milliseconds, string because)
     {
-#pragma warning disable AARC003 // Test-layer inspection of the produced distribution text
+        if (!process.WaitForExit(milliseconds))
+        {
+            process.Kill(entireProcessTree: true);
+        }
+
+        process.HasExited.Should().BeTrue(because);
+    }
+#pragma warning restore AARC003
+
+    private static readonly Regex AbsolutePathPattern = new(@"(?i)(?<![a-z])[a-z]:[\\/]+users[\\/]|/(home|users)/", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// No text file the packaging writes, and no byte of the generated executable, may name an absolute developer path
+    /// (the output must be relocatable). The executable is scanned as Latin-1 text.
+    /// </summary>
+    private static void AssertNoAbsoluteDeveloperPaths(string root, string artifact)
+    {
+#pragma warning disable AARC003 // Test-layer inspection of the produced distribution text and executable
         foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
                      .Where(static f => Path.GetExtension(f) is ".json" or ".txt" or ".md"))
         {
             AbsolutePathPattern.IsMatch(File.ReadAllText(file)).Should().BeFalse(
                 $"{Path.GetFileName(file)} must not contain an absolute path");
+        }
+
+        AbsolutePathPattern.IsMatch(Encoding.Latin1.GetString(File.ReadAllBytes(artifact))).Should().BeFalse(
+            "the generated executable must not contain an absolute path");
+#pragma warning restore AARC003
+    }
+
+    /// <summary>
+    /// Issue #B2: the distribution holds no BIOS content. No file under it may contain the first 256 bytes of the supplied
+    /// BIOS image (a run of its code words), nor the image's SHA-256 digest.
+    /// </summary>
+    private static void AssertDistributionHoldsNoBios(string root, byte[] rom)
+    {
+#pragma warning disable AARC003 // Test-layer inspection of the produced distribution bytes
+        var needle = rom.AsSpan(0, 256).ToArray();
+        needle.Should().Contain(static b => b != 0, "the probe window must hold BIOS code, not padding");
+        var digest = OpenBiosRomInput.Sha256Hex(rom);
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            var bytes = File.ReadAllBytes(file);
+            bytes.AsSpan().IndexOf(needle.AsSpan()).Should().Be(-1, $"{Path.GetFileName(file)} must not contain BIOS bytes");
+            Encoding.Latin1.GetString(bytes).Should().NotContain(digest, $"{Path.GetFileName(file)} must not contain the BIOS digest");
         }
 #pragma warning restore AARC003
     }
@@ -343,7 +384,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
              "--instruction-budget", "2000000", "--run-timeout-seconds", "300", "--build-timeout-seconds", "900", "--output", output],
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
-        AssertNoAbsoluteDeveloperPaths(output);
+        AssertNoAbsoluteDeveloperPaths(output, Path.Combine(output, "game" + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ".exe" : "")));
 
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         var artifact = Path.Combine(output, "game" + (windows ? ".exe" : ""));
@@ -354,10 +395,11 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romSource! },
         })!;
         var stderrTask = process.StandardError.ReadToEndAsync();
         process.StandardOutput.ReadToEndAsync();
-        process.WaitForExit(600_000).Should().BeTrue("the bounded real-ROM run must finish");
+        WaitOrKill(process, 600_000, "the bounded real-ROM run must finish");
         var stderr = stderrTask.GetAwaiter().GetResult();
 #pragma warning restore AARC003
 
@@ -368,5 +410,9 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
         report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run verified the user's ROM by digest");
         report.GetProperty("nativeInstructions").GetUInt64().Should().BeGreaterThan(0, "the real OpenBIOS ROM runs natively");
+#pragma warning disable AARC003 // Test-layer evidence: the real-ROM gate's run line is echoed for the run log, and the ROM is read in place
+        Console.WriteLine("b2-real-openbios-evidence " + line);
+        AssertDistributionHoldsNoBios(output, File.ReadAllBytes(romSource!));
+#pragma warning restore AARC003
     }
 }

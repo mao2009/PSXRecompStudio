@@ -294,7 +294,7 @@ public sealed class RuntimeHostLoadedCodeReportTests
         RuntimeHostLayout.ImageFileName, [], 0x80020000u, null, 1000, 0x80010000u));
 
     private static string BootText(string discFile) => FirmwareBootManifestJson.Serialize(new FirmwareBootManifest(
-        FirmwareBootManifest.CurrentSchemaVersion, "openbios", new string('a', 64), 64, "firmware/rom.roots", "firmware/images.txt",
+        FirmwareBootManifest.CurrentSchemaVersion, "openbios", 64, "firmware/rom.roots", "firmware/images.txt",
         discFile, new string('b', 64),
         [new FirmwareAotInput("firmware/rom.roots", new string('c', 64)), new FirmwareAotInput("firmware/images.txt", new string('d', 64))]));
 

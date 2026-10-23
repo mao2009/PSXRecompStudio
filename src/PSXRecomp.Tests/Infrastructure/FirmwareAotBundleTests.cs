@@ -193,7 +193,7 @@ public sealed class FirmwareAotBundleTests
     public void Manifest_RequiresAotInputsThatAreConfinedHashedAndIncludeTheRootsAndImagesFiles()
     {
         var valid = new FirmwareBootManifest(
-            FirmwareBootManifest.CurrentSchemaVersion, "openbios", new string('a', 64), 64,
+            FirmwareBootManifest.CurrentSchemaVersion, "openbios", 64,
             "firmware/rom.roots", "firmware/images.txt", "disc/disc.chd", new string('b', 64),
             [new("firmware/rom.roots", new string('c', 64)), new("firmware/images.txt", new string('d', 64))]);
         FirmwareBootManifestJson.Parse(FirmwareBootManifestJson.Serialize(valid)).AotInputs.Should().HaveCount(2);

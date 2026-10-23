@@ -303,7 +303,8 @@ public sealed record FirmwareDistributionRequest(
     bool MixedFallback = true,
     uint FallbackSegmentInstructionBudget = uint.MaxValue,
     uint FallbackMaxTransitions = uint.MaxValue,
-    TimeSpan? BuildTimeout = null);
+    TimeSpan? BuildTimeout = null,
+    string BiosProvenance = RuntimeHostManifest.BiosProvenanceUserSupplied);
 
 /// <summary>
 /// <c>psxrecomp package --bios openbios</c>: builds a standalone distribution whose native artifact IS the BIOS
@@ -332,7 +333,7 @@ public static class FirmwareDistributionBuilder
         // and hashed; then the AOT inputs and the disc are copied into a staging directory and the plan is derived
         // from those frozen copies. The compiled code and the distributed data are therefore the same snapshot,
         // and a failure at any step leaves no partial distribution and never touches a pre-existing output.
-        var (rom, romHash) = OpenBiosRomInput.Read(request.RomPath, request.ExpectedRomSha256);
+        var (rom, _) = OpenBiosRomInput.Read(request.RomPath, request.ExpectedRomSha256);
         var firmware = OpenBiosFirmware.FromBytes(rom);
         var outputDir = Path.GetFullPath(request.OutputDirectory);
         var aotDir = Path.GetFullPath(request.AotDirectory);
@@ -390,8 +391,8 @@ public static class FirmwareDistributionBuilder
 
             var source = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
-                OpenBiosFirmware.ResetVector, rom, hostBridge: true,
-                directLaunchHostRelativePath: RuntimeHostLayout.HostRelativePath);
+                OpenBiosFirmware.ResetVector, [], hostBridge: true,
+                directLaunchHostRelativePath: RuntimeHostLayout.HostRelativePath, externalBios: true);
             if (!source.Success)
             {
                 throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
@@ -415,13 +416,11 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(exception.Message, exception);
             }
 
-            // Sidecars. The ROM is the program image the host's interpreter fallback and device RAM read.
-            File.WriteAllBytes(Path.Combine(stagingRuntimeDir, RuntimeHostLayout.ImageFileName), rom);
+            // No BIOS bytes, digest or sidecar are written (Issue #B2): the run names the BIOS by path (PSXRECOMP_BIOS_ROM).
 
             var boot = new FirmwareBootManifest(
                 FirmwareBootManifest.CurrentSchemaVersion,
                 BiosBackendSelection.NameOf(BiosBackendKind.OpenBios),
-                romHash,
                 request.CodeBytes,
                 $"{FirmwareBootManifest.FirmwareDirectory}/{FirmwareAotBundle.RootsFileName}",
                 $"{FirmwareBootManifest.FirmwareDirectory}/{FirmwareAotBundle.ImagesFileName}",
@@ -443,12 +442,13 @@ public static class FirmwareDistributionBuilder
                 FallbackSegmentInstructionBudget: request.MixedFallback ? request.FallbackSegmentInstructionBudget : 0u,
                 FallbackMaxTransitions: request.MixedFallback ? request.FallbackMaxTransitions : 0u,
                 ImageLoadAddress: OpenBiosFirmware.ResetVector,
-                Image: RuntimeHostLayout.ImageFileName,
+                Image: string.Empty,
                 BlockEntryPcs: blockEntryPcs,
                 ProgramEnd: OpenBiosFirmware.ResetVector + (uint)OpenBiosFirmware.ImageSize,
                 ResultRegister: null,
                 RunTimeoutMs: request.RunTimeoutMs,
-                EntryPc: OpenBiosFirmware.ResetVector);
+                EntryPc: OpenBiosFirmware.ResetVector,
+                BiosProvenance: request.BiosProvenance);
             var hostText = RuntimeHostManifestJson.Serialize(host);
             _ = RuntimeHostManifestJson.Parse(hostText);
             File.WriteAllText(Path.Combine(stagingRuntimeDir, RuntimeHostLayout.ManifestFileName), hostText);
@@ -542,7 +542,8 @@ public static class FirmwareDistributionBuilder
         "The native artifact is the OpenBIOS ROM compiled ahead of time. OpenBIOS runs its real MIPS code and loads the",
         "game from runtime/disc/ through its own CD driver; BIOS calls are never answered by the host.",
         "",
-        "- runtime/artifact-image.bin is the OpenBIOS ROM you supplied (verified by SHA-256 on every run).",
+        "- The OpenBIOS ROM is NOT in this directory. Set PSXRECOMP_BIOS_ROM to the path of your own 512 KiB openbios.bin",
+        "  before launching; the run prints its SHA-256 and the BIOS mode (openbios-rom only for a user-supplied image).",
         "- runtime/disc/ holds the disc image you supplied (verified by SHA-256 on every run).",
         "- This directory is a LOCAL build. OpenBIOS redistribution is pending the audit in Issue #730, and the disc",
         "  is your own copyrighted media: do not redistribute this directory.",
@@ -583,7 +584,7 @@ public static class FirmwareRuntimeLauncher
         RuntimeHostManifest host,
         string runtimeDirectory,
         string artifactPath,
-        string imagePath,
+        string biosPath,
         TextWriter error,
         string? diagnosticsPath = null,
         string? frameOutPath = null,
@@ -597,7 +598,14 @@ public static class FirmwareRuntimeLauncher
                 throw new InvalidDataException("A firmware distribution's runtime manifest must declare guest firmware.");
             }
 
-            var (rom, _) = OpenBiosRomInput.Read(imagePath, boot.RomSha256);
+            // The BIOS is read from the path the user names at run time; its digest is reported, never read from the package.
+            if (biosPath.Length == 0)
+            {
+                throw new InvalidDataException(
+                    $"Set {RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable} to the path of your own OpenBIOS image; none is shipped with this distribution.");
+            }
+
+            var (rom, romSha256) = OpenBiosRomInput.Read(biosPath);
             var firmware = OpenBiosFirmware.FromBytes(rom);
             var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
@@ -702,7 +710,7 @@ public static class FirmwareRuntimeLauncher
                 kind = "firmware-run",
                 bios = boot.BiosBackend,
                 biosMode = host.BiosMode,
-                romSha256 = boot.RomSha256,
+                romSha256,
                 state = result.State.ToString(),
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
                 diagnosticCode = result.DiagnosticCode,
