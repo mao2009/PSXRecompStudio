@@ -742,7 +742,7 @@ Limits, stated plainly:
 - A BIOS fragment shorter than 8 bytes is never matched.
 - A BIOS fragment built only from windows the baseline also holds is not detected (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit`).
 - Windows that are mostly `0x00`/`0xFF` are excused when the baseline holds them, which is almost always: the real-image
-  run found 104,590 such occurrences in the packaged output, all excused. This is a measured false-negative path.
+  run found 104,223 such occurrences in the packaged output, all excused. This is a measured false-negative path.
 - The scan does not prove zero leakage. It does not establish the origin of code; only the generation guard is a guarantee.
 
 **Provenance, decided at run time (MAJOR-1).** The run classifies the image it loads by SHA-256 (`BiosProvenance`). The
