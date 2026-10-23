@@ -689,43 +689,59 @@ as part of the one guest state.
 
 #### BIOS is never in the distribution and never translated (Issue #B2)
 
-Owner ruling (option 1): the BIOS is **not ahead-of-time translated**. `package --bios openbios` reads the ROM once to
-validate it and to pin the roots file, but compiles no ROM block. Every ROM PC therefore runs in the interpreter
-fallback over the BIOS image the run loads. Only the code the guest places in RAM (the disc's boot executable and the
-images it names) is translated, guarded, and run natively, exactly as before.
+Owner ruling (option 3): the BIOS is **never an input of ahead-of-time code generation**. That is the primary guarantee
+that no BIOS-derived machine code reaches a generated executable. A byte-level scan is only a supporting check.
 
-The packaged distribution contains no BIOS bytes, no sidecar image and no BIOS digest. The generated executable loads
-the BIOS at run time from the path named by the `PSXRECOMP_BIOS_ROM` environment variable:
+**Primary guarantee: generation-stage refusal** (`BiosAddressGuard`, `FirmwareDistribution`):
 
-- A standalone artifact run directly fails with exit code **95** on a file that is not exactly 512 KiB.
-- Through the Runtime host (the packaged launch path), the same check fails closed with exit code **78**.
-- The host re-hashes the image after the run. A change during the run is a failed run, never a clean one.
-- The run reports the SHA-256 of the image the host loaded (`romSha256` on the `firmware-run` line).
+- Address aliases: every CPU alias of the 512 KiB ROM (KUSEG `0x1FC00000`, KSEG0 `0x9FC00000`, KSEG1 `0xBFC00000`, and the
+  physical range) is reduced by masking the segment bits before the range test. Unmapped aliases such as `0x3FC00000`
+  are treated as BIOS too (conservative).
+- Manifest stage: a `rom` image (BIOS bytes copied to RAM to be translated) is refused, and so is any image whose range
+  overlaps the BIOS. The BIOS's own RAM copies are therefore interpreted, never translated.
+- Plan and dispatch stage: no compiled or loaded block may start inside, or overlap, the BIOS range.
+- Generated-source stage: the generated C may name no `recompiler_block_0x…` function at a BIOS address.
 
-Provenance: `package --bios-provenance user-supplied|synthetic` records the image's origin in `runtime-host.json`.
-The default is `synthetic` (the conservative label), and any other value fails the command. The BIOS mode label:
+Each stage has a negative test that injects BIOS code at that stage's entry and expects the refusal
+(`BiosGenerationStageTests`: `ManifestStage_InjectedBiosRangeImage_IsRefused`, `PlanStage_InjectedBiosBlock_IsRefused`,
+`LoadedStage_InjectedBiosRangeCode_IsRefused`, `SourceStage_InjectedBiosBlockName_IsRefused_AndACleanSourceIsNot`,
+and `FirmwareAotPlanTests.TheGenerationTimeCheck_FailsWhenABiosBlockIsInjected`). The packaging run's own plan is audited
+too: the `firmware-run` line reports `aotBiosBlocks` (BIOS blocks in the plan the run rebuilds) and `aotLoadedBlocks`.
 
-- `openbios-rom`: user-supplied firmware (the real-ROM gate).
-- `openbios-synthetic`: any other firmware, such as a test stub. It is never labelled as a real OpenBIOS run.
-- `hle`: the legacy HLE-bridge distribution.
+**Supporting check: binary window scan** (`DistributionLeakScanner`):
 
-The label appears in `runtime-host.json` (`"biosMode"`), in the Runtime host's first line (`runtime host: bios mode <mode>`),
-and on the `firmware-run` line (`"biosMode"`).
+- Every 8-byte window of the BIOS, at every byte offset, is matched against every file of the distribution (any extension).
+- A BIOS window found in a file is a leak unless the identical window is also held by a **baseline**. The baseline is built
+  only from non-BIOS material: the output of the same packaging with a synthetic image, and the game disc. The excuse is
+  content identity; it applies to every window shape, including windows of mostly `0x00` or `0xFF` bytes.
+- Limits, stated plainly:
+  - A BIOS fragment shorter than 8 bytes is not matched by any window.
+  - Because of the baseline excuse, a BIOS fragment built only from windows that the baseline also holds is not detected
+    (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit` pins this limit). The baseline also excuses
+    low-entropy windows, which a leak can share.
+  - The byte scan therefore does not prove zero leakage. The generation-stage refusal is the guarantee.
+- Measured on the real image (HEAD `07fdad0`): 191,697 distinct BIOS 8-byte windows; 725 of them are also held by the baseline
+  and excused; 104,155 occurrences of low-entropy (mostly `0x00`/`0xFF`) BIOS windows in the packaged output are all excused
+  by the baseline; leaks: 0.
 
-Packaged E2E checks (`OpenBiosStandalonePackageE2E`):
+**Runtime evidence** (real image, HEAD `…`): the packaging and run plan report `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0.
+A bounded run with a finite fallback budget ends with `state` = `RuntimeFailure` and `diagnosticCode` =
+`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`. That is a classified stop, not a clean run. Its `fallbackInstructions` = 1,999,999
+(the interpreter executed the BIOS from the reset vector), `nativeInstructions` = 0. The unbounded run reports no fallback
+count: its single fallback segment never ends, so the count is never collected. The bounded run is the way to obtain it.
 
-- No file under the distribution contains the first 256 bytes of the BIOS, its SHA-256, or any 8-byte window of the
-  BIOS. Nothing is excused for looking like text or padding; only a window that the non-BIOS baseline (the synthetic run's
-  output and the game disc) also holds is excused, and the scan reports how many.
-- No file under the distribution (any extension, the Runtime host and its PDB included) names a user or home path.
-  The generated executable is stripped (`-s`) so that no toolchain build path survives. The one exemption is the .NET SDK apphost template path `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\` in `runtime/PSXRecomp.RuntimeHost.exe`: a Microsoft CI build path, not a developer path. It is matched exactly (case-insensitive) in that one file only, and the tests pin the range (`TheApphostTemplatePath_*`). Removing it needs `UseAppHost=false`, which is not done (owner decision pending).
-- The generated source names no block at a ROM address (`TheBiosIsNeverAheadOfTimeTranslated_...`).
+**Packaging and exceptions**:
 
-The real-ROM gate (`UserSuppliedOpenBiosRom_WiresTheRealRomAndPinsTheMeasuredRunOutcome`) packages a synthetic disc
-with a user-supplied OpenBIOS image, then runs it with `PSXRECOMP_BIOS_ROM` pointing at that same file. The image is
-read in place and is never copied into the repository, the tests or the output. Without `PSXRECOMP_OPENBIOS_ROM` the
-test is skipped with its reason. Its wiring checks and its run outcome are reported separately; the outcome is a
-measured `RuntimeFailure` / `ARTIFACT_TIMEOUT`, not a clean run.
+- The packaged executable loads the BIOS at run time from the path named by the `PSXRECOMP_BIOS_ROM` environment variable
+  (512 KiB exactly; a direct run exits with code **95** on another size, the Runtime host with **78**). The BIOS is not in the
+  distribution, so packaging pins no digest of it. The run reports the SHA-256 of the image it loaded; the host re-hashes
+  it after the run, and a change during the run fails the run.
+- Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the .NET SDK apphost template path
+  `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\`, a Microsoft CI build
+  path rather than a developer path. It is matched exactly (case-insensitive) and only in that relative file
+  (`TheApphostTemplatePath_*`, `ApphostExemption_*`). Removing it needs `UseAppHost=false` (owner decision pending).
+- The generated executable is stripped (`-s`), and so is the native library. The Runtime host is published with
+  `DebugType=none`, so no PDB ships. The intermediate object is removed after linking; a failed removal fails the build.
 
 ### Remaining acceptance gates
 
