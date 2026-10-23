@@ -163,7 +163,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("bios").GetString().Should().Be("openbios");
         report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic");
         report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(rom));
-        report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "the interpreted BIOS loop ends at the fallback budget"); report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
+        report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "the interpreted BIOS loop ends at the fallback budget");
+        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)"); report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue("the manifest's fallback policy is reported on the firmware-run line");
         report.GetProperty("fallbackSegmentInstructionBudget").GetUInt64().Should().Be(5000);
         report.GetProperty("fallbackMaxTransitions").GetUInt64().Should().Be(40);
@@ -252,6 +253,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         processExit.Should().Be(1, "the interpreted BIOS loop ends at the fallback budget: " + stderr);
         var report = JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement;
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "the interpreted BIOS loop ends at the fallback budget");
+        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)");
         report.GetProperty("nativeInstructions").GetUInt64().Should().BeGreaterThan(0, "the ROM and the guarded game run natively");
         report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the BIOS runs in the interpreter fallback; only the guarded game block is native");
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue();
@@ -431,6 +433,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
         report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run verified the user's ROM by digest");
         report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "no BIOS code is translated, and the timed-out run reached no native block (Issue #B2)");
+        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)");
+        report.GetProperty("aotLoadedBlocks").GetInt32().Should().Be(0, "this gate loads no RAM-placed code image");
         // Run outcome, reported apart from the wiring above. This is the measured result, not a clean run: the instance
         // hit the wall-clock bound. The test pins it so that any change in the outcome is noticed.
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "measured run outcome (wiring PASS, run RuntimeFailure)");
@@ -514,6 +518,65 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var widePath = System.Text.Encoding.Unicode.GetBytes(@"C:\Prog\winlibs_staging_ucrt\bin");
         Array.Copy(widePath, 0, wide, 0x200, widePath.Length);
         DistributionLeakScanner.FindAbsolutePath([(artifactName, wide)]).Should().NotBeNull("a UTF-16LE toolchain path must be detected");
+    }
+
+    /// <summary>
+    /// Issue #B2 (run evidence): the same user-supplied image, but with a finite fallback budget, so the interpreter's segment
+    /// ends and its instruction count is reported. The unbounded gate above reports no count (its segment never ends). A
+    /// bounded stop is RuntimeFailure with ARTIFACT_FALLBACK_BUDGET_EXHAUSTED: a classified stop, not a clean run.
+    /// </summary>
+    [SkippableFact]
+    public void UserSuppliedOpenBiosRom_BoundedInterpreterRun_ReportsTheInterpreterInstructionCount()
+    {
+#pragma warning disable AARC003 // The real-ROM gate reads its user-supplied path from the environment
+        var romSource = Environment.GetEnvironmentVariable(UserOpenBiosRomVariable);
+#pragma warning restore AARC003
+        Skip.If(string.IsNullOrWhiteSpace(romSource),
+            $"real-ROM bounded run skipped: set {UserOpenBiosRomVariable} to a locally built openbios.bin (never committed)");
+#pragma warning disable AARC003 // Test-layer skip check on the user-supplied path
+        Skip.IfNot(File.Exists(romSource), $"real-ROM bounded run skipped: {UserOpenBiosRomVariable} does not name an existing file");
+#pragma warning restore AARC003
+        RuntimeHostPublishE2E.RequireGcc();
+
+        var disc = SyntheticDiscBuilder.Bootable(SyntheticPsxExeBuilder.BuildValid(instructionCount: 6, textStart: GameEntry));
+#pragma warning disable AARC003 // Test-layer: the synthetic disc is written for the packaging run
+        var discPath = _dir.WriteFile("disc.bin", disc);
+#pragma warning restore AARC003
+        var output = _dir.Combine("game-bounded");
+        var (exit, error) = PackageFirmware(
+            discPath, romSource!, AotInputs("aot-bounded"), output, "user-supplied",
+            "--run-timeout-seconds", "300", "--fallback-segment-budget", "2000000", "--fallback-max-transitions", "1000");
+        exit.Should().Be(0, error);
+
+        var artifact = Path.Combine(output, "game" + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ".exe" : ""));
+#pragma warning disable AARC003 // Test-layer process use to drive the bundled game executable
+        using var process = Process.Start(new ProcessStartInfo(artifact)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romSource! },
+        })!;
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        process.StandardOutput.ReadToEndAsync();
+        WaitOrKill(process, 600_000, "the bounded real-ROM run must finish");
+        var stderr = stderrTask.GetAwaiter().GetResult();
+#pragma warning restore AARC003
+
+        var line = stderr.Split('\n').FirstOrDefault(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal));
+        line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
+#pragma warning disable AARC003 // Test-layer evidence: the bounded run's line is echoed for the run log
+        Console.WriteLine("b2-real-openbios-bounded-evidence " + line);
+#pragma warning restore AARC003
+        var report = JsonDocument.Parse(line!).RootElement;
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom");
+        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "no BIOS block was ahead-of-time translated");
+        report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "the interpreted BIOS runs no native block");
+        report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0,
+            "the BIOS ran in the interpreter: its fallback instruction count is reported once the segment ends");
+        report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "a bounded stop is a classified failure, never a clean run");
+        report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
     }
 
     /// <summary>Issue #B2 (LOW-1): without --bios-provenance the firmware is labelled as synthetic, never as a real ROM.</summary>

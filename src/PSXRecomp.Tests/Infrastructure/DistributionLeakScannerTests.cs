@@ -242,4 +242,23 @@ public sealed class DistributionLeakScannerTests
         report.Leaks.Should().Be(9, "with no baseline holding them, the zero windows are leaks");
         report.LowEntropyExcused.Should().Be(0);
     }
+
+    /// <summary>
+    /// The documented limit of the binary check (Issue #B2): a BIOS fragment built only from windows that a non-BIOS baseline also
+    /// holds is excused in full, so a leak of exactly that fragment is NOT detected. This test shows the limit exists; it is not a
+    /// claim that the binary check proves zero leakage. The generation-stage guard is the primary guarantee.
+    /// </summary>
+    [Fact]
+    public void ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit()
+    {
+        var shared = Latin1("the same 32 bytes exist in a synthetic run output as well..");
+        var bios = shared.Concat(Bios(256, seed: 9)).ToArray();
+        var candidate = (byte[])shared.Clone();
+        var baseline = Latin1("synthetic output: ").Concat(shared).ToArray();
+
+        var report = DistributionLeakScanner.Scan([("game.exe", candidate)], DistributionLeakScanner.BiosWindows(bios), [("synthetic/game.exe", baseline)]);
+
+        report.Leaks.Should().Be(0, "every 8-byte window of this BIOS fragment is shared with the baseline, so it is excused by content");
+        report.ExcusedByBaseline.Should().BeGreaterThan(0);
+    }
 }

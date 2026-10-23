@@ -45,11 +45,14 @@ public sealed record FirmwareAotPlan(
         // images it names) is translated, exactly as before.
         _ = LoadImageManifest.ReadRootsFile(rootsFile);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
+        BiosAddressGuard.RequireNoBiosImage(manifest);
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
-        return new FirmwareAotPlan(new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>()), loaded, observed);
+        var program = new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>());
+        BiosAddressGuard.RequireNoBiosCode(program, loaded);
+        return new FirmwareAotPlan(program, loaded, observed);
     }
 }
 
@@ -391,6 +394,7 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
             }
 
+            BiosAddressGuard.RequireNoBiosCode(plan.Program, plan.LoadedCode);
             var source = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
                 OpenBiosFirmware.ResetVector, [], hostBridge: true,
@@ -399,6 +403,8 @@ public static class FirmwareDistributionBuilder
             {
                 throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
             }
+
+            BiosAddressGuard.RequireNoBiosSource(source.Source!);
 
             // The ROM + RAM-image dispatch is large; the build gets the request's per-step toolchain timeout
             // (--build-timeout-seconds), or the same bounded three minutes the probe uses by default.
@@ -718,6 +724,9 @@ public static class FirmwareRuntimeLauncher
                 bios = boot.BiosBackend,
                 biosMode = host.BiosMode,
                 romSha256,
+                // The generation-stage audit (Issue #B2): no BIOS block is translated; loaded RAM blocks are the game's code.
+                aotBiosBlocks = BiosAddressGuard.BiosBlockCount(plan.Program),
+                aotLoadedBlocks = plan.LoadedCode.Blocks.Count(),
                 state = result.State.ToString(),
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
                 diagnosticCode = result.DiagnosticCode,
