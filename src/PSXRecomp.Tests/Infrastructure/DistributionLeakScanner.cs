@@ -9,9 +9,11 @@ namespace PSXRecomp.Tests.Infrastructure;
 /// </summary>
 /// <remarks>
 /// The BIOS check has zero tolerance. Every 8-byte window of the BIOS (at every byte offset) is a leak when it occurs in a
-/// candidate file, unless the identical window also occurs in a <em>baseline</em>: material that is not the BIOS (a
-/// synthetic run's output, the game disc). Nothing is excused for looking like text or padding. An 8-byte window catches
-/// any BIOS fragment of 8 bytes or more; a shorter fragment cannot be matched by a window of this length.
+/// candidate file. The one excuse is content: a window whose identical bytes also occur in a <em>baseline</em> (material
+/// that is not the BIOS: a synthetic run's output, the game disc) is excused, whatever its shape. That includes windows of
+/// mostly 0x00 or 0xFF bytes, which the baseline holds too; the report counts those occurrences apart
+/// (<see cref="BiosScanReport.LowEntropyOccurrences"/>) so the excuse is visible. An 8-byte window catches any BIOS
+/// fragment of 8 bytes or more; a shorter fragment cannot be matched by a window of this length.
 /// </remarks>
 [Test]
 internal static class DistributionLeakScanner
@@ -37,7 +39,7 @@ internal static class DistributionLeakScanner
     /// only in that one file; any other string under that root, and the same string in any other file, is flagged.
     /// Residual: removing it needs <c>UseAppHost=false</c>, which is not done.
     /// </summary>
-    internal const string ApphostFileName = "PSXRecomp.RuntimeHost.exe";
+    internal const string ApphostRelativePath = "runtime/PSXRecomp.RuntimeHost.exe";
     internal const string ApphostTemplatePath = @"D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\";
 
     /// <summary>
@@ -58,7 +60,7 @@ internal static class DistributionLeakScanner
     private static bool IsExemptApphostPath(string name, string match)
     {
         var normalized = name.Replace('\\', '/');
-        return normalized.EndsWith("runtime/" + ApphostFileName, StringComparison.OrdinalIgnoreCase)
+        return string.Equals(normalized, ApphostRelativePath, StringComparison.OrdinalIgnoreCase)
             && string.Equals(match, ApphostTemplatePath, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -101,7 +103,15 @@ internal static class DistributionLeakScanner
     /// baseline also holds: the coincidental matches the baseline absorbs. <see cref="Leaks"/> counts candidate occurrences of
     /// a BIOS window that the baseline does not hold; any of them fails the check.
     /// </summary>
-    public sealed record BiosScanReport(int BiosWindows, int ExcusedByBaseline, int Leaks, string? FirstLeak);
+    public sealed record BiosScanReport(
+        int BiosWindows, int ExcusedByBaseline, int Leaks, string? FirstLeak, int LowEntropyOccurrences, int LowEntropyExcused);
+
+    /// <summary>A window of mostly 0x00 or 0xFF bytes: such a window is common in any binary, so the report counts it apart.</summary>
+    public static bool IsLowEntropy(ulong key)
+    {
+        var bytes = BitConverter.GetBytes(key);
+        return bytes.Count(static b => b is 0x00 or 0xFF) >= 6;
+    }
 
     /// <summary>Scans the candidates for BIOS windows that the baseline does not also hold.</summary>
     public static BiosScanReport Scan(
@@ -124,13 +134,27 @@ internal static class DistributionLeakScanner
         }
 
         var leaks = 0;
+        var lowEntropy = 0;
+        var lowEntropyExcused = 0;
         string? first = null;
         foreach (var (name, bytes) in candidates)
         {
             for (var i = 0; i + WindowLength <= bytes.Length; i++)
             {
                 var key = KeyAt(bytes, i);
-                if (biosWindows.TryGetValue(key, out var biosOffset) && !excused.Contains(key))
+                if (!biosWindows.TryGetValue(key, out var biosOffset))
+                {
+                    continue;
+                }
+
+                var isExcused = excused.Contains(key);
+                if (IsLowEntropy(key))
+                {
+                    lowEntropy++;
+                    if (isExcused) lowEntropyExcused++;
+                }
+
+                if (!isExcused)
                 {
                     leaks++;
                     first ??= $"{name} contains an {WindowLength}-byte window of the BIOS: file offset 0x{i:X}, " +
@@ -139,7 +163,7 @@ internal static class DistributionLeakScanner
             }
         }
 
-        return new BiosScanReport(biosWindows.Count, excused.Count, leaks, first);
+        return new BiosScanReport(biosWindows.Count, excused.Count, leaks, first, lowEntropy, lowEntropyExcused);
     }
 
     /// <summary>The first leak, or null: the check that fails a distribution.</summary>

@@ -157,21 +157,56 @@ public sealed class FirmwareAotPlanTests
 
         var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
         dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
+        var source = StandaloneSourceFor(plan.Program, plan.LoadedCode);
+        source.Should().Contain("static const int embedded_bios_external = 1;");
+        source.Should().Contain("static const uint32_t embedded_image_len = 0u;");
+        AssertNoBiosBlock(source);
+        dispatch.Source!.Should().NotContain("recompiler_block_0xBFC");
+        dispatch.Source!.Should().NotContain("recompiler_block_0x1FC");
+    }
+
+    /// <summary>
+    /// The injection entry (Issue #B2, L3): the standalone source for a program, generated the way the firmware distribution
+    /// generates it. A program that carries BIOS blocks is the injection; the generation-time check runs on what comes out.
+    /// </summary>
+    private static string StandaloneSourceFor(RecompilerIrProgram program, LoadedCodeTable loaded)
+    {
+        var dispatch = RecompilerHostCodeGen.Generate(program, loaded, allowEmptyProgram: true);
+        dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
         var standalone = RecompiledArtifactCodeGen.GenerateStandalone(
             dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, 1000, [],
             OpenBiosFirmware.ResetVector, [], hostBridge: true, directLaunchHostRelativePath: "runtime/host", externalBios: true);
         standalone.Success.Should().BeTrue(standalone.DiagnosticMessage);
+        return standalone.Source!;
+    }
 
-        var source = standalone.Source!;
-        source.Should().Contain("static const int embedded_bios_external = 1;");
-        source.Should().Contain("static const uint32_t embedded_image_len = 0u;");
+    /// <summary>The generation-time check: no BIOS block function may appear in a standalone source.</summary>
+    private static void AssertNoBiosBlock(string source)
+    {
         foreach (var block in new[] { "recompiler_block_0xBFC", "recompiler_block_0x1FC", "recompiler_block_0x9FC" })
         {
             source.Should().NotContain(block, "no BIOS block function reaches the generated standalone source");
         }
+    }
 
-        dispatch.Source!.Should().NotContain("recompiler_block_0xBFC");
-        dispatch.Source!.Should().NotContain("recompiler_block_0x1FC");
+    /// <summary>
+    /// Mutation test (Issue #B2, L3): with BIOS blocks injected at the injection entry, the generation-time check must fail.
+    /// If it did not, the check would be a no-op.
+    /// </summary>
+    [Fact]
+    public void TheGenerationTimeCheck_FailsWhenABiosBlockIsInjected()
+    {
+        var rom = SyntheticRom();
+        var words = Enumerable.Range(0, 16).Select(i => BitConverter.ToUInt32(rom, i * 4)).ToArray();
+        var injected = ReachableProgramBuilder.BuildFirmwareImage(
+            OpenBiosFirmware.ResetVector, words, OpenBiosFirmware.ResetVector, [OpenBiosFirmware.ResetVector]).Program;
+        injected.Blocks.Should().NotBeEmpty("the injected program carries real BIOS blocks");
+
+        var source = StandaloneSourceFor(injected, LoadedCodeTable.Empty);
+        source.Should().Contain("recompiler_block_0xBFC", "the injection reaches the generated source");
+
+        Action check = () => AssertNoBiosBlock(source);
+        check.Should().Throw<Exception>("an injected BIOS block must fail the generation-time check");
     }
 
     [Fact]

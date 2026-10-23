@@ -340,7 +340,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     }
 
     /// <summary>
-    /// Zero tolerance (Issue #B2, MEDIUM-1): no 16-byte window of the BIOS appears in the distribution unless the same window
+    /// Zero tolerance (Issue #B2, MEDIUM-1): no 8-byte window of the BIOS appears in the distribution unless the same window
     /// appears in <paramref name="baseline"/>, material that is not the BIOS (a synthetic run's output, the game disc).
     /// </summary>
     private static void AssertNoBiosWindows(string root, byte[] rom, IEnumerable<(string Name, byte[] Bytes)> baseline)
@@ -348,7 +348,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var report = DistributionLeakScanner.Scan(ReadTree(root), DistributionLeakScanner.BiosWindows(rom), baseline);
 #pragma warning disable AARC003 // Test-layer evidence: the window-scan counts are echoed for the run log
         Console.WriteLine($"b2-bios-window-scan windowLength={DistributionLeakScanner.WindowLength} biosWindows={report.BiosWindows} " +
-                          $"excusedByBaseline={report.ExcusedByBaseline} leaks={report.Leaks}");
+                          $"excusedByBaseline={report.ExcusedByBaseline} leaks={report.Leaks} " +
+                          $"lowEntropyOccurrences={report.LowEntropyOccurrences} lowEntropyExcused={report.LowEntropyExcused}");
 #pragma warning restore AARC003
         report.FirstLeak.Should().BeNull("no 8-byte window of the BIOS may appear in the distribution unless the baseline holds it");
     }

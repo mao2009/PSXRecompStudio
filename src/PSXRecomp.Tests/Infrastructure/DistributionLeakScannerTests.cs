@@ -199,4 +199,47 @@ public sealed class DistributionLeakScannerTests
     {
         DistributionLeakScanner.FindAbsolutePath([("game.exe", Latin1(text))]).Should().BeNull(text);
     }
+
+    [Theory]
+    [InlineData("myruntime/PSXRecomp.RuntimeHost.exe")]
+    [InlineData("x/runtime/PSXRecomp.RuntimeHost.exe")]
+    [InlineData("runtime/sub/PSXRecomp.RuntimeHost.exe")]
+    [InlineData("PSXRecomp.RuntimeHost.exe")]
+    [InlineData("runtime/PSXRecomp.RuntimeHost.exe.bak")]
+    public void TheApphostExemption_DoesNotCoverANeighbouringFile(string name)
+    {
+        DistributionLeakScanner.FindAbsolutePath([(name, Latin1(DistributionLeakScanner.ApphostTemplatePath))])
+            .Should().NotBeNull($"{name} is not the one file that carries the template");
+    }
+
+    [Fact]
+    public void ZeroWindowsAreExcusedByContentAndCountedApart()
+    {
+        // The BIOS has 16 zero bytes; the candidate and the baseline both hold them. Every zero window is excused by
+        // content, and the report counts those occurrences as low-entropy, so the excuse stays visible.
+        var bios = new byte[16 + 64];
+        Array.Copy(Bios(64, seed: 7), 0, bios, 16, 64);
+        var candidate = new byte[16];
+        var baseline = new byte[16];
+
+        var report = DistributionLeakScanner.Scan(
+            [("game.exe", candidate)], DistributionLeakScanner.BiosWindows(bios), [("synthetic/game.exe", baseline)]);
+
+        report.Leaks.Should().Be(0, "the zero windows are content the non-BIOS baseline also holds");
+        report.LowEntropyOccurrences.Should().Be(9, "16 zero bytes hold 9 windows of 8 bytes");
+        report.LowEntropyExcused.Should().Be(9);
+    }
+
+    [Fact]
+    public void ZeroWindowsOfTheBios_AreNotExcusedWhenTheBaselineDoesNotHoldThem()
+    {
+        var bios = new byte[16 + 64];
+        Array.Copy(Bios(64, seed: 7), 0, bios, 16, 64);
+        var candidate = new byte[16];
+
+        var report = DistributionLeakScanner.Scan([("game.exe", candidate)], DistributionLeakScanner.BiosWindows(bios), []);
+
+        report.Leaks.Should().Be(9, "with no baseline holding them, the zero windows are leaks");
+        report.LowEntropyExcused.Should().Be(0);
+    }
 }

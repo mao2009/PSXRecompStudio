@@ -24,10 +24,21 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
     internal const string DefaultCompiler = "gcc";
     private static readonly string[] DefaultCompilerArgTokens = ["-std=c11", "-O0", "-Wall", "-Wextra"];
     private readonly int _toolchainTimeoutMs;
+    private readonly Action<string> _removeIntermediate;
 
     /// <summary>Creates a bounded compiler adapter; null retains the normal 30-second per-step limit.</summary>
     public GeneratedHostBuildService(TimeSpan? toolchainTimeout = null)
+        : this(toolchainTimeout, File.Delete)
     {
+    }
+
+    /// <summary>
+    /// The seam for the intermediate-object removal (Issue #B2). Tests inject a failing remover to prove that a build whose
+    /// intermediate cannot be removed is not reported as a success.
+    /// </summary>
+    internal GeneratedHostBuildService(TimeSpan? toolchainTimeout, Action<string> removeIntermediate)
+    {
+        _removeIntermediate = removeIntermediate;
         var milliseconds = (toolchainTimeout ?? TimeSpan.FromSeconds(30)).TotalMilliseconds;
         if (milliseconds < 1 || milliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(toolchainTimeout));
@@ -95,8 +106,28 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");
         }
 
-        // The object file is an internal step of the build: once linked, it is not left in the output (Issue #B2).
-        File.Delete(objectPath);
+        // The object file is an internal step of the build and carries generated code. It is removed once linked. A removal
+        // that fails is not a link failure, but the build is not reported as a success while the intermediate remains:
+        // the caller then commits nothing (Issue #B2).
+        string? removalProblem = null;
+        try
+        {
+            _removeIntermediate(objectPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            removalProblem = exception.Message;
+        }
+
+        if (removalProblem is not null || File.Exists(objectPath))
+        {
+            return GeneratedHostBuildResult.Failed(
+                GeneratedHostBuildStatus.OutputFailed,
+                "INTERMEDIATE_NOT_REMOVED",
+                $"The intermediate object '{objectPath}' could not be removed after linking" +
+                (removalProblem is null ? string.Empty : $": {removalProblem}") +
+                ". The build is not committed.");
+        }
 
         var resolvedBinaryPath = ResolveBinaryPath(binaryPath);
         if (!File.Exists(resolvedBinaryPath))
