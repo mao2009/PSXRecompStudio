@@ -158,30 +158,31 @@ public sealed class BiosWiringIntegrationTests : IDisposable
     }
 
     [Fact]
-    public void ProductionBuild_RefusesA254ByteBiosCopyInADiscExecutable_AtTheManifestStage()
+    public void ProductionBuild_RefusesA252ByteBiosCopyInADiscExecutable_AtTheManifestStage()
     {
-        // The disc's boot executable carries 63 whole words of the BIOS (252 bytes covered): over the threshold.
+        // The disc's boot executable carries 63 whole words of the BIOS (252 bytes covered): over the 96-byte threshold.
         var rom = LcgRom();
         var exe = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 252, WordsBytes(rom, 8192, 63));
-        var request = CopyRequest("copy-254", rom, SyntheticDiscBuilder.Bootable(exe), "boot-exe game\n");
+        var request = CopyRequest("copy-252", rom, SyntheticDiscBuilder.Bootable(exe), "boot-exe game\n");
 
         ((Action)(() => Build(request)))
             .Should().Throw<InvalidDataException>().WithMessage("*together hold 252 bytes of BIOS code*");
     }
 
     [Fact]
-    public void ProductionBuild_RefusesA127ByteCopySplitAcrossTwoAotInputs()
+    public void ProductionBuild_RefusesA124ByteWholeWordCopySplitAcrossTwoAotInputs()
     {
-        // Each half is 31 whole words (124 bytes): the disc's boot executable and a PS-X EXE file, together 248 bytes.
+        // A 127-byte copy's 31 whole words (124 bytes), split: 16 words in the disc's boot executable and 15 in a PS-X EXE file.
+        // Each half alone is under the threshold; together they are 124 bytes, over it.
         var rom = LcgRom();
-        var first = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 124, WordsBytes(rom, 4096, 31));
-        var second = SyntheticPsxExeBuilder.Build(0x80020000u, 0x80020000u, 124, WordsBytes(rom, 20000, 31));
+        var first = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 64, WordsBytes(rom, 4096, 16));
+        var second = SyntheticPsxExeBuilder.Build(0x80020000u, 0x80020000u, 60, WordsBytes(rom, 20000, 15));
         var request = CopyRequest(
             "copy-split", rom, SyntheticDiscBuilder.Bootable(first),
             "boot-exe game\nexe half2 half2.exe\n",
             ("half2.exe", second));
 
         ((Action)(() => Build(request)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 248 bytes of BIOS code*");
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 124 bytes of BIOS code*");
     }
 }

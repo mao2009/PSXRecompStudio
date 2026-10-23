@@ -8,8 +8,10 @@ namespace PSXRecomp.Tests.Infrastructure;
 
 /// <summary>
 /// Issue #B2 (owner ruling: cumulative): the AOT inputs of one packaging hold, together, at most <see cref="BiosAddressGuard.CopyThresholdBytes"/>
-/// bytes of BIOS code. A BIOS word counts once however many inputs or runs hold it; a run of fewer than <see cref="BiosAddressGuard.MinRunWords"/>
-/// words is a coincidence and is not counted; a copy split across inputs is counted across them.
+/// bytes of BIOS code. A BIOS word counts once however many inputs or matches hold it; a match of fewer than
+/// <see cref="BiosAddressGuard.MinRunWords"/> words, or of low-entropy words, is not counted; a copy split across inputs or by
+/// non-BIOS words is counted across them. Tests named <c>...Limit...</c> fix a documented limit: they assert what the guard does,
+/// not what is wished for.
 /// </summary>
 [Test]
 public sealed class BiosCopyDetectionTests
@@ -39,45 +41,47 @@ public sealed class BiosCopyDetectionTests
         new HashSet<uint>());
 
     [Fact]
-    public void ThresholdIsExclusive_56WordsAccepted_57WordsRefused()
+    public void ThresholdIsExclusive_24WordsAccepted_25WordsRefused()
     {
+        // 96 bytes is 24 words: at the threshold, not over it. 25 words (100 bytes) is over it.
         var bios = Bios();
-        var thirtyTwo = Manifest(("exe-file", Fragment(bios, 1000, 56)));
-        var thirtyThree = Manifest(("exe-file", Fragment(bios, 1000, 57)));
+        var twentyFour = Manifest(("exe-file", Fragment(bios, 1000, 24)));
+        var twentyFive = Manifest(("exe-file", Fragment(bios, 1000, 25)));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(thirtyTwo, bios))).Should().NotThrow("224 bytes is at the threshold, not over it");
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(thirtyThree, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 228 bytes of BIOS code*");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(twentyFour, bios))).Should().NotThrow("96 bytes is at the threshold, not over it");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(twentyFive, bios)))
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 100 bytes of BIOS code*");
     }
 
     [Theory]
     [InlineData("exe-file")]
     [InlineData("boot-exe")]
     [InlineData("disc-exe")]
-    public void A254ByteBiosCopy_InADiscOrFileImage_IsRefused(string kind)
+    public void A252ByteBiosCopy_InADiscOrFileImage_IsRefused(string kind)
     {
-        // 254 bytes hold 63 whole BIOS words (252 bytes covered): over the 128-byte threshold, by a wide margin.
+        // 252 bytes is 63 whole words, all of them covered: over the 96-byte threshold by a wide margin.
         var bios = Bios();
         var manifest = Manifest((kind, Fragment(bios, 8192, 63)));
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios)))
             .Should().Throw<InvalidDataException>().WithMessage("*together hold 252 bytes of BIOS code*",
-                $"a 254-byte BIOS copy in an input of kind {kind} must be refused");
+                $"a 252-byte BIOS copy in an input of kind {kind} must be refused");
     }
 
     [Fact]
-    public void A127ByteCopySplitInTwoImages_IsRefused_ByTheCumulativeCount()
+    public void A124ByteWholeWordCopySplitInTwoImages_IsRefused_ByTheCumulativeCount()
     {
-        // Each half is 31 whole words (124 bytes): alone, each is under the threshold; together, 248 bytes are over it.
+        // A 127-byte copy holds 31 whole words (124 bytes); the 3 trailing bytes are not a word and are not counted.
+        // Split in two inputs of 16 and 15 words (64 and 60 bytes): each half alone is under the threshold, together 124 are over it.
         var bios = Bios();
-        var first = Fragment(bios, 4096, 31);
-        var second = Fragment(bios, 20000, 31);
+        var first = Fragment(bios, 4096, 16);
+        var second = Fragment(bios, 20000, 15);
         var halves = Manifest(("boot-exe", first), ("exe-file", second));
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", first)), bios))).Should().NotThrow(
             "one half alone is under the threshold: the rule is cumulative, so a single input is not the test");
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(halves, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 248 bytes of BIOS code*");
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 124 bytes of BIOS code*");
     }
 
     [Fact]
@@ -94,19 +98,66 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
-    public void SingleWordCoincidences_AreNotCounted()
+    public void FourPiecesOfEightWords_SplitByNonBiosWords_AreCountedTogether()
     {
-        // Ten BIOS runs of three words each, each separated by a non-BIOS word: every run is shorter than MinRunWords.
+        // Four matches of 8 words (the minimum), each separated by a non-BIOS word: 32 words, 128 bytes, over the threshold.
+        var bios = Bios();
+        var words = new List<uint>();
+        for (var k = 0; k < 4; k++)
+        {
+            words.AddRange(Fragment(bios, 2000 + k * 300, 8));
+            words.Add(Separator);
+        }
+
+        BiosAddressGuard.BiosCopyBytes([words.ToArray()], bios).Should().Be(128,
+            "each 8-word match is a counted match; the separators between them do not stop the count");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", words.ToArray())), bios)))
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 128 bytes of BIOS code*");
+    }
+
+    [Fact]
+    public void PiecesShorterThanTheMinimumMatch_AreNotCounted_ThisIsTheLimit()
+    {
+        // Limit (documented): ten BIOS pieces of seven words, each separated by a non-BIOS word, are 280 bytes of BIOS code in
+        // total, and are not counted, because no single match reaches MinRunWords. The guard does not detect this copy.
         var bios = Bios();
         var words = new List<uint>();
         for (var k = 0; k < 10; k++)
         {
-            words.AddRange(Fragment(bios, 2000 + k * 50, 3));
+            words.AddRange(Fragment(bios, 2000 + k * 300, BiosAddressGuard.MinRunWords - 1));
             words.Add(Separator);
         }
 
         BiosAddressGuard.BiosCopyBytes([words.ToArray()], bios).Should().Be(0,
-            "a run of 3 words is a coincidence: it is not evidence of a copy, however many there are");
+            "pieces shorter than MinRunWords are not matches; this limit is recorded in the docs and is not a pass condition");
+    }
+
+    [Fact]
+    public void ALowEntropyMatch_IsNotEvidence_ButTheSameLengthHighEntropyMatchIs()
+    {
+        // The BIOS holds a 16-word run of only two values (a padding-like table). Copying it is a coincidence in ordinary code.
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        var state = 0x5EED5EEDUL;
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            state = unchecked(state * 6364136223846793005UL + 1442695040888963407UL);
+            bytes[i] = (byte)(state >> 56);
+        }
+
+        const int at = 3000 * 4;
+        for (var k = 0; k < 16; k++)
+        {
+            var value = (k % 2 == 0) ? 0xAAAAAAAAu : 0x55555555u;
+            BitConverter.GetBytes(value).CopyTo(bytes, at + k * 4);
+        }
+
+        var bios = OpenBiosFirmware.FromBytes(bytes);
+        var lowEntropy = Manifest(("exe-file", Fragment(bios, 3000, 16)));
+
+        BiosAddressGuard.BiosCopyBytes(lowEntropy.Images.Select(static i => i.Words), bios).Should().Be(0,
+            "two distinct values in 16 words are not evidence of a copy");
+        BiosAddressGuard.BiosCoveredWords(lowEntropy.Images.Select(static i => i.Words), bios, BiosAddressGuard.MinRunWords, 1)
+            .Count.Should().Be(16, "without the distinct-value filter the same match is counted (the filter is what removes it)");
     }
 
     [Fact]

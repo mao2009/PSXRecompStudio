@@ -88,7 +88,7 @@ public sealed class DistributionLeakScannerTests
     [InlineData(@"C:\Prog\winlibs_staging_ucrt\home64\gcc-16.1.0\build_mingw\x86_64-w64-mingw32\lib")]
     [InlineData(@"C:\Prog\winlibs_staging_ucrt\bin")]
     [InlineData(@"D:/src/PSXRecompStudio/out/game")]
-    [InlineData(@"C:\Users\Hobart\AppData\Local\Temp")]
+    [InlineData(@"C:\Users\builder\AppData\Local\Temp")]
     [InlineData("/home/builder/psx/out")]
     [InlineData("/mnt/c/Users/build/psx")]
     [InlineData("/Users/builder/psx")]
@@ -184,7 +184,7 @@ public sealed class DistributionLeakScannerTests
     }
 
     [Theory]
-    [InlineData("/c/Users/Hobart/AppData/Local/Temp")]
+    [InlineData("/c/Users/builder/AppData/Local/Temp")]
     [InlineData("/d/src/PSXRecompStudio/out")]
     public void MsysAbsolutePath_IsFlagged(string path)
     {

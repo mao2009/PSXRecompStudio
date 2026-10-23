@@ -99,14 +99,10 @@ public static class BiosAddressGuard
     public static IReadOnlySet<string> AllowedAotSourceKinds { get; } =
         new HashSet<string>(StringComparer.Ordinal) { "boot-exe", "disc-exe", "exe-file" };
 
-    /// <summary>A copy of BIOS code is recognised by a run of this many words that the BIOS holds too (256 bytes).</summary>
-    public const int CopyWindowWords = 64;
-
     /// <summary>
     /// The manifest stage (Issue #B2, MEDIUM-3): an AOT input must come from an allowed source kind, a <c>rom</c> image (BIOS bytes
-    /// copied to RAM to be translated) is refused, an image overlapping the BIOS range is refused, and an image holding a copy of a
-    /// BIOS run of <see cref="CopyWindowWords"/> words is refused. A shorter overlap is not a copy and is allowed: disc code that
-    /// happens to share bytes with the BIOS is not evidence of its origin.
+    /// copied to RAM to be translated) is refused, an image overlapping the BIOS range is refused, and the AOT inputs of one
+    /// packaging together may not hold more BIOS code than <see cref="CopyThresholdBytes"/> (see <see cref="BiosCoveredWords"/>).
     /// </summary>
     public static void RequireNoBiosImage(LoadImageManifest manifest, OpenBiosFirmware firmware)
     {
@@ -145,32 +141,51 @@ public static class BiosAddressGuard
         }
     }
 
-    /// <summary>
-    /// A match shorter than this many words is a coincidence, not a copy. Single-word and short matches are never counted (Issue #B2).
-    /// </summary>
-    public const int MinRunWords = 16;
+    /// <summary>The words a match is indexed by: a match is found by its first <see cref="KeyWords"/> words.</summary>
+    public const int KeyWords = 4;
 
     /// <summary>
-    /// The cumulative threshold: the BIOS code the AOT inputs hold, all together, may not exceed this many bytes (Issue #B2, owner
-    /// ruling). 224 bytes is 56 words. The measured accidental coverage of non-BIOS binaries (runs of 16 words) peaks at 192 bytes (docs).
+    /// The shortest match (in words) that counts as a copy (Issue #B2). A match of 8 words is 32 bytes: a copy of at least that
+    /// length is evidence; a shorter match is a coincidence (measured: <c>docs/runtime/openbios-firmware-backend.md</c>).
     /// </summary>
-    public const int CopyThresholdBytes = 224;
+    public const int MinRunWords = 8;
 
     /// <summary>
-    /// The BIOS word offsets covered by matching runs of at least <see cref="MinRunWords"/> words that the candidate images hold.
-    /// A BIOS word covered by several runs, in one image or in several, is counted once: the measure is a union, not a sum.
-    /// Uniform runs (padding, such as zero words) are never evidence and are not counted.
+    /// The fewest distinct word values a counted match must hold (Issue #B2). A match of low-entropy words (padding, repeated
+    /// small constants) is not evidence of a copy: without this filter, runs of 8 and 16 words coincide with the BIOS in
+    /// ordinary binaries (measured in the docs). Real BIOS code holds at least this many distinct words in 8 words.
     /// </summary>
-    public static IReadOnlySet<int> BiosCoveredWords(IEnumerable<IReadOnlyList<uint>> images, OpenBiosFirmware firmware, int minRunWords = MinRunWords)
+    public const int MinDistinctWords = 4;
+
+    /// <summary>
+    /// The cumulative threshold: the BIOS code the AOT inputs hold, all together, may not exceed this many bytes (Issue #B2).
+    /// 96 bytes is 24 words, three matches of the minimum length: one coincidental match cannot refuse a packaging, and a copy of
+    /// 25 words or more (100 bytes), in matches of at least <see cref="MinRunWords"/> words, is refused. The measured coincidence
+    /// of ordinary binaries is zero at this filter (docs); the x86 corpus is the only measured corpus (no MIPS corpus was available).
+    /// </summary>
+    public const int CopyThresholdBytes = 96;
+
+    /// <summary>
+    /// The BIOS word offsets covered by matches of at least <paramref name="minRunWords"/> words, holding at least
+    /// <paramref name="minDistinctWords"/> distinct values, that the candidate images hold. A BIOS word covered by several matches,
+    /// in one image or in several, is counted once: the measure is a union, not a sum. Uniform 4-word windows (padding) are never
+    /// indexed. Defaults are the production values; the measurement varies them to reproduce its table.
+    /// </summary>
+    public static IReadOnlySet<int> BiosCoveredWords(
+        IEnumerable<IReadOnlyList<uint>> images,
+        OpenBiosFirmware firmware,
+        int minRunWords = MinRunWords,
+        int minDistinctWords = MinDistinctWords)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(minRunWords, MinRunWords);
+        ArgumentOutOfRangeException.ThrowIfLessThan(minRunWords, KeyWords);
+        ArgumentOutOfRangeException.ThrowIfLessThan(minDistinctWords, 1);
         ArgumentNullException.ThrowIfNull(images);
         ArgumentNullException.ThrowIfNull(firmware);
         var bios = firmware.Words;
         var index = new Dictionary<(uint, uint, uint, uint), List<int>>();
-        for (var j = 0; j + MinRunWords <= bios.Count; j++)
+        for (var j = 0; j + KeyWords <= bios.Count; j++)
         {
-            if (!IsUniformRun(bios, j))
+            if (!IsUniformKey(bios, j))
             {
                 var key = Key(bios, j);
                 if (!index.TryGetValue(key, out var starts))
@@ -185,9 +200,9 @@ public static class BiosAddressGuard
         var covered = new HashSet<int>();
         foreach (var image in images)
         {
-            for (var i = 0; i + MinRunWords <= image.Count; i++)
+            for (var i = 0; i + KeyWords <= image.Count; i++)
             {
-                if (IsUniformRun(image, i) || !index.TryGetValue(Key(image, i), out var starts))
+                if (IsUniformKey(image, i) || !index.TryGetValue(Key(image, i), out var starts))
                 {
                     continue;
                 }
@@ -200,7 +215,7 @@ public static class BiosAddressGuard
                         run++;
                     }
 
-                    if (run >= minRunWords)
+                    if (run >= minRunWords && DistinctCount(image, i, run) >= minDistinctWords)
                     {
                         for (var k = 0; k < run; k++)
                         {
@@ -226,9 +241,9 @@ public static class BiosAddressGuard
     public static bool ContainsBiosCopy(IReadOnlyList<uint> words, OpenBiosFirmware firmware) =>
         ExceedsCopyThreshold([words], firmware);
 
-    private static bool IsUniformRun(IReadOnlyList<uint> words, int start)
+    private static bool IsUniformKey(IReadOnlyList<uint> words, int start)
     {
-        for (var k = 1; k < MinRunWords; k++)
+        for (var k = 1; k < KeyWords; k++)
         {
             if (words[start + k] != words[start])
             {
@@ -237,6 +252,17 @@ public static class BiosAddressGuard
         }
 
         return true;
+    }
+
+    private static int DistinctCount(IReadOnlyList<uint> words, int start, int count)
+    {
+        var distinct = new HashSet<uint>();
+        for (var k = 0; k < count; k++)
+        {
+            distinct.Add(words[start + k]);
+        }
+
+        return distinct.Count;
     }
 
     private static (uint, uint, uint, uint) Key(IReadOnlyList<uint> words, int start) =>
