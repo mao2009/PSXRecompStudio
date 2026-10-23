@@ -155,6 +155,8 @@ public static class RuntimeHostBuildService
                 "--no-restore",
             };
 
+            // Issue #B2 (MEDIUM-5): no PDB is shipped, so the host carries no developer build path (PDB source paths).
+            args.Add("-p:DebugType=none");
             if (selfContained)
             {
                 args.Add("-p:SelfContained=true");

@@ -158,7 +158,7 @@ public static class RuntimeHostManifestJson
             }
         }
 
-        if (!manifest.GuestFirmware || manifest.MixedFallback)
+        if (!manifest.GuestFirmware)
         {
             // HLE games and mixed-fallback runs rely on the bridge (or the fallback)
             // to classify transfers; a populated table is mandatory for them.

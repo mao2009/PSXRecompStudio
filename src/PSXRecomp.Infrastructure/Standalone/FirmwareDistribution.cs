@@ -39,15 +39,17 @@ public sealed record FirmwareAotPlan(
     {
         // The shared roots parser (Issue #732 review): comments/blank lines and hex interpretation match the
         // manifest's own roots files, and an invalid line is an InvalidDataException the CLI classifies.
-        var roots = LoadImageManifest.ReadRootsFile(rootsFile);
-        var code = firmware.Words.Take((int)Math.Min(codeBytes / 4, (uint)firmware.Words.Count)).ToArray();
-        var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, code, OpenBiosFirmware.ResetVector, roots);
+        // Owner ruling (Issue #B2, option 1): the BIOS is never ahead-of-time translated. The roots file is still read,
+        // so a malformed input fails closed, but no ROM block is compiled: every ROM PC runs in the interpreter fallback
+        // over the BIOS image the run loads. Only the code the guest places in RAM (the disc's boot executable and the
+        // images it names) is translated, exactly as before.
+        _ = LoadImageManifest.ReadRootsFile(rootsFile);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
-        return new FirmwareAotPlan(image.Program, loaded, observed);
+        return new FirmwareAotPlan(new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>()), loaded, observed);
     }
 }
 
@@ -304,7 +306,7 @@ public sealed record FirmwareDistributionRequest(
     uint FallbackSegmentInstructionBudget = uint.MaxValue,
     uint FallbackMaxTransitions = uint.MaxValue,
     TimeSpan? BuildTimeout = null,
-    string BiosProvenance = RuntimeHostManifest.BiosProvenanceUserSupplied);
+    string BiosProvenance = RuntimeHostManifest.BiosProvenanceSynthetic);
 
 /// <summary>
 /// <c>psxrecomp package --bios openbios</c>: builds a standalone distribution whose native artifact IS the BIOS
@@ -383,7 +385,7 @@ public static class FirmwareDistributionBuilder
 
             // Measurement only (Issue #773): PSXRECOMP_NATIVE_GUARD_STATS at package time builds the artifact with guard counters.
             var dispatch = RecompilerHostCodeGen.Generate(
-                plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled);
+                plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled, allowEmptyProgram: true);
             if (!dispatch.Success)
             {
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
@@ -656,6 +658,11 @@ public static class FirmwareRuntimeLauncher
                 new TitleExecutionRequest(
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
             wall.Stop();
+            if (OpenBiosRomInput.Sha256HexOfFile(biosPath) != romSha256)
+            {
+                throw new InvalidDataException(
+                    "The BIOS image changed while the run was in progress (SHA-256 differs from the image the host loaded); the run is not valid.");
+            }
 
             if (frameOutPath is not null)
             {

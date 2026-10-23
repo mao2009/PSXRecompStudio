@@ -112,7 +112,30 @@ public sealed class FirmwareAotPlanTests
             dir.Combine("aot", "images.txt"),
             new RawCdSectorSource(new byte[2352]));
 
-        plan.Program.Blocks.Should().NotBeEmpty("the commented roots file still roots the ROM at the reset vector");
+        // Owner ruling (Issue #B2): the roots file is validated, but the BIOS is never ahead-of-time translated.
+        plan.Program.Blocks.Should().BeEmpty("the BIOS ROM is never compiled ahead of time; it runs in the interpreter fallback");
+    }
+
+    /// <summary>
+    /// Owner ruling (Issue #B2, option 1): no BIOS code is ahead-of-time translated. Packaging a roots file that names the
+    /// reset vector yields no ROM block, and the generated dispatch source names no block at a ROM address.
+    /// </summary>
+    [Fact]
+    public void TheBiosIsNeverAheadOfTimeTranslated_NoRomBlockOrRomBlockFunctionIsGenerated()
+    {
+        using var dir = new TempDirectory();
+        var rom = SyntheticRom();
+        dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
+        dir.WriteFile("aot/images.txt", Text("# no images\n"));
+
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom), dir.Combine("aot", "rom.roots"), 64, dir.Combine("aot", "images.txt"),
+            new RawCdSectorSource(new byte[2352]));
+
+        plan.Program.Blocks.Should().BeEmpty("the BIOS ROM is never compiled ahead of time");
+        var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
+        dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
+        dispatch.Source!.Should().NotContain("recompiler_block_0xBFC", "no BIOS block function reaches the generated source");
     }
 
     [Fact]

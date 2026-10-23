@@ -324,7 +324,17 @@ public static class Program
                     var optionText = arguments[++i];
                     if (token == "--bios") bios = optionText;
                     else if (token == "--bios-rom") biosRom = optionText;
-                    else if (token == "--bios-provenance" && optionText is "user-supplied" or "synthetic") biosProvenance = optionText;
+                    else if (token == "--bios-provenance")
+                    {
+                        if (optionText is not ("user-supplied" or "synthetic"))
+                        {
+                            parsed = default;
+                            error = $"unknown --bios-provenance '{optionText}'; expected 'user-supplied' or 'synthetic'.";
+                            return false;
+                        }
+
+                        biosProvenance = optionText;
+                    }
                     else if (token == "--aot-dir") aotDir = optionText;
                     else if (token == "--code-bytes" && uint.TryParse(optionText, out var parsedCodeBytes) && parsedCodeBytes != 0) codeBytes = parsedCodeBytes;
                     else if (token == "--instruction-budget" && uint.TryParse(optionText, out var parsedBudget) && parsedBudget != 0) instructionBudget = parsedBudget;

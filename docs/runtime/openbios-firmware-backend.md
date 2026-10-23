@@ -687,28 +687,44 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
-#### BIOS is never in the distribution; BIOS mode labels (Issue #B2)
+#### BIOS is never in the distribution and never translated (Issue #B2)
 
-The packaged distribution contains no BIOS bytes, no sidecar image and no BIOS digest. `package --bios openbios` reads
-the ROM once at packaging time to compile its code ahead of time. The generated executable then loads the BIOS at run
-time from the path named by the `PSXRECOMP_BIOS_ROM` environment variable (a 512 KiB image; any other size fails
-closed with exit code 95). The Runtime host reads the same path, and the run reports the SHA-256 of the image it
-actually loaded (`romSha256` on the `firmware-run` line).
+Owner ruling (option 1): the BIOS is **not ahead-of-time translated**. `package --bios openbios` reads the ROM once to
+validate it and to pin the roots file, but compiles no ROM block. Every ROM PC therefore runs in the interpreter
+fallback over the BIOS image the run loads. Only the code the guest places in RAM (the disc's boot executable and the
+images it names) is translated, guarded, and run natively, exactly as before.
 
-- `package --bios-provenance user-supplied|synthetic` records the image's provenance in `runtime-host.json` (default
-  `user-supplied`). The BIOS mode label derives from it:
-  - `openbios-rom`: user-supplied firmware, the real-ROM gate.
-  - `openbios-synthetic`: any other firmware, such as a test stub. It is never labelled as a real OpenBIOS run.
-  - `hle`: the legacy HLE-bridge distribution.
-- The label appears in `runtime-host.json` (`"biosMode"`), in the Runtime host's first line (`runtime host: bios mode <mode>`),
-  and on the `firmware-run` line (`"biosMode"`).
-- The packaged E2E asserts that no file under the distribution contains the first 256 bytes of the supplied BIOS or
-  its SHA-256, and that no text file or the generated executable names a user or home path.
+The packaged distribution contains no BIOS bytes, no sidecar image and no BIOS digest. The generated executable loads
+the BIOS at run time from the path named by the `PSXRECOMP_BIOS_ROM` environment variable:
 
-The real-ROM gate (`UserSuppliedOpenBiosRom_PackagesAndRunsNativelyThroughTheRuntimeHost`) packages a synthetic disc with
-a user-supplied OpenBIOS image, then runs it with `PSXRECOMP_BIOS_ROM` pointing at that same file. The image is read in
-place and is never copied into the repository, the tests or the output. Without `PSXRECOMP_OPENBIOS_ROM` the test is
-skipped with its reason.
+- A standalone artifact run directly fails with exit code **95** on a file that is not exactly 512 KiB.
+- Through the Runtime host (the packaged launch path), the same check fails closed with exit code **78**.
+- The host re-hashes the image after the run. A change during the run is a failed run, never a clean one.
+- The run reports the SHA-256 of the image the host loaded (`romSha256` on the `firmware-run` line).
+
+Provenance: `package --bios-provenance user-supplied|synthetic` records the image's origin in `runtime-host.json`.
+The default is `synthetic` (the conservative label), and any other value fails the command. The BIOS mode label:
+
+- `openbios-rom`: user-supplied firmware (the real-ROM gate).
+- `openbios-synthetic`: any other firmware, such as a test stub. It is never labelled as a real OpenBIOS run.
+- `hle`: the legacy HLE-bridge distribution.
+
+The label appears in `runtime-host.json` (`"biosMode"`), in the Runtime host's first line (`runtime host: bios mode <mode>`),
+and on the `firmware-run` line (`"biosMode"`).
+
+Packaged E2E checks (`OpenBiosStandalonePackageE2E`):
+
+- No file under the distribution contains the first 256 bytes of the BIOS, its SHA-256, or any 16-byte window of the
+  BIOS (uniform padding windows excluded).
+- No file under the distribution (any extension, the Runtime host and its PDB included) names a user or home path.
+  The generated executable is stripped (`-s`) so that no toolchain build path survives.
+- The generated source names no block at a ROM address (`TheBiosIsNeverAheadOfTimeTranslated_...`).
+
+The real-ROM gate (`UserSuppliedOpenBiosRom_WiresTheRealRomAndPinsTheMeasuredRunOutcome`) packages a synthetic disc
+with a user-supplied OpenBIOS image, then runs it with `PSXRECOMP_BIOS_ROM` pointing at that same file. The image is
+read in place and is never copied into the repository, the tests or the output. Without `PSXRECOMP_OPENBIOS_ROM` the
+test is skipped with its reason. Its wiring checks and its run outcome are reported separately; the outcome is a
+measured `RuntimeFailure` / `ARTIFACT_TIMEOUT`, not a clean run.
 
 ### Remaining acceptance gates
 
