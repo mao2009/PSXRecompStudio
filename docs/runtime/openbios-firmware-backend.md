@@ -687,61 +687,78 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
-#### BIOS is never in the distribution and never translated (Issue #B2)
+#### BIOS: never an AOT input; run-time provenance (Issue #B2)
 
-Owner ruling (option 3): the BIOS is **never an input of ahead-of-time code generation**. That is the primary guarantee
-that no BIOS-derived machine code reaches a generated executable. A byte-level scan is only a supporting check.
+**Primary guarantee: the BIOS is never an input of ahead-of-time generation.** `BiosAddressGuard` refuses BIOS code at four
+stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistribution`:
 
-**Primary guarantee: generation-stage refusal** (`BiosAddressGuard`, `FirmwareDistribution`):
+| Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
+|---|---|---|
+| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, a source kind other than `boot-exe`/`disc-exe`/`exe-file`, an image holding a 64-word run of BIOS code | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage` |
+| plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestStageDisabled_ThePlanStageRefuses` |
+| dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses` |
+| source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
 
-- Address aliases: every CPU alias of the 512 KiB ROM (KUSEG `0x1FC00000`, KSEG0 `0x9FC00000`, KSEG1 `0xBFC00000`, and the
-  physical range) is reduced by masking the segment bits before the range test. Unmapped aliases such as `0x3FC00000`
-  are treated as BIOS too (conservative).
-- Manifest stage: a `rom` image (BIOS bytes copied to RAM to be translated) is refused, and so is any image whose range
-  overlaps the BIOS. The BIOS's own RAM copies are therefore interpreted, never translated.
-- Plan and dispatch stage: no compiled or loaded block may start inside, or overlap, the BIOS range.
-- Generated-source stage: the generated C may name no `recompiler_block_0x…` function at a BIOS address.
+Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFFFF` before the range test. The load-bearing
+proof: with all four stages disabled, the production path does generate a block at `0xBFC00000`
+(`WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource`), so the refusals are what keep BIOS code out.
 
-Each stage has a negative test that injects BIOS code at that stage's entry and expects the refusal
-(`BiosGenerationStageTests`: `ManifestStage_InjectedBiosRangeImage_IsRefused`, `PlanStage_InjectedBiosBlock_IsRefused`,
-`LoadedStage_InjectedBiosRangeCode_IsRefused`, `SourceStage_InjectedBiosBlockName_IsRefused_AndACleanSourceIsNot`,
-and `FirmwareAotPlanTests.TheGenerationTimeCheck_FailsWhenABiosBlockIsInjected`). The packaging run's own plan is audited
-too: the `firmware-run` line reports `aotBiosBlocks` (BIOS blocks in the plan the run rebuilds) and `aotLoadedBlocks`.
+**Disc code and the BIOS (MEDIUM-3).** Disc code is AOT input (`boot-exe`, `disc-exe`, `exe-file`) and is not refused for
+sharing bytes with the BIOS. A short coincidence is not evidence of origin. The guard refuses a copy of BIOS code only when a run of
+64 words (256 bytes) matches the BIOS at some offset; uniform padding runs are skipped. A disc program that shares a
+shorter run with the BIOS, or a copy shorter than 256 bytes, is NOT refused. The origin of an AOT input is therefore
+tracked by its source kind and by the copy check, which is a best-effort, not a proof of origin.
 
-**Supporting check: binary window scan** (`DistributionLeakScanner`):
+**Binary window scan (supporting only, `DistributionLeakScanner`).** 8-byte windows of the BIOS at every offset are matched
+against every file of the packaged distribution. A match is excused when the identical window is also held by a non-BIOS
+baseline (the same packaging with a synthetic image, and the game disc). The excuse is content identity, for any window shape.
+Limits, stated plainly:
 
-- Every 8-byte window of the BIOS, at every byte offset, is matched against every file of the distribution (any extension).
-- A BIOS window found in a file is a leak unless the identical window is also held by a **baseline**. The baseline is built
-  only from non-BIOS material: the output of the same packaging with a synthetic image, and the game disc. The excuse is
-  content identity; it applies to every window shape, including windows of mostly `0x00` or `0xFF` bytes.
-- Limits, stated plainly:
-  - A BIOS fragment shorter than 8 bytes is not matched by any window.
-  - Because of the baseline excuse, a BIOS fragment built only from windows that the baseline also holds is not detected
-    (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit` pins this limit). The baseline also excuses
-    low-entropy windows, which a leak can share.
-  - The byte scan therefore does not prove zero leakage. The generation-stage refusal is the guarantee.
-- Measured on the real image (HEAD `07fdad0`): 191,697 distinct BIOS 8-byte windows; 725 of them are also held by the baseline
-  and excused; 104,155 occurrences of low-entropy (mostly `0x00`/`0xFF`) BIOS windows in the packaged output are all excused
-  by the baseline; leaks: 0.
+- A BIOS fragment shorter than 8 bytes is never matched.
+- A BIOS fragment built only from windows the baseline also holds is not detected (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit`).
+- Windows that are mostly `0x00`/`0xFF` are excused when the baseline holds them, which is almost always: the real-image
+  run found 104,590 such occurrences in the packaged output, all excused. This is a measured false-negative path.
+- The scan does not prove zero leakage. It does not establish the origin of code; only the generation guard is a guarantee.
 
-**Runtime evidence** (real image, HEAD `07fdad0`): the packaging and run plan report `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0.
-A bounded run with a finite fallback budget ends with `state` = `RuntimeFailure` and `diagnosticCode` =
-`ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`. That is a classified stop, not a clean run. Its `fallbackInstructions` = 1,999,999
-(the interpreter executed the BIOS from the reset vector), `nativeInstructions` = 0. The unbounded run reports no fallback
-count: its single fallback segment never ends, so the count is never collected. The bounded run is the way to obtain it.
+**Provenance, decided at run time (MAJOR-1).** The run classifies the image it loads by SHA-256 (`BiosProvenance`). The
+packaging-time declaration (`--bios-provenance`) is recorded for comparison only and is never evidence.
 
-**Packaging and exceptions**:
+- `openbios-rom`: the digest is in `BiosProvenance.VerifiedOpenBiosSha256`, an allowlist of independently verified OpenBIOS
+  builds. **The allowlist is empty.** No build has an independently verified, reproducible procedure from a pinned upstream
+  commit (Issues #794, #732, #730). The local build used for the real-image gate is NOT registered.
+- `openbios-synthetic`: the digest is in `BiosProvenance.KnownSyntheticSha256`, the digests of this project's deterministic
+  test stubs (SyntheticRom, the reproducible BIOS-shaped random image, RomWithGame). A stub is not BIOS code.
+- `openbios-unverified`: any other image. It may run locally. It is never a verified OpenBIOS run, and nothing in the docs or
+  the logs calls such a run a success.
+- An unregistered image is never classified synthetic automatically. A declaration that the run does not confirm produces a
+  `runtime host: warning:` line.
 
-- The packaged executable loads the BIOS at run time from the path named by the `PSXRECOMP_BIOS_ROM` environment variable
-  (512 KiB exactly; a direct run exits with code **95** on another size, the Runtime host with **78**). The BIOS is not in the
-  distribution, so packaging pins no digest of it. The run reports the SHA-256 of the image it loaded; the host re-hashes
-  it after the run, and a change during the run fails the run.
+**Run evidence (real image, HEAD `…`, `openbios-unverified` as classified):**
+
+- Generation stage: `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0 on the `firmware-run` line.
+- Unbounded run: `RuntimeFailure` with `ARTIFACT_TIMEOUT` at the 300-second bound. The fallback count is null: the interpreter's single
+  fallback segment never ends, so its count is never collected.
+- Bounded run (fallback budget 2,000,000): `RuntimeFailure` with `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`. `fallbackInstructions` =
+  1,999,999, `nativeInstructions` = 0, `fallbackTransitions` = 1. The run reports `guestPc` = `0xBFC00000`.
+- Progress of the BIOS itself, measured separately with the interpreter probe (`openbios-probe --segment-budget 2000000 --segments 1`,
+  same image): after 2,000,000 instructions the PC is `0x80031618` in kernel RAM, with `KernelRunningFromRam`, `VectorsInstalled`
+  and `ShellEntered` all true. The BIOS does leave the reset vector.
+
+**Why the bounded run reports `guestPc` = `0xBFC00000`.** The reported snapshot is the artifact process's own snapshot, parsed
+from its stdout (`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`). The interpreter's fallback runs in the host, and
+its final state is not written back into that snapshot. The reported PC is therefore the segment's entry state. The probe shows the
+interpreter's real end state. The probe and the artifact share the interpreter core only by construction: the probe uses its
+own engine (`openbios-mips`), and this is an inference from the code, not an instrumented check.
+
+**Packaging and exceptions.**
+
+- The packaged executable loads the BIOS at run time from the path named by `PSXRECOMP_BIOS_ROM` (512 KiB exactly; a direct run
+  exits with **95** on another size, the Runtime host with **78**). The packaging pins no digest of the BIOS.
 - Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the .NET SDK apphost template path
-  `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\`, a Microsoft CI build
-  path rather than a developer path. It is matched exactly (case-insensitive) and only in that relative file
-  (`TheApphostTemplatePath_*`, `ApphostExemption_*`). Removing it needs `UseAppHost=false` (owner decision pending).
-- The generated executable is stripped (`-s`), and so is the native library. The Runtime host is published with
-  `DebugType=none`, so no PDB ships. The intermediate object is removed after linking; a failed removal fails the build.
+  `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\`, a Microsoft CI build path,
+  not a developer path. Matched exactly (case-insensitive) in that relative file only. Removing it needs `UseAppHost=false` (owner decision pending).
+- The generated executable and the native library are stripped (`-s`). The Runtime host is published with `DebugType=none`.
+  The intermediate object is removed after linking; a failed removal fails the build.
 
 ### Remaining acceptance gates
 
