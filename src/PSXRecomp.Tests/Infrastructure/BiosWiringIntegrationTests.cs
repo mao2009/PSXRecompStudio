@@ -1,0 +1,187 @@
+using System.Runtime.InteropServices;
+using FluentAssertions;
+using PSXRecomp.Core.Execution;
+using PSXRecomp.Infrastructure.Standalone;
+using PSXRecomp.Tests.E2E;
+using PSXRecomp.Tests.RealRomAnalysis;
+using Xunit;
+
+namespace PSXRecomp.Tests.Infrastructure;
+
+/// <summary>
+/// Issue #B2 (MEDIUM-2, L2): the production packaging path with each generation-stage guard's wiring disabled in turn. The input's
+/// manifest names a BIOS-destination image, a rom image. Each stage's refusal carries its own stage name, so a test can tell which
+/// stage fired: a stage is load-bearing only when the stages before it are disabled.
+/// </summary>
+[Test]
+public sealed class BiosWiringIntegrationTests : IDisposable
+{
+    private readonly TempDirectory _dir = new();
+
+    public void Dispose() => _dir.Dispose();
+
+    /// <summary>A reproducible ROM whose first words are valid MIPS (addiu, jr ra, nop); the rest is zero padding.</summary>
+    private static byte[] CodeRom()
+    {
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        uint[] words = [0x24080001u, 0x03E00008u, 0u, 0x24090002u, 0x03E00008u, 0u];
+        for (var i = 0; i < words.Length; i++)
+        {
+            BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        }
+
+        return bytes;
+    }
+
+    private FirmwareDistributionRequest Request(string outputName)
+    {
+        var rom = _dir.WriteFile("openbios.bin", CodeRom());
+        var aot = _dir.CreateSubdirectory("aot");
+        _dir.WriteFile("aot/rom.roots", System.Text.Encoding.ASCII.GetBytes("0xBFC00000\n"));
+        _dir.WriteFile("aot/roots-bios.txt", System.Text.Encoding.ASCII.GetBytes("0xBFC00000\n"));
+        _dir.WriteFile("aot/images.txt", System.Text.Encoding.ASCII.GetBytes(
+            "image bios-range 0xBFC00000 rom 0xBFC00000 0x40 roots-bios.txt\n"));
+        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        return new FirmwareDistributionRequest(
+            RomPath: rom,
+            DiscPath: disc,
+            AotDirectory: aot,
+            OutputDirectory: _dir.Combine(outputName),
+            CodeBytes: 64,
+            RunTimeoutMs: 1000,
+            SelfContained: false,
+            BuildTimeout: TimeSpan.FromMinutes(5));
+    }
+
+    private static void Build(FirmwareDistributionRequest request) =>
+        FirmwareDistributionBuilder.Build(request, RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
+
+    [Fact]
+    public void ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage()
+    {
+        ((Action)(() => Build(Request("refused-manifest"))))
+            .Should().Throw<InvalidDataException>().WithMessage("*copies BIOS bytes*");
+    }
+
+    [Fact]
+    public void WithTheManifestAndDispatchStagesDisabled_ThePlanStageRefuses_UnderItsOwnName()
+    {
+        // Plan on, dispatch off: the refusal that fires is the plan's own, named [stage: plan].
+        using var scope = BiosGuardWiring.DisableStages(BiosGuardWiring.Manifest, BiosGuardWiring.Dispatch);
+
+        ((Action)(() => Build(Request("refused-plan"))))
+            .Should().Throw<InvalidOperationException>().WithMessage("*[stage: plan]*");
+    }
+
+    [Fact]
+    public void WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses_UnderItsOwnName()
+    {
+        using var scope = BiosGuardWiring.DisableStages(BiosGuardWiring.Manifest, BiosGuardWiring.Plan);
+
+        ((Action)(() => Build(Request("refused-dispatch"))))
+            .Should().Throw<InvalidOperationException>().WithMessage("*[stage: dispatch]*");
+    }
+
+    [Fact]
+    public void WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName()
+    {
+        using var scope = BiosGuardWiring.DisableStages(BiosGuardWiring.Manifest, BiosGuardWiring.Plan, BiosGuardWiring.Dispatch);
+
+        ((Action)(() => Build(Request("refused-source"))))
+            .Should().Throw<InvalidOperationException>().WithMessage("*names a block at 0xBFC00000*");
+    }
+
+    /// <summary>
+    /// The load-bearing proof: with every stage disabled the production path builds an artifact whose generated C names a block at
+    /// the BIOS address. So the refusals above are what keeps BIOS code out.
+    /// </summary>
+    [SkippableFact]
+    public void WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource()
+    {
+        RuntimeHostPublishE2E.RequireGcc();
+        using var scope = BiosGuardWiring.DisableStages(
+            BiosGuardWiring.Manifest, BiosGuardWiring.Plan, BiosGuardWiring.Dispatch, BiosGuardWiring.Source);
+        var request = Request("unguarded");
+
+        Build(request);
+
+#pragma warning disable AARC003 // Test-layer inspection of the generated C that the unguarded build wrote
+        var source = string.Concat(Directory.EnumerateFiles(request.OutputDirectory, "*.c").Select(File.ReadAllText));
+#pragma warning restore AARC003
+        source.Should().Contain("recompiler_block_0xBFC00000", "with the guards off, the BIOS block reaches the generated source");
+    }
+
+    /// <summary>A deterministic 512 KiB BIOS-shaped image (the same LCG as the copy tests): not OpenBIOS, not a registered stub.</summary>
+    private static byte[] LcgRom()
+    {
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        var state = 0x5EED5EEDUL;
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            state = unchecked(state * 6364136223846793005UL + 1442695040888963407UL);
+            bytes[i] = (byte)(state >> 56);
+        }
+
+        return bytes;
+    }
+
+    /// <summary>The little-endian bytes of the ROM's words from <paramref name="firstWord"/>, <paramref name="count"/> of them.</summary>
+    private static byte[] WordsBytes(byte[] rom, int firstWord, int count)
+    {
+        var bytes = new byte[count * 4];
+        Array.Copy(rom, firstWord * 4, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    /// <summary>A production request whose manifest names the given AOT inputs; the disc and the extra AOT files are the test's.</summary>
+    private FirmwareDistributionRequest CopyRequest(string name, byte[] rom, byte[] disc, string imageLines, params (string File, byte[] Bytes)[] aotFiles)
+    {
+        var romPath = _dir.WriteFile(name + "-bios.bin", rom);
+        var aot = _dir.CreateSubdirectory(name + "-aot");
+        _dir.WriteFile(name + "-aot/rom.roots", System.Text.Encoding.ASCII.GetBytes("0xBFC00000\n"));
+        _dir.WriteFile(name + "-aot/images.txt", System.Text.Encoding.ASCII.GetBytes(imageLines));
+        foreach (var (file, bytes) in aotFiles)
+        {
+            _dir.WriteFile(name + "-aot/" + file, bytes);
+        }
+
+        var discPath = _dir.WriteFile(name + "-disc.bin", disc);
+        return new FirmwareDistributionRequest(
+            RomPath: romPath,
+            DiscPath: discPath,
+            AotDirectory: aot,
+            OutputDirectory: _dir.Combine(name),
+            CodeBytes: 64,
+            RunTimeoutMs: 1000,
+            SelfContained: false,
+            BuildTimeout: TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public void ProductionBuild_RefusesA254ByteBiosCopyInADiscExecutable_AtTheManifestStage()
+    {
+        // The disc's boot executable carries 63 whole words of the BIOS (252 bytes covered): over the threshold.
+        var rom = LcgRom();
+        var exe = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 252, WordsBytes(rom, 8192, 63));
+        var request = CopyRequest("copy-254", rom, SyntheticDiscBuilder.Bootable(exe), "boot-exe game\n");
+
+        ((Action)(() => Build(request)))
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 252 bytes of BIOS code*");
+    }
+
+    [Fact]
+    public void ProductionBuild_RefusesA127ByteCopySplitAcrossTwoAotInputs()
+    {
+        // Each half is 31 whole words (124 bytes): the disc's boot executable and a PS-X EXE file, together 248 bytes.
+        var rom = LcgRom();
+        var first = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 124, WordsBytes(rom, 4096, 31));
+        var second = SyntheticPsxExeBuilder.Build(0x80020000u, 0x80020000u, 124, WordsBytes(rom, 20000, 31));
+        var request = CopyRequest(
+            "copy-split", rom, SyntheticDiscBuilder.Bootable(first),
+            "boot-exe game\nexe half2 half2.exe\n",
+            ("half2.exe", second));
+
+        ((Action)(() => Build(request)))
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 248 bytes of BIOS code*");
+    }
+}

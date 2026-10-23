@@ -32,6 +32,7 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// <param name="ProgramEnd">The guest PC one past the program image, the natural-exit handoff boundary.</param>
 /// <param name="ResultRegister">The GPR index reported as the observable result (V0 = 2), or null for none.</param>
 /// <param name="RunTimeoutMs">The bounded per-run timeout in milliseconds.</param>
+/// <param name="BiosProvenance">For guest firmware: <see cref="BiosProvenanceUserSupplied"/> or <see cref="BiosProvenanceSynthetic"/>. Null for HLE.</param>
 /// <param name="EntryPc">The guest PC at which the guest's own program begins (the PS-X EXE header entry point for games, or the
 /// firmware load address for guest firmware). The runtime host's run request starts here; it is used for
 /// diagnostics and, on guest firmware, as the execution entry so the firmware's own vectors run first.</param>
@@ -49,10 +50,29 @@ public sealed record RuntimeHostManifest(
     uint ProgramEnd,
     int? ResultRegister,
     int RunTimeoutMs,
-    uint EntryPc)
+    uint EntryPc,
+    string? BiosProvenance = null)
 {
     /// <summary>The schema version this runtime host understands.</summary>
     public const int CurrentSchemaVersion = 1;
+
+    /// <summary>The provenance of a firmware BIOS the user supplied at packaging time (Issue #B2).</summary>
+    public const string BiosProvenanceUserSupplied = "user-supplied";
+
+    /// <summary>The provenance of a test or synthetic BIOS-shaped image. It is never a real OpenBIOS build.</summary>
+    public const string BiosProvenanceSynthetic = "synthetic";
+
+    /// <summary>
+    /// The BIOS mode of a firmware run is not decided at packaging time (Issue #B2, MAJOR-1): the run classifies the image it loads
+    /// by SHA-256 (<see cref="BiosProvenance"/>) and reports the label on its <c>firmware-run</c> line.
+    /// </summary>
+    public const string BiosModeClassifiedAtRun = "classified-at-run";
+
+    /// <summary>The BIOS mode of the project's HLE BIOS bridge. Never a firmware label.</summary>
+    public const string BiosModeHle = "hle";
+
+    /// <summary>The BIOS mode field: HLE for the legacy bridge; for guest firmware, classified at run time.</summary>
+    public string BiosMode => GuestFirmware ? BiosModeClassifiedAtRun : BiosModeHle;
 }
 
 /// <summary>Canonical JSON reading/writing for <see cref="RuntimeHostManifest"/>, with fail-closed validation.</summary>
@@ -112,7 +132,11 @@ public static class RuntimeHostManifestJson
         }
 
         RuntimeHostLayout.ValidateManifestArtifactPath(manifest.Artifact);
-        RuntimeHostLayout.ValidateManifestImagePath(manifest.Image);
+        // Guest firmware carries no sidecar image: the BIOS is supplied at run time (Issue #B2).
+        if (!(manifest.GuestFirmware && string.IsNullOrEmpty(manifest.Image)))
+        {
+            RuntimeHostLayout.ValidateManifestImagePath(manifest.Image);
+        }
 
         if (manifest.BlockEntryPcs is not null)
         {
@@ -127,7 +151,7 @@ public static class RuntimeHostManifestJson
             }
         }
 
-        if (!manifest.GuestFirmware || manifest.MixedFallback)
+        if (!manifest.GuestFirmware)
         {
             // HLE games and mixed-fallback runs rely on the bridge (or the fallback)
             // to classify transfers; a populated table is mandatory for them.

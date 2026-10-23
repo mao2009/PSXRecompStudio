@@ -40,7 +40,7 @@ public sealed class FirmwareRuntimeLauncherDiagnosticsTests
         FallbackSegmentInstructionBudget: uint.MaxValue,
         FallbackMaxTransitions: uint.MaxValue,
         ImageLoadAddress: RomBase,
-        Image: RuntimeHostLayout.ImageFileName,
+        Image: string.Empty,
         BlockEntryPcs: [RomBase],
         ProgramEnd: RomBase + (uint)OpenBiosFirmware.ImageSize,
         ResultRegister: null,
@@ -48,7 +48,7 @@ public sealed class FirmwareRuntimeLauncherDiagnosticsTests
         EntryPc: RomBase);
 
     /// <summary>Seeds a plausible distribution tree (AOT inputs under runtime/firmware/, ROM and disc sidecars).</summary>
-    private static string Seed(TempDirectory dir, byte[] rom, byte[] disc, string? romSha256)
+    private static string Seed(TempDirectory dir, byte[] rom, byte[] disc, string? discSha256 = null)
     {
         dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
         dir.WriteFile("aot/images.txt", Text("# no RAM-placed code images\n"));
@@ -57,32 +57,32 @@ public sealed class FirmwareRuntimeLauncherDiagnosticsTests
         var runtime = dir.CreateSubdirectory("runtime");
         var firmware = dir.CreateSubdirectory("runtime/firmware");
         FirmwareAotBundle.CopyInto(files, firmware);
-        dir.WriteFile("runtime/artifact-image.bin", rom);
-        dir.WriteFile("runtime/disc.bin", disc);
+        dir.CreateSubdirectory("runtime/disc");
+        dir.WriteFile("runtime/disc/disc.bin", disc);
+        dir.WriteFile("bios.bin", rom); // the BIOS is named by path at run time, never stored in the distribution
         var boot = new FirmwareBootManifest(
             FirmwareBootManifest.CurrentSchemaVersion,
             "openbios",
-            romSha256 ?? OpenBiosRomInput.Sha256Hex(rom),
             64,
             "firmware/rom.roots",
             "firmware/images.txt",
             "disc/disc.bin",
-            OpenBiosRomInput.Sha256Hex(disc),
+            discSha256 ?? OpenBiosRomInput.Sha256Hex(disc),
             inputs);
         dir.WriteFile("runtime/firmware-boot.json", Text(FirmwareBootManifestJson.Serialize(boot)));
         return runtime;
     }
 
     [Fact]
-    public void Run_WritesAFailureDiagnostic_WhenTheRomIdentityDoesNotMatch()
+    public void Run_WritesAFailureDiagnostic_WhenTheDiscIdentityDoesNotMatch()
     {
         using var dir = new TempDirectory();
-        var runtime = Seed(dir, SyntheticRom(), new byte[2352], romSha256: new string('0', 64));
+        var runtime = Seed(dir, SyntheticRom(), new byte[2352], discSha256: new string('0', 64));
         var diagnostics = dir.Combine("firmware-diagnostics.json");
         var stderr = new StringWriter();
 
         var exit = FirmwareRuntimeLauncher.Run(
-            Host(), runtime, dir.Combine("game"), Path.Combine(runtime, RuntimeHostLayout.ImageFileName), stderr, diagnostics);
+            Host(), runtime, dir.Combine("game"), dir.Combine("bios.bin"), stderr, diagnostics);
 
         exit.Should().Be(FirmwareRuntimeLauncher.SetupFailureExitCode, "a mismatched ROM stops the run before anything executes");
         stderr.ToString().Should().Contain("runtime host: firmware distribution:").And.Contain("InvalidDataException").And.Contain("does not match");
@@ -102,11 +102,11 @@ public sealed class FirmwareRuntimeLauncherDiagnosticsTests
     public void Run_WritesNoDiagnostics_WithoutAPath_AndLeavesTheExitCodeUnchanged()
     {
         using var dir = new TempDirectory();
-        var runtime = Seed(dir, SyntheticRom(), new byte[2352], romSha256: new string('0', 64));
+        var runtime = Seed(dir, SyntheticRom(), new byte[2352], discSha256: new string('0', 64));
         var stderr = new StringWriter();
 
         var exit = FirmwareRuntimeLauncher.Run(
-            Host(), runtime, dir.Combine("game"), Path.Combine(runtime, RuntimeHostLayout.ImageFileName), stderr);
+            Host(), runtime, dir.Combine("game"), dir.Combine("bios.bin"), stderr);
 
         exit.Should().Be(FirmwareRuntimeLauncher.SetupFailureExitCode, "the classified exit code is independent of the diagnostics sink");
 #pragma warning disable AARC003 // Test-layer inspection of the produced distribution layout

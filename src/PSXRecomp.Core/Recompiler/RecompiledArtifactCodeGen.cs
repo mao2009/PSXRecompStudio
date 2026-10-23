@@ -313,7 +313,8 @@ public static class RecompiledArtifactCodeGen
         uint imageLoadAddress,
         IReadOnlyList<byte> programImage,
         bool hostBridge = false,
-        string? directLaunchHostRelativePath = null)
+        string? directLaunchHostRelativePath = null,
+        bool externalBios = false)
     {
         ArgumentNullException.ThrowIfNull(generatedDispatch);
         ArgumentNullException.ThrowIfNull(initialGpr);
@@ -361,7 +362,8 @@ public static class RecompiledArtifactCodeGen
             imageLoadAddress,
             programImage,
             hostBridge,
-            directLaunchHostRelativePath);
+            directLaunchHostRelativePath,
+            externalBios);
 
         if (!standaloneSource.Success)
         {
@@ -391,7 +393,8 @@ public static class RecompiledArtifactCodeGen
         uint imageLoadAddress,
         IReadOnlyList<byte> programImage,
         bool hostBridge = false,
-        string? directLaunchHostRelativePath = null)
+        string? directLaunchHostRelativePath = null,
+        bool externalBios = false)
     {
         var sb = new System.Text.StringBuilder();
 
@@ -446,6 +449,8 @@ public static class RecompiledArtifactCodeGen
         // Embedded program image
         sb.AppendLine($"static const uint32_t embedded_image_load_address = 0x{imageLoadAddress:X8}u;");
         sb.AppendLine($"static const uint32_t embedded_image_len = {programImage.Count}u;");
+        // Issue #B2: an external BIOS image is never embedded; the run loads it from PSXRECOMP_BIOS_ROM.
+        sb.AppendLine($"static const int embedded_bios_external = {(externalBios ? 1 : 0)};");
         sb.AppendLine("static const uint8_t embedded_image[] = {");
         for (int i = 0; i < programImage.Count; i++)
         {
@@ -537,7 +542,7 @@ public static class RecompiledArtifactCodeGen
         // comment that sits exactly where the old main began, not on the signature
         // text itself (fragile). The old main body immediately follows the marker, so
         // we replace the whole [marker .. old main closing brace] region at once.
-        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath);
+        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath, externalBios);
         const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
 
         // Split the launcher prologue into a file-scope header (preprocessor directives
@@ -603,7 +608,8 @@ public static class RecompiledArtifactCodeGen
         // helper from the original driver leaked into the source (the artifact must be
         // self-contained). If the region replacement missed the old main, its fopen /
         // fscanf usage would still be present and this check catches that.
-        if (fullDriver.Contains("fopen") || fullDriver.Contains("fscanf") || fullDriver.Contains("argv[1]") || fullDriver.Contains("argv[2]"))
+        var fileIoScan = fullDriver.Replace(ExternalBiosLoadBlock, "", StringComparison.Ordinal);
+        if (fileIoScan.Contains("fopen") || fileIoScan.Contains("fscanf") || fileIoScan.Contains("argv[1]") || fileIoScan.Contains("argv[2]"))
         {
             return new RecompiledArtifactCodeGenResult(
                 false,
@@ -616,8 +622,33 @@ public static class RecompiledArtifactCodeGen
             true, prologueHeader + standaloneDispatchSource + "\n" + sb.ToString() + "\n" + fullDriver, null, null);
     }
 
+    /// <summary>The environment variable that names the BIOS image a run loads when the artifact is built with an external BIOS (Issue #B2).</summary>
+    public const string ExternalBiosEnvironmentVariable = "PSXRECOMP_BIOS_ROM";
+
+    /// <summary>
+    /// The sanctioned C block that loads an external BIOS image at run time. It is the only file-reading code the
+    /// standalone artifact may contain; the file-IO leak check excludes exactly this text.
+    /// </summary>
+    internal const string ExternalBiosLoadBlock = """
+    /* External BIOS image (Issue #B2): the artifact never embeds the BIOS. The run names the image by path in
+       PSXRECOMP_BIOS_ROM and it must be exactly PSX_ROM_SIZE bytes. */
+    {
+        const char* bios_path = getenv("PSXRECOMP_BIOS_ROM");
+        FILE* bios = bios_path ? fopen(bios_path, "rb") : NULL;
+        size_t bios_read = bios ? fread(artifact_rom, 1, PSX_ROM_SIZE, bios) : 0;
+        int bios_extra = bios ? (fgetc(bios) != EOF) : 1;
+        if (bios) fclose(bios);
+        if (bios_read != PSX_ROM_SIZE || bios_extra) {
+            fprintf(stderr, "error: PSXRECOMP_BIOS_ROM must name a 512 KiB BIOS image\n");
+            return 95; /* InvalidImage */
+        }
+        artifact_rom_loaded = 1;
+    }
+
+""";
+
     private static (string? LauncherPrologue, string Main) BuildStandaloneMain(
-        bool hostBridge, string? directLaunchHostRelativePath)
+        bool hostBridge, string? directLaunchHostRelativePath, bool externalBios)
     {
         // Phase 2 (Issue #757): the embedded-image artifact may attach the shared
         // Runtime host bridge when the caller opts in (--host-transfer), so it runs
@@ -840,6 +871,8 @@ int main(int argc, char** argv) {
         artifact_ram_write8(embedded_init_addrs[i], (uint8_t)embedded_init_vals[i]);
     }
 
+    if (embedded_bios_external) {
+" + (externalBios ? ExternalBiosLoadBlock : string.Empty) + @"    } else {
     // Load embedded program image
     uint32_t image_pa = artifact_translate(embedded_image_load_address);
     int image_in_rom = image_pa >= PSX_ROM_BASE && image_pa - PSX_ROM_BASE < PSX_ROM_SIZE;
@@ -856,6 +889,7 @@ int main(int argc, char** argv) {
     for (uint32_t image_i = 0; image_i < embedded_image_len; image_i++) {
         if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + image_i] = embedded_image[image_i];
         else artifact_ram[(image_pa + image_i) & (PSX_RAM_SIZE - 1u)] = embedded_image[image_i];
+    }
     }
 
 " + bridgeAttach + @"    recompiler_dispatch(&state, budget);

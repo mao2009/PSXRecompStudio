@@ -82,7 +82,8 @@ public static class RecompilerHostCodeGen
     /// and guard misses, and writes them to the file named by PSX_GUARD_STATS_FILE (measurement only, Issue #773). Off, the
     /// emitted text is exactly what it was.
     /// </summary>
-    public static RecompilerHostCodeGenResult Generate(RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool traceUnits = false, bool guardStats = false)
+    public static RecompilerHostCodeGenResult Generate(
+        RecompilerIrProgram program, LoadedCodeTable? loadedCode, bool traceUnits = false, bool guardStats = false, bool allowEmptyProgram = false)
     {
         s_guardStats = guardStats;
         ArgumentNullException.ThrowIfNull(program);
@@ -106,7 +107,9 @@ public static class RecompilerHostCodeGen
         }
 
         var allBlocks = program.Blocks.Concat(loadedCode.Blocks.Select(static v => v.Block)).ToArray();
-        if (allBlocks.Length == 0)
+        // allowEmptyProgram (Issue #B2): a firmware distribution whose BIOS is never translated may hold no block at all;
+        // every PC then runs in the interpreter fallback. Other callers keep the guard.
+        if (allBlocks.Length == 0 && !allowEmptyProgram)
         {
             return new RecompilerHostCodeGenResult(
                 false, null,

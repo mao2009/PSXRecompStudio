@@ -498,7 +498,7 @@ compiled words.
 | Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`, schema 2), selects the firmware run in the shared RuntimeHost |
 | Run settings | `runtime/runtime-host.json` (`guestFirmware:true`; mixed fallback on by default — `--mixed-fallback`/`--no-mixed-fallback` with `--fallback-segment-budget`/`--fallback-max-transitions` propagate through the manifest, recorded as 0 budgets when off) |
 
-`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes.
+`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a missing or wrong-size BIOS named by `PSXRECOMP_BIOS_ROM`, a tampered disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes. The BIOS is not in the distribution, so packaging pins no digest of it: the run reports the SHA-256 of the image it loaded, and a change to that image during the run fails the run.
 The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts and the final register file, and `RuntimeHost --diagnostics <path>` additionally writes the Issue #763 stop diagnostic (best-effort; the classified exit code is unchanged).
 
 **Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
@@ -686,6 +686,106 @@ branch builds on it. `RuntimeHost` now honors `--diagnostics` for a firmware dis
 writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFailure`, best-effort — the run's
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
+
+#### BIOS: never an AOT input; run-time provenance (Issue #B2)
+
+**Primary guarantee: the BIOS is never an input of ahead-of-time generation.** `BiosAddressGuard` refuses BIOS code at four
+stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistribution`:
+
+| Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
+|---|---|---|
+| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, a source kind other than `boot-exe`/`disc-exe`/`exe-file`, AOT inputs that together hold more than 224 bytes of BIOS code (cumulative, Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage` |
+| plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestStageDisabled_ThePlanStageRefuses` |
+| dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses` |
+| source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
+
+Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFFFF` before the range test. The load-bearing
+proof: with all four stages disabled, the production path does generate a block at `0xBFC00000`
+(`WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource`), so the refusals are what keep BIOS code out.
+
+**Disc code and the BIOS: cumulative copy rule (Issue #B2, owner ruling).** Disc code is AOT input (`boot-exe`,
+`disc-exe`, `exe-file`) and is not refused for sharing bytes with the BIOS by chance. The BIOS ROM itself, and RAM copies of
+BIOS code, are never AOT input. The copy test is cumulative over all AOT inputs of one packaging:
+
+- A **match run** is a run of words that equal a run of the BIOS, at least `MinRunWords` = 16 words (64 bytes) long. Uniform
+  runs (padding, such as zero words) are never evidence. Shorter matches are coincidences and are not counted.
+- The measure is the **union** of the BIOS words covered by match runs, over all inputs together. A BIOS word covered by
+  several runs, in one input or in several, is counted once. The measure is not a sum.
+- The inputs together may hold at most `CopyThresholdBytes` = **224 bytes** (56 words) of BIOS code. Above that the packaging
+  is refused, with the total named (`the AOT inputs together hold N bytes of BIOS code`).
+
+**Why 16 words and 224 bytes (measured).** The accidental BIOS coverage of non-BIOS binaries, per file, measured with
+`BiosCopyMeasurementTests` (a skipped measurement, run with `PSXRECOMP_MEASURE_DIR`):
+
+| Minimum run | System32 `*.exe`/`*.dll` (400 files): p50 / p90 / max, bytes | Project's own built binaries (37 files): max, bytes |
+|---|---|---|
+| 4 words | 580 / 1084 / 6184 | 1084 |
+| 8 words | 0 / 0 / 224 | 56 |
+| 16 words | 0 / 0 / **192** | 0 |
+| 32 words | 0 / 0 / 0 | 0 |
+
+- At 8 words the accidental maximum (224 bytes) reaches the threshold, so 8 is too short. At 4 words, short runs are
+  common in any structured data, so 4 is far too short. At 32 words a split 127-byte copy (31 words per half) is not counted,
+  so 32 is too long. 16 words is the shortest run whose accidental maximum stays under the detection requirement.
+- The threshold 224 bytes is above the measured accidental maximum (192 bytes, one system DLL) and below the required
+  detections: a 254-byte copy (63 whole words, 252 bytes) and a 127-byte copy split in two (62 words, 248 bytes) are refused.
+- **Limits of the measurement.** No real PS1 game disc is available locally. The measured corpus is x86 system binaries and the
+  project's own binaries, not PS1 disc code. The threshold is therefore justified by a proxy distribution. A disc whose code
+  shares many 16-word runs with the BIOS would be refused, and that is intended; a disc sharing fewer does pass. The measure
+  does not establish that any accepted code is not BIOS-derived.
+
+**Binary window scan (supporting only, `DistributionLeakScanner`).** 8-byte windows of the BIOS at every offset are matched
+against every file of the packaged distribution. A match is excused when the identical window is also held by a non-BIOS
+baseline (the same packaging with a synthetic image, and the game disc). The excuse is content identity, for any window shape.
+Limits, stated plainly:
+
+- A BIOS fragment shorter than 8 bytes is never matched.
+- A BIOS fragment built only from windows the baseline also holds is not detected (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit`).
+- Windows that are mostly `0x00`/`0xFF` are excused when the baseline holds them, which is almost always: the real-image
+  run found 104,223 such occurrences in the packaged output, all excused. This is a measured false-negative path.
+- The scan does not prove zero leakage. It does not establish the origin of code; only the generation guard is a guarantee.
+
+**Provenance, decided at run time (MAJOR-1).** The run classifies the image it loads by SHA-256 (`BiosProvenance`). The
+packaging-time declaration (`--bios-provenance`) is recorded for comparison only and is never evidence.
+
+- `openbios-rom`: the digest is in `BiosProvenance.VerifiedOpenBiosSha256`, an allowlist of independently verified OpenBIOS
+  builds. **The allowlist is empty.** No build has an independently verified, reproducible procedure from a pinned upstream
+  commit (Issues #794, #732, #730). The local build used for the real-image gate is NOT registered.
+- `openbios-synthetic`: the digest is in `BiosProvenance.KnownSyntheticSha256`, the digests of this project's deterministic
+  test stubs (SyntheticRom, the reproducible BIOS-shaped random image, RomWithGame). A stub is not BIOS code.
+- `openbios-unverified`: any other image. It may run locally. It is never a verified OpenBIOS run, and nothing in the docs or
+  the logs calls such a run a success.
+- An unregistered image is never classified synthetic automatically. A declaration that the run does not confirm produces a
+  `runtime host: warning:` line.
+
+**Run evidence (real image, classified `openbios-unverified`, code of `826eb4f`, HEAD `c06c0c2`):**
+
+- Generation stage: `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0 on the `firmware-run` line.
+- Unbounded run: `RuntimeFailure` with `ARTIFACT_TIMEOUT` at the 300-second bound. The fallback count is null: the interpreter's
+  single fallback segment never ends, so its count is never collected. Nothing about the BIOS's progress can be read from it.
+- Bounded run (fallback budget 2,000,000): `RuntimeFailure` with `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`, a classified stop.
+  `fallbackInstructions` = 1,999,999, `nativeInstructions` = 0, `fallbackTransitions` = 1. The `firmware-run` line carries the
+  interpreter's own stop message (`diagnosticMessage`): "it stopped at pc 0x800327FC". That is the interpreter's final PC for
+  the run, read from the run's output (the message is written by `InterpreterTitleExecutionEngine` at the budget stop).
+  The `guestPc` field (`0xBFC00000`) is not that PC; see below.
+- Progress of the BIOS, from a separate probe: `psxrecomp openbios-probe <image> --segment-budget 2000000 --segments 1 --json`
+  (its own run of `InterpreterTitleExecutionEngine`) ends with `guestPc` = 2147685912 = `0x80031618`, `KernelRunningFromRam`,
+  `VectorsInstalled` and `ShellEntered` all true. The record is `scratchpad/probe-2m.json`. The BIOS leaves the reset vector.
+
+**Why the `guestPc` field of the bounded run is `0xBFC00000`.** It is the artifact process's own snapshot, parsed from its stdout
+(`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`). The interpreter's fallback runs in the host, and its final state is
+not written back into that snapshot, so the field is the segment's entry state. The run's stop message above is the value to
+read. Mixed-fallback progress is therefore verified by the stop message and by the probe, not by `guestPc`.
+
+**Packaging and exceptions.**
+
+- The packaged executable loads the BIOS at run time from the path named by `PSXRECOMP_BIOS_ROM` (512 KiB exactly; a direct run
+  exits with **95** on another size, the Runtime host with **78**). The packaging pins no digest of the BIOS.
+- Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the .NET SDK apphost template path
+  `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\`, a Microsoft CI build path,
+  not a developer path. Matched exactly (case-insensitive) in that relative file only. Removing it needs `UseAppHost=false` (owner decision pending).
+- The generated executable and the native library are stripped (`-s`). The Runtime host is published with `DebugType=none`.
+  The intermediate object is removed after linking; a failed removal fails the build.
 
 ### Remaining acceptance gates
 

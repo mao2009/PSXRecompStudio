@@ -112,7 +112,101 @@ public sealed class FirmwareAotPlanTests
             dir.Combine("aot", "images.txt"),
             new RawCdSectorSource(new byte[2352]));
 
-        plan.Program.Blocks.Should().NotBeEmpty("the commented roots file still roots the ROM at the reset vector");
+        // Owner ruling (Issue #B2): the roots file is validated, but the BIOS is never ahead-of-time translated.
+        plan.Program.Blocks.Should().BeEmpty("the BIOS ROM is never compiled ahead of time; it runs in the interpreter fallback");
+    }
+
+    /// <summary>
+    /// Owner ruling (Issue #B2, option 1): no BIOS code is ahead-of-time translated. Packaging a roots file that names the
+    /// reset vector yields no ROM block, and the generated dispatch source names no block at a ROM address.
+    /// </summary>
+    [Fact]
+    public void TheBiosIsNeverAheadOfTimeTranslated_NoRomBlockOrRomBlockFunctionIsGenerated()
+    {
+        using var dir = new TempDirectory();
+        var rom = SyntheticRom();
+        dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
+        dir.WriteFile("aot/images.txt", Text("# no images\n"));
+
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom), dir.Combine("aot", "rom.roots"), 64, dir.Combine("aot", "images.txt"),
+            new RawCdSectorSource(new byte[2352]));
+
+        plan.Program.Blocks.Should().BeEmpty("the BIOS ROM is never compiled ahead of time");
+        var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
+        dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
+        dispatch.Source!.Should().NotContain("recompiler_block_0xBFC", "no BIOS block function reaches the generated source");
+    }
+
+    /// <summary>
+    /// Issue #B2 (review: the exclusion is checked at the generation entry, not only in the output): the standalone source
+    /// generated for an external BIOS names no BIOS block at a ROM address, in either the physical or the mapped range, and
+    /// carries the external-image flag with an empty embedded image. The BIOS load address and the reset PC appear only as
+    /// data (the image's load address and the initial PC), never as a block.
+    /// </summary>
+    [Fact]
+    public void TheStandaloneSource_ForAnExternalBios_NamesNoBiosBlockInEitherRomRange()
+    {
+        using var dir = new TempDirectory();
+        var rom = SyntheticRom();
+        dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
+        dir.WriteFile("aot/images.txt", Text("# no images\n"));
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom), dir.Combine("aot", "rom.roots"), 64, dir.Combine("aot", "images.txt"),
+            new RawCdSectorSource(new byte[2352]));
+
+        var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
+        dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
+        var source = StandaloneSourceFor(plan.Program, plan.LoadedCode);
+        source.Should().Contain("static const int embedded_bios_external = 1;");
+        source.Should().Contain("static const uint32_t embedded_image_len = 0u;");
+        AssertNoBiosBlock(source);
+        dispatch.Source!.Should().NotContain("recompiler_block_0xBFC");
+        dispatch.Source!.Should().NotContain("recompiler_block_0x1FC");
+    }
+
+    /// <summary>
+    /// The injection entry (Issue #B2, L3): the standalone source for a program, generated the way the firmware distribution
+    /// generates it. A program that carries BIOS blocks is the injection; the generation-time check runs on what comes out.
+    /// </summary>
+    private static string StandaloneSourceFor(RecompilerIrProgram program, LoadedCodeTable loaded)
+    {
+        var dispatch = RecompilerHostCodeGen.Generate(program, loaded, allowEmptyProgram: true);
+        dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
+        var standalone = RecompiledArtifactCodeGen.GenerateStandalone(
+            dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, 1000, [],
+            OpenBiosFirmware.ResetVector, [], hostBridge: true, directLaunchHostRelativePath: "runtime/host", externalBios: true);
+        standalone.Success.Should().BeTrue(standalone.DiagnosticMessage);
+        return standalone.Source!;
+    }
+
+    /// <summary>The generation-time check: no BIOS block function may appear in a standalone source.</summary>
+    private static void AssertNoBiosBlock(string source)
+    {
+        foreach (var block in new[] { "recompiler_block_0xBFC", "recompiler_block_0x1FC", "recompiler_block_0x9FC" })
+        {
+            source.Should().NotContain(block, "no BIOS block function reaches the generated standalone source");
+        }
+    }
+
+    /// <summary>
+    /// Mutation test (Issue #B2, L3): with BIOS blocks injected at the injection entry, the generation-time check must fail.
+    /// If it did not, the check would be a no-op.
+    /// </summary>
+    [Fact]
+    public void TheGenerationTimeCheck_FailsWhenABiosBlockIsInjected()
+    {
+        var rom = SyntheticRom();
+        var words = Enumerable.Range(0, 16).Select(i => BitConverter.ToUInt32(rom, i * 4)).ToArray();
+        var injected = ReachableProgramBuilder.BuildFirmwareImage(
+            OpenBiosFirmware.ResetVector, words, OpenBiosFirmware.ResetVector, [OpenBiosFirmware.ResetVector]).Program;
+        injected.Blocks.Should().NotBeEmpty("the injected program carries real BIOS blocks");
+
+        var source = StandaloneSourceFor(injected, LoadedCodeTable.Empty);
+        source.Should().Contain("recompiler_block_0xBFC", "the injection reaches the generated source");
+
+        Action check = () => AssertNoBiosBlock(source);
+        check.Should().Throw<Exception>("an injected BIOS block must fail the generation-time check");
     }
 
     [Fact]

@@ -39,15 +39,20 @@ public sealed record FirmwareAotPlan(
     {
         // The shared roots parser (Issue #732 review): comments/blank lines and hex interpretation match the
         // manifest's own roots files, and an invalid line is an InvalidDataException the CLI classifies.
-        var roots = LoadImageManifest.ReadRootsFile(rootsFile);
-        var code = firmware.Words.Take((int)Math.Min(codeBytes / 4, (uint)firmware.Words.Count)).ToArray();
-        var image = ReachableProgramBuilder.BuildFirmwareImage(OpenBiosFirmware.ResetVector, code, OpenBiosFirmware.ResetVector, roots);
+        // Owner ruling (Issue #B2, option 1): the BIOS is never ahead-of-time translated. The roots file is still read,
+        // so a malformed input fails closed, but no ROM block is compiled: every ROM PC runs in the interpreter fallback
+        // over the BIOS image the run loads. Only the code the guest places in RAM (the disc's boot executable and the
+        // images it names) is translated, exactly as before.
+        _ = LoadImageManifest.ReadRootsFile(rootsFile);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
+        BiosGuardWiring.Run(BiosGuardWiring.Manifest, () => BiosAddressGuard.RequireNoBiosImage(manifest, firmware));
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
-        return new FirmwareAotPlan(image.Program, loaded, observed);
+        var program = new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>());
+        BiosGuardWiring.Run(BiosGuardWiring.Plan, () => BiosAddressGuard.RequireNoBiosCode(program, loaded, BiosGuardWiring.Plan));
+        return new FirmwareAotPlan(program, loaded, observed);
     }
 }
 
@@ -303,7 +308,8 @@ public sealed record FirmwareDistributionRequest(
     bool MixedFallback = true,
     uint FallbackSegmentInstructionBudget = uint.MaxValue,
     uint FallbackMaxTransitions = uint.MaxValue,
-    TimeSpan? BuildTimeout = null);
+    TimeSpan? BuildTimeout = null,
+    string BiosProvenance = RuntimeHostManifest.BiosProvenanceSynthetic);
 
 /// <summary>
 /// <c>psxrecomp package --bios openbios</c>: builds a standalone distribution whose native artifact IS the BIOS
@@ -332,7 +338,7 @@ public static class FirmwareDistributionBuilder
         // and hashed; then the AOT inputs and the disc are copied into a staging directory and the plan is derived
         // from those frozen copies. The compiled code and the distributed data are therefore the same snapshot,
         // and a failure at any step leaves no partial distribution and never touches a pre-existing output.
-        var (rom, romHash) = OpenBiosRomInput.Read(request.RomPath, request.ExpectedRomSha256);
+        var (rom, _) = OpenBiosRomInput.Read(request.RomPath, request.ExpectedRomSha256);
         var firmware = OpenBiosFirmware.FromBytes(rom);
         var outputDir = Path.GetFullPath(request.OutputDirectory);
         var aotDir = Path.GetFullPath(request.AotDirectory);
@@ -382,20 +388,23 @@ public static class FirmwareDistributionBuilder
 
             // Measurement only (Issue #773): PSXRECOMP_NATIVE_GUARD_STATS at package time builds the artifact with guard counters.
             var dispatch = RecompilerHostCodeGen.Generate(
-                plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled);
+                plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled, allowEmptyProgram: true);
             if (!dispatch.Success)
             {
                 throw new InvalidOperationException(dispatch.DiagnosticMessage ?? "Host dispatch code generation failed.");
             }
 
+            BiosGuardWiring.Run(BiosGuardWiring.Dispatch, () => BiosAddressGuard.RequireNoBiosCode(plan.Program, plan.LoadedCode, BiosGuardWiring.Dispatch));
             var source = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch, new uint[TitleExecutionRequest.GprCount], 0, 0, OpenBiosFirmware.ResetVector, request.InstructionBudget, [],
-                OpenBiosFirmware.ResetVector, rom, hostBridge: true,
-                directLaunchHostRelativePath: RuntimeHostLayout.HostRelativePath);
+                OpenBiosFirmware.ResetVector, [], hostBridge: true,
+                directLaunchHostRelativePath: RuntimeHostLayout.HostRelativePath, externalBios: true);
             if (!source.Success)
             {
                 throw new InvalidOperationException(source.DiagnosticMessage ?? "Standalone source generation failed.");
             }
+
+            BiosGuardWiring.Run(BiosGuardWiring.Source, () => BiosAddressGuard.RequireNoBiosSource(source.Source!));
 
             // The ROM + RAM-image dispatch is large; the build gets the request's per-step toolchain timeout
             // (--build-timeout-seconds), or the same bounded three minutes the probe uses by default.
@@ -415,13 +424,11 @@ public static class FirmwareDistributionBuilder
                 throw new InvalidOperationException(exception.Message, exception);
             }
 
-            // Sidecars. The ROM is the program image the host's interpreter fallback and device RAM read.
-            File.WriteAllBytes(Path.Combine(stagingRuntimeDir, RuntimeHostLayout.ImageFileName), rom);
+            // No BIOS bytes, digest or sidecar are written (Issue #B2): the run names the BIOS by path (PSXRECOMP_BIOS_ROM).
 
             var boot = new FirmwareBootManifest(
                 FirmwareBootManifest.CurrentSchemaVersion,
                 BiosBackendSelection.NameOf(BiosBackendKind.OpenBios),
-                romHash,
                 request.CodeBytes,
                 $"{FirmwareBootManifest.FirmwareDirectory}/{FirmwareAotBundle.RootsFileName}",
                 $"{FirmwareBootManifest.FirmwareDirectory}/{FirmwareAotBundle.ImagesFileName}",
@@ -443,12 +450,13 @@ public static class FirmwareDistributionBuilder
                 FallbackSegmentInstructionBudget: request.MixedFallback ? request.FallbackSegmentInstructionBudget : 0u,
                 FallbackMaxTransitions: request.MixedFallback ? request.FallbackMaxTransitions : 0u,
                 ImageLoadAddress: OpenBiosFirmware.ResetVector,
-                Image: RuntimeHostLayout.ImageFileName,
+                Image: string.Empty,
                 BlockEntryPcs: blockEntryPcs,
                 ProgramEnd: OpenBiosFirmware.ResetVector + (uint)OpenBiosFirmware.ImageSize,
                 ResultRegister: null,
                 RunTimeoutMs: request.RunTimeoutMs,
-                EntryPc: OpenBiosFirmware.ResetVector);
+                EntryPc: OpenBiosFirmware.ResetVector,
+                BiosProvenance: request.BiosProvenance);
             var hostText = RuntimeHostManifestJson.Serialize(host);
             _ = RuntimeHostManifestJson.Parse(hostText);
             File.WriteAllText(Path.Combine(stagingRuntimeDir, RuntimeHostLayout.ManifestFileName), hostText);
@@ -542,7 +550,8 @@ public static class FirmwareDistributionBuilder
         "The native artifact is the OpenBIOS ROM compiled ahead of time. OpenBIOS runs its real MIPS code and loads the",
         "game from runtime/disc/ through its own CD driver; BIOS calls are never answered by the host.",
         "",
-        "- runtime/artifact-image.bin is the OpenBIOS ROM you supplied (verified by SHA-256 on every run).",
+        "- The OpenBIOS ROM is NOT in this directory. Set PSXRECOMP_BIOS_ROM to the path of your own 512 KiB openbios.bin",
+        "  before launching; the run prints its SHA-256 and the BIOS mode (openbios-rom only for a user-supplied image).",
         "- runtime/disc/ holds the disc image you supplied (verified by SHA-256 on every run).",
         "- This directory is a LOCAL build. OpenBIOS redistribution is pending the audit in Issue #730, and the disc",
         "  is your own copyrighted media: do not redistribute this directory.",
@@ -579,11 +588,36 @@ public static class FirmwareRuntimeLauncher
             : null;
     }
 
+    /// <summary>
+    /// Reads the BIOS the run was given and classifies it from the bytes it loaded (Issue #B2, MAJOR-1, MEDIUM-3). The label is
+    /// decided by the digest alone; the packaging-time declaration only produces a warning when the run does not confirm it. The
+    /// registries are parameters so a test can inject them; the run passes none.
+    /// </summary>
+    public static (byte[] Bytes, string Sha256, string Label) LoadAndClassify(
+        string biosPath,
+        string? declared,
+        TextWriter error,
+        IReadOnlySet<string>? verified = null,
+        IReadOnlySet<string>? synthetic = null)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        var (bytes, sha256) = OpenBiosRomInput.Read(biosPath);
+        var label = BiosProvenance.Classify(
+            sha256, verified ?? BiosProvenance.VerifiedOpenBiosSha256, synthetic ?? BiosProvenance.KnownSyntheticSha256);
+        var warning = BiosProvenance.DeclarationWarning(declared, label);
+        if (warning is not null)
+        {
+            error.WriteLine(warning);
+        }
+
+        return (bytes, sha256, label);
+    }
+
     public static int Run(
         RuntimeHostManifest host,
         string runtimeDirectory,
         string artifactPath,
-        string imagePath,
+        string biosPath,
         TextWriter error,
         string? diagnosticsPath = null,
         string? frameOutPath = null,
@@ -597,7 +631,14 @@ public static class FirmwareRuntimeLauncher
                 throw new InvalidDataException("A firmware distribution's runtime manifest must declare guest firmware.");
             }
 
-            var (rom, _) = OpenBiosRomInput.Read(imagePath, boot.RomSha256);
+            // The BIOS is read from the path the user names at run time; its digest is reported, never read from the package.
+            if (biosPath.Length == 0)
+            {
+                throw new InvalidDataException(
+                    $"Set {RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable} to the path of your own OpenBIOS image; none is shipped with this distribution.");
+            }
+
+            var (rom, romSha256, biosClassification) = FirmwareRuntimeLauncher.LoadAndClassify(biosPath, host.BiosProvenance, error);
             var firmware = OpenBiosFirmware.FromBytes(rom);
             var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
@@ -648,6 +689,11 @@ public static class FirmwareRuntimeLauncher
                 new TitleExecutionRequest(
                     host.EntryPc, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: uint.MaxValue));
             wall.Stop();
+            if (OpenBiosRomInput.Sha256HexOfFile(biosPath) != romSha256)
+            {
+                throw new InvalidDataException(
+                    "The BIOS image changed while the run was in progress (SHA-256 differs from the image the host loaded); the run is not valid.");
+            }
 
             if (frameOutPath is not null)
             {
@@ -701,10 +747,16 @@ public static class FirmwareRuntimeLauncher
             {
                 kind = "firmware-run",
                 bios = boot.BiosBackend,
-                romSha256 = boot.RomSha256,
+                biosMode = biosClassification,
+                declaredProvenance = host.BiosProvenance,
+                romSha256,
+                // The generation-stage audit (Issue #B2): no BIOS block is translated; loaded RAM blocks are the game's code.
+                aotBiosBlocks = BiosAddressGuard.BiosBlockCount(plan.Program),
+                aotLoadedBlocks = plan.LoadedCode.Blocks.Count(),
                 state = result.State.ToString(),
                 guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
                 diagnosticCode = result.DiagnosticCode,
+                diagnosticMessage = result.DiagnosticMessage,
                 mixedFallback = host.MixedFallback,
                 fallbackSegmentInstructionBudget = host.MixedFallback ? host.FallbackSegmentInstructionBudget : (uint?)null,
                 fallbackMaxTransitions = host.MixedFallback ? host.FallbackMaxTransitions : (uint?)null,

@@ -134,7 +134,7 @@ public static class Program
         var help = false;
         bool selfContained = false;
         bool? guestFirmware = null;
-        string? bios = null, biosRom = null, aotDir = null;
+        string? bios = null, biosRom = null, aotDir = null, biosProvenance = null;
         uint? codeBytes = null, instructionBudget = null;
         int? runTimeoutSeconds = null;
         int? buildTimeoutSeconds = null;
@@ -308,7 +308,7 @@ public static class Program
                         guestFirmware = true;
                     }
                     break;
-                case "--bios" or "--bios-rom" or "--aot-dir" or "--code-bytes" or "--instruction-budget" or "--run-timeout-seconds" or "--build-timeout-seconds":
+                case "--bios" or "--bios-rom" or "--bios-provenance" or "--aot-dir" or "--code-bytes" or "--instruction-budget" or "--run-timeout-seconds" or "--build-timeout-seconds":
                     if (!allowGuestFirmware)
                     {
                         parsed = default;
@@ -324,6 +324,17 @@ public static class Program
                     var optionText = arguments[++i];
                     if (token == "--bios") bios = optionText;
                     else if (token == "--bios-rom") biosRom = optionText;
+                    else if (token == "--bios-provenance")
+                    {
+                        if (optionText is not ("user-supplied" or "synthetic"))
+                        {
+                            parsed = default;
+                            error = $"unknown --bios-provenance '{optionText}'; expected 'user-supplied' or 'synthetic'.";
+                            return false;
+                        }
+
+                        biosProvenance = optionText;
+                    }
                     else if (token == "--aot-dir") aotDir = optionText;
                     else if (token == "--code-bytes" && uint.TryParse(optionText, out var parsedCodeBytes) && parsedCodeBytes != 0) codeBytes = parsedCodeBytes;
                     else if (token == "--instruction-budget" && uint.TryParse(optionText, out var parsedBudget) && parsedBudget != 0) instructionBudget = parsedBudget;
@@ -355,9 +366,9 @@ public static class Program
         }
 
         var mixedFallback = explicitMixedFallback ?? allowMixedFallback;
-        var firmware = bios is null && biosRom is null && aotDir is null && codeBytes is null && instructionBudget is null && runTimeoutSeconds is null && buildTimeoutSeconds is null
+        var firmware = bios is null && biosRom is null && aotDir is null && codeBytes is null && instructionBudget is null && runTimeoutSeconds is null && buildTimeoutSeconds is null && biosProvenance is null
             ? null
-            : new FirmwareOptions(bios, biosRom, aotDir, codeBytes, runTimeoutSeconds, instructionBudget, buildTimeoutSeconds);
+            : new FirmwareOptions(bios, biosRom, aotDir, codeBytes, runTimeoutSeconds, instructionBudget, buildTimeoutSeconds, biosProvenance);
 
         if ((fallbackSegmentBudget is not null || fallbackMaxTransitions is not null) && !mixedFallback && !help)
         {
@@ -511,4 +522,4 @@ internal sealed record ParsedArguments(
 /// longer compile without extending the game's own run time.
 /// </param>
 [Infrastructure]
-internal sealed record FirmwareOptions(string? Bios, string? BiosRom, string? AotDir, uint? CodeBytes, int? RunTimeoutSeconds, uint? InstructionBudget = null, int? BuildTimeoutSeconds = null);
+internal sealed record FirmwareOptions(string? Bios, string? BiosRom, string? AotDir, uint? CodeBytes, int? RunTimeoutSeconds, uint? InstructionBudget = null, int? BuildTimeoutSeconds = null, string? BiosProvenance = null);
