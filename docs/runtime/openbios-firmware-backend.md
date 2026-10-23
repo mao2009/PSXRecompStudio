@@ -694,7 +694,7 @@ stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistri
 
 | Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
 |---|---|---|
-| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, a source kind other than `boot-exe`/`disc-exe`/`exe-file`, AOT inputs that together hold more than 224 bytes of BIOS code (cumulative, Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage` |
+| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, a source kind other than `boot-exe`/`disc-exe`/`exe-file`, AOT inputs that together hold more than 96 bytes of BIOS code (cumulative, Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage` |
 | plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestStageDisabled_ThePlanStageRefuses` |
 | dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses` |
 | source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
@@ -703,36 +703,78 @@ Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFF
 proof: with all four stages disabled, the production path does generate a block at `0xBFC00000`
 (`WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource`), so the refusals are what keep BIOS code out.
 
-**Disc code and the BIOS: cumulative copy rule (Issue #B2, owner ruling).** Disc code is AOT input (`boot-exe`,
-`disc-exe`, `exe-file`) and is not refused for sharing bytes with the BIOS by chance. The BIOS ROM itself, and RAM copies of
-BIOS code, are never AOT input. The copy test is cumulative over all AOT inputs of one packaging:
+**Disc code and the BIOS: cumulative copy rule (Issue #B2, owner ruling; revised).** Disc code is an AOT input (`boot-exe`,
+`disc-exe`, `exe-file`). A copy of BIOS code is refused; a coincidence of bytes is not. The BIOS ROM itself, and RAM copies of
+BIOS code, are never an AOT input. The test is cumulative over all AOT inputs of one packaging:
 
-- A **match run** is a run of words that equal a run of the BIOS, at least `MinRunWords` = 16 words (64 bytes) long. Uniform
-  runs (padding, such as zero words) are never evidence. Shorter matches are coincidences and are not counted.
-- The measure is the **union** of the BIOS words covered by match runs, over all inputs together. A BIOS word covered by
-  several runs, in one input or in several, is counted once. The measure is not a sum.
-- The inputs together may hold at most `CopyThresholdBytes` = **224 bytes** (56 words) of BIOS code. Above that the packaging
-  is refused, with the total named (`the AOT inputs together hold N bytes of BIOS code`).
+- A **match** is a run of words equal to a run of the BIOS, at least `MinRunWords` = **8 words** (32 bytes) long, that holds at
+  least `MinDistinctWords` = **4 distinct word values**. The distinct-value filter removes low-entropy runs (padding, repeated
+  small constants), which coincide with the BIOS in ordinary binaries. Uniform 4-word windows are never indexed.
+- The measure is the **union** of the BIOS word positions covered by matches over all inputs together. A word covered several
+  times counts once. A fragment that occurs at two BIOS offsets covers both, so such a copy is over-counted; this errs toward
+  refusal.
+- The inputs together may hold at most `CopyThresholdBytes` = **96 bytes** (24 words). Above that (100 bytes or more) the
+  packaging is refused, naming the total (`the AOT inputs together hold N bytes of BIOS code`).
 
-**Why 16 words and 224 bytes (measured).** The accidental BIOS coverage of non-BIOS binaries, per file, measured with
-`BiosCopyMeasurementTests` (a skipped measurement, run with `PSXRECOMP_MEASURE_DIR`):
+**How the rule and the threshold were chosen (measured).** Every number below is printed by `BiosCopyMeasurementTests` (its
+`b2-measure` lines). The test is skipped unless `PSXRECOMP_OPENBIOS_ROM` and `PSXRECOMP_MEASURE_DIR` are set.
+`PSXRECOMP_MEASURE_LABEL` names the corpus, and `PSXRECOMP_MEASURE_MIPS_DIR` adds a MIPS corpus when one exists. The normal
+corpora are the first 400 `.exe`/`.dll` of `C:\Windows\System32` by name (`x86`), and the 41 distinct `.dll`/`.exe` files under this project's `src/*/bin/Release/net10.0`
+(`project`). "Singles" tests each input alone (continuous). "Groups" unites k random inputs (cumulative): 200 groups per k, seeded.
 
-| Minimum run | System32 `*.exe`/`*.dll` (400 files): p50 / p90 / max, bytes | Project's own built binaries (37 files): max, bytes |
-|---|---|---|
-| 4 words | 580 / 1084 / 6184 | 1084 |
-| 8 words | 0 / 0 / 224 | 56 |
-| 16 words | 0 / 0 / **192** | 0 |
-| 32 words | 0 / 0 / 0 | 0 |
+Table 1, normal inputs. "Over" counts the inputs, or groups, above the 96-byte threshold (refused).
 
-- At 8 words the accidental maximum (224 bytes) reaches the threshold, so 8 is too short. At 4 words, short runs are
-  common in any structured data, so 4 is far too short. At 32 words a split 127-byte copy (31 words per half) is not counted,
-  so 32 is too long. 16 words is the shortest run whose accidental maximum stays under the detection requirement.
-- The threshold 224 bytes is above the measured accidental maximum (192 bytes, one system DLL) and below the required
-  detections: a 254-byte copy (63 whole words, 252 bytes) and a 127-byte copy split in two (62 words, 248 bytes) are refused.
-- **Limits of the measurement.** No real PS1 game disc is available locally. The measured corpus is x86 system binaries and the
-  project's own binaries, not PS1 disc code. The threshold is therefore justified by a proxy distribution. A disc whose code
-  shares many 16-word runs with the BIOS would be refused, and that is intended; a disc sharing fewer does pass. The measure
-  does not establish that any accepted code is not BIOS-derived.
+| Scheme (min words, min distinct) | x86 singles: over / any match / max bytes | x86 groups over, k = 2 / 4 / 8 (max bytes at k = 8) | project singles: over / any match / max bytes | project groups over, k = 2 / 4 / 8 |
+|---|---|---|---|---|
+| (4, 1), no distinct filter | 400 / 400 / 3708 | 200 / 200 / 200 (5504) | 41 / 41 / 1084 | 200 / 200 / 200 |
+| (8, 1), no distinct filter | 13 / 39 / 124 | 14 / 25 / 62 (180) | 0 / 1 / 56 | 0 / 0 / 0 |
+| (16, 1), the earlier 16-word rule | 7 / 13 / 124 | 9 / 14 / 35 (124) | 0 / 0 / 0 | 0 / 0 / 0 |
+| (4, 4) | 0 / 78 / 88 | 0 / 0 / 0 (92) | 0 / 7 / 32 | 0 / 0 / 0 (60) |
+| **(8, 4), production** | **0 / 0 / 0** | **0 / 0 / 0 (0)** | **0 / 0 / 0** | **0 / 0 / 0 (0)** |
+| (16, 4) | 0 / 0 / 0 | 0 / 0 / 0 (0) | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Table 2, BIOS copies inserted into a host (the host is the first 8 System32 binaries; 40 seeded trials per row; the BIOS offsets
+are drawn from code, because padding is never evidence by design). Cells are "refused / 40". "Split n" puts n pieces of the copy
+into one input, separated by 8 non-BIOS words.
+
+| Copy | Production (8, 4): single / split 2 / split 4 | (4, 4): single / split 2 / split 4 | (16, 1): single / split 2 / split 4 |
+|---|---|---|---|
+| 32 bytes | 0 / 0 / 0 | 2 / 0 / 0 | 0 / 0 / 0 |
+| 64 bytes | 2 / 0 / 0 | 5 / 0 / 1 | 0 / 0 / 0 |
+| 96 bytes | 1 / 1 / 0 | 7 / 10 / 7 | 0 / 0 / 0 |
+| 124 bytes (31 whole words, the whole-word part of a 127-byte copy) | 40 / 40 / 4 | 40 / 40 / 40 | 40 / 1 / 0 |
+| 128 bytes | 40 / 40 / 40 | 40 / 40 / 40 | 40 / 40 / 0 |
+| 256 bytes | 40 / 40 / 40 | 40 / 40 / 40 | 40 / 40 / 40 |
+
+What the tables show:
+
+- The distinct-value filter is what makes short matches usable. Without it, 8-word matches are over the threshold in 13 of 400
+  x86 inputs and in 62 of 200 groups of 8. With it, the production scheme has no false positive in any measured corpus or group size.
+- Four-word matches are not usable. Even with the filter, they reach 88 bytes in a single input and 92 bytes in a group of x86
+  inputs, so a threshold of 96 would leave a 4-byte margin. The (4, 4) scheme detects more split copies (its split 4 of 124 bytes
+  is 40 / 40, against 4 / 40 for production), but that margin is the reason it is not the production scheme. It is recorded as the
+  alternative for the owner to decide.
+- The threshold of 96 bytes is three minimum-length matches. One accidental match cannot refuse a packaging. It is also above the
+  largest 4-word group coverage measured (92 bytes). The measured zero at (8, 4) shows that the production scheme is quiet on these
+  corpora, but it does not show the threshold is the tightest safe value.
+- The original requirement was a 127-byte copy split in two being refused. A 127-byte copy holds 31 whole words (124 bytes); its 3
+  trailing bytes are not a word and are not counted. Two pieces of 15 and 16 words are refused in 40 / 40 trials. The requirement is
+  met for copies split in two. It is not met for copies split into four pieces of 8 or fewer words each (4 / 40): a piece shorter than
+  8 words is not a match. The former 224-byte threshold could not refuse a 124-byte copy at all, so the requirement was not met there.
+
+**Limits of the measurement, stated plainly.**
+
+- **No PS1 (MIPS) corpus.** The local `mipsel-none-elf-gcc` has no assembler or linker, and no PS-X binary is available, so the
+  MIPS false-positive rate is not measured. Real PS1 code shares short instruction sequences (prologues, epilogues, calls) with other
+  MIPS code, so the production scheme may refuse an ordinary disc. That is the expected false-positive outcome: the packaging is
+  refused and no BIOS code is translated. The threshold and the run length must be checked on a MIPS corpus before they are trusted.
+- A copy split into pieces shorter than 8 words is not counted (`PiecesShorterThanTheMinimumMatch_AreNotCounted_ThisIsTheLimit`).
+- A byte-misaligned copy is not matched. MIPS code is word-aligned, so a copy that is misaligned is not code the CPU runs as such.
+- A refusal shows that BIOS words are present in the inputs. An acceptance does not show that the accepted code is not BIOS-derived.
+
+To reproduce the tables: `dotnet test src/PSXRecomp.Tests --filter FullyQualifiedName~BiosCopyMeasurementTests --logger
+"console;verbosity=detailed"`, with `PSXRECOMP_OPENBIOS_ROM` (the BIOS), `PSXRECOMP_MEASURE_DIR` (the corpus), and
+`PSXRECOMP_MEASURE_LABEL` set in the environment.
 
 **Binary window scan (supporting only, `DistributionLeakScanner`).** 8-byte windows of the BIOS at every offset are matched
 against every file of the packaged distribution. A match is excused when the identical window is also held by a non-BIOS
