@@ -140,7 +140,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         File.ReadAllText(Path.Combine(output, RuntimeHostLayout.ReadmeFileName)).Should().Contain("#730");
         File.ReadAllText(Path.Combine(runtime, RuntimeHostLayout.ManifestFileName)).Should().Contain("\"biosMode\": \"openbios-synthetic\"",
             "a synthetic BIOS is labelled openbios-synthetic, never openbios-rom or HLE");
-        AssertDistributionHoldsNoBios(output, rom);
+        AssertNoBiosBytes(output, rom);
         AssertNoAbsoluteDeveloperPaths(output);
 
         using var process = Process.Start(new ProcessStartInfo(artifact)
@@ -312,85 +312,40 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     }
 #pragma warning restore AARC003
 
-    private static readonly Regex AbsolutePathPattern = new(@"(?i)(?<![a-z])[a-z]:[\\/]+users[\\/]|/(home|users)/", RegexOptions.CultureInvariant);
-
-    /// <summary>
-    /// Every file the packaging writes (any extension: the executable, the Runtime host and its PDB included) must not name
-    /// a user or home path (the output must be relocatable). Files are scanned as Latin-1 text, so binaries are covered.
-    /// </summary>
-    private static void AssertNoAbsoluteDeveloperPaths(string root)
+    /// <summary>Every file under <paramref name="root"/> as (relative name, bytes), any extension.</summary>
+    private static (string Name, byte[] Bytes)[] ReadTree(string root)
     {
 #pragma warning disable AARC003 // Test-layer inspection of the produced distribution bytes
-        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-        {
-            AbsolutePathPattern.IsMatch(Encoding.Latin1.GetString(File.ReadAllBytes(file))).Should().BeFalse(
-                $"{Path.GetFileName(file)} must not contain an absolute developer path");
-        }
+        return Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Select(file => (Path.GetRelativePath(root, file), File.ReadAllBytes(file)))
+            .ToArray();
 #pragma warning restore AARC003
     }
 
-    /// <summary>
-    /// A window carries BIOS content only when it is neither padding nor text: fewer than eight distinct byte values, or
-    /// at least twelve printable ASCII bytes, is common to any binary (a digit table, a string) and proves nothing.
-    /// </summary>
-    private static bool IsPaddingWindow(byte[] bytes, int offset)
+    /// <summary>No file the packaging writes, of any extension (the executable and any PDB included), may name a developer path.</summary>
+    private static void AssertNoAbsoluteDeveloperPaths(string root) =>
+        DistributionLeakScanner.FindAbsolutePath(ReadTree(root)).Should().BeNull("the distribution must not name an absolute developer path");
+
+    /// <summary>The first 256 bytes of the BIOS and its SHA-256 appear nowhere in the distribution. Needs no baseline.</summary>
+    private static void AssertNoBiosBytes(string root, byte[] rom)
     {
-        Span<bool> seen = stackalloc bool[256];
-        var distinct = 0;
-        var printable = 0;
-        for (var k = 0; k < 16; k++)
-        {
-            var b = bytes[offset + k];
-            if (!seen[b])
-            {
-                seen[b] = true;
-                distinct++;
-            }
-
-            if (b is >= 0x20 and <= 0x7E) printable++;
-        }
-
-        return distinct < 8 || printable >= 12;
-    }
-
-    /// <summary>
-    /// Issue #B2: the distribution holds no BIOS content. No file under it may contain the first 256 bytes of the supplied
-    /// BIOS image (a run of its code words), nor the image's SHA-256 digest.
-    /// </summary>
-    private static void AssertDistributionHoldsNoBios(string root, byte[] rom)
-    {
-#pragma warning disable AARC003 // Test-layer inspection of the produced distribution bytes
         var needle = rom.AsSpan(0, 256).ToArray();
         needle.Should().Contain(static b => b != 0, "the probe window must hold BIOS code, not padding");
         var digest = OpenBiosRomInput.Sha256Hex(rom);
-
-        // Every informative 16-byte window of the BIOS, with the offset it occurs at in the BIOS.
-        var romWindows = new Dictionary<(ulong, ulong), int>();
-        for (var i = 0; i + 16 <= rom.Length; i++)
+        foreach (var (name, bytes) in ReadTree(root))
         {
-            if (!IsPaddingWindow(rom, i)) romWindows.TryAdd((BitConverter.ToUInt64(rom, i), BitConverter.ToUInt64(rom, i + 8)), i);
+            bytes.AsSpan().IndexOf(needle.AsSpan()).Should().Be(-1, $"{name} must not contain BIOS bytes");
+            Encoding.Latin1.GetString(bytes).Should().NotContain(digest, $"{name} must not contain the BIOS digest");
         }
-
-        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-        {
-            var bytes = File.ReadAllBytes(file);
-            bytes.AsSpan().IndexOf(needle.AsSpan()).Should().Be(-1, $"{Path.GetFileName(file)} must not contain BIOS bytes");
-            Encoding.Latin1.GetString(bytes).Should().NotContain(digest, $"{Path.GetFileName(file)} must not contain the BIOS digest");
-
-            for (var i = 0; i + 16 <= bytes.Length; i++)
-            {
-                if (IsPaddingWindow(bytes, i)) continue;
-                var key = (BitConverter.ToUInt64(bytes, i), BitConverter.ToUInt64(bytes, i + 8));
-                if (romWindows.TryGetValue(key, out var romOffset))
-                {
-                    Assert.Fail(
-                        $"{Path.GetFileName(file)} contains a 16-byte window of the BIOS: file offset 0x{i:X}, BIOS offset 0x{romOffset:X}, " +
-                        $"bytes {Convert.ToHexString(bytes, i, 16)}");
-                }
-            }
-        }
-#pragma warning restore AARC003
     }
+
+    /// <summary>
+    /// Zero tolerance (Issue #B2, MEDIUM-1): no 16-byte window of the BIOS appears in the distribution unless the same window
+    /// appears in <paramref name="baseline"/>, material that is not the BIOS (a synthetic run's output, the game disc).
+    /// </summary>
+    private static void AssertNoBiosWindows(string root, byte[] rom, IEnumerable<(string Name, byte[] Bytes)> baseline) =>
+        DistributionLeakScanner.FindBiosLeak(ReadTree(root), DistributionLeakScanner.BiosWindows(rom), baseline).Should().BeNull(
+            "no 16-byte window of the BIOS may appear in the distribution");
 
     /// <summary>
     /// Issue #B2: the same packaged path with a REAL OpenBIOS image the user supplies by path at run time. The ROM is
@@ -427,8 +382,19 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             new StringWriter(), error);
         exit.Should().Be(0, error.ToString());
         AssertNoAbsoluteDeveloperPaths(output);
-#pragma warning disable AARC003 // Test-layer inspection: the ROM is read in place to check that the distribution holds none of it
-        AssertDistributionHoldsNoBios(output, File.ReadAllBytes(romSource!));
+#pragma warning disable AARC003 // Test-layer inspection: the BIOS is read in place to check that the distribution holds none of it
+        AssertNoBiosBytes(output, File.ReadAllBytes(romSource!));
+        // The baseline is material that is not the BIOS: the output of the same packaging with a synthetic image, and the disc.
+        var syntheticImage = _dir.WriteFile("synthetic-bios.bin", SyntheticRom());
+        var baselineOutput = _dir.Combine("game-synthetic");
+        var baselineError = new StringWriter();
+        Program.Execute(
+            ["package", discPath, "--bios", "openbios", "--bios-rom", syntheticImage, "--aot-dir", aot,
+             "--instruction-budget", "2000000", "--run-timeout-seconds", "300", "--build-timeout-seconds", "900",
+             "--bios-provenance", "synthetic", "--output", baselineOutput],
+            new StringWriter(), baselineError).Should().Be(0, baselineError.ToString());
+        var baseline = ReadTree(baselineOutput).Append(("disc input", File.ReadAllBytes(discPath))).ToArray();
+        AssertNoBiosWindows(output, File.ReadAllBytes(romSource!), baseline);
 #pragma warning restore AARC003
 
         var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
@@ -462,5 +428,134 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         // hit the wall-clock bound. The test pins it so that any change in the outcome is noticed.
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "measured run outcome (wiring PASS, run RuntimeFailure)");
         report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_TIMEOUT", "measured run outcome: the wall-clock bound");
+    }
+
+    /// <summary>A reproducible 512 KiB BIOS-shaped image that no output contains. It is never OpenBIOS and never committed.</summary>
+    private static byte[] BiosShapedImage()
+    {
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        // A fixed linear congruential sequence: reproducible, and unrelated to any BIOS.
+        var state = 20261023UL;
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            state = unchecked(state * 6364136223846793005UL + 1442695040888963407UL);
+            bytes[i] = (byte)(state >> 56);
+        }
+        return bytes;
+    }
+
+    private string AotInputs(string name)
+    {
+        var aot = _dir.CreateSubdirectory(name);
+        _dir.WriteFile(name + "/rom.roots", Text("0xBFC00000\n"));
+        _dir.WriteFile(name + "/images.txt", Text("# no RAM-placed code images\n"));
+        return aot;
+    }
+
+    private (int Exit, string Error) PackageFirmware(string discPath, string romPath, string aot, string output, string? provenance, params string[] extra)
+    {
+        var args = new List<string> { "package", discPath, "--bios", "openbios", "--bios-rom", romPath, "--aot-dir", aot };
+        if (provenance is not null)
+        {
+            args.AddRange(["--bios-provenance", provenance]);
+        }
+
+        args.AddRange(extra);
+        args.AddRange(["--output", output]);
+        var error = new StringWriter();
+        var exit = Program.Execute(args.ToArray(), new StringWriter(), error);
+        return (exit, error.ToString());
+    }
+
+    /// <summary>Issue #B2 (MEDIUM-1 CI check): a clean package passes, and a planted BIOS fragment fails. Runs without the environment variable.</summary>
+    [SkippableFact]
+    public void CleanPackage_PassesTheBiosWindowCheck_AndAPlantedBiosFragmentFailsIt()
+    {
+        RuntimeHostPublishE2E.RequireGcc();
+        var bios = BiosShapedImage();
+        var biosPath = _dir.WriteFile("bios-shaped.bin", bios);
+        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var output = _dir.Combine("game");
+        var (exit, error) = PackageFirmware(disc, biosPath, AotInputs("aot"), output, "synthetic");
+        exit.Should().Be(0, error);
+
+        var files = ReadTree(output);
+        AssertNoAbsoluteDeveloperPaths(output);
+        AssertNoBiosBytes(output, bios);
+        AssertNoBiosWindows(output, bios, Array.Empty<(string Name, byte[] Bytes)>());
+#pragma warning disable AARC003 // Test-layer inspection: the Runtime host ships no PDB, so no build path rides along in one
+        Directory.EnumerateFiles(output, "*.pdb", SearchOption.AllDirectories).Should().BeEmpty("the Runtime host is published with DebugType=none");
+#pragma warning restore AARC003
+
+        // Plant 64 bytes of the BIOS into a copy of the game executable: the check must fail on it.
+        var artifactName = "game" + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ".exe" : "");
+        var planted = files.Select(f =>
+        {
+            if (f.Name != artifactName) return f;
+            var copy = (byte[])f.Bytes.Clone();
+            Array.Copy(bios, 0x4000, copy, 0x100, 64);
+            return (f.Name, copy);
+        }).ToArray();
+        var leak = DistributionLeakScanner.FindBiosLeak(planted, DistributionLeakScanner.BiosWindows(bios), Array.Empty<(string Name, byte[] Bytes)>());
+        leak.Should().NotBeNull("a planted 64-byte BIOS fragment must be detected");
+        leak.Should().Contain(artifactName);
+    }
+
+    /// <summary>Issue #B2 (LOW-1): without --bios-provenance the firmware is labelled as synthetic, never as a real ROM.</summary>
+    [SkippableFact]
+    public void PackageWithoutProvenance_IsLabelledOpenBiosSynthetic_ByDefault()
+    {
+        RuntimeHostPublishE2E.RequireGcc();
+        var biosPath = _dir.WriteFile("bios-shaped.bin", BiosShapedImage());
+        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var output = _dir.Combine("game");
+        var (exit, error) = PackageFirmware(disc, biosPath, AotInputs("aot"), output, provenance: null);
+        exit.Should().Be(0, error);
+
+#pragma warning disable AARC003 // Test-layer inspection of the generated runtime manifest
+        var manifest = File.ReadAllText(Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName, RuntimeHostLayout.ManifestFileName));
+#pragma warning restore AARC003
+        manifest.Should().Contain("\"biosMode\": \"openbios-synthetic\"");
+        manifest.Should().NotContain("openbios-rom");
+    }
+
+    /// <summary>
+    /// Issue #B2 (LOW-1): an image declared user-supplied is labelled openbios-rom, and the run reports the digest of the image
+    /// it actually loaded. The image here is BIOS-shaped, so the digest is the check that the label and the content correspond.
+    /// </summary>
+    [SkippableFact]
+    public void UserSuppliedLabel_OnAnImage_ReportsThatImagesOwnDigest()
+    {
+        RuntimeHostPublishE2E.RequireGcc();
+        var bios = BiosShapedImage();
+        var biosPath = _dir.WriteFile("bios-shaped.bin", bios);
+        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var output = _dir.Combine("game");
+        var (exit, error) = PackageFirmware(
+            disc, biosPath, AotInputs("aot"), output, "user-supplied",
+            "--run-timeout-seconds", "60", "--fallback-segment-budget", "5000", "--fallback-max-transitions", "40");
+        exit.Should().Be(0, error);
+
+        var artifact = Path.Combine(output, "game" + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ".exe" : ""));
+#pragma warning disable AARC003 // Test-layer process use to drive the bundled game executable
+        using var process = Process.Start(new ProcessStartInfo(artifact)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = biosPath },
+        })!;
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        process.StandardOutput.ReadToEndAsync();
+        WaitOrKill(process, 120_000, "the bounded run must finish");
+        var stderr = stderrTask.GetAwaiter().GetResult();
+#pragma warning restore AARC003
+
+        var line = stderr.Split('\n').FirstOrDefault(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal));
+        line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
+        var report = JsonDocument.Parse(line!).RootElement;
+        report.GetProperty("biosMode").GetString().Should().Be("openbios-rom", "declared user-supplied");
+        report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(bios), "the run reports the digest of the image it loaded");
     }
 }

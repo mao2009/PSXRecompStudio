@@ -498,7 +498,7 @@ compiled words.
 | Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`, schema 2), selects the firmware run in the shared RuntimeHost |
 | Run settings | `runtime/runtime-host.json` (`guestFirmware:true`; mixed fallback on by default — `--mixed-fallback`/`--no-mixed-fallback` with `--fallback-segment-budget`/`--fallback-max-transitions` propagate through the manifest, recorded as 0 budgets when off) |
 
-`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes.
+`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a missing or wrong-size BIOS named by `PSXRECOMP_BIOS_ROM`, a tampered disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes. The BIOS is not in the distribution, so packaging pins no digest of it: the run reports the SHA-256 of the image it loaded, and a change to that image during the run fails the run.
 The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts and the final register file, and `RuntimeHost --diagnostics <path>` additionally writes the Issue #763 stop diagnostic (best-effort; the classified exit code is unchanged).
 
 **Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no

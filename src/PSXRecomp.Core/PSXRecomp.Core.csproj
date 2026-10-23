@@ -51,7 +51,7 @@
   -->
   <Target Name="BuildNative" BeforeTargets="AssignTargetPaths;CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
-    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release"
+    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-s"
           IgnoreExitCode="false" />
     <Exec Command="cmake --build &quot;$(NativeBuildDir)&quot;"
           IgnoreExitCode="false" />
