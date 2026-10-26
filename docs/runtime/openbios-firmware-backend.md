@@ -791,6 +791,54 @@ To reproduce the tables: `dotnet test src/PSXRecomp.Tests --filter FullyQualifie
 "console;verbosity=detailed"`, with `PSXRECOMP_OPENBIOS_ROM` (the BIOS), `PSXRECOMP_MEASURE_DIR` (the corpus), and
 `PSXRECOMP_MEASURE_LABEL` set in the environment.
 
+**MIPS measurement: the PS1 executables of a retail disc (Issue #B2, owner ruling).** The normal inputs of the x86 measurement are not
+enough: the owner asked for real PS1 code. The local `rom/PERSONA.chd` is read in place (`PSXRECOMP_MEASURE_CHD`): its ISO 9660
+volume is walked and every `PS-X EXE` file is extracted to a temporary directory that is removed after the run. Nothing extracted is
+committed or printed; the measurement prints only numbers. The disc holds 5 PS-X executables, 1,034,240 bytes.
+
+Result (production rules; "over" counts the executables refused):
+
+| Scheme | Threshold | Singles: over / max bytes | Groups k = 2, 4: over |
+|---|---|---|---|
+| (8, 4) high variety, production | 96 | 5 / 5 (max 460) | 200 / 200 |
+| (8, 2) all matches, production | 256 | 5 / 5 (max 460) | 200 / 200 |
+| (4, 4) high variety, 4-word floor | 96 | 5 / 5 (max 1352) | 200 / 200 |
+| (16, 4), (16, 2) | 96 / 256 | 0 / 5 | 0 / 0 |
+
+Every PS1 executable of the disc is refused by both production rules. The matches are real code (each counted run holds at least four
+distinct values), so this is not padding. The rule as built cannot separate BIOS-derived code from ordinary PS1 code that shares short
+instruction sequences with the BIOS. A false positive on a retail disc is the expected failure of content matching, and it is the
+blocking result of this measurement. The thresholds are not raised to pass it: raising them above 460 bytes would also give up the
+127-byte and 256-byte detections below.
+
+Boundary sizes, inserted into a disc executable as a host (40 seeded trials each; "refused / 40"; padding excluded for the high and low
+kinds, and uniform windows are never counted by design). "Whole words" are the bytes that form a match.
+
+| Bytes | Whole words | High variety (rule 96) | Low variety (rule 256) | Uniform (never counted) |
+|---|---|---|---|---|
+| 1 | 0 | no match possible | no match possible | no match possible |
+| 7 | 1 | 0 / 40 (no match possible) | no such fragment | 0 / 40 |
+| 9 | 2 | 0 / 40 (no match possible) | 0 / 40 (no match possible) | 0 / 40 |
+| 32 | 8 | 0 / 40 (min covered 32) | 15 / 40 | 0 / 40 |
+| 96 | 24 | 2 / 40 | no such fragment | 0 / 40 |
+| 127 | 31 | 40 / 40 | no such fragment | 0 / 40 |
+| 256 | 64 | 40 / 40 | no such fragment | 0 / 40 |
+
+What this shows: a copy of 127 or 256 bytes of high-variety BIOS code is refused in every trial, in a disc executable as the host. A
+32-byte low-variety copy is refused in 15 / 40 trials, through the over-count described above. Copies shorter than a match cannot be
+counted at all. The 1-, 7- and 9-byte rows are not a detection result, only the word arithmetic.
+
+**Provenance (owner ruling, option 4): what is implemented and what is not.**
+- Implemented, statically (A): an AOT input whose source kind is `rom-image`, or whose load range overlaps the BIOS, is refused regardless of
+  its size or content (`RequireNoBiosImage`, tests `TheRomKindRefusal_IsItsOwnPath_EvenForAShortCopy`, `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`).
+  The declared provenance (`--bios-provenance`) only warns and is never a ground for a refusal.
+- Not implemented, runtime (A): the execution engine generates a standalone artifact from the loaded program and loaded code
+  (`RecompiledHostExecutionEngine`, the call to `RecompiledArtifactCodeGen.GenerateStandalone`), so code that the guest copies from the
+  BIOS into RAM can become a translated block. The guard checks a loaded block only by its entry address against the BIOS range. A
+  taint mark on RAM words written from BIOS reads would be the sound mechanism; it is not built, and it is not a pass.
+- Not possible from content (B): a disc executable whose bytes are copied from the BIOS cannot be shown to be BIOS-derived by any
+  content rule that also accepts ordinary PS1 code, as the measurement above shows. Under the owner's rule this is a requirement not met.
+
 **Binary window scan (supporting only, `DistributionLeakScanner`).** 8-byte windows of the BIOS at every offset are matched
 against every file of the packaged distribution. A match is excused when the identical window is also held by a non-BIOS
 baseline (the same packaging with a synthetic image, and the game disc). The excuse is content identity, for any window shape.
