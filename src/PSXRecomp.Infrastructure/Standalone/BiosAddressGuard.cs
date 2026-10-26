@@ -110,12 +110,13 @@ public static class BiosAddressGuard
         new HashSet<string>(StringComparer.Ordinal) { "boot-exe", "disc-exe", "exe-file" };
 
     /// <summary>
-    /// The manifest stage (Issue #B2, owner ruling option 1): refuses only what is confirmed to be BIOS data. Confirmation is by the
-    /// source, never by content matching: an input of kind <c>rom</c> (BIOS bytes copied to RAM) is refused; an input whose load range
-    /// overlaps the BIOS is refused; an input that is the complete BIOS image, byte for byte, is refused; an input from a source kind
-    /// other than <see cref="AllowedAotSourceKinds"/> is refused. Partial content matches are not refusals: they are diagnostics
-    /// (<see cref="DiagnoseContent"/>), because a match of BIOS bytes does not show that the input came from the BIOS.
-    /// The declared provenance (<c>--bios-provenance</c>) is never a ground for a refusal.
+    /// The manifest stage (Issue #B2, owner ruling option 1). Three refusals, each on its own ground:
+    /// (1) static source evidence: an input of kind <c>rom</c> (BIOS bytes copied to RAM), or a source kind outside
+    /// <see cref="AllowedAotSourceKinds"/>; (2) the load range overlaps the BIOS; (3) content identity: the input is the complete BIOS
+    /// image, every byte equal (<see cref="IsWholeBiosImage"/>). Content identity proves that the bytes are the BIOS image. It does not
+    /// prove where the input came from historically. Partial content matches are not refusals: they are diagnostics
+    /// (<see cref="DiagnoseContent"/>). The declared provenance (<c>--bios-provenance</c>) is a recorded label and is never a ground for
+    /// a refusal; this method does not receive it.
     /// </summary>
     public static void RequireNoBiosImage(LoadImageManifest manifest, OpenBiosFirmware firmware)
     {
@@ -144,17 +145,23 @@ public static class BiosAddressGuard
             if (IsWholeBiosImage(image.Words, firmware))
             {
                 throw new InvalidDataException(
-                    $"image '{image.Name}' is the complete BIOS image, byte for byte; BIOS data is never ahead-of-time translated (Issue #B2).");
+                    $"image '{image.Name}' is byte-identical to the complete BIOS image (content identity, Issue #B2). This does not show " +
+                    "where the input came from; BIOS data is never ahead-of-time translated.");
             }
         }
     }
 
-    /// <summary>True when the words are exactly the BIOS image: the one content that confirms its origin without a threshold.</summary>
+    /// <summary>
+    /// True when the words are the complete BIOS image, every byte equal: the content identity of the input with the BIOS (Issue #B2).
+    /// It is the only content test that refuses, and it is exact. The length must be the BIOS length (512 KiB, one byte more or less is
+    /// not identical), then every word is compared; no digest is used, so a collision cannot decide the refusal. A true result proves
+    /// content identity only, not the historical origin of the input.
+    /// </summary>
     public static bool IsWholeBiosImage(IReadOnlyList<uint> words, OpenBiosFirmware firmware)
     {
         ArgumentNullException.ThrowIfNull(words);
         ArgumentNullException.ThrowIfNull(firmware);
-        return words.Count == firmware.Words.Count && words.SequenceEqual(firmware.Words);
+        return words.Count * sizeof(uint) == OpenBiosFirmware.ImageSize && words.SequenceEqual(firmware.Words);
     }
 
     /// <summary>

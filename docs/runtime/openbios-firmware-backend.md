@@ -687,14 +687,16 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
-#### BIOS: never an AOT input; run-time provenance (Issue #B2)
+#### BIOS: refused as an AOT input on confirmed grounds; run-time provenance (Issue #B2)
 
-**Primary guarantee: BIOS-derived code is never an ahead-of-time input for an input whose provenance is confirmed.** The guarantee does not cover an input whose provenance is unknown (see the status paragraph below). `BiosAddressGuard` refuses BIOS code at four
+**Primary guarantee: BIOS-derived code is never an ahead-of-time input for an input that is confirmed to be BIOS data.** Two grounds confirm it: static source evidence (kind, load range) and content identity (the complete 512 KiB BIOS image, every byte equal). The guarantee does not cover an input that is neither, nor a partial copy (see the status paragraph below). `BiosAddressGuard` refuses BIOS code at four
 stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistribution`:
+
+**Terms.** *Static evidence* (the source kind `rom-image`, or a load range overlapping the BIOS) shows where the bytes are placed. *Content identity* (the input is the complete BIOS image, every byte equal) shows that the bytes are the BIOS image. Neither shows the historical origin of the input: a packaging cannot establish where a file came from. The declared provenance (`--bios-provenance`) is a recorded label, not evidence, and never a ground for a refusal. Content matching below the complete image is a diagnostic, never a refusal.
 
 | Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
 |---|---|---|
-| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, the complete BIOS image byte for byte, a source kind other than `boot-exe`/`disc-exe`/`exe-file` (provenance confirmed; a content match is a diagnostic only, Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`, `AWholeBiosHeldAsInputData_IsRefused_BecauseItsOriginIsConfirmed` |
+| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, the complete BIOS image with every byte equal (content identity), a source kind other than `boot-exe`/`disc-exe`/`exe-file`. A partial content match is a diagnostic only (Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`, `AWholeBiosHeldAsInputData_IsRefused_BecauseItsContentIsIdentical` |
 | plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestStageDisabled_ThePlanStageRefuses` |
 | dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses` |
 | source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
@@ -703,16 +705,20 @@ Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFF
 proof: with all four stages disabled, the production path does generate a block at `0xBFC00000`
 (`WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource`), so the refusals are what keep BIOS code out.
 
-**Status (owner ruling, option 1, staged): what refuses and what only reports.** A packaging is refused only when an input's
-provenance is confirmed: its source kind is `rom-image`, its load range overlaps the BIOS, or it is the complete BIOS image byte for
-byte. Content matching is a diagnostic (`BiosAddressGuard.DiagnoseContent`, written to `bios-content-diagnostic.txt` in the
+**Status (owner ruling, option 1, staged): what refuses and what only reports.** A packaging is refused when an input is confirmed
+to be BIOS data: its source kind is `rom-image`, its load range overlaps the BIOS, or it is the complete BIOS image with every byte
+equal (content identity, `BiosAddressGuard.IsWholeBiosImage`: the length must be 512 KiB, then every word is compared; no digest decides
+it). Partial content matches are a diagnostic (`BiosAddressGuard.DiagnoseContent`, written to `bios-content-diagnostic.txt` in the
 distribution). It reports the BIOS coverage of the inputs and says that their provenance is unknown (出所不明). It never refuses, and
-a match does not show a BIOS origin. The provenance states that the packaging can establish are listed in the residual-risk section
+a match does not show a BIOS origin. The diagnostic file holds counts and the reference values only: no BIOS word, byte or digest
+(test `TheDiagnostic_ContainsNoBiosWords`). Digests: the packaging records no BIOS digest in the distribution, because a digest of the
+user's own ROM identifies that file and adds nothing to a count. The runtime's `firmware-run` stderr line keeps its existing `romSha256`
+field, printed on the user's machine only; it is not written into the distribution. The provenance states that the packaging can establish are listed in the residual-risk section
 below; the rest of this section describes the content diagnostic and its measurements.
 
 **Content diagnostic: cumulative BIOS coverage (Issue #B2).** The reference values below are the diagnostic's reference points, not refusal
 thresholds. Disc code is an AOT input (`boot-exe`, `disc-exe`, `exe-file`). The BIOS ROM itself, and RAM copies of BIOS code, are never an
-AOT input by provenance. The coverage is cumulative over all AOT inputs of one packaging, and it has two levels:
+AOT input by a refusal ground. The coverage is cumulative over all AOT inputs of one packaging, and it has two levels:
 
 - A **match** is a run of words equal to a run of the BIOS, at least `MinRunWords` = **8 words** (32 bytes) long. A match is either
   **high variety** (at least `MinDistinctWords` = 4 distinct word values) or **low variety** (two or three distinct values, such as
@@ -860,7 +866,7 @@ Limits, stated plainly:
 - A BIOS fragment built only from windows the baseline also holds is not detected (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit`).
 - Windows that are mostly `0x00`/`0xFF` are excused when the baseline holds them, which is almost always: the real-image
   run found 104,223 such occurrences in the packaged output, all excused. This is a measured false-negative path.
-- The scan does not prove zero leakage. It does not establish the origin of code; only the generation guard is a guarantee.
+- The scan does not prove zero leakage. It does not establish the origin of code. The generation guard refuses on the grounds listed in the BIOS section (static evidence, content identity); it is not a proof that no BIOS-derived code exists in an input.
 
 **Provenance, decided at run time (MAJOR-1).** The run classifies the image it loads by SHA-256 (`BiosProvenance`). The
 packaging-time declaration (`--bios-provenance`) is recorded for comparison only and is never evidence.

@@ -251,26 +251,68 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
-    public void AWholeBiosHeldAsInputData_IsRefused_BecauseItsOriginIsConfirmed()
+    public void AWholeBiosHeldAsInputData_IsRefused_BecauseItsContentIsIdentical()
     {
-        // The complete BIOS image, byte for byte, confirms its origin: refused by identity, not by a threshold.
+        // Content identity (every byte of the 512 KiB image equal): a refusal on its own ground, not a threshold. It proves identity of
+        // content only; it does not prove the historical origin. Removing the IsWholeBiosImage check in RequireNoBiosImage fails this test.
         var bios = Bios();
         var whole = Manifest(("exe-file", bios.Words.ToArray()));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(whole, bios))).Should().Throw<InvalidDataException>().WithMessage("*complete BIOS image*");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(whole, bios))).Should().Throw<InvalidDataException>().WithMessage("*byte-identical to the complete BIOS image*");
     }
 
     [Fact]
-    public void AWholeBiosWithOneWordChanged_IsNotConfirmed_SoItIsDiagnosedNotRefused()
+    public void AWholeBiosWithOneWordChanged_IsNotIdentical_SoItIsDiagnosedNotRefused()
     {
-        // Identity is exact: one changed word is no longer the BIOS image by identity. Its content is still reported.
+        // Identity is exact: one changed word is not the BIOS image. Its content is still reported as a diagnostic.
         var bios = Bios();
         var words = bios.Words.ToArray();
         words[1000] ^= 0x1u;
         var manifest = Manifest(("exe-file", words));
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
+        BiosAddressGuard.IsWholeBiosImage(words, bios).Should().BeFalse();
         BiosAddressGuard.DiagnoseContent(manifest, bios).ExceedsHighVarietyReference.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AWholeBiosPlusOneWord_IsNotIdentical_SoItIsNotRefusedByIdentity()
+    {
+        // The length is part of the identity: the BIOS followed by one word is not the 512 KiB image. Partial content is diagnosed only.
+        var bios = Bios();
+        var longer = bios.Words.Concat(new uint[] { 0u }).ToArray();
+        var manifest = Manifest(("exe-file", longer));
+
+        BiosAddressGuard.IsWholeBiosImage(longer, bios).Should().BeFalse("the length differs from 512 KiB");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
+    }
+
+    [Fact]
+    public void TheDiagnostic_ContainsNoBiosWords()
+    {
+        // Disclosure: the diagnostic (written to bios-content-diagnostic.txt) reports counts only. No BIOS word or byte, hex or decimal.
+        var bios = Bios();
+        var fragment = Fragment(bios, 20000, 60);
+        var manifest = new LoadImageManifest([new LoadedImageSpec("copy", 0x80100000u, fragment, [], "disc-exe")], new HashSet<uint>());
+
+        var message = BiosAddressGuard.DiagnoseContent(manifest, bios).Message;
+
+        foreach (var word in fragment)
+        {
+            message.Should().NotContain(word.ToString("X8")).And.NotContain(word.ToString());
+        }
+    }
+
+    [Fact]
+    public void AWholeBiosPrefix_IsNotIdentical_SoItIsNotRefusedByIdentity()
+    {
+        // A shorter prefix of the BIOS is not the image either: it is a partial match, diagnosed and never refused.
+        var bios = Bios();
+        var prefix = bios.Words.Take(bios.Words.Count - 1).ToArray();
+        var manifest = Manifest(("exe-file", prefix));
+
+        BiosAddressGuard.IsWholeBiosImage(prefix, bios).Should().BeFalse("the length differs from 512 KiB");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
     }
 
     [Fact]
