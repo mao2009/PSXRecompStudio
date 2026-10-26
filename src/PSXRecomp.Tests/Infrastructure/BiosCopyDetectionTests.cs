@@ -266,6 +266,39 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
+    public void FixedOrdinaryInputs_HaveNoFalsePositive_UnderEitherRule()
+    {
+        // Always-run guard for the matching logic on fixed, ordinary-looking input: small integers, zero-filled tables, a repeated
+        // code-like sequence with varying immediates, and uniform runs. The BIOS is the deterministic random one, so this does not
+        // measure the real BIOS: the real-BIOS false-positive measurement is BiosCopyMeasurementTests (env-gated, see the docs).
+        var bios = Bios();
+        var words = new List<uint>();
+        for (var i = 0; i < 2048; i++)
+        {
+            words.Add((uint)(i & 0xFF));
+        }
+
+        for (var i = 0; i < 512; i++)
+        {
+            words.Add(0u);
+        }
+
+        for (var i = 0; i < 512; i++)
+        {
+            words.Add(0x24080000u | (uint)(i * 37 & 0xFFFF));
+            words.Add(0xAFBF0014u);
+            words.Add(0x03E00008u);
+            words.Add(0u);
+        }
+
+        var image = words.ToArray();
+
+        BiosAddressGuard.BiosCopyBytes([image], bios).Should().Be(0, "no high-variety match is ordinary in this fixed input");
+        (BiosAddressGuard.BiosCoveredWords([image], bios, BiosAddressGuard.MinRunWords, BiosAddressGuard.MinLowVarietyDistinctWords)
+            .Count * 4).Should().BeLessThanOrEqualTo(BiosAddressGuard.LowVarietyThresholdBytes, "the low-variety threshold holds for this input");
+    }
+
+    [Fact]
     public void AnUnknownSourceKind_IsRefused()
     {
         var bios = Bios();

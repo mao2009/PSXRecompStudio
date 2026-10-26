@@ -106,15 +106,17 @@ public sealed class BiosCopyMeasurementTests
             var sets = perScheme[scheme];
             var bytes = sets.Select(static s => s.Count * 4).OrderBy(static b => b).ToArray();
             var overSingle = bytes.Count(b => b > threshold);
+            var overSingleAt96 = bytes.Count(b => b > BiosAddressGuard.CopyThresholdBytes);
             Emit($"b2-measure singles corpus={name} minRun={scheme.MinRun} minDistinct={scheme.MinDistinct} T={threshold} files={bytes.Length} " +
                  $"p50={bytes[bytes.Length / 2]} p90={bytes[(int)(bytes.Length * 0.9)]} max={bytes[^1]} " +
-                 $"anyMatch={bytes.Count(static b => b > 0)} overThreshold={overSingle}");
+                 $"anyMatch={bytes.Count(static b => b > 0)} overThreshold={overSingle} overAt96={overSingleAt96}");
 
             var overGroups = new List<int>();
             foreach (var size in GroupSizes)
             {
                 var random = new Lcg(20261023UL + (ulong)size);
                 var over = 0;
+                var over96 = 0;
                 var maxUnion = 0;
                 for (var g = 0; g < GroupsPerSize; g++)
                 {
@@ -137,17 +139,26 @@ public sealed class BiosCopyMeasurementTests
                     {
                         over++;
                     }
+
+                    if (covered > BiosAddressGuard.CopyThresholdBytes)
+                    {
+                        over96++;
+                    }
                 }
 
                 overGroups.Add(over);
                 Emit($"b2-measure groups corpus={name} minRun={scheme.MinRun} minDistinct={scheme.MinDistinct} T={threshold} k={size} " +
-                     $"groups={GroupsPerSize} overThreshold={over} maxBytes={maxUnion}");
+                     $"groups={GroupsPerSize} overThreshold={over} overAt96={over96} maxBytes={maxUnion}");
             }
 
-            if (assertNoFalsePositive && scheme == (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinDistinctWords))
+            // The production schemes are asserted when the measurement runs (PSXRECOMP_OPENBIOS_ROM and PSXRECOMP_MEASURE_DIR set).
+            // The corpus is named in the message; the assertion holds only for the corpus it was measured on.
+            var isProduction = scheme == (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinDistinctWords)
+                || scheme == (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinLowVarietyDistinctWords);
+            if (assertNoFalsePositive && isProduction)
             {
-                overSingle.Should().Be(0, "no ordinary x86 binary may be refused by the production high-variety rule");
-                overGroups.Should().OnlyContain(static over => over == 0, "no ordinary group may be refused by the production high-variety rule");
+                overSingle.Should().Be(0, $"no ordinary {name} input may be refused by the production rule (T={threshold})");
+                overGroups.Should().OnlyContain(static over => over == 0, $"no ordinary {name} group may be refused by the production rule (T={threshold})");
             }
         }
     }
