@@ -694,7 +694,7 @@ stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistri
 
 | Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
 |---|---|---|
-| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, a source kind other than `boot-exe`/`disc-exe`/`exe-file`, AOT inputs that together hold more than 96 bytes of high-variety BIOS code, or more than 256 bytes of low-variety BIOS code (cumulative, Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage` |
+| manifest | a `rom` image (BIOS bytes copied to RAM), an image overlapping the BIOS range, the complete BIOS image byte for byte, a source kind other than `boot-exe`/`disc-exe`/`exe-file` (provenance confirmed; a content match is a diagnostic only, Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`, `AWholeBiosHeldAsInputData_IsRefused_BecauseItsOriginIsConfirmed` |
 | plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestStageDisabled_ThePlanStageRefuses` |
 | dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses` |
 | source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
@@ -703,9 +703,16 @@ Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFF
 proof: with all four stages disabled, the production path does generate a block at `0xBFC00000`
 (`WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource`), so the refusals are what keep BIOS code out.
 
-**Disc code and the BIOS: cumulative copy rule (Issue #B2, owner ruling; revised for low variety).** Disc code is an AOT input
-(`boot-exe`, `disc-exe`, `exe-file`). A copy of BIOS code is refused; a coincidence of bytes is not. The BIOS ROM itself, and RAM copies
-of BIOS code, are never an AOT input. The test is cumulative over all AOT inputs of one packaging, and it has two levels:
+**Status (owner ruling, option 1, staged): what refuses and what only reports.** A packaging is refused only when an input's
+provenance is confirmed: its source kind is `rom-image`, its load range overlaps the BIOS, or it is the complete BIOS image byte for
+byte. Content matching is a diagnostic (`BiosAddressGuard.DiagnoseContent`, written to `bios-content-diagnostic.txt` in the
+distribution). It reports the BIOS coverage of the inputs and says that their provenance is unknown (出所不明). It never refuses, and
+a match does not show a BIOS origin. The provenance states that the packaging can establish are listed in the residual-risk section
+below; the rest of this section describes the content diagnostic and its measurements.
+
+**Content diagnostic: cumulative BIOS coverage (Issue #B2).** The reference values below are the diagnostic's reference points, not refusal
+thresholds. Disc code is an AOT input (`boot-exe`, `disc-exe`, `exe-file`). The BIOS ROM itself, and RAM copies of BIOS code, are never an
+AOT input by provenance. The coverage is cumulative over all AOT inputs of one packaging, and it has two levels:
 
 - A **match** is a run of words equal to a run of the BIOS, at least `MinRunWords` = **8 words** (32 bytes) long. A match is either
   **high variety** (at least `MinDistinctWords` = 4 distinct word values) or **low variety** (two or three distinct values, such as
@@ -714,8 +721,8 @@ of BIOS code, are never an AOT input. The test is cumulative over all AOT inputs
   counts once. A fragment that occurs at several BIOS offsets covers all of them, so such a copy is over-counted; this errs toward
   refusal.
 - The inputs together may hold at most `CopyThresholdBytes` = **96 bytes** (24 words) of high-variety matches, and at most
-  `LowVarietyThresholdBytes` = **256 bytes** (64 words) of all matches. Above either, the packaging is refused, naming the total
-  (`the AOT inputs together hold N bytes of BIOS code`, or `... of low-variety BIOS code`).
+  `LowVarietyThresholdBytes` = **256 bytes** (64 words) of all matches. Above either, the diagnostic reports the total
+  (`... N bytes of high-variety BIOS matches`, `... of all BIOS matches`); it does not refuse.
 - A run of one repeated word (for example 64 words of 0x00) is never a match: its 4-word windows are not indexed. Such a copy carries
   no identity that could show its origin. This is a stated limit, not a pass condition.
 
@@ -783,7 +790,7 @@ What the tables show:
 - A copy split into pieces shorter than 8 words is not counted (`PiecesShorterThanTheMinimumMatch_AreNotCounted_ThisIsTheLimit`).
 - A run of one repeated word is not a match (`AUniformRun_IsNotCounted_ThisIsTheLimit`).
 - A byte-misaligned copy is not matched. MIPS code is word-aligned, so a misaligned copy is not code the CPU runs as such.
-- A refusal shows that BIOS words are present in the inputs. An acceptance does not show that the accepted code is not BIOS-derived.
+- A diagnostic shows that BIOS words are present in the inputs. An absence of a diagnostic does not show that the code is not BIOS-derived.
 
 The measurement asserts zero false positives for both production schemes when it runs with its inputs (it is skipped otherwise). The always-run guard is `FixedOrdinaryInputs_HaveNoFalsePositive_UnderEitherRule`, on fixed input against the deterministic BIOS; it is not the real-BIOS measurement.
 
@@ -805,7 +812,7 @@ Result (production rules; "over" counts the executables refused):
 | (4, 4) high variety, 4-word floor | 96 | 5 / 5 (max 1352) | 200 / 200 |
 | (16, 4), (16, 2) | 96 / 256 | 0 / 5 | 0 / 0 |
 
-Every PS1 executable of the disc is refused by both production rules. The matches are real code (each counted run holds at least four
+Every PS1 executable of the disc is reported by both diagnostic references, and none is refused: the packaging accepts them (see the MIPS result below). The matches are real code (each counted run holds at least four
 distinct values), so this is not padding. The rule as built cannot separate BIOS-derived code from ordinary PS1 code that shares short
 instruction sequences with the BIOS. A false positive on a retail disc is the expected failure of content matching, and it is the
 blocking result of this measurement. The thresholds are not raised to pass it: raising them above 460 bytes would also give up the
@@ -824,7 +831,7 @@ kinds, and uniform windows are never counted by design). "Whole words" are the b
 | 127 | 31 | 40 / 40 | no such fragment | 0 / 40 |
 | 256 | 64 | 40 / 40 | no such fragment | 0 / 40 |
 
-What this shows: a copy of 127 or 256 bytes of high-variety BIOS code is refused in every trial, in a disc executable as the host. A
+What this shows: a copy of 127 or 256 bytes of high-variety BIOS code is reported in every trial, in a disc executable as the host. A
 32-byte low-variety copy is refused in 15 / 40 trials, through the over-count described above. Copies shorter than a match cannot be
 counted at all. The 1-, 7- and 9-byte rows are not a detection result, only the word arithmetic.
 
