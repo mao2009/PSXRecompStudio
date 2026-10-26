@@ -48,6 +48,7 @@ internal static class FirmwarePackageCommand
                     BuildTimeout: options.BuildTimeoutSeconds is { } buildTimeoutSeconds
                         ? TimeSpan.FromSeconds(buildTimeoutSeconds)
                         : null,
+                    // Issue #B2, LOW-3: the synthetic default is only the label recorded in the manifest; no decision reads it.
                     BiosProvenance: options.BiosProvenance ?? RuntimeHostManifest.BiosProvenanceSynthetic),
                 RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             standardOutput.WriteLine($"Firmware distribution packaged: {Path.GetFullPath(arguments.OutputDirectory!)}");

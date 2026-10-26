@@ -100,13 +100,7 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
 
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
         // -s is always passed: strip symbols and build-path strings, so the shipped executable carries no developer path (Issue #B2).
-        var linkArgs = new List<string> { objectPath, "-s" };
-        if (request.ExtraLinkerArguments is { Count: > 0 })
-        {
-            linkArgs.AddRange(request.ExtraLinkerArguments);
-        }
-        linkArgs.Add("-o");
-        linkArgs.Add(binaryPath);
+        var linkArgs = LinkArguments(objectPath, binaryPath, request.ExtraLinkerArguments, request.FirmwareDistribution);
 
         var link = RunToolchain(compiler, linkArgs, _toolchainTimeoutMs);
         if (link.Outcome != ToolchainOutcome.Success)
@@ -117,24 +111,28 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         // The object file is an internal step of the build and carries generated code. It is removed once linked. A removal
         // that fails is not a link failure, but the build is not reported as a success while the intermediate remains:
         // the caller then commits nothing (Issue #B2).
-        string? removalProblem = null;
-        try
+        // Firmware distributions only (MAJOR-2): a game build keeps its object file, as before.
+        if (request.FirmwareDistribution)
         {
-            _removeIntermediate(objectPath);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            removalProblem = exception.Message;
-        }
+            string? removalProblem = null;
+            try
+            {
+                _removeIntermediate(objectPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                removalProblem = exception.Message;
+            }
 
-        if (removalProblem is not null || File.Exists(objectPath))
-        {
-            return GeneratedHostBuildResult.Failed(
-                GeneratedHostBuildStatus.OutputFailed,
-                "INTERMEDIATE_NOT_REMOVED",
-                $"The intermediate object '{objectPath}' could not be removed after linking" +
-                (removalProblem is null ? string.Empty : $": {removalProblem}") +
-                ". The build is not committed.");
+            if (removalProblem is not null || File.Exists(objectPath))
+            {
+                return GeneratedHostBuildResult.Failed(
+                    GeneratedHostBuildStatus.OutputFailed,
+                    "INTERMEDIATE_NOT_REMOVED",
+                    $"The intermediate object '{objectPath}' could not be removed after linking" +
+                    (removalProblem is null ? string.Empty : $": {removalProblem}") +
+                    ". The build is not committed.");
+            }
         }
 
         var resolvedBinaryPath = ResolveBinaryPath(binaryPath);
@@ -218,6 +216,28 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
     /// descendant can keep an inherited pipe handle open) and after a
     /// post-timeout kill of the process tree.
     /// </param>
+    /// <summary>
+    /// The linker arguments of one build (Issue #B2, MAJOR-2). A game build is <c>[object, extra..., -o, binary]</c>, exactly the
+    /// arguments before Issue #B2. A firmware distribution adds <c>-s</c> (strip symbols and build-path strings) after the object.
+    /// </summary>
+    internal static List<string> LinkArguments(string objectPath, string binaryPath, IReadOnlyList<string>? extraLinkerArguments, bool firmwareDistribution)
+    {
+        var linkArgs = new List<string> { objectPath };
+        if (firmwareDistribution)
+        {
+            linkArgs.Add("-s");
+        }
+
+        if (extraLinkerArguments is { Count: > 0 })
+        {
+            linkArgs.AddRange(extraLinkerArguments);
+        }
+
+        linkArgs.Add("-o");
+        linkArgs.Add(binaryPath);
+        return linkArgs;
+    }
+
     internal static ToolchainResult RunToolchain(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, int cleanupMs = ToolchainCleanupMs)
     {

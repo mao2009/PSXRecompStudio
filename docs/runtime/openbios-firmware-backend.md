@@ -689,7 +689,7 @@ as part of the one guest state.
 
 #### BIOS: never an AOT input; run-time provenance (Issue #B2)
 
-**Primary guarantee: the BIOS is never an input of ahead-of-time generation.** `BiosAddressGuard` refuses BIOS code at four
+**Primary guarantee: BIOS-derived code is never an ahead-of-time input for an input whose provenance is confirmed.** The guarantee does not cover an input whose provenance is unknown (see the status paragraph below). `BiosAddressGuard` refuses BIOS code at four
 stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistribution`:
 
 | Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
@@ -839,10 +839,15 @@ counted at all. The 1-, 7- and 9-byte rows are not a detection result, only the 
 - Implemented, statically (A): an AOT input whose source kind is `rom-image`, or whose load range overlaps the BIOS, is refused regardless of
   its size or content (`RequireNoBiosImage`, tests `TheRomKindRefusal_IsItsOwnPath_EvenForAShortCopy`, `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`).
   The declared provenance (`--bios-provenance`) only warns and is never a ground for a refusal.
-- Not implemented, runtime (A): the execution engine generates a standalone artifact from the loaded program and loaded code
-  (`RecompiledHostExecutionEngine`, the call to `RecompiledArtifactCodeGen.GenerateStandalone`), so code that the guest copies from the
-  BIOS into RAM can become a translated block. The guard checks a loaded block only by its entry address against the BIOS range. A
-  taint mark on RAM words written from BIOS reads would be the sound mechanism; it is not built, and it is not a pass.
+- Not implemented, runtime (A): a RAM copy of BIOS code is not tracked at run time. In a firmware distribution it is not
+  translated: the firmware run uses `RecompiledHostExecutionEngine.ForPrebuiltArtifact` with `loadedCode: plan.LoadedCode`
+  (`FirmwareDistribution.cs` ~:678-689). That table is built only from the manifest images (`FirmwareDistribution.cs` ~:53),
+  and the `LoadedCodeTable` constructor (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs` ~:52) takes image programs only.
+  A RAM copy that is not in the table has no translated block in the artifact; it runs through the interpreter fallback
+  (`HostTransferBridge`) and is not in the generated output. The prebuilt path never regenerates code: `BuildEmbeddedArtifact`
+  (`RecompiledHostExecutionEngine.cs` ~:1232) is called only from the `_embedImage` branch (~:774), not for `_prebuilt` (~:767).
+  A translation of such a copy at run time would need a code path this build does not have. The taint mark on RAM words written
+  from BIOS reads that would make it sound is not built, and it is not a pass.
 - Not possible from content (B): a disc executable whose bytes are copied from the BIOS cannot be shown to be BIOS-derived by any
   content rule that also accepts ordinary PS1 code, as the measurement above shows. Under the owner's rule this is a requirement not met.
 

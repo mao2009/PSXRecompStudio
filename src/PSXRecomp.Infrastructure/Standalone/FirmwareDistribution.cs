@@ -414,7 +414,7 @@ public static class FirmwareDistributionBuilder
             // The ROM + RAM-image dispatch is large; the build gets the request's per-step toolchain timeout
             // (--build-timeout-seconds), or the same bounded three minutes the probe uses by default.
             var build = new GeneratedHostBuildService(request.BuildTimeout ?? DefaultBuildTimeout).Build(
-                new GeneratedHostBuildRequest(source.Source!, staging, binaryName));
+                new GeneratedHostBuildRequest(source.Source!, staging, binaryName, FirmwareDistribution: true));
             if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {
                 throw new InvalidOperationException($"Artifact build failed ({build.Status}). {build.DiagnosticMessage}");
@@ -422,7 +422,7 @@ public static class FirmwareDistributionBuilder
 
             try
             {
-                RuntimeHostBuildService.ProvisionRuntimeHost(stagingRuntimeDir, request.SelfContained);
+                RuntimeHostBuildService.ProvisionRuntimeHost(stagingRuntimeDir, request.SelfContained, firmwareDistribution: true);
             }
             catch (RuntimeHostBuildService.RuntimeHostProvisionFailed exception)
             {

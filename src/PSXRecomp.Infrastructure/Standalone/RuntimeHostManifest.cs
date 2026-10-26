@@ -59,6 +59,11 @@ public sealed record RuntimeHostManifest(
     /// <summary>The provenance of a firmware BIOS the user supplied at packaging time (Issue #B2).</summary>
     public const string BiosProvenanceUserSupplied = "user-supplied";
 
+    /// <remarks>
+    /// Issue #B2, LOW-3: the packaging default is <see cref="BiosProvenanceSynthetic"/> when no <c>--bios-provenance</c> label is
+    /// declared. That default is only the label recorded in this manifest and the packaging warning. It is not a judgement of the
+    /// BIOS: the run classifies the image it loads by SHA-256, and no decision reads the declared label.
+    /// </remarks>
     /// <summary>The provenance of a test or synthetic BIOS-shaped image. It is never a real OpenBIOS build.</summary>
     public const string BiosProvenanceSynthetic = "synthetic";
 
@@ -151,6 +156,9 @@ public static class RuntimeHostManifestJson
             }
         }
 
+        // Issue #B2, LOW-2: MixedFallback is deliberately NOT a reason to require a populated loaded-code table. Guest firmware
+        // keeps its loaded table optional: its BIOS code is interpreted, and the RAM-placed code is only the table's versions. A
+        // mixed-fallback HLE run (not guest firmware) still requires the table, as before.
         if (!manifest.GuestFirmware)
         {
             // HLE games and mixed-fallback runs rely on the bridge (or the fallback)
