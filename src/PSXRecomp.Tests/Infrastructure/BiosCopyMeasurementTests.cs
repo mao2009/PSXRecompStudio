@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
+using System.Text;
 using FluentAssertions;
+using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
@@ -76,6 +78,22 @@ public sealed class BiosCopyMeasurementTests
 
         MeasureDetection(bios, x86);
         x86.Should().NotBeEmpty("the x86 corpus must hold binaries");
+
+        // The MIPS corpus of Issue #B2 (owner ruling): the PS-X executables of a disc (PSXRECOMP_MEASURE_CHD), extracted to a temporary
+        // directory that is removed after the run. Nothing extracted is committed or printed; only the measured numbers are.
+#pragma warning disable AARC003 // Test-layer measurement: the disc path is read from the environment
+        var chdPath = Environment.GetEnvironmentVariable("PSXRECOMP_MEASURE_CHD");
+#pragma warning restore AARC003
+        if (!string.IsNullOrWhiteSpace(chdPath))
+        {
+            using var temp = new TempDirectory();
+            var psx = ExtractPsxExecutables(chdPath!, temp.FullPath);
+            Emit($"b2-measure corpus=disc-mips psx-executables={psx.Length} bytes={psx.Sum(static f => new FileInfo(f).Length)}");
+            psx.Should().NotBeEmpty("the disc must hold PS-X executables");
+            MeasureCorpus("disc-mips", psx, bios, assertNoFalsePositive: false);
+            MeasureDetection(bios, psx);
+            MeasureBoundaries(bios, psx);
+        }
     }
 
     /// <summary>The threshold a scheme is judged against: high-variety schemes against the high threshold, the others the low one.</summary>
@@ -112,7 +130,7 @@ public sealed class BiosCopyMeasurementTests
                  $"anyMatch={bytes.Count(static b => b > 0)} overThreshold={overSingle} overAt96={overSingleAt96}");
 
             var overGroups = new List<int>();
-            foreach (var size in GroupSizes)
+            foreach (var size in GroupSizes.Where(k => k <= sets.Count))
             {
                 var random = new Lcg(20261023UL + (ulong)size);
                 var over = 0;
@@ -168,6 +186,115 @@ public sealed class BiosCopyMeasurementTests
     /// non-BIOS words of a corpus binary. The BIOS offsets are seeded and drawn from code (padding is excluded by design). Low-variety
     /// fragments (two or three distinct values, no uniform window) are measured separately, where the BIOS holds any.
     /// </summary>
+    /// <summary>The PS-X executables of a disc image, written to <paramref name="directory"/>; the disc is read in place, never committed.</summary>
+    private static string[] ExtractPsxExecutables(string chdPath, string directory)
+    {
+#pragma warning disable AARC003 // Test-layer measurement: the disc is read from the environment and the executables are written to a temporary directory
+        using var chd = ChdReader.Open(chdPath);
+        var iso = DiscImageAnalyzer.CreateIsoReader(chd);
+        iso.Initialize();
+        var written = new List<string>();
+        foreach (var file in iso.EnumerateFiles())
+        {
+            var bytes = iso.ReadFile(file.Entry);
+            if (bytes.Length >= 8 && Encoding.ASCII.GetString(bytes, 0, 8) == "PS-X EXE")
+            {
+                var path = Path.Combine(directory, $"psx{written.Count:D3}.exe");
+                File.WriteAllBytes(path, bytes);
+                written.Add(path);
+            }
+        }
+
+        return written.ToArray();
+#pragma warning restore AARC003
+    }
+
+    /// <summary>
+    /// The byte-size boundaries of Issue #B2 (1, 7, 9, 32, 96, 127, 256): a BIOS copy of that many bytes, of three kinds, inserted
+    /// into a non-BIOS host. Whole words are counted; a copy shorter than a match (8 words) cannot be refused by content.
+    /// The rule refuses a copy when its high-variety coverage is over 96 bytes or its all-match coverage is over 256 bytes.
+    /// </summary>
+    private static void MeasureBoundaries(OpenBiosFirmware bios, string[] hostFiles)
+    {
+        var hosts = LoadHosts(hostFiles);
+        foreach (var bytes in new[] { 1, 7, 9, 32, 96, 127, 256 })
+        {
+            var words = bytes / 4;
+            if (words == 0)
+            {
+                Emit($"b2-measure boundary bytes={bytes} words=0 (no whole word: cannot be a match)");
+                continue;
+            }
+
+            var lowOffsets = LowVarietyOffsets(bios.Words, words);
+            var uniformOffsets = UniformOffsets(bios.Words, words);
+            var kinds = new (string Kind, Func<Lcg, int> Offset, int Candidates)[]
+            {
+                ("high", r => CodeOffset(bios, words, r), -1),
+                ("low", r => lowOffsets[r.Next(lowOffsets.Length)], lowOffsets.Length),
+                ("uniform", r => uniformOffsets[r.Next(uniformOffsets.Length)], uniformOffsets.Length),
+            };
+            foreach (var (kind, offset, candidates) in kinds)
+            {
+                if (candidates == 0)
+                {
+                    Emit($"b2-measure boundary bytes={bytes} words={words} variety={kind} candidates=0 (the BIOS holds no such fragment)");
+                    continue;
+                }
+
+                var random = new Lcg(20261026UL + (ulong)(bytes * 7));
+                var refused = 0;
+                var minCovered = int.MaxValue;
+                for (var t = 0; t < Trials; t++)
+                {
+                    var start = offset(random);
+                    var host = hosts[random.Next(hosts.Length)];
+                    var hostStart = random.Next(host.Length - HostWords);
+                    var image = bios.Words.Skip(start).Take(words).Concat(host.Skip(hostStart).Take(HostWords)).ToArray();
+                    var high = BiosAddressGuard.BiosCoveredWords([image], bios).Count * 4;
+                    var all = BiosAddressGuard.BiosCoveredWords([image], bios, BiosAddressGuard.MinRunWords, BiosAddressGuard.MinLowVarietyDistinctWords).Count * 4;
+                    if (high > BiosAddressGuard.CopyThresholdBytes || all > BiosAddressGuard.LowVarietyThresholdBytes)
+                    {
+                        refused++;
+                    }
+
+                    minCovered = Math.Min(minCovered, Math.Max(high, all));
+                }
+
+                Emit($"b2-measure boundary bytes={bytes} words={words} variety={kind} candidates={candidates} refused={refused}/{Trials} minCoveredBytes={minCovered}");
+            }
+        }
+    }
+
+    /// <summary>The BIOS offsets of windows of <paramref name="count"/> words that are one repeated word (a uniform run).</summary>
+    private static int[] UniformOffsets(IReadOnlyList<uint> bios, int count)
+    {
+        var offsets = new List<int>();
+        for (var start = 0; start + count <= bios.Count; start++)
+        {
+            var uniform = true;
+            for (var k = 1; k < count && uniform; k++)
+            {
+                uniform = bios[start + k] == bios[start];
+            }
+
+            if (uniform)
+            {
+                offsets.Add(start);
+            }
+        }
+
+        return offsets.ToArray();
+    }
+
+    private static uint[][] LoadHosts(string[] hostFiles) => hostFiles.Take(8).Select(static f =>
+    {
+#pragma warning disable AARC003 // Test-layer measurement: the separators are real words of a corpus binary
+        var words = ToWords(File.ReadAllBytes(f));
+#pragma warning restore AARC003
+        return words.Take(16384).ToArray();
+    }).Where(static h => h.Length > HostWords * 2).ToArray();
+
     private static void MeasureDetection(OpenBiosFirmware bios, string[] hostFiles)
     {
         var hosts = hostFiles.Take(8).Select(static f =>
