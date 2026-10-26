@@ -768,7 +768,7 @@ What the tables show:
   zero at (8, 4) shows that the production scheme is quiet on these corpora; it does not show that 96 is the tightest safe value.
 - The original requirement was a 127-byte copy split in two being refused. A 127-byte copy holds 31 whole words (124 bytes); its 3
   trailing bytes are not a word and are not counted. Whole, and split in two pieces of 8 or more words each, it is refused in 40 / 40
-  trials. **Not met:** split into four pieces of about 8 words (4 / 40), because the last piece is shorter than 8 words. The former
+  trials. **Not met:** split into four pieces of 8, 8, 8 and 7 words (4 / 40). Three of the 8-word pieces are counted, 24 words, which is 96 bytes: not over the threshold, so the packaging is accepted. The 7-word piece is not a match. The former
   224-byte threshold could not refuse a 124-byte copy at all.
 
 **Limits of the measurement, stated plainly.**
@@ -784,6 +784,8 @@ What the tables show:
 - A run of one repeated word is not a match (`AUniformRun_IsNotCounted_ThisIsTheLimit`).
 - A byte-misaligned copy is not matched. MIPS code is word-aligned, so a misaligned copy is not code the CPU runs as such.
 - A refusal shows that BIOS words are present in the inputs. An acceptance does not show that the accepted code is not BIOS-derived.
+
+The measurement asserts zero false positives for both production schemes when it runs with its inputs (it is skipped otherwise). The always-run guard is `FixedOrdinaryInputs_HaveNoFalsePositive_UnderEitherRule`, on fixed input against the deterministic BIOS; it is not the real-BIOS measurement.
 
 To reproduce the tables: `dotnet test src/PSXRecomp.Tests --filter FullyQualifiedName~BiosCopyMeasurementTests --logger
 "console;verbosity=detailed"`, with `PSXRECOMP_OPENBIOS_ROM` (the BIOS), `PSXRECOMP_MEASURE_DIR` (the corpus), and
