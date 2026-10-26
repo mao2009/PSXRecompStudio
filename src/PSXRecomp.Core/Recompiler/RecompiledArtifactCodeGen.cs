@@ -314,7 +314,8 @@ public static class RecompiledArtifactCodeGen
         IReadOnlyList<byte> programImage,
         bool hostBridge = false,
         string? directLaunchHostRelativePath = null,
-        bool externalBios = false)
+        bool externalBios = false,
+        WindowedLaunch? windowedLaunch = null)
     {
         ArgumentNullException.ThrowIfNull(generatedDispatch);
         ArgumentNullException.ThrowIfNull(initialGpr);
@@ -363,7 +364,8 @@ public static class RecompiledArtifactCodeGen
             programImage,
             hostBridge,
             directLaunchHostRelativePath,
-            externalBios);
+            externalBios,
+            windowedLaunch);
 
         if (!standaloneSource.Success)
         {
@@ -394,7 +396,8 @@ public static class RecompiledArtifactCodeGen
         IReadOnlyList<byte> programImage,
         bool hostBridge = false,
         string? directLaunchHostRelativePath = null,
-        bool externalBios = false)
+        bool externalBios = false,
+        WindowedLaunch? windowedLaunch = null)
     {
         var sb = new System.Text.StringBuilder();
 
@@ -542,7 +545,7 @@ public static class RecompiledArtifactCodeGen
         // comment that sits exactly where the old main began, not on the signature
         // text itself (fragile). The old main body immediately follows the marker, so
         // we replace the whole [marker .. old main closing brace] region at once.
-        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath, externalBios);
+        var (launcherPrologue, standaloneMain) = BuildStandaloneMain(hostBridge, directLaunchHostRelativePath, externalBios, windowedLaunch);
         const string mainMarker = "/* STANDALONE_MAIN_FUNCTION_PLACEHOLDER */";
 
         // Split the launcher prologue into a file-scope header (preprocessor directives
@@ -647,8 +650,154 @@ public static class RecompiledArtifactCodeGen
 
 """;
 
+    /// <summary>
+    /// A windowed (GUI) direct launch (Issue #830): the launcher starts <paramref name="HostBinaryName"/> from the
+    /// <c>runtime/</c> directory with <paramref name="ArgumentRelativePath"/> as its argument, creates it without a console, and
+    /// ties its lifetime to a Job Object with kill-on-close on Windows. Only the Windows launcher supports it.
+    /// </summary>
+    /// <param name="WaitLimitMs">
+    /// The longest the launcher waits for the window host, in milliseconds (Issue #830). Past it, the launcher stops the host and
+    /// reports the limit. It is set above the window's run timeout, so it only ends a host that has stopped responding.
+    /// </param>
+    public sealed record WindowedLaunch(string HostBinaryName, string ArgumentRelativePath, int WaitLimitMs);
+
+    /// <summary>
+    /// Turns the direct-launch prologue into the windowed launcher (Issue #830). Each replacement must find its target, so a
+    /// change to the headless prologue fails here instead of silently producing a console launcher. Headless output never passes
+    /// through this method.
+    /// </summary>
+    private static string WindowedLauncherPatch(string prologue, WindowedLaunch windowed)
+    {
+        // Fail closed (Issue #830): every way the launcher can fail to start the window host shows its reason in a message box and
+        // does not start the game. The launcher is a windowed program, so stderr would not be visible.
+        // The dialog is shown on its own thread, and the launcher waits for it only PSX_LAUNCHER_DIALOG_WAIT_MS (Issue #830, MEDIUM-1): a
+        // dialog that nobody answers does not keep the launcher alive, because the launcher's exit closes the dialog with it.
+        var text = Patch(prologue, "static int run_via_runtime_host(void) {", @"#define PSX_LAUNCHER_DIALOG_WAIT_MS 30000u
+#define PSX_LAUNCHER_STOP_WAIT_MS 5000u
+
+static DWORD WINAPI window_message_thread(LPVOID param) {
+    MessageBoxW(NULL, (const wchar_t*)param, L""PSXRecomp"", MB_OK | MB_ICONERROR);
+    return 0;
+}
+
+/* Callers reach this only after the window host and its guest have stopped (or were never started). */
+static void report_window_message(const wchar_t* message) {
+    HANDLE dialog;
+    OutputDebugStringW(message);
+    dialog = CreateThread(NULL, 0, window_message_thread, (LPVOID)message, 0, NULL);
+    if (dialog) {
+        WaitForSingleObject(dialog, PSX_LAUNCHER_DIALOG_WAIT_MS);
+        CloseHandle(dialog);
+    }
+}
+
+static void report_window_launch_failure(const wchar_t* what, DWORD error) {
+    wchar_t text[512];
+    swprintf(text, 512, L""%ls (Windows error %lu). The game was not started."", what, (unsigned long)error);
+    report_window_message(text);
+}
+
+/* Stops the window host and waits (bounded) until it has ended, so a report never shows while it still runs. */
+static void stop_window_host(HANDLE process) {
+    TerminateProcess(process, 1);
+    WaitForSingleObject(process, PSX_LAUNCHER_STOP_WAIT_MS);
+}
+
+    static int run_via_runtime_host(void) {");
+        text = Patch(text, "\"PSXRecomp.RuntimeHost.exe\"", "\"" + windowed.HostBinaryName + "\"");
+        text = Patch(text, "\"runtime/runtime-host.json\"", "\"" + windowed.ArgumentRelativePath + "\"");
+        text = Patch(text, @"fprintf(stderr, ""error: cannot resolve this executable path (error %lu)\n"", (unsigned long)GetLastError());",
+            @"report_window_launch_failure(L""The launcher could not find its own path"", GetLastError());");
+        text = Patch(text, @"if (!utf8) return MissingRuntimeHostExitCode;",
+            @"if (!utf8) { report_window_launch_failure(L""The launcher ran out of memory"", 0); return MissingRuntimeHostExitCode; }");
+        text = Patch(text, @"fprintf(stderr, ""error: cannot encode runtime host paths (error %lu)\n"", (unsigned long)GetLastError());",
+            @"report_window_launch_failure(L""The launcher could not encode the window host's path"", GetLastError());");
+        text = Patch(text, @"fprintf(stderr, ""error: cannot build command line\n"");",
+            @"report_window_launch_failure(L""The launcher could not build the window host's command line"", 0);");
+        // Fail closed for the job object (Issue #830): when the job cannot be created, configured, or assigned, the game is not started.
+        text = Patch(text, "TRUE, 0, NULL, NULL, &si, &pi", "TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, NULL, &si, &pi");
+        text = Patch(text, "STARTUPINFOW si = { sizeof(si) };", @"HANDLE job = CreateJobObjectW(NULL, NULL);
+        if (!job) {
+            report_window_launch_failure(L""The launcher could not create a job object"", GetLastError());
+            return 1;
+        }
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits;
+        memset(&job_limits, 0, sizeof(job_limits));
+        job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &job_limits, sizeof(job_limits))) {
+            DWORD job_error = GetLastError();
+            CloseHandle(job);
+            report_window_launch_failure(L""The launcher could not set kill-on-close on its job object"", job_error);
+            return 1;
+        }
+        STARTUPINFOW si = { sizeof(si) };");
+        // The job exists from here on, so each failure after it closes it as well. The error is read before any cleanup (LOW-3).
+        text = Patch(text, @"fprintf(stderr, ""error: could not start the runtime host (error %lu)\n"", (unsigned long)GetLastError());",
+            @"{
+            DWORD start_error = GetLastError();
+            CloseHandle(job);
+            report_window_launch_failure(L""The window host could not be started"", start_error);
+        }");
+        // The window host starts suspended, is placed in the job, and only then runs, so no part of it runs outside the job.
+        // The wait below is bounded (Issue #830, MAJOR-1): a host that does not end within the limit is stopped and the reason is shown.
+        // The limit is the window's run timeout plus a margin, so it only ends a host that has stopped responding.
+        text = Patch(text, "WaitForSingleObject(pi.hProcess, INFINITE);", @"if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            DWORD assign_error = GetLastError();
+            stop_window_host(pi.hProcess);
+            CloseHandle(job);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            report_window_launch_failure(L""The window host could not be placed in the job object"", assign_error);
+            return 1;
+        }
+        if (ResumeThread(pi.hThread) == (DWORD)-1) {
+            DWORD resume_error = GetLastError();
+            stop_window_host(pi.hProcess);
+            CloseHandle(job);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            report_window_launch_failure(L""The window host could not be resumed"", resume_error);
+            return 1;
+        }
+        DWORD wait_result = WaitForSingleObject(pi.hProcess, __WAIT_LIMIT_MS__u);
+        if (wait_result != WAIT_OBJECT_0) {
+            DWORD wait_error = (wait_result == WAIT_FAILED) ? GetLastError() : 0;
+            stop_window_host(pi.hProcess);
+            CloseHandle(job);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            if (wait_result == WAIT_TIMEOUT) {
+                report_window_message(L""The window host did not end within its wait limit, so the launcher stopped it."");
+            } else {
+                report_window_launch_failure(L""The launcher could not wait for the window host"", wait_error);
+            }
+            return 1;
+        }
+        // Closing the last handle of the job ends any process still in it, so a child left behind is reaped.
+        CloseHandle(job);");
+        // A window host that ends with an error is reported: the launcher otherwise exits with its code and says nothing.
+        text = Patch(text, "GetExitCodeProcess(pi.hProcess, &exit_code);", @"GetExitCodeProcess(pi.hProcess, &exit_code);
+        if (exit_code != 0) {
+            wchar_t exit_text[128];
+            swprintf(exit_text, 128, L""The window host ended with exit code %lu."", (unsigned long)exit_code);
+            report_window_message(exit_text);
+        }");
+        text = text.Replace("__WAIT_LIMIT_MS__", windowed.WaitLimitMs.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
+        return text;
+    }
+
+    private static string Patch(string text, string target, string replacement)
+    {
+        if (!text.Contains(target, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Windowed launcher patch target not found in the direct-launch prologue: {target}");
+        }
+
+        return text.Replace(target, replacement, StringComparison.Ordinal);
+    }
+
     private static (string? LauncherPrologue, string Main) BuildStandaloneMain(
-        bool hostBridge, string? directLaunchHostRelativePath, bool externalBios)
+        bool hostBridge, string? directLaunchHostRelativePath, bool externalBios, WindowedLaunch? windowedLaunch)
     {
         // Phase 2 (Issue #757): the embedded-image artifact may attach the shared
         // Runtime host bridge when the caller opts in (--host-transfer), so it runs
@@ -829,6 +978,11 @@ int main(int argc, char** argv) {
     }
 "
             : null;
+
+        if (launcherPrologue is not null && windowedLaunch is not null)
+        {
+            launcherPrologue = WindowedLauncherPatch(launcherPrologue, windowedLaunch);
+        }
 
         string delegationCheck = launcherPrologue is not null
             ? @"

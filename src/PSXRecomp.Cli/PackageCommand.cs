@@ -42,11 +42,26 @@ public static class PackageCommand
     /// <summary>Default per-segment guest budget; shared with <see cref="RunCommand"/>.</summary>
     public const uint DefaultSegmentBudget = RunCommand.DefaultSegmentBudget;
 
+    /// <summary>The manifest's run timeout for a headless package, in milliseconds (unchanged).</summary>
+    public const int DefaultRunTimeoutMs = 60_000;
+
+    /// <summary>
+    /// The manifest's run timeout for a <c>--gui</c> package (Issue #830): a window runs until it is closed. The bound is finite, four hours,
+    /// so no run waits forever; closing the window stops the run before the bound is reached.
+    /// </summary>
+    public const int GuiRunTimeoutMs = 4 * 60 * 60 * 1000;
+
+    /// <summary>
+    /// How much longer than the window run the launcher waits for the window host (Issue #830). The window closes 30 seconds after its run
+    /// ends; start-up and close take a few seconds more. Past this bound the launcher stops the host, shows why, and exits non-zero.
+    /// </summary>
+    public const int GuiLauncherWaitMarginMs = 10 * 60 * 1000;
+
     /// <summary>The documented usage line for <c>package</c>.</summary>
     public const string Usage =
         "usage: psxrecomp package <input.exe|input.chd> --output <dir> [--entry-root <0xPC>]... " +
         "[--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] " +
-        "[--fallback-max-transitions <n>] [--self-contained] [--json]\n" +
+        "[--fallback-max-transitions <n>] [--self-contained] [--gui] [--json]\n" +
         "       psxrecomp package <disc.chd|disc.bin> --bios openbios --bios-rom <openbios.bin> --aot-dir <dir> --output <dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-seconds <n>] [--build-timeout-seconds <n>] [--self-contained]";
 
     internal static int Run(
@@ -110,19 +125,39 @@ public static class PackageCommand
             var windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
             var binaryName = artifactName + (windows ? ".exe" : "");
 
+            // Issue #830: --gui packages a game window. Its launcher starts the window with the manifest, and the window runs the
+            // packaged AOT artifact itself (no compiler at run time). It is Windows-only.
+            var gui = arguments.Gui;
+            if (gui && !windows)
+            {
+                return Fail(
+                    "GUI_UNSUPPORTED_PLATFORM",
+                    arguments.EntryRoots,
+                    "--gui packages a Windows game window; it is available on Windows only.");
+            }
+
             var hostRelativePath = RuntimeHostLayout.HostRelativePath;
+            var windowedLaunch = gui
+                ? new RecompiledArtifactCodeGen.WindowedLaunch(
+                    RuntimeHostLayout.GuiHostFileName,
+                    RuntimeHostLayout.ManifestRelativePath,
+                    GuiRunTimeoutMs + GuiLauncherWaitMarginMs)
+                : null;
             var artifactSource = RecompiledArtifactCodeGen.GenerateStandalone(
                 dispatch,
                 initialGpr,
                 initialHi,
                 initialLo,
                 entryPc,
-                segmentBudget,
+                // Issue #830: a window runs until it is closed (or the manifest's run timeout), so a --gui artifact is not given the
+                // headless package's finite budget, which would end a synthetic program partway through its fills.
+                gui ? uint.MaxValue : segmentBudget,
                 initialMemory,
                 imageLoadAddress,
                 ProgramImageBytes(input.InstructionWords),
                 hostBridge: true,
-                directLaunchHostRelativePath: hostRelativePath);
+                directLaunchHostRelativePath: hostRelativePath,
+                windowedLaunch: windowedLaunch);
 
             if (!artifactSource.Success)
             {
@@ -136,7 +171,13 @@ public static class PackageCommand
             // Build the native artifact.
             var buildService = new GeneratedHostBuildService();
             var build = buildService.Build(
-                new GeneratedHostBuildRequest(artifactSource.Source!, outputDir, binaryName));
+                new GeneratedHostBuildRequest(
+                    artifactSource.Source!,
+                    outputDir,
+                    binaryName,
+                    // -static-libgcc: the artifact must run on a machine without the compiler, so the GCC runtime is linked in
+                    // rather than loaded from the toolchain's bin directory (Issue #830).
+                    ExtraLinkerArguments: gui ? new[] { "-mwindows", "-static-libgcc" } : null));
             if (build.Status != GeneratedHostBuildStatus.Succeeded)
             {
                 return Fail(
@@ -156,16 +197,36 @@ public static class PackageCommand
 
             // Provision the shared Runtime host into <outputDir>/runtime/ .
             var runtimeDir = Path.Combine(outputDir, RuntimeHostLayout.RuntimeDirectoryName);
-            try
+            if (gui)
             {
-                RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, arguments.SelfContained);
+                try
+                {
+                    RuntimeHostBuildService.ProvisionGameWindow(runtimeDir, arguments.SelfContained);
+                }
+                catch (RuntimeHostBuildService.RuntimeHostProvisionFailed ex)
+                {
+                    return Fail(
+                        ex.DiagnosticCode ?? "GUI_HOST_PROVISION_FAILED",
+                        arguments.EntryRoots,
+                        ex.Message);
+                }
+
+                CarryCompilerRuntimeLibraries(artifactPath, runtimeDir);
+
             }
-            catch (RuntimeHostBuildService.RuntimeHostProvisionFailed ex)
+            else
             {
-                return Fail(
-                    ex.DiagnosticCode ?? "RUNTIME_HOST_PROVISION_FAILED",
-                    arguments.EntryRoots,
-                    ex.Message);
+                try
+                {
+                    RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, arguments.SelfContained);
+                }
+                catch (RuntimeHostBuildService.RuntimeHostProvisionFailed ex)
+                {
+                    return Fail(
+                        ex.DiagnosticCode ?? "RUNTIME_HOST_PROVISION_FAILED",
+                        arguments.EntryRoots,
+                        ex.Message);
+                }
             }
 
             // Write the program-image sidecar the manifest points to.
@@ -184,7 +245,7 @@ public static class PackageCommand
                 blockEntryPcs,
                 programEnd,
                 (int)R3000aRegister.V0,  // V0
-                60000,                    // 60 second run timeout
+                gui ? GuiRunTimeoutMs : DefaultRunTimeoutMs,
                 entryPc);
 
             var serialized = RuntimeHostManifestJson.Serialize(manifest);
@@ -205,7 +266,14 @@ public static class PackageCommand
             File.WriteAllText(Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName), serialized);
 
             // Write the end-user README.
-            WriteReadme(outputDir, guestFirmware, mixedFallback, binaryName);
+            if (gui)
+            {
+                WriteWindowReadme(outputDir, binaryName);
+            }
+            else
+            {
+                WriteReadme(outputDir, guestFirmware, mixedFallback, binaryName);
+            }
 
             if (arguments.Json)
             {
@@ -282,6 +350,119 @@ public static class PackageCommand
         }
 
         return RecompiledArtifactExitCode.Failure;
+    }
+
+    /// <summary>
+    /// Makes the window package self-contained with respect to the compiler (Issue #830). The game executable must import only Windows
+    /// libraries (it is linked with <c>-static-libgcc</c>), and the window's native module imports GCC runtime libraries: those are copied
+    /// next to the window from the compiler's bin directory. Every non-Windows import must be found, or the package is not written.
+    /// </summary>
+    private static void CarryCompilerRuntimeLibraries(string artifactPath, string runtimeDir)
+    {
+        var gccPath = FindOnPath("gcc.exe")
+            ?? throw new InvalidOperationException("The window package needs the GCC runtime libraries, but gcc.exe was not found on PATH.");
+        var compilerDirectory = Path.GetDirectoryName(gccPath)!;
+
+        var artifactImports = PeImageInfo.ImportedDllNames(File.ReadAllBytes(artifactPath))
+            .Where(name => !PeImageInfo.IsWindowsLibrary(name))
+            .ToArray();
+        if (artifactImports.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"The game executable imports {string.Join(", ", artifactImports)}, which the window package does not carry.");
+        }
+
+        // The closure of the native module's imports: a copied compiler library imports further ones (libstdc++ needs libwinpthread).
+        var nativePath = Path.Combine(runtimeDir, "PSXRecomp.Native.dll");
+        var pending = new Queue<string>(PeImageInfo.ImportedDllNames(File.ReadAllBytes(nativePath)));
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var missing = new List<string>();
+        while (pending.Count > 0)
+        {
+            var name = pending.Dequeue();
+            if (PeImageInfo.IsWindowsLibrary(name) || !visited.Add(name))
+            {
+                continue;
+            }
+
+            var source = Path.Combine(compilerDirectory, name);
+            if (!File.Exists(source))
+            {
+                missing.Add(name);
+                continue;
+            }
+
+            File.Copy(source, Path.Combine(runtimeDir, name), overwrite: true);
+            foreach (var next in PeImageInfo.ImportedDllNames(File.ReadAllBytes(source)))
+            {
+                pending.Enqueue(next);
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"The window's native module needs {string.Join(", ", missing)}, which were not found in {compilerDirectory}.");
+        }
+    }
+
+
+    private static string? FindOnPath(string fileName)
+    {
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(directory, fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The README of a <c>--gui</c> package (Issue #830): the window, its limits, and the job object's behaviour.</summary>
+    private static void WriteWindowReadme(string gameDir, string binaryName)
+    {
+        var readme = new System.Text.StringBuilder();
+        readme.AppendLine("# Game window distribution");
+        readme.AppendLine();
+        readme.AppendLine("This directory contains a PS1 program packaged with <c>psxrecomp package --gui</c>. It runs in a window on " +
+                          "Windows, with no console.");
+        readme.AppendLine();
+        readme.AppendLine("## Launching");
+        readme.AppendLine();
+        readme.AppendLine($"Double-click {binaryName}. The window shows the frames of the program as it runs.");
+        readme.AppendLine();
+        readme.AppendLine("## Ending the program");
+        readme.AppendLine();
+        readme.AppendLine("- Closing the window stops the program and then the window closes.");
+        readme.AppendLine("- When the program ends by itself, its result stays on screen and the window closes after 30 seconds. " +
+                          "Closing it sooner also works.");
+        readme.AppendLine($"- A run is limited to {PackageCommand.GuiRunTimeoutMs / 3_600_000} hours. The launcher also stops the window " +
+                          $"if it has not ended {PackageCommand.GuiLauncherWaitMarginMs / 60_000} minutes after that limit, and reports why.");
+        readme.AppendLine();
+        readme.AppendLine("## Process handling");
+        readme.AppendLine();
+        readme.AppendLine($"{binaryName} starts the window host and keeps it, and the program it runs, in a Windows job object that ends " +
+                          "them when the launcher ends. If the job object cannot be set up, the game does not start and a message " +
+                          "explains why. Running runtime/PSXRecomp.GameWindow.exe directly is not supported: it runs outside the job object.");
+        readme.AppendLine();
+        readme.AppendLine("## Contents");
+        readme.AppendLine();
+        readme.AppendLine($"- {binaryName}: launcher and native ahead-of-time program artifact.");
+        readme.AppendLine("- runtime/PSXRecomp.GameWindow.exe: the window host.");
+        readme.AppendLine("- runtime/runtime-host.json: the run manifest the window reads.");
+        readme.AppendLine("- runtime/artifact-image.bin: the program image sidecar (matches the artifact).");
+        readme.AppendLine("- runtime/PSXRecomp.Native.dll and the GCC runtime libraries it needs (libgcc_s_seh-1.dll, " +
+                          "libstdc++-6.dll and, if listed by the native module, libwinpthread-1.dll): the native video module.");
+        readme.AppendLine("- README.txt: this file.");
+        readme.AppendLine();
+        readme.AppendLine("## Requirements");
+        readme.AppendLine();
+        readme.AppendLine("- Windows. The window host is framework-dependent: it needs the .NET 10 runtime.");
+        readme.AppendLine("- No compiler is needed on the end-user machine.");
+        File.WriteAllText(Path.Combine(gameDir, RuntimeHostLayout.ReadmeFileName), readme.ToString());
     }
 
     private static void WriteReadme(

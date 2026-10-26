@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -21,11 +22,12 @@ namespace PSXRecomp.GameWindow;
 /// </summary>
 public partial class MainWindow : Window
 {
-    /// <summary>The segment budget of the synthetic program run, in dispatch steps.</summary>
-    private const uint SegmentBudget = 20_000_000u;
-
     private readonly LiveFrameSlot _slot = new();
     private readonly DispatcherTimer _poll;
+    /// <summary>The window's clock for the run-end grace period (Issue #830).</summary>
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly RunEndAutoClose _autoClose = new(RunEndAutoClose.DefaultGracePeriod);
+    private DispatcherTimer? _autoCloseTimer;
     private long _lastSequence;
     private int _framesShown;
     private WriteableBitmap? _bitmap;
@@ -46,21 +48,29 @@ public partial class MainWindow : Window
         _poll = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, (_, _) => PollFrame());
         Opened += (_, _) => Start();
         Closing += OnClosing;
-        Closed += (_, _) => _poll.Stop();
+        Closed += (_, _) =>
+        {
+            _poll.Stop();
+            _autoCloseTimer?.Stop();
+        };
     }
 
     private void Start()
     {
-        var outputDirectory = Path.Combine(Path.GetTempPath(), "psxrecomp-gamewindow", Guid.NewGuid().ToString("N"));
+        if (App.ManifestPath is null)
+        {
+            Status.Text = "No packaged game was given. Start the packaged game EXE, or pass its runtime/runtime-host.json.";
+            return;
+        }
+
         try
         {
-            _run = App.GameFilePath is { } gameFile
-                ? LiveGameRunner.RunPsxExeAsync(File.ReadAllBytes(gameFile), Path.GetFileName(gameFile), SegmentBudget, _slot, outputDirectory, _stop.Token)
-                : LiveGameRunner.RunAsync(SyntheticLiveProgram.Words(), SyntheticLiveProgram.EntryPc, SegmentBudget, _slot, outputDirectory, _stop.Token);
+            // The packaged AOT artifact runs in this process's Runtime engine. No compiler runs at this point (Issue #830).
+            _run = PackagedArtifactLiveRunner.RunAsync(App.ManifestPath, _slot, _stop.Token);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or InvalidOperationException)
         {
-            // A missing file or an invalid PS-X EXE is reported in the window, not thrown out of the UI event.
+            // A missing or invalid package is reported in the window, not thrown out of the UI event.
             Status.Text = $"The game could not be opened: {exception.Message}";
             return;
         }
@@ -71,7 +81,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Closing the window requests a stop of the run (Issue #820). The window closes once the run has ended, so the artifact
-    /// process is not left running. The request is sent once; the stop returns on its own, and the UI thread never waits for it.
+    /// process is not left running. The request is sent once. The UI thread waits only for a frame read already in progress, which is bounded
+    /// to one read (a few milliseconds, see FrameReadGate); it never waits for the child process to exit.
     /// </summary>
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
@@ -157,6 +168,23 @@ public partial class MainWindow : Window
             : $"Run ended: {run.Result.State} ({run.Result.DiagnosticCode}). Frames shown: {_framesShown}";
         if (_closeWhenRunEnds)
         {
+            Close();
+            return;
+        }
+
+        // Issue #830: the result stays visible for a grace period, then the window closes by itself, so a finished program
+        // does not leave the window, the window host, or the launcher running. Closing it earlier is always possible.
+        _autoClose.Start(_clock.Elapsed);
+        Status.Text += $" The window closes in {_autoClose.Grace.TotalSeconds:0} s.";
+        _autoCloseTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Normal, (_, _) => CloseWhenDue());
+        _autoCloseTimer.Start();
+    }
+
+    private void CloseWhenDue()
+    {
+        if (_autoClose.IsDue(_clock.Elapsed))
+        {
+            _autoCloseTimer?.Stop();
             Close();
         }
     }

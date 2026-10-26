@@ -15,4 +15,11 @@ public interface ICancellableExecutionEngine
     /// segment returns on its own, classified as <see cref="RecompilerExecutionStatus.Cancelled"/>.
     /// </summary>
     void RequestCancel();
+
+    /// <summary>
+    /// Makes the caller's cancellation token part of the engine's stop decision for the scope of the returned value (review round 12). Once the
+    /// token is cancelled, the engine reads nothing from the run's device memory, even before <see cref="RequestCancel"/> has reached it. The
+    /// orchestrator attaches the token of each run it executes.
+    /// </summary>
+    IDisposable AttachCancellation(CancellationToken cancellationToken);
 }

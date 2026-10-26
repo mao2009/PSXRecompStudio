@@ -99,8 +99,16 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         }
 
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
-        // -s: strip symbols and build-path strings, so the shipped executable carries no developer path (Issue #B2).
-        var link = RunToolchain(compiler, [objectPath, "-s", "-o", binaryPath], _toolchainTimeoutMs);
+        // -s is always passed: strip symbols and build-path strings, so the shipped executable carries no developer path (Issue #B2).
+        var linkArgs = new List<string> { objectPath, "-s" };
+        if (request.ExtraLinkerArguments is { Count: > 0 })
+        {
+            linkArgs.AddRange(request.ExtraLinkerArguments);
+        }
+        linkArgs.Add("-o");
+        linkArgs.Add(binaryPath);
+
+        var link = RunToolchain(compiler, linkArgs, _toolchainTimeoutMs);
         if (link.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");
