@@ -183,6 +183,17 @@ public sealed class DistributionLeakScannerTests
         DistributionLeakScanner.FindAbsolutePath([("game.exe", file)]).Should().NotBeNull("a UTF-16LE path is still a path");
     }
 
+    [Fact]
+    public void ASingleSegmentMsysLookingBytes_InBinaryMetadata_IsNotAPath()
+    {
+        // Compiled assemblies hold "/o/u/" at random, followed by a non-text byte (Issue #B2, regression: the merged build flagged it).
+        // An MSYS path needs two segments after the letter, so this is not a developer path.
+        var bytes = Latin1("/o/u/").Concat(new byte[] { 0xB2 }).ToArray();
+
+        DistributionLeakScanner.FindAbsolutePath([("PSXRecomp.Infrastructure.dll", bytes)]).Should().BeNull(
+            "a single-segment byte sequence in binary metadata is not an absolute path");
+    }
+
     [Theory]
     [InlineData("/c/Users/builder/AppData/Local/Temp")]
     [InlineData("/d/src/PSXRecompStudio/out")]
