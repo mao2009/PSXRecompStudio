@@ -197,9 +197,25 @@ public sealed class DistributionLeakScannerTests
     [Theory]
     [InlineData("/c/Users/builder/AppData/Local/Temp")]
     [InlineData("/d/src/PSXRecompStudio/out")]
+    [InlineData("/d/a/_work/1/s/")]
+    [InlineData("/c/Users/game.exe")]
+    [InlineData("/c/Users/builder")]
+    [InlineData("/c/Users/")]
+    [InlineData("/c/users/builder/x")]
     public void MsysAbsolutePath_IsFlagged(string path)
     {
         DistributionLeakScanner.FindAbsolutePath([("game.exe", Latin1(path))]).Should().NotBeNull(path);
+    }
+
+    [Theory]
+    [InlineData("/o/u/")]
+    [InlineData("/o/u/x")]
+    [InlineData("/d/a/")]
+    [InlineData("/x/tmp")]
+    public void MsysSingleSegment_NotTheUserRoot_IsNotFlagged(string path)
+    {
+        // Two segments are needed unless the segment is the user-home root: a single segment is not evidence (Issue #B2).
+        DistributionLeakScanner.FindAbsolutePath([("PSXRecomp.Infrastructure.dll", Latin1(path + "²"))]).Should().BeNull(path);
     }
 
     [Theory]
