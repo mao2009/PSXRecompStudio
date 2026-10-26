@@ -212,9 +212,12 @@ public sealed class DistributionLeakScannerTests
     [InlineData("/o/u/x")]
     [InlineData("/d/a/")]
     [InlineData("/x/tmp")]
+    [InlineData("/H/N/s/")]
+    [InlineData("/o/u/x/y/")]
     public void MsysSingleSegment_NotTheUserRoot_IsNotFlagged(string path)
     {
-        // Two segments are needed unless the segment is the user-home root: a single segment is not evidence (Issue #B2).
+        // Two segments are needed unless the segment is the user-home root, and one of them has two or more characters: a single
+        // segment, or two single-character segments, is not evidence (Issue #B2). "/H/N/s/" is the string CI flagged in a built DLL.
         DistributionLeakScanner.FindAbsolutePath([("PSXRecomp.Infrastructure.dll", Latin1(path + "²"))]).Should().BeNull(path);
     }
 
