@@ -132,10 +132,9 @@ public sealed class BiosCopyDetectionTests
             "pieces shorter than MinRunWords are not matches; this limit is recorded in the docs and is not a pass condition");
     }
 
-    [Fact]
-    public void ALowEntropyMatch_IsNotEvidence_ButTheSameLengthHighEntropyMatchIs()
+    /// <summary>The deterministic random BIOS of <see cref="Bios"/>, with <paramref name="words"/> planted at <paramref name="offset"/>.</summary>
+    private static OpenBiosFirmware BiosWithPlanted(int offset, IReadOnlyList<uint> words)
     {
-        // The BIOS holds a 16-word run of only two values (a padding-like table). Copying it is a coincidence in ordinary code.
         var bytes = new byte[OpenBiosFirmware.ImageSize];
         var state = 0x5EED5EEDUL;
         for (var i = 0; i < bytes.Length; i++)
@@ -144,20 +143,93 @@ public sealed class BiosCopyDetectionTests
             bytes[i] = (byte)(state >> 56);
         }
 
-        const int at = 3000 * 4;
-        for (var k = 0; k < 16; k++)
+        for (var k = 0; k < words.Count; k++)
         {
-            var value = (k % 2 == 0) ? 0xAAAAAAAAu : 0x55555555u;
-            BitConverter.GetBytes(value).CopyTo(bytes, at + k * 4);
+            BitConverter.GetBytes(words[k]).CopyTo(bytes, (offset + k) * 4);
         }
 
-        var bios = OpenBiosFirmware.FromBytes(bytes);
-        var lowEntropy = Manifest(("exe-file", Fragment(bios, 3000, 16)));
+        return OpenBiosFirmware.FromBytes(bytes);
+    }
 
-        BiosAddressGuard.BiosCopyBytes(lowEntropy.Images.Select(static i => i.Words), bios).Should().Be(0,
-            "two distinct values in 16 words are not evidence of a copy");
-        BiosAddressGuard.BiosCoveredWords(lowEntropy.Images.Select(static i => i.Words), bios, BiosAddressGuard.MinRunWords, 1)
-            .Count.Should().Be(16, "without the distinct-value filter the same match is counted (the filter is what removes it)");
+    /// <summary>
+    /// Low-variety words: a seeded choice among 0x00000000, 0xFFFFFFFF and 0x3C080000. The sequence is not periodic, so a copy
+    /// matches the BIOS only at its own offset; a periodic pattern would also match shifted by its period (an over-count, by design).
+    /// </summary>
+    private static uint[] LowVarietyWords(int count)
+    {
+        var values = new[] { 0x00000000u, 0xFFFFFFFFu, 0x3C080000u };
+        var state = 0x2B1AC0DEUL;
+        var words = new uint[count];
+        for (var k = 0; k < count; k++)
+        {
+            state = unchecked(state * 6364136223846793005UL + 1442695040888963407UL);
+            words[k] = values[(int)((state >> 33) % 3)];
+        }
+
+        return words;
+    }
+
+    [Fact]
+    public void ALowVarietyFragment_IsNotHighVariety_ButIsCountedAsLowVariety()
+    {
+        // Sixteen BIOS words of two or three values (0x00 and 0xFF mostly). They are not a high-variety match, but they are a match:
+        // a copy of mostly 0x00 and 0xFF is not a hole in the rule (owner ruling: BIOS-derived data is refused by its content).
+        var planted = LowVarietyWords(16);
+        var bios = BiosWithPlanted(3000, planted);
+        var fragment = Manifest(("exe-file", Fragment(bios, 3000, 16)));
+
+        BiosAddressGuard.BiosCopyBytes(fragment.Images.Select(static i => i.Words), bios).Should().Be(0,
+            "the high-variety count does not count three-valued matches");
+        BiosAddressGuard.BiosCoveredWords(fragment.Images.Select(static i => i.Words), bios, BiosAddressGuard.MinRunWords,
+                BiosAddressGuard.MinLowVarietyDistinctWords)
+            .Count.Should().Be(16, "the low-variety match is counted");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(fragment, bios))).Should().NotThrow(
+            "64 bytes is under the low-variety threshold; the fragment is counted, not refused on its own");
+    }
+
+    [Fact]
+    public void ALowVarietyCopy_AtTheThreshold_IsAccepted_AndOneWordMoreIsRefused()
+    {
+        // 256 bytes is 64 words: at the low-variety threshold. 65 words (260 bytes) is over it.
+        var planted = LowVarietyWords(80);
+        var bios = BiosWithPlanted(3000, planted);
+        var sixtyFour = Manifest(("exe-file", Fragment(bios, 3000, 64)));
+        var sixtyFive = Manifest(("exe-file", Fragment(bios, 3000, 65)));
+
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFour, bios))).Should().NotThrow("256 bytes is at the threshold");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFive, bios)))
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 260 bytes of low-variety BIOS code*");
+    }
+
+    [Fact]
+    public void ALowVarietyCopy_SplitByNonBiosWords_IsCountedTogether()
+    {
+        // Five pieces of 14 low-variety words, each separated by a non-BIOS word: 70 words, 280 bytes, over the low-variety threshold.
+        var planted = LowVarietyWords(80);
+        var bios = BiosWithPlanted(3000, planted);
+        var words = new List<uint>();
+        for (var k = 0; k < 5; k++)
+        {
+            words.AddRange(Fragment(bios, 3000 + k * 14, 14));
+            words.Add(Separator);
+        }
+
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", words.ToArray())), bios)))
+            .Should().Throw<InvalidDataException>().WithMessage("*together hold 280 bytes of low-variety BIOS code*");
+    }
+
+    [Fact]
+    public void AUniformRun_IsNotCounted_ThisIsTheLimit()
+    {
+        // Limit (documented): sixty-four words of one repeated value (0x00 here) carry no identity, so they are not a match and are
+        // not counted, whatever the copy. Ordinary binaries hold such runs; they are not evidence of a BIOS origin.
+        var bios = BiosWithPlanted(6000, Enumerable.Repeat(0u, 64).ToArray());
+        var zeros = Manifest(("exe-file", Fragment(bios, 6000, 64)));
+
+        BiosAddressGuard.BiosCopyBytes(zeros.Images.Select(static i => i.Words), bios).Should().Be(0,
+            "a run of one repeated word is not a match; this limit is recorded in the docs and is not a pass condition");
+        BiosAddressGuard.BiosCoveredWords(zeros.Images.Select(static i => i.Words), bios, BiosAddressGuard.MinRunWords, 1)
+            .Count.Should().Be(0, "a uniform run is never indexed, whatever the variety threshold");
     }
 
     [Fact]

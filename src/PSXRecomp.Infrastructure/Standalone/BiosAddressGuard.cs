@@ -130,13 +130,24 @@ public static class BiosAddressGuard
 
         }
 
-        // Cumulative (Issue #B2, owner ruling): the BIOS coverage of all AOT inputs together, each BIOS word counted once.
+        // Cumulative (Issue #B2, owner ruling): the BIOS coverage of all AOT inputs together, each BIOS word counted once. A copy of
+        // high-variety BIOS code is refused at CopyThresholdBytes; a copy of low-variety code (two or three distinct values, such as
+        // mostly 0x00 and 0xFF) is refused at LowVarietyThresholdBytes, so it is not a hole in the rule.
         var inputs = manifest.Images.Select(static image => image.Words).ToArray();
-        var copiedBytes = BiosCopyBytes(inputs, firmware);
-        if (copiedBytes > CopyThresholdBytes)
+        var (varied, any) = CoveredByVariety(inputs, firmware);
+        var variedBytes = varied.Count * 4;
+        if (variedBytes > CopyThresholdBytes)
         {
             throw new InvalidDataException(
-                $"the AOT inputs together hold {copiedBytes} bytes of BIOS code (threshold {CopyThresholdBytes} bytes); " +
+                $"the AOT inputs together hold {variedBytes} bytes of BIOS code (threshold {CopyThresholdBytes} bytes); " +
+                "BIOS-derived code is never translated (Issue #B2).");
+        }
+
+        var anyBytes = any.Count * 4;
+        if (anyBytes > LowVarietyThresholdBytes)
+        {
+            throw new InvalidDataException(
+                $"the AOT inputs together hold {anyBytes} bytes of low-variety BIOS code (threshold {LowVarietyThresholdBytes} bytes); " +
                 "BIOS-derived code is never translated (Issue #B2).");
         }
     }
@@ -158,6 +169,18 @@ public static class BiosAddressGuard
     public const int MinDistinctWords = 4;
 
     /// <summary>
+    /// The fewest distinct values of a low-variety match (Issue #B2). A match of two or three values is still a match: it is
+    /// counted against <see cref="LowVarietyThresholdBytes"/>, so that a BIOS fragment of mostly 0x00 and 0xFF is not a hole.
+    /// </summary>
+    public const int MinLowVarietyDistinctWords = 2;
+
+    /// <summary>
+    /// The cumulative threshold for all matches (high and low variety), in bytes (Issue #B2). It is set from the measured
+    /// coincidence of ordinary inputs at this filter (docs), and is not below <see cref="CopyThresholdBytes"/>.
+    /// </summary>
+    public const int LowVarietyThresholdBytes = 256;
+
+    /// <summary>
     /// The cumulative threshold: the BIOS code the AOT inputs hold, all together, may not exceed this many bytes (Issue #B2).
     /// 96 bytes is 24 words, three matches of the minimum length: one coincidental match cannot refuse a packaging, and a copy of
     /// 25 words or more (100 bytes), in matches of at least <see cref="MinRunWords"/> words, is refused. The measured coincidence
@@ -168,17 +191,34 @@ public static class BiosAddressGuard
     /// <summary>
     /// The BIOS word offsets covered by matches of at least <paramref name="minRunWords"/> words, holding at least
     /// <paramref name="minDistinctWords"/> distinct values, that the candidate images hold. A BIOS word covered by several matches,
-    /// in one image or in several, is counted once: the measure is a union, not a sum. Uniform 4-word windows (padding) are never
-    /// indexed. Defaults are the production values; the measurement varies them to reproduce its table.
+    /// in one image or in several, is counted once: the measure is a union, not a sum. A run of one repeated word is never a match
+    /// (its 4-word windows are never indexed): such a copy carries no identity that could show its origin.
+    /// Defaults are the production values; the measurement varies them to reproduce its table.
     /// </summary>
     public static IReadOnlySet<int> BiosCoveredWords(
         IEnumerable<IReadOnlyList<uint>> images,
         OpenBiosFirmware firmware,
         int minRunWords = MinRunWords,
-        int minDistinctWords = MinDistinctWords)
+        int minDistinctWords = MinDistinctWords) =>
+        Scan(images, firmware, minRunWords, [minDistinctWords])[0];
+
+    /// <summary>
+    /// The BIOS word offsets covered by high-variety matches (at least <see cref="MinDistinctWords"/> distinct values) and by all
+    /// matches (at least <see cref="MinLowVarietyDistinctWords"/> distinct values), in one pass over the inputs.
+    /// </summary>
+    internal static (HashSet<int> Varied, HashSet<int> Any) CoveredByVariety(IEnumerable<IReadOnlyList<uint>> images, OpenBiosFirmware firmware)
+    {
+        var sets = Scan(images, firmware, MinRunWords, [MinDistinctWords, MinLowVarietyDistinctWords]);
+        return (sets[0], sets[1]);
+    }
+
+    /// <summary>
+    /// One pass that finds each match once. A match on a diagonal (BIOS offset minus image offset) that already covers the current
+    /// image offset is skipped: it is the same maximal run, and a suffix of a run holds no more distinct values than the run.
+    /// </summary>
+    private static HashSet<int>[] Scan(IEnumerable<IReadOnlyList<uint>> images, OpenBiosFirmware firmware, int minRunWords, int[] minDistinct)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(minRunWords, KeyWords);
-        ArgumentOutOfRangeException.ThrowIfLessThan(minDistinctWords, 1);
         ArgumentNullException.ThrowIfNull(images);
         ArgumentNullException.ThrowIfNull(firmware);
         var bios = firmware.Words;
@@ -197,9 +237,11 @@ public static class BiosAddressGuard
             }
         }
 
-        var covered = new HashSet<int>();
+        var covered = minDistinct.Select(static _ => new HashSet<int>()).ToArray();
+        var diagonalEnd = new Dictionary<long, int>();
         foreach (var image in images)
         {
+            diagonalEnd.Clear();
             for (var i = 0; i + KeyWords <= image.Count; i++)
             {
                 if (IsUniformKey(image, i) || !index.TryGetValue(Key(image, i), out var starts))
@@ -209,17 +251,33 @@ public static class BiosAddressGuard
 
                 foreach (var j in starts)
                 {
+                    var diagonal = (long)j - i;
+                    if (diagonalEnd.TryGetValue(diagonal, out var end) && end > i)
+                    {
+                        continue;
+                    }
+
                     var run = 0;
                     while (i + run < image.Count && j + run < bios.Count && image[i + run] == bios[j + run])
                     {
                         run++;
                     }
 
-                    if (run >= minRunWords && DistinctCount(image, i, run) >= minDistinctWords)
+                    diagonalEnd[diagonal] = i + run;
+                    if (run < minRunWords)
                     {
-                        for (var k = 0; k < run; k++)
+                        continue;
+                    }
+
+                    var distinct = DistinctCount(image, i, run);
+                    for (var k = 0; k < minDistinct.Length; k++)
+                    {
+                        if (distinct >= minDistinct[k])
                         {
-                            covered.Add(j + k);
+                            for (var w = 0; w < run; w++)
+                            {
+                                covered[k].Add(j + w);
+                            }
                         }
                     }
                 }

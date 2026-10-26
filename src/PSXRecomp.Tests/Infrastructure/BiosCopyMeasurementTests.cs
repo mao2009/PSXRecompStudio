@@ -9,7 +9,8 @@ namespace PSXRecomp.Tests.Infrastructure;
 
 /// <summary>
 /// Issue #B2: the measurement the copy rule (<see cref="BiosAddressGuard.MinRunWords"/>, <see cref="BiosAddressGuard.MinDistinctWords"/>,
-/// <see cref="BiosAddressGuard.CopyThresholdBytes"/>) was chosen from. It is skipped unless its inputs are given:
+/// <see cref="BiosAddressGuard.CopyThresholdBytes"/>, <see cref="BiosAddressGuard.LowVarietyThresholdBytes"/>) was chosen from. It is
+/// skipped unless its inputs are given:
 /// <list type="bullet">
 /// <item><c>PSXRECOMP_OPENBIOS_ROM</c>: the BIOS, read in place.</item>
 /// <item><c>PSXRECOMP_MEASURE_DIR</c>: a directory of non-BIOS binaries (the first 400 by name are measured). The label of its lines
@@ -18,7 +19,8 @@ namespace PSXRecomp.Tests.Infrastructure;
 /// </list>
 /// It prints lines that start with <c>b2-measure</c>, and the docs record them. It measures (1) the coincidence of ordinary inputs,
 /// singly (continuous) and in groups whose BIOS coverage is united (cumulative), for several (minimum run, minimum distinct) schemes;
-/// and (2) the detection of BIOS copies of several lengths, split into several pieces with non-BIOS words between them.
+/// (2) the detection of BIOS copies of several lengths, split into several pieces with non-BIOS words between them, for high-variety
+/// and low-variety fragments.
 /// </summary>
 [Test]
 public sealed class BiosCopyMeasurementTests
@@ -27,22 +29,12 @@ public sealed class BiosCopyMeasurementTests
     private const int GroupsPerSize = 200;
     private const int Trials = 40;
     private const int HostWords = 8;
-    private static readonly (int MinRun, int MinDistinct)[] Schemes = [(4, 1), (8, 1), (16, 1), (4, 4), (8, 4), (16, 4)];
-    private static readonly int[] GroupSizes = [2, 4, 8];
+
+    /// <summary>(minimum run words, minimum distinct values): the low-variety schemes count matches of two or more values.</summary>
+    private static readonly (int MinRun, int MinDistinct)[] Schemes = [(4, 2), (8, 2), (16, 2), (4, 4), (8, 4), (16, 4)];
+    private static readonly int[] GroupSizes = [2, 4, 8, 16, 32];
     private static readonly int[] DetectionWords = [8, 16, 24, 31, 32, 64];
     private static readonly int[] DetectionPieces = [1, 2, 4];
-
-    /// <summary>A seeded linear congruential generator: the sampling is reproducible from its seed.</summary>
-    private sealed class Lcg(ulong seed)
-    {
-        private ulong _state = seed;
-
-        public int Next(int exclusiveMax)
-        {
-            _state = unchecked(_state * 6364136223846793005UL + 1442695040888963407UL);
-            return (int)((_state >> 33) % (ulong)exclusiveMax);
-        }
-    }
 
     [SkippableFact]
     public void CopyRule_IsMeasured_OnNormalInputsAndOnInsertedBiosCopies()
@@ -55,7 +47,6 @@ public sealed class BiosCopyMeasurementTests
         Skip.If(string.IsNullOrWhiteSpace(biosPath) || string.IsNullOrWhiteSpace(dir),
             "measurement skipped: set PSXRECOMP_OPENBIOS_ROM and PSXRECOMP_MEASURE_DIR");
 
-#pragma warning disable AARC003 // Test-layer measurement of the BIOS and the corpus
         var (_, _) = OpenBiosRomInput.Read(biosPath!);
         var bios = OpenBiosFirmware.FromBytes(File.ReadAllBytes(biosPath!));
         var x86 = Directory.EnumerateFiles(dir!, "*", SearchOption.TopDirectoryOnly)
@@ -66,8 +57,9 @@ public sealed class BiosCopyMeasurementTests
 #pragma warning restore AARC003
 
         MeasureCorpus(string.IsNullOrWhiteSpace(label) ? "x86" : label, x86, bios, assertNoFalsePositive: true);
-        Emit($"b2-measure production scheme minRun={BiosAddressGuard.MinRunWords} minDistinct={BiosAddressGuard.MinDistinctWords} " +
-                          $"T={BiosAddressGuard.CopyThresholdBytes}");
+        Emit($"b2-measure production thresholds: high-variety T={BiosAddressGuard.CopyThresholdBytes} " +
+             $"(minRun={BiosAddressGuard.MinRunWords}, minDistinct={BiosAddressGuard.MinDistinctWords}); " +
+             $"low-variety T={BiosAddressGuard.LowVarietyThresholdBytes} (minRun={BiosAddressGuard.MinRunWords}, minDistinct={BiosAddressGuard.MinLowVarietyDistinctWords})");
 
         if (string.IsNullOrWhiteSpace(mipsDir))
         {
@@ -82,13 +74,17 @@ public sealed class BiosCopyMeasurementTests
             MeasureCorpus("mips", mips, bios, assertNoFalsePositive: false);
         }
 
-        x86.Should().NotBeEmpty("the x86 corpus must hold binaries");
         MeasureDetection(bios, x86);
+        x86.Should().NotBeEmpty("the x86 corpus must hold binaries");
     }
+
+    /// <summary>The threshold a scheme is judged against: high-variety schemes against the high threshold, the others the low one.</summary>
+    private static int ThresholdFor(int minDistinct) =>
+        minDistinct >= BiosAddressGuard.MinDistinctWords ? BiosAddressGuard.CopyThresholdBytes : BiosAddressGuard.LowVarietyThresholdBytes;
 
     /// <summary>
     /// Per scheme: the BIOS bytes each input covers, singly (continuous) and united over random groups (cumulative). The production
-    /// scheme must not refuse an ordinary input or group; the assertion says so when the corpus is the x86 one.
+    /// schemes must not refuse an ordinary input or group; the assertion says so when <paramref name="assertNoFalsePositive"/> is set.
     /// </summary>
     private static void MeasureCorpus(string name, string[] files, OpenBiosFirmware bios, bool assertNoFalsePositive)
     {
@@ -104,15 +100,15 @@ public sealed class BiosCopyMeasurementTests
             }
         }
 
-        var threshold = BiosAddressGuard.CopyThresholdBytes;
         foreach (var scheme in Schemes)
         {
+            var threshold = ThresholdFor(scheme.MinDistinct);
             var sets = perScheme[scheme];
             var bytes = sets.Select(static s => s.Count * 4).OrderBy(static b => b).ToArray();
             var overSingle = bytes.Count(b => b > threshold);
-            Emit($"b2-measure singles corpus={name} minRun={scheme.MinRun} minDistinct={scheme.MinDistinct} files={bytes.Length} " +
-                              $"p50={bytes[bytes.Length / 2]} p90={bytes[(int)(bytes.Length * 0.9)]} max={bytes[^1]} " +
-                              $"anyMatch={bytes.Count(static b => b > 0)} overThreshold={overSingle}");
+            Emit($"b2-measure singles corpus={name} minRun={scheme.MinRun} minDistinct={scheme.MinDistinct} T={threshold} files={bytes.Length} " +
+                 $"p50={bytes[bytes.Length / 2]} p90={bytes[(int)(bytes.Length * 0.9)]} max={bytes[^1]} " +
+                 $"anyMatch={bytes.Count(static b => b > 0)} overThreshold={overSingle}");
 
             var overGroups = new List<int>();
             foreach (var size in GroupSizes)
@@ -144,21 +140,22 @@ public sealed class BiosCopyMeasurementTests
                 }
 
                 overGroups.Add(over);
-                Emit($"b2-measure groups corpus={name} minRun={scheme.MinRun} minDistinct={scheme.MinDistinct} k={size} " +
-                                  $"groups={GroupsPerSize} overThreshold={over} maxBytes={maxUnion}");
+                Emit($"b2-measure groups corpus={name} minRun={scheme.MinRun} minDistinct={scheme.MinDistinct} T={threshold} k={size} " +
+                     $"groups={GroupsPerSize} overThreshold={over} maxBytes={maxUnion}");
             }
 
             if (assertNoFalsePositive && scheme == (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinDistinctWords))
             {
-                overSingle.Should().Be(0, "no ordinary x86 binary may be refused by the production rule");
-                overGroups.Should().OnlyContain(static over => over == 0, "no ordinary group of inputs may be refused by the production rule");
+                overSingle.Should().Be(0, "no ordinary x86 binary may be refused by the production high-variety rule");
+                overGroups.Should().OnlyContain(static over => over == 0, "no ordinary group may be refused by the production high-variety rule");
             }
         }
     }
 
     /// <summary>
     /// BIOS copies of <see cref="DetectionWords"/> words, split into <see cref="DetectionPieces"/> pieces, each piece separated by
-    /// non-BIOS words of a corpus binary. The BIOS offsets are seeded; the rate of refused copies is printed per length and split.
+    /// non-BIOS words of a corpus binary. The BIOS offsets are seeded and drawn from code (padding is excluded by design). Low-variety
+    /// fragments (two or three distinct values, no uniform window) are measured separately, where the BIOS holds any.
     /// </summary>
     private static void MeasureDetection(OpenBiosFirmware bios, string[] hostFiles)
     {
@@ -169,70 +166,118 @@ public sealed class BiosCopyMeasurementTests
 #pragma warning restore AARC003
             return words.Take(16384).ToArray();
         }).Where(static h => h.Length > HostWords * 2).ToArray();
-        var threshold = BiosAddressGuard.CopyThresholdBytes;
-        var schemes = new[] { (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinDistinctWords), (4, 4), (16, 1) };
+        var schemes = new[] { (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinDistinctWords), (4, 4), (8, 2) };
 
         foreach (var words in DetectionWords)
         {
+            var lowOffsets = LowVarietyOffsets(bios.Words, words);
             foreach (var pieces in DetectionPieces)
             {
                 foreach (var scheme in schemes)
                 {
                     var random = new Lcg(20261024UL + (ulong)(words * 10 + pieces));
-                    var refused = 0;
-                    var minCovered = int.MaxValue;
-                    for (var t = 0; t < Trials; t++)
-                    {
-                        var offset = random.Next(bios.Words.Count - words);
-                        while (IsPadded(bios.Words, offset, words))
-                        {
-                            offset = random.Next(bios.Words.Count - words);
-                        }
-
-                        var host = hosts[random.Next(hosts.Length)];
-                        var start = random.Next(host.Length - HostWords);
-                        var image = new List<uint>();
-                        var position = 0;
-                        for (var piece = 0; piece < pieces; piece++)
-                        {
-                            var length = words / pieces + (piece < words % pieces ? 1 : 0);
-                            image.AddRange(bios.Words.Skip(offset + position).Take(length));
-                            position += length;
-                            if (piece < pieces - 1)
-                            {
-                                image.AddRange(host.Skip(start).Take(HostWords));
-                            }
-                        }
-
-                        var covered = BiosAddressGuard.BiosCoveredWords([image.ToArray()], bios, scheme.Item1, scheme.Item2).Count * 4;
-                        if (covered > threshold)
-                        {
-                            refused++;
-                        }
-
-                        minCovered = Math.Min(minCovered, covered);
-                    }
-
+                    var refused = RunDetection(bios, hosts, random, words, pieces, scheme, () => CodeOffset(bios, words, random), out var minCovered);
                     Emit($"b2-measure detect copyBytes={words * 4} pieces={pieces} minRun={scheme.Item1} minDistinct={scheme.Item2} " +
-                                      $"T={threshold} refused={refused}/{Trials} minCoveredBytes={minCovered}");
+                         $"T={ThresholdFor(scheme.Item2)} refused={refused}/{Trials} minCoveredBytes={minCovered}");
+                }
+
+                if (lowOffsets.Length == 0)
+                {
+                    Emit($"b2-measure detect-low copyBytes={words * 4} pieces={pieces} candidates=0 (the BIOS holds no such fragment)");
+                    continue;
+                }
+
+                foreach (var scheme in schemes.Where(static s => s.Item2 <= 2))
+                {
+                    var random = new Lcg(20261025UL + (ulong)(words * 10 + pieces));
+                    var refused = RunDetection(bios, hosts, random, words, pieces, scheme, () => lowOffsets[random.Next(lowOffsets.Length)], out var minCovered);
+                    Emit($"b2-measure detect-low copyBytes={words * 4} pieces={pieces} minRun={scheme.Item1} minDistinct={scheme.Item2} " +
+                         $"T={ThresholdFor(scheme.Item2)} candidates={lowOffsets.Length} refused={refused}/{Trials} minCoveredBytes={minCovered}");
                 }
             }
         }
     }
 
-    /// <summary>The measurement's output: one line per result, starting with <c>b2-measure</c>.</summary>
-    private static void Emit(string line)
+    private static int RunDetection(
+        OpenBiosFirmware bios,
+        uint[][] hosts,
+        Lcg random,
+        int words,
+        int pieces,
+        (int Item1, int Item2) scheme,
+        Func<int> nextOffset,
+        out int minCovered)
     {
-#pragma warning disable AARC003 // Test-layer measurement: its output is the record of the measurement
-        Console.WriteLine(line);
-#pragma warning restore AARC003
+        var refused = 0;
+        minCovered = int.MaxValue;
+        for (var t = 0; t < Trials; t++)
+        {
+            var offset = nextOffset();
+            var host = hosts[random.Next(hosts.Length)];
+            var start = random.Next(host.Length - HostWords);
+            var image = new List<uint>();
+            var position = 0;
+            for (var piece = 0; piece < pieces; piece++)
+            {
+                var length = words / pieces + (piece < words % pieces ? 1 : 0);
+                image.AddRange(bios.Words.Skip(offset + position).Take(length));
+                position += length;
+                if (piece < pieces - 1)
+                {
+                    image.AddRange(host.Skip(start).Take(HostWords));
+                }
+            }
+
+            var covered = BiosAddressGuard.BiosCoveredWords([image.ToArray()], bios, scheme.Item1, scheme.Item2).Count * 4;
+            if (covered > ThresholdFor(scheme.Item2))
+            {
+                refused++;
+            }
+
+            minCovered = Math.Min(minCovered, covered);
+        }
+
+        return refused;
+    }
+
+    /// <summary>A seeded BIOS offset for a code fragment: padding (a uniform window) is redrawn, because it is never evidence by design.</summary>
+    private static int CodeOffset(OpenBiosFirmware bios, int count, Lcg random)
+    {
+        var offset = random.Next(bios.Words.Count - count);
+        while (HasUniformWindow(bios.Words, offset, count))
+        {
+            offset = random.Next(bios.Words.Count - count);
+        }
+
+        return offset;
     }
 
     /// <summary>
-    /// True when the BIOS fragment holds a uniform 4-word window (padding). Padding is never evidence by design, so the detection
-    /// trials draw code fragments only; the padded draws would measure the padding, not the rule.
+    /// The BIOS offsets of windows of <paramref name="count"/> words that hold two or three distinct values and no uniform 4-word window:
+    /// the low-variety fragments the rule counts at its low threshold.
     /// </summary>
-    private static bool IsPadded(IReadOnlyList<uint> bios, int start, int count)
+    private static int[] LowVarietyOffsets(IReadOnlyList<uint> bios, int count)
+    {
+        var offsets = new List<int>();
+        for (var start = 0; start + count <= bios.Count; start++)
+        {
+            var distinct = new HashSet<uint>();
+            for (var k = 0; k < count; k++)
+            {
+                distinct.Add(bios[start + k]);
+            }
+
+            if (distinct.Count is >= 2 and <= 3 && !HasUniformWindow(bios, start, count))
+            {
+                offsets.Add(start);
+            }
+        }
+
+        return offsets.ToArray();
+    }
+
+    /// <summary>True when the BIOS fragment holds a uniform 4-word window (padding). Padding is never evidence by design.</summary>
+    private static bool HasUniformWindow(IReadOnlyList<uint> bios, int start, int count)
     {
         for (var k = start; k + BiosAddressGuard.KeyWords <= start + count; k++)
         {
@@ -243,6 +288,26 @@ public sealed class BiosCopyMeasurementTests
         }
 
         return false;
+    }
+
+    /// <summary>A seeded linear congruential generator: the sampling is reproducible from its seed.</summary>
+    private sealed class Lcg(ulong seed)
+    {
+        private ulong _state = seed;
+
+        public int Next(int exclusiveMax)
+        {
+            _state = unchecked(_state * 6364136223846793005UL + 1442695040888963407UL);
+            return (int)((_state >> 33) % (ulong)exclusiveMax);
+        }
+    }
+
+    /// <summary>The measurement's output: one line per result, starting with <c>b2-measure</c>.</summary>
+    private static void Emit(string line)
+    {
+#pragma warning disable AARC003 // Test-layer measurement: its output is the record of the measurement
+        Console.WriteLine(line);
+#pragma warning restore AARC003
     }
 
     private static uint[] ToWords(byte[] bytes)
