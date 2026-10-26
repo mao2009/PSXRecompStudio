@@ -53,6 +53,16 @@ public static class BiosGuardWiring
     }
 }
 
+/// <summary>The content diagnostic of the AOT inputs of one packaging (Issue #B2): a report, never a refusal.</summary>
+[Infrastructure]
+public sealed record BiosContentDiagnostic(
+    int HighVarietyBytes,
+    int AllMatchBytes,
+    bool ExceedsHighVarietyReference,
+    bool ExceedsAllMatchReference,
+    string Provenance,
+    string Message);
+
 /// <summary>
 /// The BIOS is never an input of ahead-of-time code generation (owner ruling, Issue #B2, option 3). This guard is the
 /// generation-stage enforcement: it refuses any program, loaded image, block or generated source that would translate
@@ -100,9 +110,12 @@ public static class BiosAddressGuard
         new HashSet<string>(StringComparer.Ordinal) { "boot-exe", "disc-exe", "exe-file" };
 
     /// <summary>
-    /// The manifest stage (Issue #B2, MEDIUM-3): an AOT input must come from an allowed source kind, a <c>rom</c> image (BIOS bytes
-    /// copied to RAM to be translated) is refused, an image overlapping the BIOS range is refused, and the AOT inputs of one
-    /// packaging together may not hold more BIOS code than <see cref="CopyThresholdBytes"/> (see <see cref="BiosCoveredWords"/>).
+    /// The manifest stage (Issue #B2, owner ruling option 1): refuses only what is confirmed to be BIOS data. Confirmation is by the
+    /// source, never by content matching: an input of kind <c>rom</c> (BIOS bytes copied to RAM) is refused; an input whose load range
+    /// overlaps the BIOS is refused; an input that is the complete BIOS image, byte for byte, is refused; an input from a source kind
+    /// other than <see cref="AllowedAotSourceKinds"/> is refused. Partial content matches are not refusals: they are diagnostics
+    /// (<see cref="DiagnoseContent"/>), because a match of BIOS bytes does not show that the input came from the BIOS.
+    /// The declared provenance (<c>--bios-provenance</c>) is never a ground for a refusal.
     /// </summary>
     public static void RequireNoBiosImage(LoadImageManifest manifest, OpenBiosFirmware firmware)
     {
@@ -128,28 +141,45 @@ public static class BiosAddressGuard
                 throw new InvalidDataException($"image '{image.Name}' loads into the BIOS range; no code there is translated (Issue #B2).");
             }
 
+            if (IsWholeBiosImage(image.Words, firmware))
+            {
+                throw new InvalidDataException(
+                    $"image '{image.Name}' is the complete BIOS image, byte for byte; BIOS data is never ahead-of-time translated (Issue #B2).");
+            }
         }
+    }
 
-        // Cumulative (Issue #B2, owner ruling): the BIOS coverage of all AOT inputs together, each BIOS word counted once. A copy of
-        // high-variety BIOS code is refused at CopyThresholdBytes; a copy of low-variety code (two or three distinct values, such as
-        // mostly 0x00 and 0xFF) is refused at LowVarietyThresholdBytes, so it is not a hole in the rule.
+    /// <summary>True when the words are exactly the BIOS image: the one content that confirms its origin without a threshold.</summary>
+    public static bool IsWholeBiosImage(IReadOnlyList<uint> words, OpenBiosFirmware firmware)
+    {
+        ArgumentNullException.ThrowIfNull(words);
+        ArgumentNullException.ThrowIfNull(firmware);
+        return words.Count == firmware.Words.Count && words.SequenceEqual(firmware.Words);
+    }
+
+    /// <summary>
+    /// The content diagnostic (Issue #B2, option 1): the BIOS coverage of the AOT inputs together, reported and never refused. The
+    /// provenance of every input is unknown here, so the diagnostic says so: content matching cannot show where the bytes came from.
+    /// </summary>
+    public static BiosContentDiagnostic DiagnoseContent(LoadImageManifest manifest, OpenBiosFirmware firmware)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(firmware);
         var inputs = manifest.Images.Select(static image => image.Words).ToArray();
         var (varied, any) = CoveredByVariety(inputs, firmware);
         var variedBytes = varied.Count * 4;
-        if (variedBytes > CopyThresholdBytes)
-        {
-            throw new InvalidDataException(
-                $"the AOT inputs together hold {variedBytes} bytes of BIOS code (threshold {CopyThresholdBytes} bytes); " +
-                "BIOS-derived code is never translated (Issue #B2).");
-        }
-
         var anyBytes = any.Count * 4;
-        if (anyBytes > LowVarietyThresholdBytes)
-        {
-            throw new InvalidDataException(
-                $"the AOT inputs together hold {anyBytes} bytes of low-variety BIOS code (threshold {LowVarietyThresholdBytes} bytes); " +
-                "BIOS-derived code is never translated (Issue #B2).");
-        }
+        var message =
+            $"BIOS content diagnostic: {variedBytes} bytes of high-variety BIOS matches (reference {CopyThresholdBytes}), " +
+            $"{anyBytes} bytes of all BIOS matches (reference {LowVarietyThresholdBytes}). " +
+            "The provenance of these inputs is unknown (出所不明). Content matching is a diagnostic: it does not refuse, and a match does not show a BIOS origin.";
+        return new BiosContentDiagnostic(
+            variedBytes,
+            anyBytes,
+            variedBytes > CopyThresholdBytes,
+            anyBytes > LowVarietyThresholdBytes,
+            "unknown",
+            message);
     }
 
     /// <summary>The words a match is indexed by: a match is found by its first <see cref="KeyWords"/> words.</summary>

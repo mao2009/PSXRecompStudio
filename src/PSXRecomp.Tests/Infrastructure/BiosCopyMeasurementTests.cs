@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
@@ -73,7 +74,7 @@ public sealed class BiosCopyMeasurementTests
             var mips = Directory.EnumerateFiles(mipsDir, "*", SearchOption.TopDirectoryOnly).OrderBy(static f => Path.GetFileName(f), StringComparer.Ordinal)
                 .Take(FileLimit).ToArray();
 #pragma warning restore AARC003
-            MeasureCorpus("mips", mips, bios, assertNoFalsePositive: false);
+            MeasureCorpus("mips", mips, bios, assertNoFalsePositive: true);
         }
 
         MeasureDetection(bios, x86);
@@ -90,7 +91,7 @@ public sealed class BiosCopyMeasurementTests
             var psx = ExtractPsxExecutables(chdPath!, temp.FullPath);
             Emit($"b2-measure corpus=disc-mips psx-executables={psx.Length} bytes={psx.Sum(static f => new FileInfo(f).Length)}");
             psx.Should().NotBeEmpty("the disc must hold PS-X executables");
-            MeasureCorpus("disc-mips", psx, bios, assertNoFalsePositive: false);
+            MeasureCorpus("disc-mips", psx, bios, assertNoFalsePositive: true);
             MeasureDetection(bios, psx);
             MeasureBoundaries(bios, psx);
         }
@@ -112,6 +113,14 @@ public sealed class BiosCopyMeasurementTests
 #pragma warning disable AARC003 // Test-layer measurement of one corpus file
             var words = ToWords(File.ReadAllBytes(file));
 #pragma warning restore AARC003
+            if (assertNoFalsePositive)
+            {
+                // The provenance rule (Issue #B2, option 1) never refuses by content: an ordinary input must pass the manifest stage.
+                var manifest = new LoadImageManifest([new LoadedImageSpec(Path.GetFileName(file), 0x80010000u, words, [], "exe-file")], new HashSet<uint>());
+                ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow(
+                    $"the ordinary {name} input {Path.GetFileName(file)} must not be refused");
+            }
+
             foreach (var scheme in Schemes)
             {
                 perScheme[scheme].Add(new HashSet<int>(BiosAddressGuard.BiosCoveredWords([words], bios, scheme.MinRun, scheme.MinDistinct)));
@@ -169,23 +178,9 @@ public sealed class BiosCopyMeasurementTests
                      $"groups={GroupsPerSize} overThreshold={over} overAt96={over96} maxBytes={maxUnion}");
             }
 
-            // The production schemes are asserted when the measurement runs (PSXRECOMP_OPENBIOS_ROM and PSXRECOMP_MEASURE_DIR set).
-            // The corpus is named in the message; the assertion holds only for the corpus it was measured on.
-            var isProduction = scheme == (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinDistinctWords)
-                || scheme == (BiosAddressGuard.MinRunWords, BiosAddressGuard.MinLowVarietyDistinctWords);
-            if (assertNoFalsePositive && isProduction)
-            {
-                overSingle.Should().Be(0, $"no ordinary {name} input may be refused by the production rule (T={threshold})");
-                overGroups.Should().OnlyContain(static over => over == 0, $"no ordinary {name} group may be refused by the production rule (T={threshold})");
-            }
         }
     }
 
-    /// <summary>
-    /// BIOS copies of <see cref="DetectionWords"/> words, split into <see cref="DetectionPieces"/> pieces, each piece separated by
-    /// non-BIOS words of a corpus binary. The BIOS offsets are seeded and drawn from code (padding is excluded by design). Low-variety
-    /// fragments (two or three distinct values, no uniform window) are measured separately, where the BIOS holds any.
-    /// </summary>
     /// <summary>The PS-X executables of a disc image, written to <paramref name="directory"/>; the disc is read in place, never committed.</summary>
     private static string[] ExtractPsxExecutables(string chdPath, string directory)
     {
@@ -295,6 +290,11 @@ public sealed class BiosCopyMeasurementTests
         return words.Take(16384).ToArray();
     }).Where(static h => h.Length > HostWords * 2).ToArray();
 
+    /// <summary>
+    /// BIOS copies of <see cref="DetectionWords"/> words, split into <see cref="DetectionPieces"/> pieces, each piece separated by
+    /// non-BIOS words of a corpus binary. The BIOS offsets are seeded and drawn from code (padding is excluded by design). Low-variety
+    /// fragments (two or three distinct values, no uniform window) are measured separately, where the BIOS holds any.
+    /// </summary>
     private static void MeasureDetection(OpenBiosFirmware bios, string[] hostFiles)
     {
         var hosts = hostFiles.Take(8).Select(static f =>

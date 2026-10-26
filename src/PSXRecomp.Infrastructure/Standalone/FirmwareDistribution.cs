@@ -18,7 +18,8 @@ namespace PSXRecomp.Infrastructure.Standalone;
 public sealed record FirmwareAotPlan(
     RecompilerIrProgram Program,
     LoadedCodeTable LoadedCode,
-    IReadOnlySet<uint> ObservationPcs)
+    IReadOnlySet<uint> ObservationPcs,
+    BiosContentDiagnostic? ContentDiagnostic = null)
 {
     /// <summary>
     /// The only PCs a firmware distribution keeps interpreted: the exception entry points, whose vectors the
@@ -46,13 +47,14 @@ public sealed record FirmwareAotPlan(
         _ = LoadImageManifest.ReadRootsFile(rootsFile);
         var manifest = LoadImageManifest.Read(loadImagesFile, firmware, disc);
         BiosGuardWiring.Run(BiosGuardWiring.Manifest, () => BiosAddressGuard.RequireNoBiosImage(manifest, firmware));
+        var contentDiagnostic = BiosAddressGuard.DiagnoseContent(manifest, firmware);
         var observed = new HashSet<uint>(manifest.Interpreted);
         observed.UnionWith(FixedExceptionObservationPcs);
         var loaded = new LoadedCodeTable(manifest.Images.Select(
             i => ReachableProgramBuilder.BuildLoadedImage(i.LoadAddress, i.Words, i.Roots, observed) with { Origin = i.Origin }));
         var program = new RecompilerIrProgram(Array.Empty<RecompilerIrBlock>());
         BiosGuardWiring.Run(BiosGuardWiring.Plan, () => BiosAddressGuard.RequireNoBiosCode(program, loaded, BiosGuardWiring.Plan));
-        return new FirmwareAotPlan(program, loaded, observed);
+        return new FirmwareAotPlan(program, loaded, observed, contentDiagnostic);
     }
 }
 
@@ -321,6 +323,9 @@ public sealed record FirmwareDistributionRequest(
 [Infrastructure]
 public static class FirmwareDistributionBuilder
 {
+    /// <summary>The file in the distribution's runtime directory that holds the BIOS content diagnostic (Issue #B2).</summary>
+    public const string BiosContentDiagnosticFileName = "bios-content-diagnostic.txt";
+
     /// <summary>
     /// The bounded per-step native-toolchain timeout a firmware distribution build uses unless the request
     /// overrides it (<c>--build-timeout-seconds</c>). The ROM + RAM-image dispatch is far larger than an
@@ -438,6 +443,11 @@ public static class FirmwareDistributionBuilder
             var bootText = FirmwareBootManifestJson.Serialize(boot);
             _ = FirmwareBootManifestJson.Parse(bootText);
             File.WriteAllText(Path.Combine(stagingRuntimeDir, FirmwareBootManifest.FileName), bootText);
+
+            // The content diagnostic (Issue #B2, option 1): a report of BIOS content matches, never a refusal. It holds counts and
+            // the provenance state only; no BIOS or input bytes are written.
+            File.WriteAllText(Path.Combine(stagingRuntimeDir, BiosContentDiagnosticFileName),
+                (plan.ContentDiagnostic?.Message ?? "BIOS content diagnostic: not computed.") + Environment.NewLine);
 
             // Block entry PCs are the artifact's static (ROM) blocks only: RAM-placed versions are selected by their
             // guard, and the fallback relies on a loaded PC NOT being listed (ArtifactFallbackSession).

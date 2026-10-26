@@ -41,47 +41,51 @@ public sealed class BiosCopyDetectionTests
         new HashSet<uint>());
 
     [Fact]
-    public void ThresholdIsExclusive_24WordsAccepted_25WordsRefused()
+    public void ThresholdIsExclusive_24WordsNotFlagged_25WordsFlagged()
     {
-        // 96 bytes is 24 words: at the threshold, not over it. 25 words (100 bytes) is over it.
+        // 96 bytes is 24 words: at the reference, not over it. 25 words (100 bytes) is over it. The diagnostic reports; it never refuses.
         var bios = Bios();
         var twentyFour = Manifest(("exe-file", Fragment(bios, 1000, 24)));
         var twentyFive = Manifest(("exe-file", Fragment(bios, 1000, 25)));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(twentyFour, bios))).Should().NotThrow("96 bytes is at the threshold, not over it");
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(twentyFive, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 100 bytes of BIOS code*");
+        BiosAddressGuard.DiagnoseContent(twentyFour, bios).ExceedsHighVarietyReference.Should().BeFalse("96 bytes is at the reference");
+        var over = BiosAddressGuard.DiagnoseContent(twentyFive, bios);
+        over.ExceedsHighVarietyReference.Should().BeTrue();
+        over.Message.Should().Contain("100 bytes of high-variety BIOS matches");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(twentyFive, bios))).Should().NotThrow("a content match is never a refusal");
     }
 
     [Theory]
     [InlineData("exe-file")]
     [InlineData("boot-exe")]
     [InlineData("disc-exe")]
-    public void A252ByteBiosCopy_InADiscOrFileImage_IsRefused(string kind)
+    public void A252ByteBiosCopy_InADiscOrFileImage_IsDiagnosedButNotRefused(string kind)
     {
-        // 252 bytes is 63 whole words, all of them covered: over the 96-byte threshold by a wide margin.
+        // 252 bytes is 63 whole words of BIOS code. Its provenance is unknown from content alone: it is reported, not refused.
         var bios = Bios();
         var manifest = Manifest((kind, Fragment(bios, 8192, 63)));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 252 bytes of BIOS code*",
-                $"a 252-byte BIOS copy in an input of kind {kind} must be refused");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow($"a content match in an input of kind {kind} is not a refusal");
+        var diagnostic = BiosAddressGuard.DiagnoseContent(manifest, bios);
+        diagnostic.HighVarietyBytes.Should().Be(252);
+        diagnostic.ExceedsHighVarietyReference.Should().BeTrue();
+        diagnostic.Provenance.Should().Be("unknown");
+        diagnostic.Message.Should().Contain("出所不明");
     }
 
     [Fact]
-    public void A124ByteWholeWordCopySplitInTwoImages_IsRefused_ByTheCumulativeCount()
+    public void A124ByteWholeWordCopySplitInTwoImages_IsDiagnosedAcrossTheInputs()
     {
         // A 127-byte copy holds 31 whole words (124 bytes); the 3 trailing bytes are not a word and are not counted.
-        // Split in two inputs of 16 and 15 words (64 and 60 bytes): each half alone is under the threshold, together 124 are over it.
+        // Split in two inputs of 16 and 15 words: together 124 bytes, reported across the inputs (not refused).
         var bios = Bios();
         var first = Fragment(bios, 4096, 16);
         var second = Fragment(bios, 20000, 15);
         var halves = Manifest(("boot-exe", first), ("exe-file", second));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", first)), bios))).Should().NotThrow(
-            "one half alone is under the threshold: the rule is cumulative, so a single input is not the test");
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(halves, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 124 bytes of BIOS code*");
+        BiosAddressGuard.DiagnoseContent(Manifest(("exe-file", first)), bios).HighVarietyBytes.Should().Be(64);
+        BiosAddressGuard.DiagnoseContent(halves, bios).HighVarietyBytes.Should().Be(124, "the cumulative count is the union over the inputs");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(halves, bios))).Should().NotThrow();
     }
 
     [Fact]
@@ -100,7 +104,7 @@ public sealed class BiosCopyDetectionTests
     [Fact]
     public void FourPiecesOfEightWords_SplitByNonBiosWords_AreCountedTogether()
     {
-        // Four matches of 8 words (the minimum), each separated by a non-BIOS word: 32 words, 128 bytes, over the threshold.
+        // Four matches of 8 words (the minimum), each separated by a non-BIOS word: 32 words, 128 bytes, counted across the pieces.
         var bios = Bios();
         var words = new List<uint>();
         for (var k = 0; k < 4; k++)
@@ -111,8 +115,7 @@ public sealed class BiosCopyDetectionTests
 
         BiosAddressGuard.BiosCopyBytes([words.ToArray()], bios).Should().Be(128,
             "each 8-word match is a counted match; the separators between them do not stop the count");
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", words.ToArray())), bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 128 bytes of BIOS code*");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", words.ToArray())), bios))).Should().NotThrow();
     }
 
     [Fact]
@@ -188,23 +191,25 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
-    public void ALowVarietyCopy_AtTheThreshold_IsAccepted_AndOneWordMoreIsRefused()
+    public void ALowVarietyCopy_AtTheReference_IsNotFlagged_AndOneWordMoreIsFlagged()
     {
-        // 256 bytes is 64 words: at the low-variety threshold. 65 words (260 bytes) is over it.
+        // 256 bytes is 64 words: at the low-variety reference. 65 words (260 bytes) is over it. Reported, never refused.
         var planted = LowVarietyWords(80);
         var bios = BiosWithPlanted(3000, planted);
         var sixtyFour = Manifest(("exe-file", Fragment(bios, 3000, 64)));
         var sixtyFive = Manifest(("exe-file", Fragment(bios, 3000, 65)));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFour, bios))).Should().NotThrow("256 bytes is at the threshold");
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFive, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 260 bytes of low-variety BIOS code*");
+        BiosAddressGuard.DiagnoseContent(sixtyFour, bios).ExceedsAllMatchReference.Should().BeFalse("256 bytes is at the reference");
+        var over = BiosAddressGuard.DiagnoseContent(sixtyFive, bios);
+        over.ExceedsAllMatchReference.Should().BeTrue();
+        over.Message.Should().Contain("260 bytes of all BIOS matches");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFive, bios))).Should().NotThrow();
     }
 
     [Fact]
     public void ALowVarietyCopy_SplitByNonBiosWords_IsCountedTogether()
     {
-        // Five pieces of 14 low-variety words, each separated by a non-BIOS word: 70 words, 280 bytes, over the low-variety threshold.
+        // Five pieces of 14 low-variety words, each separated by a non-BIOS word: 70 words, 280 bytes, counted across the pieces.
         var planted = LowVarietyWords(80);
         var bios = BiosWithPlanted(3000, planted);
         var words = new List<uint>();
@@ -214,8 +219,9 @@ public sealed class BiosCopyDetectionTests
             words.Add(Separator);
         }
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", words.ToArray())), bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 280 bytes of low-variety BIOS code*");
+        var manifest = Manifest(("exe-file", words.ToArray()));
+        BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("280 bytes of all BIOS matches");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
     }
 
     [Fact]
@@ -233,25 +239,38 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
-    public void ARamCopyOfBiosCode_InsideADiscImage_IsRefusedByTheSameCount()
+    public void ARamCopyOfBiosCode_InsideADiscImage_IsDiagnosedNotRefused()
     {
-        // A disc program that copies a BIOS routine into RAM: the RAM address does not matter, the content does.
+        // A disc program that copies a BIOS routine into RAM: the RAM address does not matter, the content does. Reported only.
         var bios = Bios();
         var words = Enumerable.Range(0, 16).Select(static i => 0x24080000u | (uint)i).Concat(Fragment(bios, 20000, 60)).ToArray();
         var manifest = new LoadImageManifest([new LoadedImageSpec("copy-in-ram", 0x80100000u, words, [], "disc-exe")], new HashSet<uint>());
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 240 bytes of BIOS code*");
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
+        BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("240 bytes of high-variety BIOS matches");
     }
 
     [Fact]
-    public void AWholeBiosHeldAsInputData_IsRefused_RegardlessOfTheOtherInputs()
+    public void AWholeBiosHeldAsInputData_IsRefused_BecauseItsOriginIsConfirmed()
     {
-        // Data the BIOS holds in full is refused by its size, not by a judgement of its content.
+        // The complete BIOS image, byte for byte, confirms its origin: refused by identity, not by a threshold.
         var bios = Bios();
         var whole = Manifest(("exe-file", bios.Words.ToArray()));
 
-        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(whole, bios))).Should().Throw<InvalidDataException>();
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(whole, bios))).Should().Throw<InvalidDataException>().WithMessage("*complete BIOS image*");
+    }
+
+    [Fact]
+    public void AWholeBiosWithOneWordChanged_IsNotConfirmed_SoItIsDiagnosedNotRefused()
+    {
+        // Identity is exact: one changed word is no longer the BIOS image by identity. Its content is still reported.
+        var bios = Bios();
+        var words = bios.Words.ToArray();
+        words[1000] ^= 0x1u;
+        var manifest = Manifest(("exe-file", words));
+
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
+        BiosAddressGuard.DiagnoseContent(manifest, bios).ExceedsHighVarietyReference.Should().BeTrue();
     }
 
     [Fact]

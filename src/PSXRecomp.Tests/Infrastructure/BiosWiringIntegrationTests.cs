@@ -158,22 +158,32 @@ public sealed class BiosWiringIntegrationTests : IDisposable
     }
 
     [Fact]
-    public void ProductionBuild_RefusesA252ByteBiosCopyInADiscExecutable_AtTheManifestStage()
+    public void ProductionManifest_DiagnosesA252ByteBiosCopyInADiscExecutable_AndDoesNotRefuseIt()
     {
-        // The disc's boot executable carries 63 whole words of the BIOS (252 bytes covered): over the 96-byte threshold.
+        // The disc's boot executable carries 63 whole words of the BIOS (252 bytes). Its provenance is unknown from content: the
+        // production manifest stage does not refuse it; the plan carries the content diagnostic instead (Issue #B2, option 1).
         var rom = LcgRom();
         var exe = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 252, WordsBytes(rom, 8192, 63));
         var request = CopyRequest("copy-252", rom, SyntheticDiscBuilder.Bootable(exe), "boot-exe game\n");
 
-        ((Action)(() => Build(request)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 252 bytes of BIOS code*");
+        using var disc = DiscSectorSourceOpener.Open(request.DiscPath);
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom),
+            Path.Combine(request.AotDirectory, "rom.roots"),
+            request.CodeBytes,
+            Path.Combine(request.AotDirectory, "images.txt"),
+            disc.Source);
+
+        plan.ContentDiagnostic.Should().NotBeNull();
+        plan.ContentDiagnostic!.HighVarietyBytes.Should().Be(252);
+        plan.ContentDiagnostic.Provenance.Should().Be("unknown");
     }
 
     [Fact]
-    public void ProductionBuild_RefusesA124ByteWholeWordCopySplitAcrossTwoAotInputs()
+    public void ProductionManifest_DiagnosesA124ByteCopySplitAcrossTwoAotInputs_AndDoesNotRefuseIt()
     {
-        // A 127-byte copy's 31 whole words (124 bytes), split: 16 words in the disc's boot executable and 15 in a PS-X EXE file.
-        // Each half alone is under the threshold; together they are 124 bytes, over it.
+        // A 127-byte copy's 31 whole words (124 bytes), split: 16 words in the disc's boot executable, 15 in a PS-X EXE file.
+        // Reported across the inputs; not refused by content (Issue #B2, option 1).
         var rom = LcgRom();
         var first = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 64, WordsBytes(rom, 4096, 16));
         var second = SyntheticPsxExeBuilder.Build(0x80020000u, 0x80020000u, 60, WordsBytes(rom, 20000, 15));
@@ -182,7 +192,15 @@ public sealed class BiosWiringIntegrationTests : IDisposable
             "boot-exe game\nexe half2 half2.exe\n",
             ("half2.exe", second));
 
-        ((Action)(() => Build(request)))
-            .Should().Throw<InvalidDataException>().WithMessage("*together hold 124 bytes of BIOS code*");
+        using var disc = DiscSectorSourceOpener.Open(request.DiscPath);
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom),
+            Path.Combine(request.AotDirectory, "rom.roots"),
+            request.CodeBytes,
+            Path.Combine(request.AotDirectory, "images.txt"),
+            disc.Source);
+
+        plan.ContentDiagnostic!.HighVarietyBytes.Should().Be(124, "the cumulative count across the two inputs");
     }
+
 }
