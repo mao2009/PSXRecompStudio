@@ -7,6 +7,17 @@ Status: **design only**. No code is changed by this document. Evidence is taken 
 - **CONFIRMED**: read in the source at the cited location.
 - **INFERRED**: reasoned from the source. Not measured.
 
+## 0. Owner decisions
+
+These decisions are confirmed by the issue owner. This document reflects them; it does not reopen them.
+
+- **Input hash requirement kept.** The input hash is an identification mechanism only. The SHA-256 of the input executable is recorded at generation time and checked at startup.
+- **The hash is not runtime proof.** A hash alone is not treated as proof that the RAM of a running process matches the input. Runtime identity is checked with the actual RAM instruction words and the RAM write generation.
+- **Dispatch never recomputes a region hash.** Dispatch uses the generation check and, only after a generation change, a word compare of the block span.
+- **Generation granularity is 4 KiB pages.**
+- **Startup `memset` calls are not an exception.** The two startup clears must go through a generation-bumping helper. This is a design decision only. The helper itself is out of scope for this document and is separate implementation work.
+- **Undecided:** the full copy and compare in `WriteBack` (section 3, section 4 performance rules, open question 3). It needs a measurement first. Whether it belongs in #734 is also undecided.
+
 ## 1. Problem
 
 A PS-X EXE loaded by the guest (through OpenBIOS, or through the standalone artifact's file image) may run from RAM. Ahead-of-time (AOT) code generated from the same bytes can be dispatched in its place, but only while RAM still holds exactly the words the code was compiled from. Issue #734 asks for three things at once: an input identity hash, a per-dispatch check that is safe, and no full-region hash recomputation on the hot path.
@@ -20,7 +31,7 @@ This document separates the six concepts that the issue owner ruled must not be 
 5. RAM write generation: a cheap signal that a write happened.
 6. AOT mapping validity: whether a pc-to-version mapping is still trusted.
 
-A hash of the input proves provenance. It does not prove what RAM holds at a given moment, because the guest can overwrite code, and a DMA or a store can change a page after load.
+A hash of the input proves provenance. It does not prove what RAM holds at a given moment, because the guest can overwrite code, and a DMA or a store can change a page after load. The hash is therefore used for identification only. Runtime identity is decided by the RAM instruction words (concept 4) and the RAM write generation (concept 5).
 
 ## 2. Current handling of each concept
 
@@ -34,7 +45,7 @@ A hash of the input proves provenance. It does not prove what RAM holds at a giv
 | 4 | Actual RAM words | Authoritative at dispatch. The C guard compares each word of the span when the span's generation sum differs from the last success. The C# `LoadedCodeTable.Match` does the same comparison, but production code does not call it (only `FirmwareAotPlanTests` does). | CONFIRMED | `RecompiledArtifactCodeGen.cs:1169-1176`; `src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs:89-104`; `src/PSXRecomp.Tests/Infrastructure/FirmwareAotPlanTests.cs:87-90` |
 | 4 | Attribution of fallback entries | `ArtifactFallbackSession.Attribute` compares every version at the pc word by word, one `ReadMemory32` P/Invoke per word. It runs only when a transition observer is set. | CONFIRMED (code); INFERRED (cost only when observer on) | `src/PSXRecomp.Infrastructure/ArtifactFallbackSession.cs:143-160`, `:295`; `src/PSXRecomp.Core/PSXCoreWrapper.cs:639-643` |
 | 5 | RAM write generation | One `uint64` per 4 KiB page (`artifact_page_gen`). Bumped by the single-byte store, 16/32-bit stores, the startup loader for the file image (added by #840, commit `e821453`), and the fallback commit (K). The span check sums the generations of the pages the block covers and reruns the word compare only when the sum changed. | CONFIRMED | `RecompiledArtifactCodeGen.cs:1147-1155` (macro and loader), `:1205-1209` (`artifact_ram_write8`), `:1434-1460` (stores), `:1641-1642` (K commit) |
-| 5 | Writers that do **not** bump | Two `memset(artifact_ram, 0, ...)` calls at startup, emitted inside the generated `main()`, before any dispatch. They are safe only because `main()` runs once per process and the caches start at `UINT64_MAX`. | CONFIRMED (no bump); INFERRED (safe under the single-`main` invariant) | `RecompiledArtifactCodeGen.cs:1023`, `:1836`; caches `RecompilerHostCodeGen.cs:1285` |
+| 5 | Writers that do **not** bump | Two `memset(artifact_ram, 0, ...)` calls at startup, emitted inside the generated `main()`, before any dispatch. They are safe only because `main()` runs once per process and the caches start at `UINT64_MAX`. Decided (section 0): these clears are to be routed through a bumping helper, not kept as an exception. | CONFIRMED (no bump); INFERRED (safe under the single-`main` invariant) | `RecompiledArtifactCodeGen.cs:1023`, `:1836`; caches `RecompilerHostCodeGen.cs:1285` |
 | 5 | C# side RAM | The interpreter's RAM is not generation-tracked. It reaches the native artifact only through a fallback commit (`B` stage then `K`), which bumps. Changes are detected on the C# side by a full compare against a shadow copy at every segment return. | CONFIRMED | `src/PSXRecomp.Infrastructure/ArtifactFallbackSession.cs:489-534` (`WriteBack`), `:337` (call) |
 | 6 | AOT mapping (pc to versions) | Built at code generation time: versions per `EntryPc` in link order, identical words deduplicated. Emitted as a `switch` on pc, with one `if` per version. The table is fixed in the generated artifact. No runtime check compares it with the input hash. The artifact file hash is recorded for diagnostics at run time. | CONFIRMED | `LoadedCodeTable.cs:52-64`; `RecompilerHostCodeGen.cs:1276-1300`; `src/PSXRecomp.Cli/RunCommand.cs:191`, `:206` |
 | 6 | Mismatched artifact | Because each version carries its own words, a stale or foreign version fails the word check and falls back. Safety does not depend on the input hash. Only provenance and diagnostics do. | INFERRED | `RecompiledArtifactCodeGen.cs:1169-1176`; `RecompilerHostCodeGen.cs:1286` |
@@ -73,7 +84,7 @@ This is already the design the issue asks for: identity comes from the words, an
 Judgement from the code:
 
 - **No full-region hash runs per dispatch.** The hot path is an integer sum over the pages a block covers, plus a block-sized compare after a write into one of those pages. The issue's requirement is met on this path today.
-- **Full-region work happens at startup and on each fallback transition.** The transition cost is the one to watch. `WriteBack` copies and compares 2 MiB on every fallback return even when one page changed. Replacing that with dirty tracking would remove the cost, but this needs a measurement first (none was taken here).
+- **Full-region work happens at startup and on each fallback transition.** The transition cost is the one to watch. `WriteBack` copies and compares 2 MiB on every fallback return even when one page changed. Replacing that with dirty tracking would remove the cost, but this needs a measurement first (none was taken here). Whether to do it, and whether it is part of #734, is **undecided** (section 0).
 - **The residual dispatch risk is false invalidation.** Generations are per 4 KiB page. Data writes into a page that also holds a large block's span force a block-sized word compare. Its frequency is unknown without a measurement.
 
 ## 4. Proposed design
@@ -86,12 +97,12 @@ Separate **identity** (what the artifact was built from, decided once, used for 
 
 | Concept | Kept as | Used at |
 |---|---|---|
-| (1) Input hash | SHA-256 of the input file or disc, recorded in the generated artifact's metadata for each image | Startup only, and only where the input file is given to the run (the standalone file image). For the OpenBIOS path, the recorded disc hash is provenance. |
+| (1) Input hash | SHA-256 of the input executable or disc, recorded in the generated artifact's metadata for each image at generation time | Startup check, when an input file is given to the run (the standalone file image). For the OpenBIOS path, the recorded disc hash is provenance only. Never used at dispatch. |
 | (2) Code range | `EntryPc` plus `Words` count, as now | Dispatch (span guard) |
 | (3) Load address | Table key (`EntryPc`); recorded per image for diagnostics | Table lookup |
 | (4) RAM words | Compared against the embedded `codeN` words | Dispatch, on first use and after a span write |
-| (5) Write generation | Per-page `uint64`, bumped by every writer | Dispatch, as the cache key that skips the compare |
-| (6) Mapping validity | Table fixed at generation time, with a per-version words hash recorded | Startup: a version whose recorded words hash does not match is removed from the table and falls back. Dispatch: no separate check. |
+| (5) Write generation | Per-page `uint64`, 4 KiB pages, bumped by every writer | Dispatch, as the cache key that skips the compare |
+| (6) Mapping validity | Table fixed at generation time, with a per-version words hash recorded | Startup: a version whose recorded words hash does not match its embedded words is removed from the table and falls back. This is an artifact integrity check, not a check of RAM. Dispatch: no separate check. |
 
 ### Dispatch decision
 
@@ -107,15 +118,15 @@ Separate **identity** (what the artifact was built from, decided once, used for 
 
 ### Writer invariant
 
-Every write to `artifact_ram` must bump the page generation. Today the rule holds for every writer except the two startup `memset` calls, which are safe only because `main()` runs once and runs them before any dispatch. Proposed:
+Every write to `artifact_ram` must bump the page generation. Today the rule holds for every writer except the two startup `memset` calls, which are safe only because `main()` runs once and runs them before any dispatch. That reasoning is not accepted as an exception. Decided (section 0):
 
-- Route the startup clears through a bumping helper. This removes the exception.
+- The startup clears go through a generation-bumping helper. This is design only; the helper is separate implementation work and outside this document's scope.
 - Add a test that scans the generated C for writes to `artifact_ram` that do not go through `ARTIFACT_WROTE` or `artifact_ram_load8`/`artifact_ram_write8`. The existing `ArtifactCodeGuardSpanTests` (`src/PSXRecomp.Tests/Recompiler/ArtifactCodeGuardSpanTests.cs`) already compiles the guard with gcc, so the test can reuse that harness.
 
 ### Performance rules
 
 - No dispatch path may hash the span or the region. The span compare runs only after a generation change.
-- The fallback transition should send only the pages whose generation changed. That replaces the full `CopyRamTo` and compare in `WriteBack`. This is proposed for measurement first. It is out of scope for the dispatch rule above.
+- The fallback transition should send only the pages whose generation changed. That would replace the full `CopyRamTo` and compare in `WriteBack`. **Undecided.** It is proposed for measurement first, and whether it is part of #734 is also undecided. It is outside the dispatch rule above and does not change it.
 
 ## 5. Alternatives
 
@@ -129,15 +140,15 @@ Every write to `artifact_ram` must bump the page generation. Today the rule hold
 
 **C. Finer generation granularity (for example 256-byte lines).**
 - Advantages: fewer false invalidations from data writes beside code. Costs 8192 counters (64 KiB) instead of 512.
-- Disadvantages: more counters to sum per dispatch. Worth doing only if a measurement shows false invalidations matter.
+- Disadvantages: more counters to sum per dispatch. Not adopted: the owner decided 4 KiB pages (section 0). Revisit only if a measurement shows false invalidations matter.
 
 ## 6. Open questions for the owner
 
-1. **Input hash gating.** Should the run refuse to attach the table when a given input file's hash differs from the recorded one, or is the recorded hash enough for provenance? The safety argument above does not depend on this choice. It only affects whether a mismatched artifact can run at all.
+1. **Input hash mismatch outcome.** The startup check of the recorded input hash is decided (section 0). Should a mismatch refuse to attach the table, or only be recorded for provenance? The safety argument above does not depend on this choice. It only affects whether a mismatched artifact can run at all.
 2. **Formal identity for the Persona path.** `ArtifactFixtureIdentity` names the disc image hash as the formal identity and the executable hash as the analysed-code identity. Which hash identifies the main EXE handoff in #734: the disc hash, the EXE hash, or both?
-3. **Scope of the `WriteBack` full copy.** Is replacing the 2 MiB copy and compare part of #734, or a separate issue? A measurement is needed first.
-4. **Startup clears.** Accept the documented exception for the two startup `memset` calls, or route them through the bumping helper?
-5. **Granularity.** Keep 4 KiB pages, or move to finer lines (alternative C), given that the false-invalidation rate is unmeasured?
+3. **Scope of the `WriteBack` full copy (undecided).** Is replacing the 2 MiB copy and compare part of #734, or a separate issue? A measurement is needed first. No decision has been made.
+4. **Resolved.** The startup clears go through a generation-bumping helper (section 0 and section 4). No exception is kept.
+5. **Resolved.** Generation granularity is 4 KiB pages (section 0). Alternative C is not adopted.
 
 ## 7. Not done here
 
