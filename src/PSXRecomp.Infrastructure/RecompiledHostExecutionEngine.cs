@@ -923,12 +923,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             drainTimedOut,
             drainCutWhileAlive,
             OutputBudgetMsForTest ?? _runTimeoutMs);
-        // Issue #829: a fallback segment that ended because of the stop request (it was stopped in the host, and the child then ended on the
-        // decision it was sent) is the stop's result, not the artifact's UnresolvedIndirectFlow.
-        if (bridge?.DiagnosticCode == MixedFallbackDiagnostics.StoppedOnRequest && stopToken.IsCancellationRequested)
-        {
-            result = RecompilerExecutionResult.Failed(RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.");
-        }
+        // Issue #829: a fallback segment stopped by the stop request reaches the same decision as any other child (ResolveOutcome, which applies
+        // the stop's outcome table, Issue #828). No separate override here: a child that ended before the stop keeps its own result.
 
         var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
         LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested);

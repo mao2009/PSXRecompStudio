@@ -41,7 +41,7 @@ public sealed class GuestStopFallbackTests
     }
 
     [Fact]
-    public async Task StopDuringAFallbackSegment_EndsCancelled_AndTheFallbackStops()
+    public async Task StopDuringAFallbackSegment_ResultFollowsTheSpecTable_AndTheFallbackStops()
     {
         var words = FallbackSpinProgram();
         using var dir = new TempDirectory();
@@ -73,8 +73,22 @@ public sealed class GuestStopFallbackTests
 
         var result = await run.WaitAsync(StopWait);
 
-        result.State.Should().Be(TitleExecutionState.Cancelled, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
-        result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
+        // Issue #828 (the stop's outcome table, ApplyStopOutcome): only a live child whose kill was confirmed is Cancelled. A child that ended
+        // before the stop reached it keeps its own result. Which of the two happens is decided by the race between the kill and the child's
+        // exit on the decision, so the expectation is read from the stop's diagnostics; the rule itself is what is checked.
+        var diagnostics = engine.LastStopDiagnostics;
+        diagnostics.Should().NotBeNull("a stop was requested during the run");
+        if (diagnostics!.ChildEndedBeforeStop)
+        {
+            result.State.Should().NotBe(TitleExecutionState.Cancelled, $"the child ended before the stop: {result.DiagnosticCode}");
+            result.DiagnosticCode.Should().NotBe(ExecutionOrchestrator.CancelledCode);
+        }
+        else
+        {
+            diagnostics.Confirmed.Should().BeTrue("the live child was killed and its exit seen");
+            result.State.Should().Be(TitleExecutionState.Cancelled, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
+            result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
+        }
 
         // The run's result is not the proof: the host's fallback segment must have stopped too. The interpreter's fetch count
         // must not move once the run has returned, so a fallback still stepping in the background fails here.
