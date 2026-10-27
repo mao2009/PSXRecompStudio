@@ -281,6 +281,103 @@ public sealed class GeneratedHostBuildServiceTests
         }
     }
 
+    [Fact]
+    public void RunRuntimeHost_HostExitsButGrandchildHoldsPipesOpen_ReturnsWithinDrainBudget()
+    {
+        using var dir = new TempDirectory();
+        var host = CompileCDriver(dir, "held-pipe-host", HeldPipeHostDriverSource);
+        var manifest = Path.Combine(dir.FullPath, "runtime-host.json");
+        var pidFile = Path.Combine(dir.FullPath, "grandchild.pid");
+#pragma warning disable AARC003
+        File.WriteAllText(manifest, "{}");
+#pragma warning restore AARC003
+
+        try
+        {
+            // Run on a worker so a regression (an unbounded read) fails this test instead of hanging the test run.
+            var stopwatch = Stopwatch.StartNew();
+            var run = Task.Run(() => RuntimeHostBuildService.RunRuntimeHost(
+                host, manifest, TimeSpan.FromSeconds(30), [pidFile]));
+            var returned = run.Wait(TimeSpan.FromSeconds(20));
+            stopwatch.Stop();
+
+            // The host exits at once; the grandchild it spawned keeps the inherited pipes open. The drain must be bounded.
+            returned.Should().BeTrue("a pipe held by a grandchild must not block RunRuntimeHost");
+            var outcome = run.Result;
+            outcome.ExitCode.Should().Be(0, "the host's own exit code stands even when its pipes are cut short");
+            // Both pipes were held open: each is reported as cut short, and keeps the text the host wrote before it exited.
+            outcome.StdoutDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.TimedOut);
+            outcome.StderrDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.TimedOut);
+            outcome.Stdout.Should().Contain("held-stdout-marker");
+            outcome.Stderr.Should().Contain("held-stderr-marker");
+            stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(15));
+        }
+        finally
+        {
+            KillDescendantIfRecorded(pidFile);
+        }
+    }
+
+    [Fact]
+    public void PipeCollector_ReadFailsAfterPartialText_KeepsTextAndReportsReadFailed()
+    {
+        var pipe = new RuntimeHostBuildService.PipeCollector(new StreamReader(new FailingAfterFirstReadStream("partial text")));
+
+        RuntimeHostBuildService.AwaitPipe(pipe, Stopwatch.StartNew())
+            .Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.ReadFailed);
+        pipe.Text.Should().Be("partial text", "the text read before the failure is kept, not discarded");
+    }
+
+    // Yields its bytes on the first read, then fails. The read path's failure is reported, and the partial text stays with it.
+    private sealed class FailingAfterFirstReadStream : MemoryStream
+    {
+        private int _reads;
+
+        public FailingAfterFirstReadStream(string text) : base(System.Text.Encoding.UTF8.GetBytes(text))
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            _reads++ == 0 ? base.Read(buffer, offset, count) : throw new IOException("simulated read failure");
+
+        public override int Read(Span<byte> buffer) =>
+            _reads++ == 0 ? base.Read(buffer) : throw new IOException("simulated read failure");
+    }
+
+    // Host invoked as: host manifest pidfile. It writes a marker to each pipe, spawns a grandchild that inherits the pipes, then exits 0 at once.
+    // The grandchild is invoked as: host manifest pidfile child. It records its pid and sleeps until killed.
+    private const string HeldPipeHostDriverSource = """
+        #include <stdio.h>
+        #ifdef _WIN32
+        #include <process.h>
+        #include <windows.h>
+        #define GETPID() _getpid()
+        #define SLEEP_ONE_SECOND() Sleep(1000)
+        #else
+        #include <unistd.h>
+        #define GETPID() getpid()
+        #define SLEEP_ONE_SECOND() sleep(1)
+        #endif
+
+        static void hold(const char* pidfile) {
+            FILE* f = fopen(pidfile, "w");
+            if (f) { fprintf(f, "%d", (int)GETPID()); fclose(f); }
+            for (;;) { SLEEP_ONE_SECOND(); }
+        }
+
+        int main(int argc, char** argv) {
+            if (argc >= 4) { hold(argv[2]); return 0; }
+            fputs("held-stdout-marker\n", stdout); fflush(stdout);
+            fputs("held-stderr-marker\n", stderr); fflush(stderr);
+        #ifdef _WIN32
+            _spawnl(_P_DETACH, argv[0], argv[0], argv[1], argv[2], "child", NULL);
+        #else
+            if (fork() == 0) { hold(argv[2]); }
+        #endif
+            return 0;
+        }
+        """;
+
     private const string HangDriverSource =
         "#include <stdio.h>\n" +
         "int main(void) { fprintf(stderr, \"hanging driver\\n\"); fflush(stderr);" +

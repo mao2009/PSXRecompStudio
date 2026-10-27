@@ -113,12 +113,39 @@ public sealed class RuntimeHostToolchainDiagnosticsTests
             result.Stderr.Should().NotBe("Runtime host timed out",
                 "the host must not block on a full pipe while the pool is saturated");
             result.Stdout.Should().Contain("stdout-tail-marker");
+            // A host that exits normally has both pipes read to their end, so neither is reported as cut short (Issue #832).
+            result.StdoutDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.Complete);
+            result.StderrDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.Complete);
         }
         finally
         {
             release.Set();
             Task.WaitAll(holders);
         }
+    }
+
+    [Fact]
+    public void RunRuntimeHost_WhenTheHostOutlivesItsTimeout_ReportsBothPipesAsTimedOut()
+    {
+        // A timed-out run never read its pipes to the end, so neither is Complete (Issue #832: Complete means the whole text is there).
+        using var dir = new TempDirectory();
+        var windows = OperatingSystem.IsWindows();
+        var scriptPath = Path.Combine(dir.FullPath, windows ? "hang.cmd" : "hang.sh");
+#pragma warning disable AARC003
+        File.WriteAllText(scriptPath, windows ? "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n" : "sleep 30\n");
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Test-only process launch: the host is the Windows PowerShell executable on Windows.
+        var host = windows
+            ? Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe")
+            : "/bin/sh";
+#pragma warning restore AARC003
+
+        var result = RuntimeHostBuildService.RunRuntimeHost(host, scriptPath, TimeSpan.FromSeconds(1));
+
+        result.ExitCode.Should().Be(int.MinValue);
+        result.Stderr.Should().Be("Runtime host timed out");
+        result.StdoutDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.TimedOut);
+        result.StderrDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.TimedOut);
     }
 
     [Fact]
