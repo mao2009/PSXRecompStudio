@@ -99,6 +99,27 @@ public sealed class BiosDocumentedProcedureTests
         plan.ContentDiagnostic.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// R1 on the distributed code, executed: a package made by the documented <c>package --bios openbios</c> command holds no native
+    /// block at a BIOS address. Its generated C (the code the native artifact is built from) is searched for a block named at a BIOS
+    /// address (<c>0xBFC…</c>, <c>0x9FC…</c>, <c>0x1FC…</c>). Skipped unless <c>PSXRECOMP_PACKAGE_DIR</c> names a package directory.
+    /// </summary>
+    [SkippableFact]
+    public void ThePackagedArtifact_NamesNoBlockAtABiosAddress()
+    {
+        var packageDir = Environment.GetEnvironmentVariable("PSXRECOMP_PACKAGE_DIR");
+        Skip.If(string.IsNullOrWhiteSpace(packageDir) || !Directory.Exists(packageDir),
+            "set PSXRECOMP_PACKAGE_DIR to a package made by the documented command; none is in CI");
+
+        var sources = Directory.EnumerateFiles(packageDir!, "*.c", SearchOption.AllDirectories).ToArray();
+        sources.Should().NotBeEmpty("the package holds the generated C of its native artifact");
+        var biosBlock = new System.Text.RegularExpressions.Regex(@"recompiler_block_0x(BFC|9FC|1FC)[0-9A-Fa-f]{5}");
+        foreach (var source in sources)
+        {
+            biosBlock.IsMatch(File.ReadAllText(source)).Should().BeFalse($"{Path.GetFileName(source)} names a block at a BIOS address (R1)");
+        }
+    }
+
     private static string ScriptPath() => Path.Combine(FindRepositoryRoot(), "scripts", "openbios", "prepare-aot.py");
 
     /// <summary>The Python interpreter to run the script with, or null when none starts.</summary>

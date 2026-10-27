@@ -152,14 +152,25 @@ NOP is `0xBFC05E4C`). With both, the probe reaches `0x80010000` with
 The optional M path table is not emitted; the optional/extra descriptors are
 not modelled.
 
-### Generated host (`--engine generated-host`)
+### Developer diagnostics: `openbios-probe --engine generated-host` (not the normal procedure)
 
-The probe compiles the ROM (from `--roots`) and the explicit RAM images before execution. This is a measurement path: its ROM
-compile is not the distribution's AOT, which never compiles ROM code (R1), and this change does not alter the probe. The probe then runs
+> **Scope.** This is a developer measurement, run by hand. It is not part of the normal OpenBIOS integration or the
+> `package --bios openbios` procedure, and `package` never calls it. Its `--roots` compile the ROM's own code
+> (`ReachableProgramBuilder.BuildFirmwareImage`), so this path **does** compile BIOS code ahead of time. The distribution
+> compiles no ROM block (owner ruling R1, and the owner's choice for MAJOR-2: the probe is excluded from the normal procedure).
+> The R1 rule therefore does not cover this diagnostic path by itself; the limit is the scope above, not a claim that the path is
+> outside R1.
+>
+> **Handling of its outputs.** The JSON report and any generated code, binary or log are local measurement results. They are never
+> committed to the repository, never placed in CI artifacts, and never included in a distribution package. Keep the `--json` output
+> out of shared locations.
+
+The probe compiles the ROM (from `--roots`) and the explicit RAM images before execution. The probe then runs
 `RecompiledHostExecutionEngine` over the common device graph. Unknown or changed
 code uses the counted interpreter fallback. No code is compiled during the run.
 
 ```bash
+# Developer diagnostic only: prepare the procedure's images, then run the probe on a synthetic disc.
 python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/aot
 pwsh scripts/demo/synthetic-disc.ps1 -WorkDir /local/fixtures -OpenBiosCompatible
 psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-disc-openbios.bin \
@@ -167,7 +178,6 @@ psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-di
   --code-bytes 37160 --segment-budget 1000000 --segments 230 \
   --stop-at 0x80010014 --differential --json
 ```
-
 `psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]`
 
 The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =

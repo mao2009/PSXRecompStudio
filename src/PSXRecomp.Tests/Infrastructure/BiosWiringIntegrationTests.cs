@@ -203,4 +203,27 @@ public sealed class BiosWiringIntegrationTests : IDisposable
         plan.ContentDiagnostic!.HighVarietyBytes.Should().Be(124, "the cumulative count across the two inputs");
     }
 
+    [Fact]
+    public void TheFirmwarePlan_CompilesNoRomBlock_AndNoCompiledBlockStartsInTheBios()
+    {
+        // Owner ruling R1 (MAJOR-2 option 2): the normal package path compiles no BIOS code. The plan's own program is empty, and no
+        // compiled block starts in the BIOS range. The synthetic executable may compile to no block at all, so the BIOS check is the
+        // assertion that matters here; the real packaged C is checked by ThePackagedArtifact_NamesNoBlockAtABiosAddress.
+        var rom = LcgRom();
+        var exe = SyntheticPsxExeBuilder.Build(0x80010000u, 0x80010000u, 64, WordsBytes(rom, 4096, 16));
+        var request = CopyRequest("plan-r1", rom, SyntheticDiscBuilder.Bootable(exe), "boot-exe game\n");
+
+        using var disc = DiscSectorSourceOpener.Open(request.DiscPath);
+        var plan = FirmwareAotPlan.Build(
+            OpenBiosFirmware.FromBytes(rom),
+            Path.Combine(request.AotDirectory, "rom.roots"),
+            request.CodeBytes,
+            Path.Combine(request.AotDirectory, "images.txt"),
+            disc.Source);
+
+        plan.Program.Blocks.Should().BeEmpty("the firmware plan compiles no ROM block (R1)");
+        plan.LoadedCode.Blocks.Should().NotContain(static version => BiosAddressGuard.IsBiosAddress(version.Block.EntryPc),
+            "no compiled block starts in the BIOS range");
+    }
+
 }
