@@ -709,7 +709,8 @@ project claims complete detection of BIOS data in an input.
 file, is not detected as BIOS. Each piece is an ordinary executable to the structural checks, and a partial content match is a
 diagnostic only (owner ruling). With N = 4, the measured diagnostic coverage (below) of a 124-byte copy split into four reached the refusal threshold in 4 of 40
 trials, assuming the then-current refusal rule applied; under the present diagnostic-only rule nothing is refused, and such a split is reported. The limit is pinned by
-`BiosSplitLimitationTests` (synthetic input, names begin `KnownLimit_`). A complete BIOS image as one input is still refused.
+`BiosSplitLimitationTests` (synthetic input, names begin `KnownLimit_`) and tracked in Issue #835 and Issue #836 (open). A complete BIOS
+image as one input is still refused.
 
 **Input-kind trust boundary (owner ruling, option 2).** A directive keyword selects a reader; it does not decide the class.
 `BiosAddressGuard.DeriveInputClass` derives the class from what was produced: (1) the ROM reader's product (`rom-image`: the bytes are
@@ -761,7 +762,7 @@ AOT input when they meet a refusal ground. The coverage is cumulative over all A
 **How the thresholds were chosen (measured).** Every number below is printed by `BiosCopyMeasurementTests` (its `b2-measure` lines).
 The test is skipped unless `PSXRECOMP_OPENBIOS_ROM` and `PSXRECOMP_MEASURE_DIR` are set. `PSXRECOMP_MEASURE_LABEL` names the corpus, and
 `PSXRECOMP_MEASURE_MIPS_DIR` adds a MIPS corpus when one exists. The normal corpora are the first 400 `.exe`/`.dll` of
-`C:\Windows\System32` by name (`x86`), and the 41 distinct `.dll`/`.exe` files under this project's `src/*/bin/Release/net10.0`
+the Windows system directory by name (`x86`), and the 41 distinct `.dll`/`.exe` files under this project's `src/*/bin/Release/net10.0`
 (`project`). "Singles" tests each input alone (continuous). "Groups" unites k random inputs (cumulative): 200 groups per k, seeded.
 
 Table 1, normal inputs (false positives). "Over" counts the inputs, or groups, above the scheme's threshold.
@@ -802,7 +803,7 @@ What the tables show:
   of 200 groups of eight. At 256 bytes the production low-variety scheme has no false positive up to 32 inputs, in either corpus. Its
   highest measured group coverage is 220 bytes (x86, k = 16 and 32).
 - The 4-word floor is not usable. Even with the high-variety filter, (4, 4) reaches 92 bytes in a group of eight and 108 bytes in a
-  group of 32 (x86), above the 96-byte threshold: 1 of 200 groups at k = 16 and 13 of 200 at k = 32. It detects more split copies
+  group of 32 (x86), above the 96-byte threshold: 1 of 200 groups at k = 16 and 13 of 200 at k = 32. The rejected alternative rule, which was not adopted, detects more split copies
   (its 124-byte split of four reaches the threshold in 40 / 40 trials, against 4 / 40 for production, under the then-current rule assumed for the measurement), but it refuses ordinary inputs, so it is rejected, not left as
   an option.
 - The 96-byte high-variety threshold is three minimum-length matches. One accidental match cannot refuse a packaging. The measured
@@ -954,7 +955,7 @@ read. Mixed-fallback progress is therefore verified by the stop message and by t
   removes its DWARF sections. The Runtime host is published with `DebugType=none`.
   The intermediate object is removed after linking; a failed removal fails the build.
 - **Split BIOS (accepted residual, owner ruling option 1).** A complete BIOS split into several PS-X inputs is not detected as BIOS
-  (`BiosSplitLimitationTests`). This is a known limit, not a guarantee.
+  (`BiosSplitLimitationTests`). This is a known limit, not a guarantee; it is tracked in Issue #835 and Issue #836 (open).
 - **Fragments embedded in a PS-X input (not excludable).** A BIOS fragment built into a disc executable at build time, rather than
   copied at run time, is not detected by any rule here. The static embedded-fragment question is tracked as a separate open issue
   (see the PR body). The run-time copy-tracking question is Issue #835.

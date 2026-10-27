@@ -11,8 +11,8 @@ namespace PSXRecomp.Tests.Infrastructure;
 /// <summary>
 /// Issue #B2 (owner ruling R1, narrowed): the canonical pipeline does not take the BIOS directly as an input of ahead-of-time code generation
 /// (a split BIOS is a known limit, pinned by BiosSplitLimitationTests). Each stage the code passes
-/// through (manifest, plan, dispatch, generated C) refuses BIOS code, and each stage has a negative test that injects BIOS code
-/// at that stage's entry and expects the refusal.
+/// through (manifest, plan, dispatch, generated C) refuses an input that meets a refusal ground, and each stage has a negative test that
+/// injects a BIOS-range input at that stage's entry and expects the refusal.
 /// </summary>
 [Test]
 public sealed class BiosGenerationStageTests : IDisposable
