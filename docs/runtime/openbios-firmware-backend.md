@@ -484,7 +484,7 @@ artifact build; it is independent of `--run-timeout-seconds` (the guest run boun
 three-minute per-step default (`FirmwareDistributionBuilder.DefaultBuildTimeout`); it is validated to `1..86400` and
 is never unbounded. A slower build host (for example the ~515,783-line ROM + AOT dispatch on a low-core CPU) can be
 given a longer compile budget without extending the game's own run time. The `openbios-probe` generated-host build
-keeps its own fixed three-minute per-step cap.
+keeps its own fixed three-minute per-step cap (the developer-only probe; see the Developer diagnostics section).
 
 **Execution structure (one guest state).** The native artifact holds the guarded RAM-placed versions of the disc's executables
 (`LoadedCodeTable`: the `boot-exe` and any `disc-exes`, ADR-026). The OpenBIOS ROM itself is not compiled: `FirmwareAotPlan.Build`
@@ -501,7 +501,7 @@ and a guarded game block runs only while RAM holds its compiled words.
 
 | Item | Where |
 |---|---|
-| BIOS ROM | user-supplied `--bios-rom`, exactly 512 KiB; copied to `runtime/artifact-image.bin`; SHA-256 re-verified on every run |
+| BIOS ROM | user-supplied path, named at run time by `PSXRECOMP_BIOS_ROM` (exactly 512 KiB); not copied into the distribution, and no BIOS bytes, digest or sidecar are written; the run checks the size and prints the SHA-256 |
 | Disc (CD sector source) | user-supplied, copied to `runtime/disc/disc.{chd,bin}`; SHA-256 re-verified on every run |
 | AOT inputs | `--aot-dir` files (`rom.roots`, `images.txt` and every `image`/`exe` reference, resolved fail-closed against the AOT directory) copied to `runtime/firmware/` preserving their layout; per-file SHA-256 pinned in the boot manifest (`aotInputs`, schema 2) and re-verified before every plan rebuild; the host rebuilds the identical `LoadedCodeTable` (analysis only, no code generation) |
 | Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`, schema 2), selects the firmware run in the shared RuntimeHost |
@@ -511,7 +511,7 @@ and a guarded game block runs only while RAM holds its compiled words.
 The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts and the final register file, and `RuntimeHost --diagnostics <path>` additionally writes the Issue #763 stop diagnostic (best-effort; the classified exit code is unchanged).
 
 **Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
-commercial game or genuine BIOS is bundled. Redistributing OpenBIOS (even the compiled artifact embeds the ROM) waits
+commercial game or genuine BIOS is bundled. Redistributing OpenBIOS waits (the distribution holds no BIOS bytes; the ROM is named by path at run time)
 for the #730 file-by-file license audit; the generated `README.txt` says so. This is a technical verification path,
 not distribution approval.
 
@@ -700,13 +700,29 @@ as part of the one guest state.
 
 **Scope of the refusals (R1).** The manifest stage refuses an AOT input on one of four grounds: the input kind `rom-image` (BIOS bytes placed in RAM), an input kind outside the allowed set (refused fail-closed, the reason being the kind), a load range that overlaps the BIOS range, and a complete BIOS image with every byte equal. These refusals check the structure of an input and its content identity. They say nothing about the historical origin of an input, and a partial content match is a diagnostic only. The refusals are wired through `BiosGuardWiring.Run` in `FirmwareDistribution`, one stage each (`BiosAddressGuard`):
 
-**Terms.** A *structural check* (the input kind, or the load range overlapping the BIOS) is a safety check on how an input is placed; it is not a claim about where the bytes came from. *Content identity* (the input is the complete BIOS image, every byte equal) shows that the content is the BIOS image; it does not show where the input came from. *Historical origin* is not proven by any ground: a packaging cannot establish where a file came from. The kind and the load range come from the internal manifest parser, not from a user-declared label. The declared provenance (`--bios-provenance`) is a recorded label, not evidence, and never a ground for a refusal. Content matching below the complete image is a diagnostic, never a refusal.
+**Input-kind trust boundary (owner ruling, option 2).** A directive keyword selects a reader; it does not decide the class.
+`BiosAddressGuard.DeriveInputClass` derives the class from what was produced: (1) the ROM reader's product (`rom-image`: the bytes are
+read from the ROM by code, at the ROM address the directive names); (2) the actual load address, for the BIOS-range check (for a PS-X
+file the address is the file's own header TextStart, not a user value); (3) the actual words, for the whole-image identity; (4) for an
+executable kind, the evidence that the PS-X file reader verified the bytes (`SourceSha256`, set only after the file parsed as a PS-X
+EXE). Missing or inconsistent evidence, and an unknown kind, derive `Unknown` and are refused fail-closed, with no BIOS origin claimed.
+Relabelling a ROM copy as a disc or file executable does not pass it: its load address decides the range check and its words decide the
+identity check. Metadata that does not validate (a corrupt executable, a malformed directive) stops the production reader before any image
+exists.
+
+**Guarantee and limits.** The derivation refuses every input the ROM reader produced, every input whose actual load range overlaps the
+BIOS, every input whose words are the complete BIOS image, and every unknown or unverified input. It does not refuse a partial BIOS
+fragment carried by a PS-X file at a RAM address: partial content matching is a diagnostic only, by the owner's rule. A deliberately
+crafted file that carries BIOS words at a RAM address is therefore not detected by any structural check; it is reported by the content
+diagnostic. This is the residual risk of the trust boundary. Nothing here establishes the historical origin of any input.
+
+**Terms.** A *structural check* (the input kind, or the load range overlapping the BIOS) is a safety check on how an input is placed; it is not a claim about where the bytes came from. *Content identity* (the input is the complete BIOS image, every byte equal) shows that the content is the BIOS image; it does not show where the input came from. *Historical origin* is not proven by any ground: a packaging cannot establish where a file came from. The class is derived from the reader's product, the actual load address and the actual words (see the trust boundary paragraph); no user-declared label is used. The declared provenance (`--bios-provenance`) is a recorded label, not evidence, and never a ground for a refusal. Content matching below the complete image is a diagnostic, never a refusal.
 
 | Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
 |---|---|---|
-| manifest | structural checks: a `rom-image` kind, a kind outside `boot-exe`/`disc-exe`/`exe-file` (fail-closed), a load range overlapping the BIOS range; content identity: the complete BIOS image with every byte equal. A partial content match is a diagnostic only (Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`, `AnUnknownInputKind_IsRefusedFailClosed_WithoutAnOriginClaim`, `TheRomKindRefusal_IsItsOwnPath_EvenForAShortCopy`, `AWholeBiosHeldAsInputData_IsRefused_BecauseItsContentIsIdentical`, `ANormalInput_PassesEveryRefusalRoute_ForEachAllowedKind` (negative control) |
-| plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestStageDisabled_ThePlanStageRefuses` |
-| dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses` |
+| manifest | structural checks on the derived class: the ROM reader's product (`rom-image`), an unknown or unverified kind (fail-closed), a load range overlapping the BIOS range; content identity: the complete BIOS image with every byte equal. A partial content match is a diagnostic only (Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`, `AnUnknownInputKind_IsRefusedFailClosed_WithoutAnOriginClaim`, `TheRomKindRefusal_IsItsOwnPath_EvenForAShortCopy`, `AWholeBiosHeldAsInputData_IsRefused_BecauseItsContentIsIdentical`, `ANormalInput_PassesEveryRefusalRoute_ForEachAllowedKind` (negative control) |
+| plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestAndDispatchStagesDisabled_ThePlanStageRefuses_UnderItsOwnName` |
+| dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses_UnderItsOwnName` |
 | source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
 
 Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFFFF` before the range test. The load-bearing
@@ -919,11 +935,16 @@ read. Mixed-fallback progress is therefore verified by the stop message and by t
 
 - The packaged executable loads the BIOS at run time from the path named by `PSXRECOMP_BIOS_ROM` (512 KiB exactly; a direct run
   exits with **95** on another size, the Runtime host with **78**). The packaging pins no digest of the BIOS.
-- Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the .NET SDK apphost template path
-  the Microsoft CI build root of the .NET apphost template (the exact path is `DistributionLeakScanner.ApphostTemplatePath`),
-  not a developer path. Matched exactly (case-insensitive) in that relative file only. Removing it needs `UseAppHost=false` (owner decision pending).
-- The generated executable and the native library are stripped (`-s`). The Runtime host is published with `DebugType=none`.
+- Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the path of the .NET SDK apphost template's Microsoft
+  CI build root (the exact path is `DistributionLeakScanner.ApphostTemplatePath`). It is not a developer path. Matched exactly (case-insensitive) in that relative file only. Removing it needs `UseAppHost=false` (owner decision pending).
+- The generated executable is stripped (`-s`, the firmware link only). The native library keeps its symbol table; `--strip-debug`
+  removes its DWARF sections. The Runtime host is published with `DebugType=none`.
   The intermediate object is removed after linking; a failed removal fails the build.
+- **Developer probe (residual).** `openbios-probe --engine generated-host` compiles ROM blocks. It is a developer-run diagnostic,
+  outside the distribution. Its outputs (the JSON report, generated code, binaries, logs) stay local: they are never committed, never
+  placed in CI artifacts, and never included in a distribution package.
+- **Input-kind trust boundary (residual).** A crafted PS-X file that carries BIOS words at a RAM address is reported by the content
+  diagnostic and not refused (see the trust boundary paragraph).
 
 ### Remaining acceptance gates
 

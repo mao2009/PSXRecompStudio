@@ -116,7 +116,7 @@ public sealed class BiosCopyMeasurementTests
             if (assertNoFalsePositive)
             {
                 // The provenance rule (Issue #B2, option 1) never refuses by content: an ordinary input must pass the manifest stage.
-                var manifest = new LoadImageManifest([new LoadedImageSpec(Path.GetFileName(file), 0x80010000u, words, [], "exe-file")], new HashSet<uint>());
+                var manifest = new LoadImageManifest([new LoadedImageSpec(Path.GetFileName(file), 0x80010000u, words, [], "exe-file") { SourceSha256 = "measurement-evidence" }], new HashSet<uint>());
                 ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow(
                     $"the ordinary {name} input {Path.GetFileName(file)} must not be refused");
             }

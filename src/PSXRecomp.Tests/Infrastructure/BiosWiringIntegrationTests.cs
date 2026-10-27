@@ -180,6 +180,20 @@ public sealed class BiosWiringIntegrationTests : IDisposable
     }
 
     [Fact]
+    public void DistributionReadme_DoesNotClaimThatTheRomIsCompiled()
+    {
+        // The distributed README is the user's statement of what is compiled. It must say that the ROM is not compiled, and must not say
+        // that the artifact embeds the ROM or holds a BIOS digest (Issue #B2, review MEDIUM-1).
+        var readme = FirmwareDistributionBuilder.Readme("game.exe");
+
+        readme.Should().Contain("The OpenBIOS ROM is not compiled", "the README states the ROM is interpreted, not compiled");
+        readme.Should().Contain("compiled code", "the README says what the native artifact holds");
+        readme.Should().NotContain("ROM compiled ahead of time", "the README must not claim the ROM is compiled");
+        readme.Should().NotContain("embeds the ROM", "the distribution holds no BIOS bytes");
+        readme.Should().Contain("No BIOS bytes or digest are written", "the README states what the distribution holds");
+    }
+
+    [Fact]
     public void ProductionManifest_DiagnosesA124ByteCopySplitAcrossTwoAotInputs_AndDoesNotRefuseIt()
     {
         // A 127-byte copy's 31 whole words (124 bytes), split: 16 words in the disc's boot executable, 15 in a PS-X EXE file.

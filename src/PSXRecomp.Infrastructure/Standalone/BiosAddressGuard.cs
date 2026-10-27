@@ -53,6 +53,29 @@ public static class BiosGuardWiring
     }
 }
 
+/// <summary>
+/// The class of one AOT input, derived by <see cref="BiosAddressGuard.DeriveInputClass"/> (Issue #B2, the trust boundary).
+/// <see cref="Executable"/> is the only class the manifest stage passes.
+/// </summary>
+[Infrastructure]
+public enum BiosInputClass
+{
+    /// <summary>A PS-X executable read by a file or disc reader, with its verified source evidence, outside the BIOS range.</summary>
+    Executable,
+
+    /// <summary>BIOS bytes placed in RAM by the ROM reader (the structural kind <c>rom-image</c>).</summary>
+    RomCopy,
+
+    /// <summary>The load range overlaps the BIOS range (the actual load address).</summary>
+    BiosRange,
+
+    /// <summary>The words are the complete BIOS image, every byte equal (content identity).</summary>
+    BiosImage,
+
+    /// <summary>An unknown kind, or an executable kind without its verified source evidence: refused fail-closed.</summary>
+    Unknown,
+}
+
 /// <summary>The content diagnostic of the AOT inputs of one packaging (Issue #B2): a report, never a refusal.</summary>
 [Infrastructure]
 public sealed record BiosContentDiagnostic(
@@ -126,34 +149,59 @@ public static class BiosAddressGuard
         ArgumentNullException.ThrowIfNull(firmware);
         foreach (var image in manifest.Images)
         {
-            if (image.Kind == "rom-image")
+            switch (DeriveInputClass(image, firmware))
             {
-                throw new InvalidDataException(
-                    $"image '{image.Name}' has the structural kind 'rom-image' (BIOS bytes placed in RAM by the packaging); refused by the structural " +
-                    "check on the input kind (Issue #B2). This is not a claim about the historical origin; such code runs in the interpreter fallback.");
-            }
-
-            if (!AllowedAotSourceKinds.Contains(image.Kind))
-            {
-                throw new InvalidDataException(
-                    $"image '{image.Name}' has the input kind '{image.Kind}', which is not an allowed AOT source; refused fail-closed by the structural " +
-                    "check on the input kind (Issue #B2). The reason is the kind; no BIOS origin is claimed.");
-            }
-
-            if (OverlapsBios(image.LoadAddress, (ulong)image.Words.Length * 4))
-            {
-                throw new InvalidDataException(
-                    $"image '{image.Name}' loads into the BIOS range: refused by the structural safety check on the load range (Issue #B2). " +
-                    "This is not a claim about the historical origin; no code there is translated.");
-            }
-
-            if (IsWholeBiosImage(image.Words, firmware))
-            {
-                throw new InvalidDataException(
-                    $"image '{image.Name}' is byte-identical to the complete BIOS image: refused by content identity (Issue #B2). This does not show " +
-                    "where the input came from; the identity is of content only.");
+                case BiosInputClass.RomCopy:
+                    throw new InvalidDataException(
+                        $"image '{image.Name}' has the structural kind 'rom-image' (BIOS bytes placed in RAM by the packaging); refused by the structural " +
+                        "check on the input kind (Issue #B2). This is not a claim about the historical origin; such code runs in the interpreter fallback.");
+                case BiosInputClass.BiosRange:
+                    throw new InvalidDataException(
+                        $"image '{image.Name}' loads into the BIOS range: refused by the structural safety check on the load range (Issue #B2). " +
+                        "This is not a claim about the historical origin; no code there is translated.");
+                case BiosInputClass.BiosImage:
+                    throw new InvalidDataException(
+                        $"image '{image.Name}' is byte-identical to the complete BIOS image: refused by content identity (Issue #B2). This does not show " +
+                        "where the input came from; the identity is of content only.");
+                case BiosInputClass.Unknown:
+                    throw new InvalidDataException(
+                        $"image '{image.Name}' has the input kind '{image.Kind}', which is not an allowed AOT source (or has no verified source evidence); " +
+                        "refused fail-closed (Issue #B2). The reason is the kind and the evidence; no BIOS origin is claimed.");
+                default:
+                    break;
             }
         }
+    }
+
+    /// <summary>
+    /// The class of an AOT input, derived from what the parser actually produced (Issue #B2, the trust boundary). The directive keyword
+    /// selects a reader; it cannot assign a class the reader did not produce. The class uses:
+    /// the reader's own product (a ROM copy is read from the ROM by code); the actual load address (the range check); the actual words
+    /// (the whole-image identity); and the evidence that a PS-X file reader verified the bytes (<c>SourceSha256</c>, set only after the
+    /// file parsed as a PS-X EXE). Missing or inconsistent evidence is <see cref="BiosInputClass.Unknown"/>, which is refused fail-closed.
+    /// </summary>
+    public static BiosInputClass DeriveInputClass(LoadedImageSpec image, OpenBiosFirmware firmware)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        ArgumentNullException.ThrowIfNull(firmware);
+        if (image.Kind == "rom-image")
+        {
+            return BiosInputClass.RomCopy;
+        }
+
+        if (OverlapsBios(image.LoadAddress, (ulong)image.Words.Length * 4))
+        {
+            return BiosInputClass.BiosRange;
+        }
+
+        if (IsWholeBiosImage(image.Words, firmware))
+        {
+            return BiosInputClass.BiosImage;
+        }
+
+        return AllowedAotSourceKinds.Contains(image.Kind) && !string.IsNullOrEmpty(image.SourceSha256)
+            ? BiosInputClass.Executable
+            : BiosInputClass.Unknown;
     }
 
     /// <summary>

@@ -551,13 +551,16 @@ public static class FirmwareDistributionBuilder
         }
     }
 
-    private static string Readme(string binaryName) => string.Join('\n',
+    /// <summary>The distribution's README. The native artifact holds the disc's executables as compiled code; the OpenBIOS ROM is not compiled.</summary>
+    internal static string Readme(string binaryName) => string.Join('\n',
         "# Standalone OpenBIOS game distribution",
         "",
         $"Launch: {binaryName}",
         "",
-        "The native artifact is the OpenBIOS ROM compiled ahead of time. OpenBIOS runs its real MIPS code and loads the",
-        "game from runtime/disc/ through its own CD driver; BIOS calls are never answered by the host.",
+        "The native artifact holds the disc's executables as compiled code. The OpenBIOS ROM is not compiled: it runs",
+        "interpreted from the BIOS image you supply. OpenBIOS runs its real MIPS code and loads the game from runtime/disc/",
+        "through its own CD driver; BIOS calls are never answered by the host. No BIOS bytes or digest are written into",
+        "this directory.",
         "",
         "- The OpenBIOS ROM is NOT in this directory. Set PSXRECOMP_BIOS_ROM to the path of your own 512 KiB openbios.bin",
         "  before launching; the run prints its SHA-256 and the BIOS mode (openbios-rom only for a user-supplied image).",

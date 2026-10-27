@@ -36,8 +36,14 @@ public sealed class BiosCopyDetectionTests
     /// <summary>A word the BIOS does not hold at any offset of these fragments (a non-BIOS separator).</summary>
     private const uint Separator = 0xC0FFEE00u;
 
+    /// <summary>The source evidence a PS-X file reader records after it parsed a file (the production <c>SourceSha256</c>); synthetic here.</summary>
+    private const string Evidence = "synthetic-evidence";
+
     private static LoadImageManifest Manifest(params (string Kind, uint[] Words)[] images) => new(
-        images.Select((image, index) => new LoadedImageSpec($"input{index}", 0x00000500u + (uint)index * 0x1000u, image.Words, [], image.Kind)).ToArray(),
+        images.Select((image, index) => new LoadedImageSpec($"input{index}", 0x00000500u + (uint)index * 0x1000u, image.Words, [], image.Kind)
+        {
+            SourceSha256 = Evidence,
+        }).ToArray(),
         new HashSet<uint>());
 
     [Fact]
@@ -244,7 +250,7 @@ public sealed class BiosCopyDetectionTests
         // A disc program that copies a BIOS routine into RAM: the RAM address does not matter, the content does. Reported only.
         var bios = Bios();
         var words = Enumerable.Range(0, 16).Select(static i => 0x24080000u | (uint)i).Concat(Fragment(bios, 20000, 60)).ToArray();
-        var manifest = new LoadImageManifest([new LoadedImageSpec("copy-in-ram", 0x80100000u, words, [], "disc-exe")], new HashSet<uint>());
+        var manifest = new LoadImageManifest([new LoadedImageSpec("copy-in-ram", 0x80100000u, words, [], "disc-exe") { SourceSha256 = Evidence }], new HashSet<uint>());
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
         BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("240 bytes of high-variety BIOS matches");
@@ -293,7 +299,7 @@ public sealed class BiosCopyDetectionTests
         // Disclosure: the diagnostic (written to bios-content-diagnostic.txt) reports counts only. No BIOS word or byte, hex or decimal.
         var bios = Bios();
         var fragment = Fragment(bios, 20000, 60);
-        var manifest = new LoadImageManifest([new LoadedImageSpec("copy", 0x80100000u, fragment, [], "disc-exe")], new HashSet<uint>());
+        var manifest = new LoadImageManifest([new LoadedImageSpec("copy", 0x80100000u, fragment, [], "disc-exe") { SourceSha256 = Evidence }], new HashSet<uint>());
 
         var message = BiosAddressGuard.DiagnoseContent(manifest, bios).Message;
 
@@ -379,7 +385,7 @@ public sealed class BiosCopyDetectionTests
         // Negative control: an ordinary allowed-kind input outside the BIOS range, not the BIOS, passes every route.
         var bios = Bios();
         var words = Enumerable.Range(0, 64).Select(static i => 0x3C010000u | (uint)i).ToArray();
-        var manifest = new LoadImageManifest([new LoadedImageSpec("normal", 0x00080000u, words, [], kind)], new HashSet<uint>());
+        var manifest = new LoadImageManifest([new LoadedImageSpec("normal", 0x00080000u, words, [], kind) { SourceSha256 = Evidence }], new HashSet<uint>());
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
     }

@@ -169,7 +169,7 @@ public sealed class BiosDocumentedProcedureTests
         if (!process.WaitForExit(ProcessTimeoutMs))
         {
             process.Kill(entireProcessTree: true);
-            process.HasExited.Should().BeTrue("the killed script must not keep running");
+            process.WaitForExit(10_000).Should().BeTrue("the killed script must exit before the test ends");
             throw new TimeoutException($"prepare-aot.py did not finish within {ProcessTimeoutMs} ms; the process tree was killed");
         }
 
