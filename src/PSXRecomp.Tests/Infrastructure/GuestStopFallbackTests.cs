@@ -40,55 +40,100 @@ public sealed class GuestStopFallbackTests
         return Image(main, target);
     }
 
+    /// <summary>
+    /// Issue #828 (the stop's outcome table, ApplyStopOutcome), measured path only. In this fallback the child has already handed over and
+    /// ended, and the stop still reaches the run as "child ended before stop" (path 1 of the table). The child is observed alive when
+    /// the stop starts, and in measurements it ends during the stop's own enumeration, before the kill; that ordering is a race inside
+    /// the stop, not something this test controls. The test therefore fixes the observed outcome of that path, not a deterministic
+    /// schedule. The Cancelled path (a live child killed and confirmed) cannot be reached from a fallback segment; it is checked by the
+    /// unit table (GuestCancellationTests.ApplyStopOutcome_*).
+    /// </summary>
     [Fact]
-    public async Task StopDuringAFallbackSegment_ResultFollowsTheSpecTable_AndTheFallbackStops()
+    public async Task StopDuringAFallbackSegment_MeasuredPath_ChildEndsBeforeKill_KeepsItsResult()
     {
-        var words = FallbackSpinProgram();
-        using var dir = new TempDirectory();
-        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
-        // The segment budget is effectively unbounded, so only the stop can end the fallback segment in test time.
-        var fallback = new MixedFallbackOptions(SegmentInstructionBudget: uint.MaxValue);
-        using var engine = new RecompiledHostExecutionEngine(
-            program,
-            words,
-            Entry,
-            new GeneratedHostBuildService(),
-            dir.FullPath,
-            (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer),
-            mixedFallback: fallback);
-        long fetches = 0;
-        engine.FallbackFetchObserver = (_, _) => Interlocked.Increment(ref fetches);
-        using var cts = new CancellationTokenSource();
+        using var run = new StoppableFallback();
+        var result = await run.StopAfterFetches();
 
-        var run = Task.Run(() => new ExecutionOrchestrator().Execute(engine, new ExitAtZeroHandoff(), Request(), cancellationToken: cts.Token));
-        try
-        {
-            WaitUntil(() => Volatile.Read(ref fetches) >= FetchesBeforeStop, StopWait);
-        }
-        finally
-        {
-            // Even when the fallback never reaches the stop point, the spinning segment must not outlive the test.
-            cts.Cancel();
-        }
-
-        var result = await run.WaitAsync(StopWait);
-
-        // Issue #828 (the stop's outcome table, ApplyStopOutcome). The fallback segment runs after the artifact child has handed over and
-        // ended, so the stop finds the child already gone: the child's own result stands (path A). This test fixes that path only. The
-        // Cancelled path (a live child killed and confirmed) cannot be reached from a fallback segment; it is checked by the unit table
-        // (GuestCancellationTests.ApplyStopOutcome_*).
-        var diagnostics = engine.LastStopDiagnostics;
+        var diagnostics = run.Diagnostics;
         diagnostics.Should().NotBeNull("a stop was requested during the run");
-        diagnostics!.ChildEndedBeforeStop.Should().BeTrue("the stop reached the fallback after the artifact child had ended");
+        diagnostics!.ChildEndedBeforeStop.Should().BeTrue("the stop reached the fallback after the artifact child had ended (measured path)");
         diagnostics.Confirmed.Should().BeFalse("no kill was sent to a child that had already ended");
         result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
         result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.StoppedOnRequest);
+    }
 
-        // The run's result is not the proof: the host's fallback segment must have stopped too. The interpreter's fetch count
-        // must not move once the run has returned, so a fallback still stepping in the background fails here.
-        var atReturn = Volatile.Read(ref fetches);
+    /// <summary>
+    /// The run's result is not the proof: the host's fallback segment must stop with the run. Independent of the stop's outcome path, so
+    /// a failure here is not masked by a classification failure. The interpreter's fetch count must not move once the run has returned.
+    /// </summary>
+    [Fact]
+    public async Task StopDuringAFallbackSegment_FetchesDoNotGrowAfterTheRunReturns()
+    {
+        using var run = new StoppableFallback();
+        await run.StopAfterFetches();
+
+        var atReturn = run.Fetches;
         SpinFor(TimeSpan.FromMilliseconds(300));
-        Volatile.Read(ref fetches).Should().Be(atReturn, "the fallback segment must stop with the run, not keep stepping the interpreter");
+        run.Fetches.Should().Be(atReturn, "the fallback segment must stop with the run, not keep stepping the interpreter");
+    }
+
+    /// <summary>
+    /// One engine running the spinning fallback, with the fetch count and the stop. Owns its engine, directory and token source, and
+    /// disposes them in the order the engine needs (engine first).
+    /// </summary>
+    private sealed class StoppableFallback : IDisposable
+    {
+        private readonly TempDirectory _dir = new();
+        private readonly RecompiledHostExecutionEngine _engine;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task<TitleExecutionResult> _run;
+        private long _fetches;
+
+        public StoppableFallback()
+        {
+            var words = FallbackSpinProgram();
+            var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+            // The segment budget is effectively unbounded, so only the stop can end the fallback segment in test time.
+            var fallback = new MixedFallbackOptions(SegmentInstructionBudget: uint.MaxValue);
+            _engine = new RecompiledHostExecutionEngine(
+                program,
+                words,
+                Entry,
+                new GeneratedHostBuildService(),
+                _dir.FullPath,
+                (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer),
+                mixedFallback: fallback);
+            _engine.FallbackFetchObserver = (_, _) => Interlocked.Increment(ref _fetches);
+            var token = _cts.Token;
+            _run = Task.Run(() => new ExecutionOrchestrator().Execute(_engine, new ExitAtZeroHandoff(), Request(), cancellationToken: token));
+        }
+
+        public long Fetches => Volatile.Read(ref _fetches);
+
+        public StopDiagnostics? Diagnostics => _engine.LastStopDiagnostics;
+
+        /// <summary>Waits for the fallback to reach the fetch point, sends the stop, and returns the run's result (bounded).</summary>
+        public async Task<TitleExecutionResult> StopAfterFetches()
+        {
+            try
+            {
+                WaitUntil(() => Fetches >= FetchesBeforeStop, StopWait);
+            }
+            finally
+            {
+                // Even when the fallback never reaches the stop point, the spinning segment must not outlive the test.
+                _cts.Cancel();
+            }
+
+            return await _run.WaitAsync(StopWait);
+        }
+
+        public void Dispose()
+        {
+            _engine.Dispose();
+            _cts.Dispose();
+            _dir.Dispose();
+        }
     }
 
     /// <summary>Busy-waits for <paramref name="duration"/> (a bounded, deterministic pause for the test layer).</summary>
