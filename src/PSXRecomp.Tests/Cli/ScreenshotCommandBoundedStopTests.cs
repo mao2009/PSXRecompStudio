@@ -70,8 +70,9 @@ public sealed class ScreenshotCommandBoundedStopTests
 
         var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
         manifest.GetProperty("engine").GetString().Should().Be(InterpreterTitleExecutionEngine.EngineName);
+        manifest.GetProperty("guestPcTiming").GetString().Should().Be("capture-instant");
         var frame = manifest.GetProperty("frames")[0];
-        frame.GetProperty("guestPc").GetString().Should().StartWith("0x");
+        frame.GetProperty("guestPc").GetString().Should().Be("0xBFC00000");
     }
 
     [Theory]

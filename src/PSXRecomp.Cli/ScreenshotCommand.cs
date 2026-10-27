@@ -273,7 +273,8 @@ public static class ScreenshotCommand
                     vblankInterval,
                     maxScreenshots,
                     startVblank,
-                    () => segmentPc);
+                    () => segmentPc,
+                    guestPcTiming: "segment-boundary");
             });
             // A RuntimeHandoff is continued on the same live engine (no Load: RAM, GPU and scheduler are kept, review of #751).
             // The request's outer budget bounds the whole run: each continuation gets only what the earlier slices left.
@@ -292,7 +293,7 @@ public static class ScreenshotCommand
         {
             stopReason = stop.Reason;
             executionResult = new TitleExecutionResult(
-                TitleExecutionState.RuntimeHandoff, stop.Last, 0, InterpreterTitleExecutionEngine.EngineName,
+                TitleExecutionState.RuntimeHandoff, stop.Last, 0, engine.Name,
                 stop.Reason.ToUpperInvariant(), $"Stopped by the screenshot command: {stop.Reason}.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -302,7 +303,7 @@ public static class ScreenshotCommand
             standardError.WriteLine($"psxrecomp screenshot: runtime crash: {ex}");
             executionResult = new TitleExecutionResult(
                 TitleExecutionState.RuntimeFailure,
-                null, 0, InterpreterTitleExecutionEngine.EngineName,
+                null, 0, engine.Name,
                 "CRASH", $"Runtime crash: {ex}");
         }
         finally
@@ -765,7 +766,8 @@ public static class ScreenshotCommand
                         vblankInterval,
                         maxScreenshots,
                         startVblank,
-                        () => interpreterEngine.DiagnosticDevices.Core.Pc);
+                        () => interpreterEngine.DiagnosticDevices.Core.Pc,
+                        guestPcTiming: "capture-instant");
 
                     interpreterEngine.Scheduler!.VblankCallback = vblank => screenshotCapture.TryCaptureAtVBlank(vblank);
                 });

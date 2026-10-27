@@ -22,6 +22,7 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly List<ulong> _targetVblanks;
     private readonly HashSet<ulong> _capturedVblanks = new();
     private readonly Func<uint?>? _guestPcSource;
+    private readonly string? _guestPcTiming;
     private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
     private ulong _lastVblank = 0;
@@ -42,7 +43,12 @@ public sealed class ScreenshotCapture : IDisposable
     /// <param name="interval">VBlank interval between captures (default 300).</param>
     /// <param name="maxScreenshots">Maximum number of screenshots to capture (default 10).</param>
     /// <param name="startVblank">First VBlank to capture at (default 300).</param>
-    /// <param name="guestPcSource">Reads the guest PC at the moment of each capture; null when the caller cannot know it.</param>
+    /// <param name="guestPcSource">Reads the guest PC for each capture; null when the caller cannot know it.</param>
+    /// <param name="guestPcTiming">
+    /// When <paramref name="guestPcSource"/> reads the PC: <c>"capture-instant"</c> (the PC at the moment of capture, OpenBIOS)
+    /// or <c>"segment-boundary"</c> (the PC of the last segment boundary, which can lag the capture by up to one segment, HLE).
+    /// Recorded in the manifest as <c>guestPcTiming</c>.
+    /// </param>
     public ScreenshotCapture(
         GpuDevice gpuDevice,
         DeviceScheduler scheduler,
@@ -50,7 +56,8 @@ public sealed class ScreenshotCapture : IDisposable
         uint interval = 300,
         int maxScreenshots = 10,
         ulong startVblank = 300,
-        Func<uint?>? guestPcSource = null)
+        Func<uint?>? guestPcSource = null,
+        string? guestPcTiming = null)
     {
         ArgumentNullException.ThrowIfNull(gpuDevice);
         ArgumentNullException.ThrowIfNull(scheduler);
@@ -64,6 +71,7 @@ public sealed class ScreenshotCapture : IDisposable
         _interval = interval;
         _maxScreenshots = maxScreenshots;
         _guestPcSource = guestPcSource;
+        _guestPcTiming = guestPcTiming;
 
         _targetVblanks = new List<ulong>(maxScreenshots);
         for (int i = 1; i <= maxScreenshots; i++)
@@ -287,7 +295,7 @@ public sealed class ScreenshotCapture : IDisposable
     public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc,
         string? exceptionType = null, bool goalReached = false, string? engine = null) =>
         WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames,
-            exceptionType, goalReached, WriteFailures, _frames.Select(f => f.File), engine);
+            exceptionType, goalReached, WriteFailures, _frames.Select(f => f.File), engine, _guestPcTiming);
 
     /// <summary>
     /// Writes <c>manifest.json</c> without a capture session, so a run that failed before capture was set up still
@@ -300,7 +308,7 @@ public sealed class ScreenshotCapture : IDisposable
     public static void WriteManifestFile(
         string outputDirectory, string stopReason, int screenshotsTaken, ulong maxVblankReached, TimeSpan elapsed,
         uint? lastGuestPc, IEnumerable<object> frames, string? exceptionType = null, bool goalReached = false,
-        int writeFailures = 0, IEnumerable<string>? ownPngNames = null, string? engine = null)
+        int writeFailures = 0, IEnumerable<string>? ownPngNames = null, string? engine = null, string? guestPcTiming = null)
     {
         Directory.CreateDirectory(outputDirectory);
         var own = new HashSet<string>(ownPngNames ?? [], StringComparer.OrdinalIgnoreCase);
@@ -315,6 +323,7 @@ public sealed class ScreenshotCapture : IDisposable
         {
             stopReason,
             engine,
+            guestPcTiming,
             goalReached,
             captureStatus = CaptureStatusOf(goalReached, screenshotsTaken, writeFailures),
             writeFailures,

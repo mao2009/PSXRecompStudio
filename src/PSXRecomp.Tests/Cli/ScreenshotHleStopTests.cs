@@ -143,6 +143,70 @@ public sealed class ScreenshotHleStopTests : IDisposable
         ScreenshotCommand.IsSuccess(result).Should().BeFalse("a run that ends on its budget is never a success");
     }
 
+    [Fact]
+    public void Frames_RecordTheBoundaryPcOfTheSegmentThatProducedThem()
+    {
+        // Review of #842 (MAJOR): each frame carries the PC of the segment boundary it was taken at. The two segments end
+        // at different PCs, so a missing, stale or constant PC fails here.
+        using var dir = new TempDirectory();
+        var engine = new ScriptedEngine((segment, request) =>
+        {
+            _scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles);
+            var pc = segment == 1 ? Entry + 0x40 : Entry + 0x80;
+            return RecompilerExecutionResult.Completed(new RecompilerStateSnapshot(
+                request.Gpr.ToArray(), request.Hi, request.Lo, pc,
+                termination: RecompilerIrTerminationReason.UnresolvedIndirectFlow));
+        });
+
+        var result = ScreenshotCommand.RunScreenshotCaptureHle(
+            engine, () => (_gpu, _scheduler), new ExitHandoff(), Request(), segmentBudget: 1000,
+            dir.FullPath, vblankInterval: 1, maxScreenshots: 2, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        result.GoalReached.Should().BeTrue("both segments must produce a frame");
+        var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("guestPcTiming").GetString().Should().Be("segment-boundary");
+        var frames = manifest.GetProperty("frames");
+        frames[0].GetProperty("guestPc").GetString().Should().Be("0x80010040");
+        frames[1].GetProperty("guestPc").GetString().Should().Be("0x80010080");
+    }
+
+    [Fact]
+    public void CaptureStop_RecordsTheEngineThatRan()
+    {
+        // Review of #842 (MINOR): the stop path names the engine that actually ran, not the interpreter by default.
+        using var dir = new TempDirectory();
+        var engine = new ScriptedEngine((segment, request) =>
+        {
+            _scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles);
+            return RecompilerExecutionResult.Completed(new RecompilerStateSnapshot(
+                request.Gpr.ToArray(), request.Hi, request.Lo, Entry + 0x40,
+                termination: RecompilerIrTerminationReason.ExecutionBudgetExceeded));
+        });
+
+        var result = ScreenshotCommand.RunScreenshotCaptureHle(
+            engine, () => (_gpu, _scheduler), new ExitHandoff(), Request(), segmentBudget: 1000,
+            dir.FullPath, vblankInterval: 1, maxScreenshots: 1, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        result.StopReason.Should().Be("goal_reached");
+        var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("engine").GetString().Should().Be(engine.Name);
+    }
+
+    [Fact]
+    public void RuntimeCrash_RecordsTheEngineThatRan()
+    {
+        using var dir = new TempDirectory();
+        var engine = new ScriptedEngine((_, _) => throw new InvalidOperationException("scripted crash"));
+
+        var result = ScreenshotCommand.RunScreenshotCaptureHle(
+            engine, () => (_gpu, _scheduler), new ExitHandoff(), Request(), segmentBudget: 1000,
+            dir.FullPath, vblankInterval: 1, maxScreenshots: 1, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        result.StopReason.Should().Be("runtime_failure");
+        var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("engine").GetString().Should().Be(engine.Name);
+    }
+
     private static TitleExecutionRequest Request(uint outerBudget = 10) =>
         new(Entry, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget, 1000);
 
