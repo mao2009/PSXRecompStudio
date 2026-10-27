@@ -253,8 +253,10 @@ public static class ScreenshotCommand
             // scheduler the loaded engine uses (review of #751: a second Load would replace the scheduler under the capture).
             // Screenshots are taken at segment boundaries and the guard ends the run at the capture cap or the wall-clock
             // timeout (Issue #751). The outer budget still bounds a guest that never stops.
+            uint? segmentPc = null;
             void Segment(RecompilerStateSnapshot snap)
             {
+                segmentPc = snap.PC;
                 screenshotCapture!.TryCapture();
                 StopGuard(screenshotCapture, stopwatch, timeout)(snap);
             }
@@ -270,7 +272,8 @@ public static class ScreenshotCommand
                     outputDirectory,
                     vblankInterval,
                     maxScreenshots,
-                    startVblank);
+                    startVblank,
+                    () => segmentPc);
             });
             // A RuntimeHandoff is continued on the same live engine (no Load: RAM, GPU and scheduler are kept, review of #751).
             // The request's outer budget bounds the whole run: each continuation gets only what the earlier slices left.
@@ -761,7 +764,8 @@ public static class ScreenshotCommand
                         outputDirectory,
                         vblankInterval,
                         maxScreenshots,
-                        startVblank);
+                        startVblank,
+                        () => interpreterEngine.DiagnosticDevices.Core.Pc);
 
                     interpreterEngine.Scheduler!.VblankCallback = vblank => screenshotCapture.TryCaptureAtVBlank(vblank);
                 });
@@ -819,10 +823,10 @@ public static class ScreenshotCommand
         var goalReached = capture?.AllTargetsSaved ?? false;
         if (capture is not null)
             capture.WriteManifest(stopReason, maxVblank, stopwatch.Elapsed, executionResult?.FinalSnapshot?.PC,
-                exceptionType, goalReached);
+                exceptionType, goalReached, executionResult?.EngineName);
         else
             ScreenshotCapture.WriteManifestFile(outputDirectory, stopReason, 0, maxVblank, stopwatch.Elapsed,
-                executionResult?.FinalSnapshot?.PC, [], exceptionType, goalReached);
+                executionResult?.FinalSnapshot?.PC, [], exceptionType, goalReached, engine: executionResult?.EngineName);
 
         return new HeadlessRunResult(
             executionResult ?? new TitleExecutionResult(

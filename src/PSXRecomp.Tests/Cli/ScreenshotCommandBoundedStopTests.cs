@@ -60,6 +60,20 @@ public sealed class ScreenshotCommandBoundedStopTests
         frame.GetProperty("width").GetInt32().Should().BeGreaterThan(0);
     }
 
+    [Fact]
+    public void Manifest_RecordsEngineAndPerFrameGuestPc()
+    {
+        using var dir = new TempDirectory();
+        ScreenshotCommand.RunScreenshotCaptureOpenBios(
+            SpinRom(), "00", null, dir.FullPath, segmentBudget: 100_000, segments: 50,
+            vblankInterval: 1, maxScreenshots: 1, startVblank: 1, TimeSpan.FromMinutes(1), TextWriter.Null);
+
+        var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        manifest.GetProperty("engine").GetString().Should().Be(InterpreterTitleExecutionEngine.EngineName);
+        var frame = manifest.GetProperty("frames")[0];
+        frame.GetProperty("guestPc").GetString().Should().StartWith("0x");
+    }
+
     [Theory]
     [InlineData(TitleExecutionState.BudgetExhausted, "execution_budget")]
     [InlineData(TitleExecutionState.RuntimeFailure, "runtime_failure")]
