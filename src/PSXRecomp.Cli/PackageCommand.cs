@@ -96,9 +96,7 @@ public static class PackageCommand
                 ?? (input.LoadAddress == 0x1FC00000u);
 
             var mixedFallback = arguments.MixedFallback
-                ? new MixedFallbackOptions(
-                    arguments.FallbackSegmentBudget ?? MixedFallbackOptions.DefaultSegmentInstructionBudget,
-                    arguments.FallbackMaxTransitions ?? MixedFallbackOptions.DefaultMaxTransitions)
+                ? ResolveMixedFallback(arguments.Gui, arguments.FallbackSegmentBudget, arguments.FallbackMaxTransitions)
                 : null;
 
             // Generate the dispatch table, then the direct-launch artifact source with the
@@ -308,6 +306,17 @@ public static class PackageCommand
             return RecompiledArtifactExitCode.Failure;
         }
     }
+
+    /// <summary>
+    /// The interpreter-fallback options of a package (#820 W09). Explicit <c>--fallback-*</c> values are kept as given. Without them a
+    /// headless package takes the finite defaults; a <c>--gui</c> window takes none, because it runs until it is closed (the same reason
+    /// as its artifact segment budget, #830). Its run is still bounded by <see cref="GuiRunTimeoutMs"/>.
+    /// </summary>
+    internal static MixedFallbackOptions ResolveMixedFallback(bool gui, uint? segmentBudget, uint? maxTransitions) =>
+        gui
+            ? new(segmentBudget ?? uint.MaxValue, maxTransitions ?? uint.MaxValue)
+            : new(segmentBudget ?? MixedFallbackOptions.DefaultSegmentInstructionBudget,
+                maxTransitions ?? MixedFallbackOptions.DefaultMaxTransitions);
 
     /// <summary>The PS-X EXE program image as little-endian bytes (text segment words).</summary>
     private static byte[] ProgramImageBytes(IReadOnlyList<uint> instructionWords)
