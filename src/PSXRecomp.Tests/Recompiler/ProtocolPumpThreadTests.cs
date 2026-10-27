@@ -36,12 +36,20 @@ public sealed class ProtocolPumpThreadTests
             allStarted.Wait(TimeSpan.FromSeconds(60)).Should().BeTrue("the blocked work must occupy the pool first");
 
             var pumpStarted = new ManualResetEventSlim(false);
-            var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() => pumpStarted.Set());
+            var pumpOnPool = true;
+            var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() =>
+            {
+#pragma warning disable AARC003 // Test-only observation of the pump's thread; the test starts and manages no threads itself.
+                pumpOnPool = Thread.CurrentThread.IsThreadPoolThread;
+#pragma warning restore AARC003
+                pumpStarted.Set();
+            });
 
-            // Condition wait, not a wall-clock budget: a loaded machine must not fail the test by timing alone. Whether the
-            // pump avoids the pool is pinned at its call site by the test below.
+            // Condition waits, not a wall-clock budget: a loaded machine must not fail the test by timing alone. The thread
+            // check below is deterministic: a pump on a pool worker fails it whenever it runs.
             pumpStarted.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue("the pump must start while the pool workers are held");
             pump.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue();
+            pumpOnPool.Should().BeFalse("a pump on a pool worker holds that worker for the child's whole life");
         }
         finally
         {
