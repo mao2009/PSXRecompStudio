@@ -923,6 +923,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             drainTimedOut,
             drainCutWhileAlive,
             OutputBudgetMsForTest ?? _runTimeoutMs);
+        // Issue #829: a fallback segment that ended because of the stop request (it was stopped in the host, and the child then ended on the
+        // decision it was sent) is the stop's result, not the artifact's UnresolvedIndirectFlow.
+        if (bridge?.DiagnosticCode == MixedFallbackDiagnostics.StoppedOnRequest && stopToken.IsCancellationRequested)
+        {
+            result = RecompilerExecutionResult.Failed(RecompilerExecutionStatus.Cancelled, CancelledDiagnosticCode, "The run was cancelled before the guest finished.");
+        }
 
         var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
         LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested);
@@ -2033,7 +2039,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode, _loadedCodeMismatch);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode, _loadedCodeMismatch,
+                        stopNow: () => StopNow is { } stop && stop());
                 }
                 Send(string.Create(CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
