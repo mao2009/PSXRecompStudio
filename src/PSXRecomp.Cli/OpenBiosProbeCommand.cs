@@ -305,6 +305,12 @@ internal static class OpenBiosProbeCommand
             ["firstMismatch"] = first,
         };
         output.WriteLine(document.ToJsonString());
+        // Issue #774 (W03): no common boundary means nothing was compared. A clean exit would read as a match, so it fails.
+        if (common == 0)
+        {
+            error.WriteLine("openbios-probe: --compare-boundary-logs: commonBoundaries is 0; no boundary was compared");
+            return 1;
+        }
         return 0;
     }
 

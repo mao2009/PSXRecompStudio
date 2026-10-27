@@ -44,6 +44,20 @@ public sealed class OpenBiosProbeBoundaryCompareTests
     }
 
     [Fact]
+    public void Zero_Common_Boundaries_Is_A_Failure_Not_A_Clean_Match()
+    {
+        using var dir = new TempDirectory();
+        var left = dir.WriteFile("left.jsonl", Lines("interpreter", "aa", "bb"));
+        var right = dir.WriteFile("right.jsonl", []);
+
+        var exit = Compare(left, right, out var output, out var error);
+
+        exit.Should().Be(1, "an empty side compares nothing; reporting it as a match would pass a run that was never compared");
+        error.Should().Contain("commonBoundaries is 0");
+        JsonNode.Parse(output)!["commonBoundaries"]!.GetValue<int>().Should().Be(0);
+    }
+
+    [Fact]
     public void A_Missing_File_Is_Refused()
     {
         using var dir = new TempDirectory();
