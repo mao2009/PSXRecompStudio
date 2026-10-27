@@ -76,9 +76,12 @@ public sealed class BiosSplitLimitationTests
         message.Should().NotContainEquivalentOf("all BIOS data", "no complete detection is claimed");
     }
 
-    /// <summary>The rule that stays: the complete image itself is still refused (the identity rule is not part of the limit).</summary>
+    /// <summary>
+    /// Guarantee, not a limit: the complete image itself is refused, as the guaranteed case of content identity. This test does not use
+    /// the <c>KnownLimit_</c> prefix, which is reserved for the limits this class pins.
+    /// </summary>
     [Fact]
-    public void KnownLimit_TheCompleteImageItself_IsStillRefused()
+    public void CompleteImage_IsStillRefused_AsTheGuaranteedCase()
     {
         var bios = SyntheticBios();
         var whole = new LoadedImageSpec("whole", 0x80010000u, bios.Words.ToArray(), [0x80010000u], "exe-file") { SourceSha256 = Evidence };

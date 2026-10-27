@@ -231,7 +231,7 @@ public static class BiosAddressGuard
         var anyBytes = any.Count * 4;
         var message =
             $"BIOS content diagnostic: {variedBytes} bytes of high-variety BIOS matches (reference {CopyThresholdBytes}), " +
-            $"{anyBytes} bytes of all BIOS matches (reference {LowVarietyThresholdBytes}). " +
+            $"{anyBytes} bytes of cumulative BIOS matches (reference {LowVarietyThresholdBytes}). " +
             "The provenance of these inputs is unknown (出所不明). Content matching is a diagnostic: it does not refuse, and a match does not show a BIOS origin.";
         return new BiosContentDiagnostic(
             variedBytes,

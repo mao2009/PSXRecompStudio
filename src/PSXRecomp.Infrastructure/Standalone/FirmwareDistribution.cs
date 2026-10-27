@@ -24,7 +24,7 @@ public sealed record FirmwareAotPlan(
     /// <summary>
     /// The only PCs a firmware distribution keeps interpreted: OpenBIOS's own exception entry points (<c>0x80000080</c>,
     /// <c>0x26A4</c>), which the firmware's exception path must stay able to observe. <c>scripts/openbios/prepare-aot.py</c> writes
-    /// them as <c>interpret</c> lines; it writes no BIOS image, because the BIOS is never an AOT input (owner ruling R1).
+    /// them as <c>interpret</c> lines; it writes no BIOS image, because the canonical pipeline never takes the BIOS as an AOT input (owner ruling R1, narrowed).
     /// </summary>
     /// <remarks>
     /// The milestone PCs the <c>openbios-probe</c> parity runs stop at (<c>0x80030000</c> shell load and

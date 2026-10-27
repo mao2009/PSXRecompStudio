@@ -208,7 +208,7 @@ public sealed class BiosCopyDetectionTests
         BiosAddressGuard.DiagnoseContent(sixtyFour, bios).ExceedsAllMatchReference.Should().BeFalse("256 bytes is at the reference");
         var over = BiosAddressGuard.DiagnoseContent(sixtyFive, bios);
         over.ExceedsAllMatchReference.Should().BeTrue();
-        over.Message.Should().Contain("260 bytes of all BIOS matches");
+        over.Message.Should().Contain("260 bytes of cumulative BIOS matches");
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFive, bios))).Should().NotThrow();
     }
 
@@ -226,7 +226,7 @@ public sealed class BiosCopyDetectionTests
         }
 
         var manifest = Manifest(("exe-file", words.ToArray()));
-        BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("280 bytes of all BIOS matches");
+        BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("280 bytes of cumulative BIOS matches");
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
     }
 

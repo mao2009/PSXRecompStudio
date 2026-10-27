@@ -411,7 +411,7 @@ fetches by 1,880, so `differentialPass` is false: device time diverges
 
 PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. The RAM-placed code that is compiled before
 the run is the code of the disc's executables, listed in a manifest (`LoadImageManifest`; one directive per line, hex numbers,
-paths relative to the manifest). The BIOS is never an AOT input (owner ruling R1): the manifest has no `image ... rom` line, since a
+paths relative to the manifest). The canonical pipeline never takes the BIOS as an AOT input (owner ruling R1, narrowed): the manifest has no `image ... rom` line, since a
 RAM image that copies BIOS bytes is refused (`rom-image`). The kernel data, the exception vectors and the shell are not compiled:
 the run loads them from the BIOS image and interprets them (the counted fallback).
 
@@ -754,7 +754,7 @@ AOT input by a refusal ground. The coverage is cumulative over all AOT inputs of
   refusal.
 - The inputs together may hold at most `CopyThresholdBytes` = **96 bytes** (24 words) of high-variety matches, and at most
   `LowVarietyThresholdBytes` = **256 bytes** (64 words) of all matches. Above either, the diagnostic reports the total
-  (`... N bytes of high-variety BIOS matches`, `... of all BIOS matches`); it does not refuse.
+  (`... N bytes of high-variety BIOS matches`, `... of cumulative BIOS matches`); it does not refuse.
 - A run of one repeated word (for example 64 words of 0x00) is never a match: its 4-word windows are not indexed. Such a copy carries
   no identity that could show its origin. This is a stated limit, not a pass condition.
 
