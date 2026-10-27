@@ -25,7 +25,7 @@ internal static class OpenBiosProbeCommand
 
     private const int RamBytes = 0x200000;
 
-    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>] " +
+    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>] [--local-ram-evidence <file.json>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--boundary-log <file.jsonl>] [--json]";
 
@@ -39,7 +39,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false, standalone = false;
-        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, engineKind = "interpreter";
+        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, localRamEvidencePath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         string? retireTargetsPath = null, retireOutPath = null;
         string? mdecEventsPath = null, mdecFromText = null, mdecToText = null, boundaryLogPath = null;
@@ -71,7 +71,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets" or "--boundary-log")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets" or "--local-ram-evidence" or "--boundary-log")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -88,6 +88,7 @@ internal static class OpenBiosProbeCommand
                 else if (option == "--symbols") symbolsPath = args[i];
                 else if (option == "--load-images") loadImagesPath = args[i];
                 else if (option == "--fallback-targets") fallbackTargetsPath = args[i];
+                else if (option == "--local-ram-evidence") localRamEvidencePath = args[i];
                 else if (option == "--retire-states") retireTargetsPath = args[i];
                 else if (option == "--retire-out") retireOutPath = args[i];
                 else if (option == "--mdec-events") mdecEventsPath = args[i];
@@ -153,6 +154,18 @@ internal static class OpenBiosProbeCommand
         if (fallbackTargetsPath is not null && Path.Exists(fallbackTargetsPath))
         {
             error.WriteLine($"openbios-probe: --fallback-targets {fallbackTargetsPath} already exists; choose a new path");
+            return 1;
+        }
+        // The local RAM evidence: explicit, bound to an export, and only at a path outside any Git work tree (see LocalRamEvidence).
+        if (localRamEvidencePath is not null && fallbackTargetsPath is null)
+        {
+            error.WriteLine("openbios-probe: --local-ram-evidence requires --fallback-targets (the evidence is bound to that export)");
+            return 1;
+        }
+
+        if (localRamEvidencePath is not null && LocalRamEvidence.RefusalFor(localRamEvidencePath, mustBeNew: true) is { } evidenceRefusal)
+        {
+            error.WriteLine($"openbios-probe: --local-ram-evidence: {evidenceRefusal}");
             return 1;
         }
         // Issue #774 (W03): the VBlank boundary log is taken from the interpreter's scheduler only; the host scheduler is not exposed to the probe.
@@ -222,7 +235,7 @@ internal static class OpenBiosProbeCommand
                 boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
-                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog)
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath), localRamEvidencePath), json, output, error, mdecLog)
                     : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
             }
             finally
@@ -464,7 +477,7 @@ internal static class OpenBiosProbeCommand
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
         uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath,
-        bool Standalone, string? FallbackTargetsPath, string? DiscSha256);
+        bool Standalone, string? FallbackTargetsPath, string? DiscSha256, string? LocalRamEvidencePath);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
@@ -563,7 +576,7 @@ internal static class OpenBiosProbeCommand
             double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
             uint? lastFallbackFetch = null;
-            // Issue #773: the RAM word the interpreter fetched at each fallback PC (the observation the planner checks against the file).
+            // Issue #773: the RAM word the interpreter fetched at each fallback PC. It goes only to the local RAM evidence (never to a public output).
             var ramWords = new FallbackRamWordLog();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
@@ -647,8 +660,7 @@ internal static class OpenBiosProbeCommand
                 // Issue #773: every distinct fallback target, in PC order, as its own document. The top-12 summary in the
                 // report above is unchanged; this file is written only when requested. A run that did not finish has no
                 // evidence, and an export of it would read as "no targets" to the planner, so none is written.
-                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt,
-                    ramWords.Get, probe.Segments, probe.SegmentBudget);
+                var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt, probe.Segments, probe.SegmentBudget);
                 if (exportJson is null)
                 {
                     error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
@@ -661,6 +673,12 @@ internal static class OpenBiosProbeCommand
                 }
 
                 WriteAtomically(probe.FallbackTargetsPath, exportJson);
+                if (probe.LocalRamEvidencePath is not null)
+                {
+                    // The local evidence (RAM words, never published) is bound to this export's exact bytes, and is written only outside any Git work tree.
+                    var exportSha = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(exportJson))).ToLowerInvariant();
+                    WriteAtomically(probe.LocalRamEvidencePath, BuildRamEvidenceDocument(exportSha, evidence!.Targets.Select(static t => t.Target), ramWords.Get));
+                }
             }
 
             var document = new
@@ -924,19 +942,30 @@ internal static class OpenBiosProbeCommand
     internal static bool IsGuestRamPc(uint pc) => Ps1AddressTranslation.TryTranslate(pc, out var physical) && physical < 0x00800000u;
 
     /// <summary>
-    /// Decision A (PR #839, arbitration): a RAM word at a PC is withheld from every output the probe writes (stdout, JSON, files),
-    /// as a RAM byte is. The one switch; tests pin it to false.
+    /// The ruling on #839: no guest word from RAM is published. Every stdout, JSON and public file output withholds it. The one
+    /// exception is the explicit local RAM evidence (<c>--local-ram-evidence</c>, see <see cref="BuildRamEvidenceDocument"/>), which
+    /// is written only outside any Git work tree. The switch is pinned to false by tests.
     /// </summary>
     private const bool PublishRamWords = false;
 
-    /// <summary>The single decision for every guest word written out; always null while <see cref="PublishRamWords"/> is false.</summary>
+    /// <summary>The single decision for every guest word written to a public output; always null while <see cref="PublishRamWords"/> is false.</summary>
     internal static uint? WordFor(uint pc, uint word) => PublishRamWords && IsGuestRamPc(pc) ? word : null;
 
     /// <summary>
-    /// The RAM word of a fallback target as the planner's input document (<c>fallback-targets/v2</c> <c>ramWord</c>). The planner
-    /// checks it against the image's word (ObservedRootPlanner), so it is the one file contract that carries it; a PC outside RAM is null.
+    /// The local RAM evidence document (<c>fallback-ram-evidence/v1</c>): the RAM word observed at each fallback PC in RAM, bound to one
+    /// public export by its SHA-256. It is the only file that carries RAM words, and it is never a public artifact. A PC outside RAM
+    /// (the BIOS ROM range) or without an observed word is left out, so the planner refuses it.
     /// </summary>
-    internal static string? PlannerWordHex(uint pc, uint word) => IsGuestRamPc(pc) ? Hex(word) : null;
+    internal static string BuildRamEvidenceDocument(string exportSha256, IEnumerable<uint> targetPcs, Func<uint, uint?> ramWordOf)
+    {
+        var words = targetPcs
+            .Where(IsGuestRamPc)
+            .Select(pc => (pc, word: ramWordOf(pc)))
+            .Where(entry => entry.word is not null)
+            .Select(entry => new { pc = Hex(entry.pc), word = Hex(entry.word!.Value) })
+            .ToArray();
+        return JsonSerializer.Serialize(new { format = ObservedRootPlanner.RamEvidenceFormat, exportSha256, words }, new JsonSerializerOptions { WriteIndented = true });
+    }
 
     /// <summary>
     /// Decision A (PR #839, fixed by the arbitration): a general-purpose register value is never written to a public artifact.
@@ -987,11 +1016,11 @@ internal static class OpenBiosProbeCommand
     /// <summary>
     /// The <c>fallback-targets/v2</c> document for a run (Issue #773), or null when the run has no fallback evidence (it did not
     /// finish). Null is never a valid export: the planner would read it as a run with no targets. The run's <c>outcome</c> is
-    /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer).
+    /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer). The export carries no RAM word (the ruling on #839).
     /// </summary>
     internal static string? BuildFallbackTargetsDocument(
         MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state,
-        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt, Func<uint, uint?> ramWordOf, uint segments = 10, uint segmentBudget = 100_000)
+        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt, uint segments = 10, uint segmentBudget = 100_000)
     {
         if (evidence is null)
         {
@@ -1005,7 +1034,6 @@ internal static class OpenBiosProbeCommand
             entries = t.Entries,
             instructions = t.Instructions,
             lastReturnPc = Hex(t.LastReturnPc),
-            ramWord = ramWordOf(t.Target) is { } word ? PlannerWordHex(t.Target, word) : null,
         }).ToArray();
         return JsonSerializer.Serialize(new
         {

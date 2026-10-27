@@ -16,7 +16,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 internal static class FallbackRootsCommand
 {
     internal const string Usage =
-        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>]";
+        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>] [--local-ram-evidence <file.json>]";
 
     private const string ReportFormat = "psxrecomp.fallback-roots-report/v1";
 
@@ -31,11 +31,11 @@ internal static class FallbackRootsCommand
             }
 
             var romPath = args[0];
-            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null, segmentsText = null, segmentBudgetText = null;
+            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null, segmentsText = null, segmentBudgetText = null, localEvidencePath = null;
             for (var i = 1; i < args.Count; i++)
             {
                 var option = args[i];
-                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes" or "--segments" or "--segment-budget"))
+                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes" or "--segments" or "--segment-budget" or "--local-ram-evidence"))
                 {
                     error.WriteLine($"fallback-roots: unknown option {option}");
                     error.WriteLine(Usage);
@@ -50,6 +50,7 @@ internal static class FallbackRootsCommand
 
                 if (option == "--load-images") manifestPath = args[i];
                 else if (option == "--fallback-targets") targetsPath = args[i];
+                else if (option == "--local-ram-evidence") localEvidencePath = args[i];
                 else if (option == "--out") outPath = args[i];
                 else if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
@@ -113,7 +114,22 @@ internal static class FallbackRootsCommand
                 manifest,
                 discPath is null ? null : OpenBiosProbeCommand.FileSha256(discPath),
                 ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots, segments, segmentBudget)));
-            var plan = ObservedRootPlanner.Plan(manifest.Images, export.Targets);
+            // The RAM words come only from the explicit local evidence, bound to this export (never public). Without it, or for a PC it does
+            // not name, no word is known and the planner refuses the target (ram-word-mismatch): nothing is adopted without the check.
+            var targets = export.Targets;
+            if (localEvidencePath is not null)
+            {
+                if (LocalRamEvidence.RefusalFor(localEvidencePath, mustBeNew: false) is { } evidenceRefusal)
+                {
+                    error.WriteLine($"fallback-roots: --local-ram-evidence: {evidenceRefusal}");
+                    return 1;
+                }
+
+                var targetsSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(targetsPath))).ToLowerInvariant();
+                targets = ObservedRootPlanner.ApplyRamEvidence(targets, ObservedRootPlanner.ReadRamEvidence(File.ReadAllText(localEvidencePath), targetsSha256));
+            }
+
+            var plan = ObservedRootPlanner.Plan(manifest.Images, targets);
 
             var directory = Path.GetDirectoryName(outFull)!;
             // One lock per directory: the roots file names do not depend on --out, so every run that publishes here shares them.

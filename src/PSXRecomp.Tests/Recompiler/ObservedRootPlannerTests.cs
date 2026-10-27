@@ -174,10 +174,11 @@ public sealed class ObservedRootPlannerTests
 
         var targets = ObservedRootPlanner.ReadTargets(json);
 
-        targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, ObservedRootsFixtures.Text[2]));
+        // The public export carries no RAM word (the ruling on #839): the target has none until the local evidence supplies it.
+        targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, RamWord: null));
     }
 
-    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1,"ramWord":"0x00000000"}""";
+    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1}""";
 
     public static TheoryData<string> Malformed => new()
     {
