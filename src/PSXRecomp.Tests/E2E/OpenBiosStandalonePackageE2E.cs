@@ -143,8 +143,14 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         AssertNoBiosBytes(output, rom);
         AssertNoAbsoluteDeveloperPaths(output);
         // The developer-path check scans the whole tree: the native library must be in that tree (Issue #B2, review LOW-4).
-        ReadTree(output).Select(static file => file.Name.Replace('\\', '/')).Should().Contain("runtime/PSXRecomp.Native.dll",
-            "the native library is scanned by AssertNoAbsoluteDeveloperPaths, so it must be in the distribution tree");
+        // The file name is per platform: PSXRecomp.Native.dll (Windows), libPSXRecomp.Native.so (Linux), libPSXRecomp.Native.dylib (macOS).
+        ReadTree(output).Select(static file => file.Name.Replace('\\', '/'))
+            .Where(static name => name.StartsWith("runtime/", StringComparison.Ordinal)
+                && (name.StartsWith("runtime/PSXRecomp.Native.", StringComparison.Ordinal)
+                    || name.StartsWith("runtime/libPSXRecomp.Native.", StringComparison.Ordinal))
+                && (name.EndsWith(".dll", StringComparison.Ordinal) || name.EndsWith(".so", StringComparison.Ordinal)
+                    || name.EndsWith(".dylib", StringComparison.Ordinal)))
+            .Should().NotBeEmpty("the native library is scanned by AssertNoAbsoluteDeveloperPaths, so it must be in the distribution tree");
 
         using var process = Process.Start(new ProcessStartInfo(artifact)
         {
