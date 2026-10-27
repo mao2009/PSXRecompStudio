@@ -142,6 +142,9 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
             "the packaging records the declaration; the label is decided at run time");
         AssertNoBiosBytes(output, rom);
         AssertNoAbsoluteDeveloperPaths(output);
+        // The developer-path check scans the whole tree: the native library must be in that tree (Issue #B2, review LOW-4).
+        ReadTree(output).Select(static file => file.Name.Replace('\\', '/')).Should().Contain("runtime/PSXRecomp.Native.dll",
+            "the native library is scanned by AssertNoAbsoluteDeveloperPaths, so it must be in the distribution tree");
 
         using var process = Process.Start(new ProcessStartInfo(artifact)
         {

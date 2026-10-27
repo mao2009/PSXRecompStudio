@@ -202,9 +202,9 @@ public sealed class DistributionLeakScannerTests
     [InlineData("/c/Users/builder")]
     [InlineData("/c/Users/")]
     [InlineData("/c/users/builder/x")]
-    [InlineData("/c/Hobart/x.dll")]
+    [InlineData("/c/user/x.dll")]
     [InlineData("/d/PSXRecompStudio/README.md")]
-    [InlineData("/c/Hobart/")]
+    [InlineData("/c/user/")]
     public void MsysAbsolutePath_IsFlagged(string path)
     {
         DistributionLeakScanner.FindAbsolutePath([("game.exe", Latin1(path))]).Should().NotBeNull(path);

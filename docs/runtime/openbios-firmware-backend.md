@@ -871,9 +871,9 @@ Limits, stated plainly:
 **Absolute developer path check (`DistributionLeakScanner`, the MSYS rule, Issue #B2).** A distributed file must not name a
 developer or user path in Windows, MSYS or Unix form. The MSYS rule matches a drive letter followed by (a) the user-home root,
 (b) two or more segments with one of two or more characters, or (c) one name of three or more characters followed by `/` or
-`.ext` (`/c/Hobart/x.dll`, `/d/PSXRecompStudio/README.md`). Limits, stated plainly:
+`.ext` (`/c/user/x.dll`, `/d/PSXRecompStudio/README.md`). Limits, stated plainly:
 
-- A name directly under the drive with no separator or extension after it is not matched (`/c/Hobart` at the end of a string).
+- A name directly under the drive with no separator or extension after it is not matched (`/c/user` at the end of a string).
 - A two-character name is not matched (`/c/ab/`). Two single-character segments are not matched (`/H/N/s/`).
 - A cygwin-style `/cygdrive/c/…` path is not matched.
 - A UTF-16 wide string is matched only where its two-byte units line up with one of the two views the scanner reads (even offset,

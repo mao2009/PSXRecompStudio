@@ -14,7 +14,8 @@ endif()
 # compiler's recorded paths (__FILE__, assert messages, debug info) are rewritten
 # instead, so that the developer's toolchain and checkout do not appear in the
 # binary. The build directory lies inside the source tree, so it is mapped first.
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# clang-cl (the MSVC front end of Clang) is excluded: it takes the MSVC command line and rejects GNU-only options.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"))
     get_filename_component(PSX_TOOLCHAIN_ROOT "${CMAKE_CXX_COMPILER}/../.." ABSOLUTE)
     add_compile_options(
         -ffile-prefix-map=${CMAKE_BINARY_DIR}=build
