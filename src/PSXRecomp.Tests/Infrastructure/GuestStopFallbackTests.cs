@@ -73,22 +73,16 @@ public sealed class GuestStopFallbackTests
 
         var result = await run.WaitAsync(StopWait);
 
-        // Issue #828 (the stop's outcome table, ApplyStopOutcome): only a live child whose kill was confirmed is Cancelled. A child that ended
-        // before the stop reached it keeps its own result. Which of the two happens is decided by the race between the kill and the child's
-        // exit on the decision, so the expectation is read from the stop's diagnostics; the rule itself is what is checked.
+        // Issue #828 (the stop's outcome table, ApplyStopOutcome). The fallback segment runs after the artifact child has handed over and
+        // ended, so the stop finds the child already gone: the child's own result stands (path A). This test fixes that path only. The
+        // Cancelled path (a live child killed and confirmed) cannot be reached from a fallback segment; it is checked by the unit table
+        // (GuestCancellationTests.ApplyStopOutcome_*).
         var diagnostics = engine.LastStopDiagnostics;
         diagnostics.Should().NotBeNull("a stop was requested during the run");
-        if (diagnostics!.ChildEndedBeforeStop)
-        {
-            result.State.Should().NotBe(TitleExecutionState.Cancelled, $"the child ended before the stop: {result.DiagnosticCode}");
-            result.DiagnosticCode.Should().NotBe(ExecutionOrchestrator.CancelledCode);
-        }
-        else
-        {
-            diagnostics.Confirmed.Should().BeTrue("the live child was killed and its exit seen");
-            result.State.Should().Be(TitleExecutionState.Cancelled, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
-            result.DiagnosticCode.Should().Be(ExecutionOrchestrator.CancelledCode);
-        }
+        diagnostics!.ChildEndedBeforeStop.Should().BeTrue("the stop reached the fallback after the artifact child had ended");
+        diagnostics.Confirmed.Should().BeFalse("no kill was sent to a child that had already ended");
+        result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
+        result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.StoppedOnRequest);
 
         // The run's result is not the proof: the host's fallback segment must have stopped too. The interpreter's fetch count
         // must not move once the run has returned, so a fallback still stepping in the background fails here.
