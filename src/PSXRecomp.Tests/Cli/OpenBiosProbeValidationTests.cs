@@ -118,6 +118,24 @@ public sealed class OpenBiosProbeValidationTests
         error.Should().Contain("--dump-ram requires --capture-at");
     }
 
+    [Fact]
+    public void Run_BoundaryLogWithEngineGeneratedHost_Rejected_Without_Creating_The_Log()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        var roots = dir.WriteFile("roots.txt", []);
+        var boundaryLog = GetTempPath(dir, "boundary.jsonl");
+
+        var exit = RunProbe([
+            rom, "--engine", "generated-host", "--roots", roots,
+            "--boundary-log", boundaryLog, "--json"
+        ], out _, out var error);
+
+        exit.Should().Be(1);
+        error.Should().Contain("--boundary-log requires --engine interpreter");
+        new FileInfo(boundaryLog).Exists.Should().BeFalse("the refusal happens before the log is opened");
+    }
+
     [Theory]
     [InlineData("--dump-ram")]
     [InlineData("--dump-frame")]

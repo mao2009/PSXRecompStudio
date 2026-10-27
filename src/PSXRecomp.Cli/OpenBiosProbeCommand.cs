@@ -26,7 +26,7 @@ internal static class OpenBiosProbeCommand
 
     internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
-                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]";
+                             "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--boundary-log <file.jsonl>] [--json]";
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
@@ -41,7 +41,7 @@ internal static class OpenBiosProbeCommand
         string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         string? retireTargetsPath = null, retireOutPath = null;
-        string? mdecEventsPath = null, mdecFromText = null, mdecToText = null;
+        string? mdecEventsPath = null, mdecFromText = null, mdecToText = null, boundaryLogPath = null;
         var compareAt = new SortedSet<uint>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Count; i++)
@@ -70,7 +70,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets" or "--boundary-log")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -92,6 +92,7 @@ internal static class OpenBiosProbeCommand
                 else if (option == "--mdec-events") mdecEventsPath = args[i];
                 else if (option == "--mdec-from") mdecFromText = args[i];
                 else if (option == "--mdec-to") mdecToText = args[i];
+                else if (option == "--boundary-log") boundaryLogPath = args[i];
                 else engineKind = args[i];
                 continue;
             }
@@ -153,6 +154,13 @@ internal static class OpenBiosProbeCommand
             error.WriteLine($"openbios-probe: --fallback-targets {fallbackTargetsPath} already exists; choose a new path");
             return 1;
         }
+        // Issue #774 (W03): the VBlank boundary log is taken from the interpreter's scheduler only; the host scheduler is not exposed to the probe.
+        if (boundaryLogPath is not null && engineKind != "interpreter")
+        {
+            error.WriteLine("openbios-probe: --boundary-log requires --engine interpreter");
+            error.WriteLine(Usage);
+            return 1;
+        }
         if (listDiscPath is not null && (dumpRamPath is not null || dumpFramePath is not null || histogramPath is not null))
         {
             error.WriteLine("openbios-probe: --list-disc cannot be combined with --dump-ram, --dump-frame, or --pc-histogram");
@@ -204,18 +212,25 @@ internal static class OpenBiosProbeCommand
                 return 0;
             }
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
-            var mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
+            OpenBiosProbeMdecLog? mdecLog = null;
+            OpenBiosProbeBoundaryLog? boundaryLog = null;
             try
             {
+                // Created inside the try so that a failure opening the second log still disposes the first.
+                mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
+                boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
                         firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog)
-                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog);
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
             }
             finally
             {
                 // The log contains its own output failures, so the guest run keeps its result. Report the gap here, after the flush.
                 mdecLog?.Dispose();
+                boundaryLog?.Dispose();
+                if (boundaryLog?.FailureMessage is { } boundaryFailure)
+                    error.WriteLine($"openbios-probe: warning: VBlank boundary log is incomplete: {boundaryFailure}");
                 if (mdecLog?.FailureMessage is { } failure)
                     error.WriteLine($"openbios-probe: warning: MDEC event log is incomplete: {failure}");
             }
@@ -280,7 +295,7 @@ internal static class OpenBiosProbeCommand
 
     private static int RunInterpreter(
         OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
-        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null)
+        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
@@ -290,6 +305,11 @@ internal static class OpenBiosProbeCommand
         if (mdecLog is not null && observed is not null)
         {
             observed.DiagnosticDevices.Mdec.Observer = e => mdecLog.Write("interpreter", e, $"0x{lastFetch:X8}", null);
+        }
+        if (boundaryLog is not null && observed?.Scheduler is { } scheduler)
+        {
+            // Issue #774 (W03): one record per VBlank, read at the boundary itself; the cycle count is the scheduler's, not the instruction count alone.
+            scheduler.VblankCallback = vblank => boundaryLog.Write(InterpreterTitleExecutionEngine.EngineName, observed.DiagnosticDevices, vblank, scheduler.ElapsedCycles);
         }
         // Issue #774 (B-7): the CPU state after each listed retirement position (guest cycles = retired instructions).
         var retireTargets = retireTargetsPath is null ? null : new HashSet<ulong>(File.ReadLines(retireTargetsPath)
