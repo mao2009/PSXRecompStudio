@@ -293,6 +293,24 @@ public sealed class ObservedRootPlannerTests
         ObservedRootPlanner.ProbeOptionsSha256(0, [], segmentBudget: 5).Should().NotBe(baseline);
     }
 
+    // Issue #773 (partial exports, decision material for the owner; policy unchanged): the refusal of a partial run is a gate on the
+    // outcome only. The same bytes with a classified end parse to the same run identity and the same targets, so the identity
+    // check (Verify) does not depend on whether the run finished. What a partial set changes is coverage, not which PC is native-safe.
+    [Fact]
+    public void PartialRunExport_IsRefusedOnlyByItsOutcome_TheSameTargetsAndIdentityParseWhenTheRunFinished()
+    {
+        var target = ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100, WordAt(A));
+        var partial = ObservedRootsFixtures.TargetsJsonInState("BudgetExhausted", null, target);
+        var finished = ObservedRootsFixtures.TargetsJsonInState("Completed", null, target);
+
+        var refused = () => ObservedRootPlanner.ReadExport(partial);
+        refused.Should().Throw<InvalidDataException>().WithMessage("*BudgetExhausted*");
+
+        var parsed = ObservedRootPlanner.ReadExport(finished);
+        parsed.Run.Should().Be(ObservedRootsFixtures.PlaceholderRun);
+        parsed.Targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, WordAt(A)));
+    }
+
     [Fact]
     public void ReadExport_RefusesAnExportProducedWithStopAt_BecauseItIsAPartialPause()
     {
