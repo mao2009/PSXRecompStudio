@@ -64,6 +64,36 @@ public sealed class RuntimeHostToolchainDiagnosticsTests
     }
 
     [Fact]
+    public void FailedStep_WhileTheThreadPoolIsSaturated_StillDrainsItsOutput()
+    {
+        // Pool work queued ahead of the driver's stream reads cannot start until the pool injects threads, which is slow.
+        // A child that fills its stdout pipe then blocks until those reads run, and the step times out.
+        ThreadPool.GetMinThreads(out var minWorkers, out _);
+        var release = new ManualResetEventSlim(false);
+        var holders = new Task[minWorkers * 2];
+        for (var i = 0; i < holders.Length; i++)
+        {
+            holders[i] = Task.Run(() => release.Wait());
+        }
+
+        try
+        {
+            using var dir = new TempDirectory();
+            var result = RunDriver(dir, payloadChars: DiagnosticTailChars + 1000, exitCode: 3, timeoutMs: 5000);
+
+            result.Outcome.Should().Be(RuntimeHostBuildService.ToolchainOutcome.Failed,
+                "the child must not block on a full pipe while the pool is saturated");
+            result.ExitCode.Should().Be(3);
+        }
+        finally
+        {
+            release.Set();
+            // Queued holders must finish before the test ends, or they would starve the pool of later tests.
+            Task.WaitAll(holders);
+        }
+    }
+
+    [Fact]
     public void SuccessfulStep_ReturnsSuccessWithoutCapturedOutput()
     {
         using var dir = new TempDirectory();
