@@ -16,9 +16,11 @@ namespace PSXRecomp.Infrastructure.Cli;
 internal static class FallbackRootsCommand
 {
     internal const string Usage =
-        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> --out <manifest> [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>]";
+        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> (--out <manifest> | --diagnose-partial) [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>]";
 
     private const string ReportFormat = "psxrecomp.fallback-roots-report/v1";
+    private const string DiagnosticFormat = "psxrecomp.fallback-roots-diagnostic/v1";
+    private const string DiagnoseOption = "--diagnose-partial";
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
@@ -32,9 +34,16 @@ internal static class FallbackRootsCommand
 
             var romPath = args[0];
             string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null, segmentsText = null, segmentBudgetText = null;
+            var diagnose = false;
             for (var i = 1; i < args.Count; i++)
             {
                 var option = args[i];
+                if (option == DiagnoseOption)
+                {
+                    diagnose = true;
+                    continue;
+                }
+
                 if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes" or "--segments" or "--segment-budget"))
                 {
                     error.WriteLine($"fallback-roots: unknown option {option}");
@@ -58,25 +67,34 @@ internal static class FallbackRootsCommand
                 else codeBytesText = args[i];
             }
 
-            if (manifestPath is null || targetsPath is null || outPath is null)
+            if (manifestPath is null || targetsPath is null || (outPath is null && !diagnose))
             {
                 error.WriteLine(Usage);
                 return 1;
             }
 
-            var manifestFull = Path.GetFullPath(manifestPath);
-            var outFull = Path.GetFullPath(outPath);
-            if (manifestFull == outFull)
+            if (diagnose && outPath is not null)
             {
-                error.WriteLine("fallback-roots: --out must differ from --load-images; the input manifest is never overwritten.");
+                error.WriteLine("fallback-roots: --diagnose-partial writes no manifest; it cannot be combined with --out.");
                 return 1;
             }
 
-            // Relative paths in the manifest resolve against its directory, so the new manifest must sit beside it.
-            if (!string.Equals(Path.GetDirectoryName(manifestFull), Path.GetDirectoryName(outFull), StringComparison.OrdinalIgnoreCase))
+            var manifestFull = Path.GetFullPath(manifestPath);
+            if (outPath is not null)
             {
-                error.WriteLine("fallback-roots: --out must be in the same directory as --load-images, so the manifest's relative paths keep resolving.");
-                return 1;
+                var outCheck = Path.GetFullPath(outPath);
+                if (manifestFull == outCheck)
+                {
+                    error.WriteLine("fallback-roots: --out must differ from --load-images; the input manifest is never overwritten.");
+                    return 1;
+                }
+
+                // Relative paths in the manifest resolve against its directory, so the new manifest must sit beside it.
+                if (!string.Equals(Path.GetDirectoryName(manifestFull), Path.GetDirectoryName(outCheck), StringComparison.OrdinalIgnoreCase))
+                {
+                    error.WriteLine("fallback-roots: --out must be in the same directory as --load-images, so the manifest's relative paths keep resolving.");
+                    return 1;
+                }
             }
 
             var originalLines = File.ReadAllLines(manifestFull);
@@ -105,7 +123,10 @@ internal static class FallbackRootsCommand
             var firmware = OpenBiosFirmware.FromBytes(romBytes);
             using var disc = discPath is null ? null : OpenBiosProbeCommand.OpenDisc(discPath);
             var manifest = LoadImageManifest.Read(manifestFull, firmware, disc?.Source);
-            var export = ObservedRootPlanner.ReadExport(File.ReadAllText(targetsPath));
+            // The diagnostic mode reads a budget-exhausted partial export; the default reads only a complete one (fail closed).
+            var targetsText = File.ReadAllText(targetsPath);
+            var partial = diagnose ? ObservedRootPlanner.ReadPartialExport(targetsText) : null;
+            var export = partial?.Export ?? ObservedRootPlanner.ReadExport(targetsText);
             // The export must come from a run over these exact inputs (ROM, disc, manifest and probe options), or its PCs are not evidence about this build.
             var roots = rootsPath is null ? Array.Empty<uint>() : OpenBiosProbeCommand.ReadRoots(rootsPath);
             ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(
@@ -115,6 +136,34 @@ internal static class FallbackRootsCommand
                 ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots, segments, segmentBudget)));
             var plan = ObservedRootPlanner.Plan(manifest.Images, export.Targets);
 
+            if (partial is not null)
+            {
+                // Diagnosis only: the candidates are listed with their trust label, and no file is written. A production
+                // manifest is never changed from partial evidence; adopting a root needs a complete identity check and a regression test.
+                var diagnostic = new
+                {
+                    format = DiagnosticFormat,
+                    trust = "PARTIAL_UNTRUSTED",
+                    outcome = new { state = partial.State.ToString(), diagnosticCode = partial.DiagnosticCode },
+                    manifestWritten = false,
+                    candidates = plan.Counts.Candidates,
+                    accepted = plan.Counts.Accepted,
+                    rejected = plan.Counts.Rejected,
+                    baseReachableInstructions = plan.Counts.BaseReachable,
+                    extraReachableInstructions = plan.Counts.ExtraReachable,
+                    candidateRoots = plan.Images.SelectMany(static image => image.Roots.Select(root => new
+                    {
+                        image = image.Name,
+                        pc = $"0x{root.Pc:X8}",
+                        instructions = root.Instructions,
+                        entries = root.Entries,
+                    })),
+                };
+                output.WriteLine(JsonSerializer.Serialize(diagnostic, new JsonSerializerOptions { WriteIndented = true }));
+                return 0;
+            }
+
+            var outFull = Path.GetFullPath(outPath!);
             var directory = Path.GetDirectoryName(outFull)!;
             // One lock per directory: the roots file names do not depend on --out, so every run that publishes here shares them.
             // File.Move does not overwrite on Windows, but on POSIX a name that appears between the exists check and the rename is

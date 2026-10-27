@@ -375,4 +375,69 @@ public sealed class ObservedRootPlannerTests
 
         act.Should().Throw<InvalidOperationException>();
     }
+
+    // Issue #773 (owner-approved diagnostic mode): a run that exhausted its budget is a partial observation. Only the
+    // diagnostic reader accepts it, and it records the cause; the strict reader still refuses the same bytes.
+    [Theory]
+    [InlineData("BudgetExhausted", null)]
+    [InlineData("RuntimeFailure", "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED")]
+    [InlineData("RuntimeFailure", "ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED")]
+    public void ReadPartialExport_ReadsABudgetExhaustedRun_AndRecordsItsOutcome(string state, string? cause)
+    {
+        var json = ObservedRootsFixtures.TargetsJsonWithCause(state, cause, null, ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100));
+
+        var partial = ObservedRootPlanner.ReadPartialExport(json);
+
+        partial.State.ToString().Should().Be(state);
+        partial.DiagnosticCode.Should().Be(cause);
+        partial.Export.Targets.Should().ContainSingle().Which.Pc.Should().Be(A);
+        var strict = () => ObservedRootPlanner.ReadExport(json);
+        strict.Should().Throw<InvalidDataException>().WithMessage("*partial*");
+    }
+
+    // Crashes, protocol failures, unclassified failures and complete runs are never read as a partial budget observation.
+    public static TheoryData<string, string?> NotABudgetPartial => new()
+    {
+        { "RuntimeFailure", null },                                  // a crash or engine failure with no code
+        { "RuntimeFailure", "ARTIFACT_FALLBACK_UNSUPPORTED_STATE" }, // a classified failure that is not a budget
+        { "RuntimeFailure", "ARTIFACT_FALLBACK_SYNC_FAILED" },
+        { "InvalidState", null },                                    // a protocol or contract failure
+        { "UnsupportedTransfer", null },
+        { "Completed", null },                                       // a complete run is read with --out, not as partial
+    };
+
+    [Theory]
+    [MemberData(nameof(NotABudgetPartial))]
+    public void ReadPartialExport_RefusesEveryOutcomeThatIsNotABudgetExhaustion(string state, string? cause)
+    {
+        var json = ObservedRootsFixtures.TargetsJsonWithCause(state, cause, null, ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100));
+
+        var act = () => ObservedRootPlanner.ReadPartialExport(json);
+
+        act.Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void ReadPartialExport_RefusesAnExportProducedWithStopAt()
+    {
+        var json = ObservedRootsFixtures.TargetsJsonWithStop("BudgetExhausted", null, "0x80030000", ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 1));
+
+        var act = () => ObservedRootPlanner.ReadPartialExport(json);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*--stop-at*");
+    }
+
+    // The diagnostic path plans with the same gates: a partial target whose RAM word differs from the file is not a root.
+    [Fact]
+    public void ReadPartialExport_PlansOnlyTargetsWhoseRamWordMatchesTheFile()
+    {
+        var json = ObservedRootsFixtures.TargetsJsonWithCause("BudgetExhausted", null, null,
+            ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100, ramWord: WordAt(A)),
+            ObservedRootsFixtures.TargetObject(B, "unknown-code", 1, 50, ramWord: 0xDEADBEEFu));
+
+        var plan = ObservedRootPlanner.Plan([Image()], ObservedRootPlanner.ReadPartialExport(json).Export.Targets, Open);
+
+        plan.Images.Single().Roots.Select(static r => r.Pc).Should().Equal(A);
+        plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);
+    }
 }

@@ -54,6 +54,13 @@ internal sealed record ObservedRunIdentity(
 [Domain]
 internal sealed record ObservedFallbackExport(ObservedRunIdentity Run, IReadOnlyList<ObservedFallbackTarget> Targets);
 
+/// <summary>
+/// A budget-exhausted partial export, read only by the explicit diagnostic mode (Issue #773). Its evidence is partial and is
+/// never a complete observation: <see cref="State"/> and <see cref="DiagnosticCode"/> say why the run stopped.
+/// </summary>
+[Domain]
+internal sealed record ObservedPartialExport(ObservedFallbackExport Export, TitleExecutionState State, string? DiagnosticCode);
+
 /// <summary>One accepted observed root with the run evidence that selected it.</summary>
 [Domain]
 internal sealed record ObservedRoot(uint Pc, ulong Instructions, ulong Entries);
@@ -318,13 +325,38 @@ internal static class ObservedRootPlanner
     public static IReadOnlyList<ObservedFallbackTarget> ReadTargets(string json) => ReadExport(json).Targets;
 
     /// <summary>
+    /// Whether a run that ended this way exhausted its budget: the outer budget (<see cref="TitleExecutionState.BudgetExhausted"/>), or a
+    /// fallback segment or transition budget (a <c>RuntimeFailure</c> whose diagnostic code names the budget). A crash, a protocol
+    /// failure and any other classified failure are not budget stops.
+    /// </summary>
+    internal static bool IsBudgetPartial(TitleExecutionState state, string? diagnosticCode) =>
+        state == TitleExecutionState.BudgetExhausted
+        || (state == TitleExecutionState.RuntimeFailure
+            && diagnosticCode is MixedFallbackDiagnostics.SegmentBudgetExhausted or MixedFallbackDiagnostics.TransitionBudgetExhausted);
+
+    /// <summary>
     /// Reads a fallback-target export. Fail closed: the format must match, the run identity must be present and well formed
     /// (its firmware hash equal to the top-level <c>sha256</c>), every target must carry a valid PC, cause, entries and
     /// instructions, and a PC may appear only once. The run must have ended at a classified end (see <see cref="IsCompleteOutcome"/>).
     /// </summary>
-    public static ObservedFallbackExport ReadExport(string json)
+    public static ObservedFallbackExport ReadExport(string json) => Parse(json, partialAllowed: false, out _, out _);
+
+    /// <summary>
+    /// The explicit diagnostic reader (Issue #773): reads a budget-exhausted partial export and records its outcome. Every other
+    /// check of <see cref="ReadExport"/> applies, and a complete run, a crash or any other outcome is refused. The result is partial
+    /// evidence for diagnosis only: it is never a complete observation and must not be planned into a production manifest.
+    /// </summary>
+    public static ObservedPartialExport ReadPartialExport(string json)
+    {
+        var export = Parse(json, partialAllowed: true, out var state, out var diagnosticCode);
+        return new ObservedPartialExport(export, state, diagnosticCode);
+    }
+
+    private static ObservedFallbackExport Parse(string json, bool partialAllowed, out TitleExecutionState outState, out string? outDiagnosticCode)
     {
         ArgumentNullException.ThrowIfNull(json);
+        outState = default;
+        outDiagnosticCode = null;
         try
         {
             using var document = JsonDocument.Parse(json);
@@ -353,7 +385,19 @@ internal static class ObservedRootPlanner
                 throw new InvalidDataException($"fallback targets: 'outcome.complete' contradicts the state {state}.");
             }
 
-            if (!IsCompleteOutcome(state))
+            outState = state;
+            outDiagnosticCode = outcome.TryGetProperty("diagnosticCode", out var causeElement) && causeElement.ValueKind == JsonValueKind.String
+                ? causeElement.GetString()
+                : null;
+            if (partialAllowed)
+            {
+                if (!IsBudgetPartial(state, outDiagnosticCode))
+                {
+                    throw new InvalidDataException(
+                        $"fallback targets: the run ended in {state} (cause {outDiagnosticCode ?? "none"}), which is not a budget-exhausted partial run; the diagnostic mode reads only that.");
+                }
+            }
+            else if (!IsCompleteOutcome(state))
             {
                 throw new InvalidDataException(
                     $"fallback targets: the run ended in {state}, so its evidence is partial and is refused; re-run openbios-probe to a classified end.");

@@ -60,6 +60,18 @@ internal static class ObservedRootsFixtures
     internal static string TargetsJsonInState(string state, ObservedRunIdentity? run, params string[] targetObjects) =>
         TargetsJsonWithStop(state, run, null, targetObjects);
 
+    /// <summary>
+    /// An export whose run ended in <paramref name="state"/> with the run's classified cause <paramref name="diagnosticCode"/>
+    /// (null when the run recorded none). The outcome carries no <c>stopAt</c>.
+    /// </summary>
+    internal static string TargetsJsonWithCause(string state, string? diagnosticCode, ObservedRunIdentity? run, params string[] targetObjects)
+    {
+        run ??= PlaceholderRun;
+        var complete = state is "Completed" or "Returned" or "RuntimeHandoff" ? "true" : "false";
+        var cause = diagnosticCode is null ? "null" : $"\"{diagnosticCode}\"";
+        return $$"""{"format":"psxrecomp.fallback-targets/v2","sha256":"{{run.FirmwareSha256}}","run":{{JsonSerializer.Serialize(ObservedRootPlanner.RunDocument(run))}},"outcome":{"state":"{{state}}","complete":{{complete}},"stopAt":null,"diagnosticCode":{{cause}}},"targets":[{{string.Join(",", targetObjects)}}]}""";
+    }
+
     /// <summary>An export whose run ended in <paramref name="state"/>; <paramref name="stopAt"/> is the <c>--stop-at</c> PC, if any.</summary>
     internal static string TargetsJsonWithStop(string state, ObservedRunIdentity? run, string? stopAt, params string[] targetObjects)
     {

@@ -691,4 +691,99 @@ public sealed class FallbackRootsCommandTests
         code.Should().Be(1);
         stderr.Should().Contain("probe options");
     }
+
+    // Issue #773 (owner-approved diagnostic mode): --diagnose-partial reads a budget-exhausted export, labels the result
+    // PARTIAL_UNTRUSTED, lists the candidates the planner gates accept, and writes nothing.
+    private static int RunDiagnostic(Fixture fixture, out string stdout, out string stderr, params string[] extra)
+    {
+        var outWriter = new StringWriter();
+        var errWriter = new StringWriter();
+        var code = FallbackRootsCommand.Run(
+            [fixture.Rom, "--load-images", fixture.Manifest, "--fallback-targets", fixture.Targets, "--diagnose-partial", .. extra],
+            outWriter,
+            errWriter);
+        stdout = outWriter.ToString();
+        stderr = errWriter.ToString();
+        return code;
+    }
+
+    [Fact]
+    public void DiagnosticMode_ReadsABudgetPartialRun_LabelsItPartialUntrusted_AndWritesNothing()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJsonWithCause("RuntimeFailure", "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED", run,
+            ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)));
+
+        var code = RunDiagnostic(fixture, out var stdout, out var stderr);
+
+        code.Should().Be(0, stderr);
+        stdout.Should().Contain("\"trust\": \"PARTIAL_UNTRUSTED\"");
+        stdout.Should().Contain("\"manifestWritten\": false");
+        stdout.Should().Contain("\"accepted\": 1");
+        stdout.Should().Contain("0x80010010");
+#pragma warning disable AARC003 // the assertion reads the directory listing the test created; no file is written by the run
+        Directory.GetFiles(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "test.exe", "images.txt", "targets.json"]);
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void DiagnosticMode_StillVerifiesTheRunIdentity()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJsonWithCause("BudgetExhausted", null, run with { DiscSha256 = new string('9', 64) },
+            ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)));
+
+        var code = RunDiagnostic(fixture, out _, out var stderr);
+
+        code.Should().Be(1);
+        stderr.Should().Contain("disc image");
+    }
+
+    [Fact]
+    public void DiagnosticMode_RefusesACrashedRun_AsASuccessfulDiagnosis()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJsonWithCause("RuntimeFailure", null, run,
+            ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)));
+
+        var code = RunDiagnostic(fixture, out var stdout, out var stderr);
+
+        code.Should().Be(1);
+        stdout.Should().NotContain("PARTIAL_UNTRUSTED");
+        stderr.Should().Contain("RuntimeFailure");
+    }
+
+    [Fact]
+    public void DiagnosticMode_CannotPublishAManifest()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJsonWithCause("BudgetExhausted", null, run,
+            ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)));
+        var output = dir.Combine("images-observed.txt");
+
+        var code = RunDiagnostic(fixture, out _, out var stderr, "--out", output);
+
+        code.Should().Be(1);
+        stderr.Should().Contain("--diagnose-partial");
+#pragma warning disable AARC003 // the assertion checks that the refused run wrote nothing
+        File.Exists(output).Should().BeFalse();
+#pragma warning restore AARC003
+    }
+
+    // The probe records the run's classified cause in the export's outcome, so a budget stop can be told from a crash.
+    [Fact]
+    public void TheExportRecordsTheRunsDiagnosticCode_InItsOutcome()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
+        var hash = ObservedRootsFixtures.Sha256Hex(firmwareBytes);
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
+        var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
+
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.RuntimeFailure, null, 0, [], null,
+            _ => ObservedRootsFixtures.Text[4], diagnosticCode: MixedFallbackDiagnostics.SegmentBudgetExhausted)!;
+
+        ObservedRootPlanner.ReadPartialExport(json).DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SegmentBudgetExhausted);
+    }
 }
