@@ -176,7 +176,7 @@ public sealed class BiosCopyDetectionTests
     public void ALowVarietyFragment_IsNotHighVariety_ButIsCountedAsLowVariety()
     {
         // Sixteen BIOS words of two or three values (0x00 and 0xFF mostly). They are not a high-variety match, but they are a match:
-        // a copy of mostly 0x00 and 0xFF is not a hole in the rule (owner ruling: BIOS-derived data is refused by its content).
+        // a copy of mostly 0x00 and 0xFF is not a hole in the rule (owner ruling: a partial content match is a diagnostic, never a refusal).
         var planted = LowVarietyWords(16);
         var bios = BiosWithPlanted(3000, planted);
         var fragment = Manifest(("exe-file", Fragment(bios, 3000, 16)));
@@ -322,7 +322,7 @@ public sealed class BiosCopyDetectionTests
         var manifest = Manifest(("rom-image", Fragment(bios, 0, 4)));
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*copies BIOS bytes into RAM*",
+            .Should().Throw<InvalidDataException>().WithMessage("*structural kind 'rom-image'*",
                 "the rom kind is refused by name, independently of the cumulative count");
     }
 
@@ -360,12 +360,27 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
-    public void AnUnknownSourceKind_IsRefused()
+    public void AnUnknownInputKind_IsRefusedFailClosed_WithoutAnOriginClaim()
     {
+        // Route 1b (structural, fail-closed): an unknown kind is refused, and the message gives the kind as the reason, not a BIOS origin.
         var bios = Bios();
-        var manifest = Manifest(("unknown", Fragment(bios, 0, 2)));
+        var manifest = Manifest(("mystery-kind", Fragment(bios, 0, 2)));
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios)))
-            .Should().Throw<InvalidDataException>().WithMessage("*not an allowed AOT source*");
+            .Should().Throw<InvalidDataException>().WithMessage("*not an allowed AOT source*fail-closed*no BIOS origin is claimed*");
+    }
+
+    [Theory]
+    [InlineData("boot-exe")]
+    [InlineData("disc-exe")]
+    [InlineData("exe-file")]
+    public void ANormalInput_PassesEveryRefusalRoute_ForEachAllowedKind(string kind)
+    {
+        // Negative control: an ordinary allowed-kind input outside the BIOS range, not the BIOS, passes every route.
+        var bios = Bios();
+        var words = Enumerable.Range(0, 64).Select(static i => 0x3C010000u | (uint)i).ToArray();
+        var manifest = new LoadImageManifest([new LoadedImageSpec("normal", 0x00080000u, words, [], kind)], new HashSet<uint>());
+
+        ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
     }
 }

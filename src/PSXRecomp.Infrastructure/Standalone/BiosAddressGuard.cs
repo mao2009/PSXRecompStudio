@@ -110,13 +110,15 @@ public static class BiosAddressGuard
         new HashSet<string>(StringComparer.Ordinal) { "boot-exe", "disc-exe", "exe-file" };
 
     /// <summary>
-    /// The manifest stage (Issue #B2, owner ruling option 1). Three refusals, each on its own ground:
-    /// (1) static source evidence: an input of kind <c>rom</c> (BIOS bytes copied to RAM), or a source kind outside
-    /// <see cref="AllowedAotSourceKinds"/>; (2) the load range overlaps the BIOS; (3) content identity: the input is the complete BIOS
-    /// image, every byte equal (<see cref="IsWholeBiosImage"/>). Content identity proves that the bytes are the BIOS image. It does not
-    /// prove where the input came from historically. Partial content matches are not refusals: they are diagnostics
-    /// (<see cref="DiagnoseContent"/>). The declared provenance (<c>--bios-provenance</c>) is a recorded label and is never a ground for
-    /// a refusal; this method does not receive it.
+    /// The manifest stage (Issue #B2, owner ruling; R1 scope). Four refusals, each on its own ground, and the grounds are kept apart:
+    /// (1) a structural check on the input kind: the kind <c>rom-image</c> (the packaging places BIOS bytes in RAM), and any kind outside
+    /// <see cref="AllowedAotSourceKinds"/> (fail-closed: an unknown kind is refused, and the reason is the kind, not a BIOS origin);
+    /// (2) a structural safety check on the load range: the range overlaps the BIOS range; (3) content identity: the input is the complete
+    /// BIOS image, every byte equal (<see cref="IsWholeBiosImage"/>). Content identity proves that the bytes are the BIOS image. Neither
+    /// a structural check nor content identity proves the historical origin of an input. Partial content matches are not refusals: they
+    /// are diagnostics (<see cref="DiagnoseContent"/>). The kind and the load range come from the internal manifest parser
+    /// (<c>LoadImageManifest</c>), not from a user-declared label; the declared provenance (<c>--bios-provenance</c>) is a recorded label
+    /// and is never a ground for a refusal. This method does not receive it.
     /// </summary>
     public static void RequireNoBiosImage(LoadImageManifest manifest, OpenBiosFirmware firmware)
     {
@@ -127,26 +129,29 @@ public static class BiosAddressGuard
             if (image.Kind == "rom-image")
             {
                 throw new InvalidDataException(
-                    $"image '{image.Name}' copies BIOS bytes into RAM to be translated; BIOS-derived code is never ahead-of-time translated (Issue #B2). " +
-                    "Such code runs in the interpreter fallback instead.");
+                    $"image '{image.Name}' has the structural kind 'rom-image' (BIOS bytes placed in RAM by the packaging); refused by the structural " +
+                    "check on the input kind (Issue #B2). This is not a claim about the historical origin; such code runs in the interpreter fallback.");
             }
 
             if (!AllowedAotSourceKinds.Contains(image.Kind))
             {
                 throw new InvalidDataException(
-                    $"image '{image.Name}' has the source kind '{image.Kind}', which is not an allowed AOT source (Issue #B2).");
+                    $"image '{image.Name}' has the input kind '{image.Kind}', which is not an allowed AOT source; refused fail-closed by the structural " +
+                    "check on the input kind (Issue #B2). The reason is the kind; no BIOS origin is claimed.");
             }
 
             if (OverlapsBios(image.LoadAddress, (ulong)image.Words.Length * 4))
             {
-                throw new InvalidDataException($"image '{image.Name}' loads into the BIOS range; no code there is translated (Issue #B2).");
+                throw new InvalidDataException(
+                    $"image '{image.Name}' loads into the BIOS range: refused by the structural safety check on the load range (Issue #B2). " +
+                    "This is not a claim about the historical origin; no code there is translated.");
             }
 
             if (IsWholeBiosImage(image.Words, firmware))
             {
                 throw new InvalidDataException(
-                    $"image '{image.Name}' is byte-identical to the complete BIOS image (content identity, Issue #B2). This does not show " +
-                    "where the input came from; BIOS data is never ahead-of-time translated.");
+                    $"image '{image.Name}' is byte-identical to the complete BIOS image: refused by content identity (Issue #B2). This does not show " +
+                    "where the input came from; the identity is of content only.");
             }
         }
     }

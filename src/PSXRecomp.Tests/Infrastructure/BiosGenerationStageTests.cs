@@ -56,7 +56,7 @@ public sealed class BiosGenerationStageTests : IDisposable
         BiosAddressGuard.IsBiosAddress(address).Should().BeFalse($"0x{address:X8} is not in the BIOS ROM");
 
     [Fact]
-    public void AManifestRomImage_IsRefused_BecauseItIsBiosDerivedCode()
+    public void AManifestRomImage_IsRefused_OnTheStructuralKindCheck()
     {
         var rom = new byte[OpenBiosFirmware.ImageSize];
         var firmware = OpenBiosFirmware.FromBytes(rom);
@@ -65,7 +65,7 @@ public sealed class BiosGenerationStageTests : IDisposable
 
         ((Action)(() => FirmwareAotPlan.Build(
             firmware, _dir.Combine("aot", "rom.roots"), 64, _dir.Combine("aot", "images.txt"), new RawCdSectorSource(new byte[2352]))))
-            .Should().Throw<InvalidDataException>().WithMessage("*BIOS-derived*");
+            .Should().Throw<InvalidDataException>().WithMessage("*structural kind 'rom-image'*");
     }
 
     [Fact]

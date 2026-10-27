@@ -60,7 +60,7 @@ public sealed class BiosWiringIntegrationTests : IDisposable
     public void ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage()
     {
         ((Action)(() => Build(Request("refused-manifest"))))
-            .Should().Throw<InvalidDataException>().WithMessage("*copies BIOS bytes*");
+            .Should().Throw<InvalidDataException>().WithMessage("*structural kind 'rom-image'*");
     }
 
     [Fact]
