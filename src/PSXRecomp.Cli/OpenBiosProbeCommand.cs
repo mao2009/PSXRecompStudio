@@ -7,6 +7,7 @@ using PSXRecomp.Architecture;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Infrastructure.Standalone;
 
@@ -917,6 +918,9 @@ internal static class OpenBiosProbeCommand
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
+    /// <summary>True when a guest PC translates into the 2 MiB of RAM. A PC outside RAM (the BIOS ROM range) has no RAM word to export.</summary>
+    internal static bool IsGuestRamPc(uint pc) => Ps1AddressTranslation.TryTranslate(pc, out var physical) && physical < 0x00800000u;
+
     /// <summary>
     /// The per-fetch accounting the probe's fallback fetch observer performs: the boot monitor and the fallback accounting each see the
     /// fetch once, and the first exception-vector entry with no pending cause is captured as the host interrupt. Shared by the probe and
@@ -965,7 +969,8 @@ internal static class OpenBiosProbeCommand
             entries = t.Entries,
             instructions = t.Instructions,
             lastReturnPc = Hex(t.LastReturnPc),
-            ramWord = ramWordOf(t.Target) is { } word ? Hex(word) : null,
+            // PR #839 review (MAJOR): a PC outside guest RAM (the BIOS ROM range) carries no ramWord, so no BIOS word is exported.
+            ramWord = IsGuestRamPc(t.Target) && ramWordOf(t.Target) is { } word ? Hex(word) : null,
         }).ToArray();
         return JsonSerializer.Serialize(new
         {

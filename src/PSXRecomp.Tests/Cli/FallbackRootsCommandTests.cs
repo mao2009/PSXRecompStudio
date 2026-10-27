@@ -600,6 +600,32 @@ public sealed class FallbackRootsCommandTests
         ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(hash, manifest, null, ObservedRootPlanner.ProbeOptionsSha256(0, [])));
     }
 
+    // PR #839 review (MAJOR): a fallback target in the BIOS ROM range carries no ramWord, so the BIOS word is never written
+    // into the export. The synthetic word below stands in for a BIOS word; the RAM target keeps its own word.
+    [Fact]
+    public void BiosRange_OpenBiosProbeFallbackTarget_InTheRomRange_ExportsNoRamWord()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
+        var hash = ObservedRootsFixtures.Sha256Hex(firmwareBytes);
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
+        const uint biosWord = 0x24020BADu;
+        var romPc = OpenBiosFirmware.ResetVector;
+        var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [
+            new MixedFallbackTarget(romPc, Entries: 1, Instructions: 1, LastReturnPc: Dest),
+            new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
+
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null,
+            pc => pc == Callee ? ObservedRootsFixtures.Text[4] : biosWord);
+
+        json.Should().NotBeNull();
+        json!.ToLowerInvariant().Should().NotContain("24020bad", "the BIOS word must not appear in the exported artifact");
+        var export = ObservedRootPlanner.ReadExport(json);
+        export.Targets.Single(t => t.Pc == romPc).RamWord.Should().BeNull();
+        export.Targets.Single(t => t.Pc == Callee).RamWord.Should().Be(ObservedRootsFixtures.Text[4]);
+    }
+
     // An engine whose outer budget is spent before its first segment: the orchestrator ends the run as BudgetExhausted,
     // so the probe's evidence is partial (review M1). The real orchestrator produces the state; nothing is hand-set.
     private sealed class NoSegmentEngine : IRecompiledExecutionEngine
