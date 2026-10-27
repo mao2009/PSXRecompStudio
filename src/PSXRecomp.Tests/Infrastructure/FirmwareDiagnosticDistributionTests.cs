@@ -117,6 +117,81 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [Fact]
+    public void ResolveRuntimeDiscPath_WithoutTheMarker_IsTheProductPath()
+    {
+        // Default off: no marker means the product's runtime/disc path, unchanged.
+        using var dir = new TempDirectory();
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+
+        FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd")
+            .Should().Be(Path.Combine(runtime, "disc/game.chd"));
+    }
+
+    [Fact]
+    public void ResolveRuntimeDiscPath_WithTheMarker_NamesTheOriginalDiscAndNothingIsCreatedInRuntime()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var original = dir.WriteFile("source/game.chd", new byte[4096]);
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime", "disc")).FullName;
+        var before = OpenBiosRomInput.Sha256HexOfFile(original);
+        File.WriteAllText(Path.Combine(dir.Combine("runtime"), "diagnostic-disc.json"),
+            "{\"schema\":\"psxrecomp.diagnostic-disc.v1\",\"path\":\"" + original.Replace("\\", "\\\\") + "\",\"sha256\":\"" + before + "\",\"access\":\"read-only\"}");
+
+        var resolved = FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(dir.Combine("runtime"), "disc/game.chd");
+
+        resolved.Should().Be(Path.GetFullPath(original));
+        Directory.EnumerateFileSystemEntries(runtime).Should().BeEmpty("the disc is referenced, never linked or copied into runtime/");
+        OpenBiosRomInput.Sha256HexOfFile(original).Should().Be(before);
+        new FileInfo(original).LinkTarget.Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveRuntimeDiscPath_MarkerWithAnUnknownSchema_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+        var disc = dir.WriteFile("source/game.chd", new byte[16]);
+        File.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"),
+            "{\"schema\":\"other\",\"path\":\"" + disc.Replace("\\", "\\\\") + "\"}");
+
+        var act = () => FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd");
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*unknown schema*");
+    }
+
+    [Fact]
+    public void DiscOpener_ReadOnlyFile_OpensWithoutWriteAccessAndLeavesTheBytesUnchanged()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var disc = dir.WriteFile("source/game.bin", new byte[2352 * 2]);
+        var before = OpenBiosRomInput.Sha256HexOfFile(disc);
+        File.SetAttributes(disc, FileAttributes.ReadOnly);
+        try
+        {
+            using (var opened = DiscSectorSourceOpener.Open(disc))
+            {
+                opened.Source.Should().NotBeNull();
+            }
+
+            OpenBiosRomInput.Sha256HexOfFile(disc).Should().Be(before, "the read-only open does not change the disc");
+        }
+        finally
+        {
+            File.SetAttributes(disc, FileAttributes.Normal);
+        }
+    }
+
+    [Fact]
     public void RequireInputsUnchanged_AnyDigestChange_InvalidatesTheMeasurement()
     {
         var before = new Dictionary<string, string> { ["rom"] = "aa", ["disc"] = "bb" };

@@ -16,7 +16,7 @@ internal static class FirmwareDiagnosticCommand
     internal const string Usage =
         "usage: psxrecomp firmware-diagnostic --rom <openbios.bin> --rom-sha256 <hex> --disc <image.chd|image.bin> --disc-sha256 <hex> " +
         "--aot-dir <dir> --out <new-dir> [--code-bytes <n>] [--instruction-budget <n>] [--run-timeout-ms <n>] [--build-timeout-seconds <n>] " +
-        "[--host-from <published-host-dir>] [--artifact-from <earlier-artifact.exe>] [--run]";
+        "[--host-from <published-host-dir>] [--artifact-from <earlier-artifact.exe>] [--direct-disc] [--run]";
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
     {
@@ -25,6 +25,7 @@ internal static class FirmwareDiagnosticCommand
         int runTimeoutMs = 1_800_000; // the product package default (FirmwarePackageCommand.DefaultRunTimeoutSeconds = 1800)
         int? buildTimeoutSeconds = null;
         var run = false;
+        var directDisc = false;
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
         for (var i = 0; i < args.Count; i++)
@@ -40,6 +41,12 @@ internal static class FirmwareDiagnosticCommand
             if (option == "--run")
             {
                 run = true;
+                continue;
+            }
+
+            if (option == "--direct-disc")
+            {
+                directDisc = true;
                 continue;
             }
 
@@ -116,7 +123,8 @@ internal static class FirmwareDiagnosticCommand
                 RunTimeoutMs: runTimeoutMs,
                 HostSourceDirectory: hostFrom,
                 ArtifactSourcePath: artifactFrom,
-                BuildTimeout: buildTimeoutSeconds is { } s ? TimeSpan.FromSeconds(s) : null);
+                BuildTimeout: buildTimeoutSeconds is { } s ? TimeSpan.FromSeconds(s) : null,
+                DirectDiscReference: directDisc);
             var build = FirmwareDiagnosticDistribution.Build(request, RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             output.WriteLine($"firmware-diagnostic built: {build.Root}");
             if (!run)

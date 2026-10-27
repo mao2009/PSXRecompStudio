@@ -27,7 +27,8 @@ public sealed record FirmwareDiagnosticRequest(
     int RunTimeoutMs,
     string? HostSourceDirectory = null,
     string? ArtifactSourcePath = null,
-    TimeSpan? BuildTimeout = null);
+    TimeSpan? BuildTimeout = null,
+    bool DirectDiscReference = false);
 
 /// <summary>A built measurement layout: the game executable, the <c>runtime/</c> directory and the manifest the host reads.</summary>
 [Infrastructure]
@@ -55,6 +56,11 @@ public static class FirmwareDiagnosticDistribution
     public const string HostStderrFileName = "host-stderr.txt";
     public const string HostStdoutFileName = "host-stdout.txt";
     public const string DiagnosticFileName = "host-diagnostic.json";
+
+    /// <summary>The developer-only marker that makes the host open the original disc read-only (absent in every product package).</summary>
+    public const string DiscMarkerFileName = "diagnostic-disc.json";
+
+    private const string DiscMarkerSchema = "psxrecomp.diagnostic-disc.v1";
 
     private const string Schema = "psxrecomp.firmware-diagnostic.v1";
     private const string FirmwareRunPrefix = "{\"kind\":\"firmware-run\"";
@@ -119,7 +125,15 @@ public static class FirmwareDiagnosticDistribution
             // the original path directly, so the disc the plan and the host read is the one the user named.
             var discLeaf = Path.GetExtension(discPath).Equals(".chd", StringComparison.OrdinalIgnoreCase) ? "disc.chd" : "disc.bin";
             var discDir = Directory.CreateDirectory(Path.Combine(runtimeDir, FirmwareBootManifest.DiscDirectory)).FullName;
-            LinkDiscInPlace(discPath, Path.Combine(discDir, discLeaf));
+            if (request.DirectDiscReference)
+            {
+                // Nothing is linked or copied: the marker names the original, which the host opens read-only.
+                WriteDiscMarker(runtimeDir, discPath, request.DiscSha256);
+            }
+            else
+            {
+                LinkDiscInPlace(discPath, Path.Combine(discDir, discLeaf));
+            }
 
             FirmwareAotPlan plan;
             using (var disc = DiscSectorSourceOpener.Open(discPath))
@@ -327,6 +341,46 @@ public static class FirmwareDiagnosticDistribution
                     $"The input '{name}' changed while the measurement was taken (SHA-256 differs); the result is invalid.");
             }
         }
+    }
+
+    /// <summary>
+    /// The disc the host opens for a run. Without the developer marker in <paramref name="runtimeDirectory"/> it is the product path
+    /// (<c>runtime/&lt;relativeDiscFile&gt;</c>), so the product contract is unchanged. With the marker it is the original disc the marker
+    /// names, which the caller opens read-only and digests (the digest check is the caller's). A symbolic link is refused.
+    /// </summary>
+    public static string ResolveRuntimeDiscPath(string runtimeDirectory, string relativeDiscFile)
+    {
+        var marker = Path.Combine(runtimeDirectory, DiscMarkerFileName);
+        if (!File.Exists(marker))
+        {
+            return Path.Combine(runtimeDirectory, relativeDiscFile);
+        }
+
+        var node = JsonNode.Parse(File.ReadAllText(marker))?.AsObject()
+            ?? throw new InvalidDataException("The diagnostic disc marker is not a JSON object.");
+        if (node["schema"]?.GetValue<string>() != DiscMarkerSchema)
+        {
+            throw new InvalidDataException("The diagnostic disc marker has an unknown schema.");
+        }
+
+        var path = node["path"]?.GetValue<string>();
+        if (path is null || !Path.IsPathFullyQualified(path) || !File.Exists(path))
+        {
+            throw new InvalidDataException("The diagnostic disc marker does not name an existing absolute disc path.");
+        }
+
+        if (new FileInfo(path).LinkTarget is not null)
+        {
+            throw new InvalidDataException("The diagnostic disc must be a regular file, not a symbolic link.");
+        }
+
+        return Path.GetFullPath(path);
+    }
+
+    private static void WriteDiscMarker(string runtimeDir, string discPath, string sha256)
+    {
+        var marker = new JsonObject { ["schema"] = DiscMarkerSchema, ["path"] = discPath, ["sha256"] = sha256, ["access"] = "read-only" };
+        File.WriteAllText(Path.Combine(runtimeDir, DiscMarkerFileName), marker.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
     }
 
     /// <summary>Creates a hard link at <paramref name="linkPath"/> to <paramref name="originalPath"/>. Never copies the bytes.</summary>
