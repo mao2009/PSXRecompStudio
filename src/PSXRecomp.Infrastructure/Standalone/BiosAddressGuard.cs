@@ -87,7 +87,7 @@ public sealed record BiosContentDiagnostic(
     string Message);
 
 /// <summary>
-/// The BIOS is never an input of ahead-of-time code generation (owner ruling, Issue #B2, option 3). This guard is the
+/// The canonical pipeline does not take the BIOS directly as an input of ahead-of-time code generation (owner ruling R1, narrowed). This guard is the
 /// generation-stage enforcement: it refuses any program, loaded image, block or generated source that would translate
 /// BIOS code, and it is called at each stage the code passes through (manifest, plan, dispatch, generated C).
 /// </summary>
@@ -427,7 +427,7 @@ public static class BiosAddressGuard
             if (IsBiosAddress(block.EntryPc))
             {
                 throw new InvalidOperationException(
-                    $"a compiled block at 0x{block.EntryPc:X8} lies in the BIOS (Issue #B2); the BIOS is never translated. [stage: {stage}]");
+                    $"a compiled block at 0x{block.EntryPc:X8} lies in the BIOS (Issue #B2); the canonical pipeline does not translate the BIOS. [stage: {stage}]");
             }
         }
 
@@ -437,7 +437,7 @@ public static class BiosAddressGuard
             if (OverlapsBios(block.EntryPc, (ulong)Math.Max(1, block.RetiredInstructionCount) * 4))
             {
                 throw new InvalidOperationException(
-                    $"a loaded block at 0x{block.EntryPc:X8} overlaps the BIOS (Issue #B2); the BIOS is never translated. [stage: {stage}]");
+                    $"a loaded block at 0x{block.EntryPc:X8} overlaps the BIOS (Issue #B2); the canonical pipeline does not translate the BIOS. [stage: {stage}]");
             }
         }
     }

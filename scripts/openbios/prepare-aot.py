@@ -46,7 +46,7 @@ class Elf:
 
 
 def prepare(rom_path, output, disc_exes=False):
-    # R1 (BIOS is never an AOT input): no BIOS code or data is emitted as a RAM image. The kernel data, the exception
+    # R1 (the canonical pipeline does not take the BIOS directly as an AOT input): no BIOS code or data is emitted as a RAM image. The kernel data, the exception
     # vectors and the shell stay in the BIOS image; the run loads them from the ROM and interprets them, as before.
     # Only the disc's executables are AOT inputs, plus the observation points that stay interpreted.
     rom = Elf(rom_path)

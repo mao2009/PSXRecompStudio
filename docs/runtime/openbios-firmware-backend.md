@@ -707,8 +707,8 @@ project claims complete detection of BIOS data in an input.
 
 **Known limit: a split BIOS is not detected (accepted residual).** A complete BIOS split into N pieces, each placed in its own PS-X
 file, is not detected as BIOS. Each piece is an ordinary executable to the structural checks, and a partial content match is a
-diagnostic only (owner ruling). With N = 4, the cumulative content rule (measured below) would have refused a 124-byte copy split
-into four in only 4 of 40 trials; under the diagnostic-only rule nothing here is refused, and such a split is reported, not refused. The limit is pinned by
+diagnostic only (owner ruling). With N = 4, the measured diagnostic coverage (below) of a 124-byte copy split into four reached the refusal threshold in 4 of 40
+trials, assuming the then-current refusal rule applied; under the present diagnostic-only rule nothing is refused, and such a split is reported. The limit is pinned by
 `BiosSplitLimitationTests` (synthetic input, names begin `KnownLimit_`). A complete BIOS image as one input is still refused.
 
 **Input-kind trust boundary (owner ruling, option 2).** A directive keyword selects a reader; it does not decide the class.
@@ -803,13 +803,13 @@ What the tables show:
   highest measured group coverage is 220 bytes (x86, k = 16 and 32).
 - The 4-word floor is not usable. Even with the high-variety filter, (4, 4) reaches 92 bytes in a group of eight and 108 bytes in a
   group of 32 (x86), above the 96-byte threshold: 1 of 200 groups at k = 16 and 13 of 200 at k = 32. It detects more split copies
-  (its 124-byte split of four is 40 / 40, against 4 / 40 for production), but it refuses ordinary inputs, so it is rejected, not left as
+  (its 124-byte split of four reaches the threshold in 40 / 40 trials, against 4 / 40 for production, under the then-current rule assumed for the measurement), but it refuses ordinary inputs, so it is rejected, not left as
   an option.
 - The 96-byte high-variety threshold is three minimum-length matches. One accidental match cannot refuse a packaging. The measured
   zero at (8, 4) shows that the production scheme is quiet on these corpora; it does not show that 96 is the tightest safe value.
 - The original requirement was a 127-byte copy split in two being refused. A 127-byte copy holds 31 whole words (124 bytes); its 3
   trailing bytes are not a word and are not counted. Whole, and split in two pieces of 8 or more words each, it is refused in 40 / 40
-  trials. **Not met:** split into four pieces of 8, 8, 8 and 7 words (4 / 40). Three of the 8-word pieces are counted, 24 words, which is 96 bytes: not over the threshold, so the packaging is accepted. The 7-word piece is not a match. The former
+  trials. **Not met:** split into four pieces of 8, 8, 8 and 7 words (the threshold is reached in 4 / 40 trials, under the then-current rule assumed for the measurement; nothing is refused now, and the diagnostic reports the coverage). Three of the 8-word pieces are counted, 24 words, which is 96 bytes: not over the threshold, so the packaging is accepted. The 7-word piece is not a match. The former
   224-byte threshold could not refuse a 124-byte copy at all.
 
 **Limits of the measurement, stated plainly.**
