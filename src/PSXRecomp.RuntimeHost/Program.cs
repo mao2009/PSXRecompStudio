@@ -254,6 +254,9 @@ public static class Program
                     imageBytes.AsSpan(i * 4));
             }
 
+            // Issue #B2 (R1 scope): the HLE package's load range; a refusal here is a failed run (exit 78) with diagnostics.
+            BiosAddressGuard.RequireNoBiosRange("packaged image", manifest.ImageLoadAddress, imageWords.Length);
+
             // Choose the launch mode:
             // - Guest firmware (OpenBIOS) gets NO BIOS HLE Runtime (it owns its kernel
             //   and vectors), but it does get the device-MMIO HostTransferBridge: the

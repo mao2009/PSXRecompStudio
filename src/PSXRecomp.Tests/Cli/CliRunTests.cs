@@ -873,4 +873,35 @@ public sealed class CliRunTests
 
     [Fact]
     public void Help_ExitsZero() => Invoke("--help").Exit.Should().Be(RecompiledArtifactExitCode.Success);
+
+    // Issue #B2 (R1 scope): the production CLI lowering refuses a PS-X EXE whose text loads into the BIOS range (any alias).
+    // Synthetic bytes only; the refusal message names the range ground and contains no BIOS bytes.
+    [Theory]
+    [InlineData("recompile")]
+    [InlineData("run")]
+    public void BiosRange_TextStartInBiosRange_IsRefusedByTheProductionLowering(string command)
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExeAt(dir, "bios-range.exe", SuccessfulProgram(), 0xBFC00000u);
+
+        var (exit, output, error) = Invoke(command, exePath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().NotBe(RecompiledArtifactExitCode.Success);
+        (output + error).Should().Contain("loads into the BIOS range");
+    }
+
+    [Fact]
+    public void BiosRange_ChdWithTextStartInBiosRange_IsRefusedByTheProductionLowering()
+    {
+        using var dir = new TempDirectory();
+        var chdPath = dir.WriteFile("bios-range.chd", SyntheticChdBuilder.Build(BuildSyntheticExe(SuccessfulProgram(), 0xBFC00000u)));
+
+        var (exit, output, error) = Invoke("recompile", chdPath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().NotBe(RecompiledArtifactExitCode.Success);
+        (output + error).Should().Contain("loads into the BIOS range");
+    }
+
+    private static string WriteSyntheticExeAt(TempDirectory dir, string name, uint[] words, uint textStart) =>
+        dir.WriteFile(name, BuildSyntheticExe(words, textStart));
 }
