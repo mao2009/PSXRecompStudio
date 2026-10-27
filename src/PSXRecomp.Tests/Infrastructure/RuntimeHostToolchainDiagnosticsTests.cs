@@ -108,7 +108,7 @@ public sealed class RuntimeHostToolchainDiagnosticsTests
         try
         {
             using var dir = new TempDirectory();
-            var result = RunHostDriver(dir, payloadChars: 1_000_000, timeout: TimeSpan.FromSeconds(20));
+            var result = RunHostDriver(dir, payloadChars: 1_000_000, timeout: TimeSpan.FromSeconds(5));
 
             result.Stderr.Should().NotBe("Runtime host timed out",
                 "the host must not block on a full pipe while the pool is saturated");
