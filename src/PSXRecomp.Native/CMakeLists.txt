@@ -20,11 +20,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -ffile-prefix-map=${CMAKE_BINARY_DIR}=build
         -ffile-prefix-map=${PSX_TOOLCHAIN_ROOT}=toolchain
         -ffile-prefix-map=${PROJECT_SOURCE_DIR}=PSXRecomp.Native)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    # /d1trimpath keeps only the file name in __FILE__. No PDB path is embedded: the
-    # Release link does not pass /DEBUG, so no debug directory is written.
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/d1trimpath>)
 endif()
+# MSVC: no path mapping is applied. The CI cl (MSBuild 18.x, Visual Studio generator) rejects /d1trimpath
+# (error C1007: unrecognized flag), so the flag is not passed. Limit: an MSVC build keeps the full source path
+# wherever the compiler records __FILE__ (the project sources use none; the one assert in psx_cpu.cpp is removed
+# by NDEBUG in Release). The Release link does not pass /DEBUG, so no PDB path is embedded.
 
 # --- Rust coexistence substrate (Issue #473, ADR-023) ------------------------
 # The Rust crate is compiled by cargo as a `staticlib` and linked into the same
@@ -145,7 +145,8 @@ target_link_libraries(PSXRecomp.Native PRIVATE ${PSX_RUST_STATICLIB})
 # The MinGW runtime archives (libgcc) carry DWARF debug information whose directory is the MinGW build
 # machine's path, and the prefix maps cannot reach it. --strip-debug removes the DWARF sections and keeps the
 # symbol table (the COFF/ELF symbols), which is the part the -s flag used to remove (Issue #B2, review M1).
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
+# GNU ld only (MinGW and GCC on Linux). MSVC gets no GNU option; Clang and Apple are not used by this build.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)
     target_link_options(PSXRecomp.Native PRIVATE -Wl,--strip-debug)
 endif()
 

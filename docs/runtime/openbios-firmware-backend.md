@@ -868,6 +868,22 @@ Limits, stated plainly:
   run found 104,223 such occurrences in the packaged output, all excused. This is a measured false-negative path.
 - The scan does not prove zero leakage. It does not establish the origin of code. The generation guard refuses on the grounds listed in the BIOS section (static evidence, content identity); it is not a proof that no BIOS-derived code exists in an input.
 
+**Absolute developer path check (`DistributionLeakScanner`, the MSYS rule, Issue #B2).** A distributed file must not name a
+developer or user path in Windows, MSYS or Unix form. The MSYS rule matches a drive letter followed by (a) the user-home root,
+(b) two or more segments with one of two or more characters, or (c) one name of three or more characters followed by `/` or
+`.ext` (`/c/Hobart/x.dll`, `/d/PSXRecompStudio/README.md`). Limits, stated plainly:
+
+- A name directly under the drive with no separator or extension after it is not matched (`/c/Hobart` at the end of a string).
+- A two-character name is not matched (`/c/ab/`). Two single-character segments are not matched (`/H/N/s/`).
+- A cygwin-style `/cygdrive/c/…` path is not matched.
+- A UTF-16 wide string is matched only where its two-byte units line up with one of the two views the scanner reads (even offset,
+  odd offset); a path inside a longer wide string can be missed.
+- Random byte sequences in compiled code can match the rule. Measured on the built DLL and EXE files of this repository
+  (`scripts/ci/measure-leak-rule.py`, 291 files): no file is flagged only by the three-character alternative; its matches are
+  test-data literals in `PSXRecomp.Tests.dll`.
+- The native library is built with `-ffile-prefix-map` on GCC/Clang. An MSVC build keeps the full source path wherever `__FILE__`
+  is recorded (see `src/PSXRecomp.Native/CMakeLists.txt`).
+
 **Provenance, decided at run time (MAJOR-1).** The run classifies the image it loads by SHA-256 (`BiosProvenance`). The
 packaging-time declaration (`--bios-provenance`) is recorded for comparison only and is never evidence.
 
