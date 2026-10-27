@@ -133,7 +133,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     private const int RunTimeoutMs = 30000;
-    private const int PumpDrainTimeoutMs = 5000;
+    // Also the drain cap of RuntimeHostBuildService (RuntimeHostBuildService.PipeDrainBudgetMs refers to this value).
+    internal const int PumpDrainTimeoutMs = 5000;
 
     private readonly Func<IGuestMemoryReader, IGuestMemoryWriter, IBiosRuntime>? _biosRuntimeFactory;
     private readonly Action<PsxDeviceGraph>? _configureDevices;

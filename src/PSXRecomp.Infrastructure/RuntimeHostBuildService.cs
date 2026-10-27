@@ -400,8 +400,8 @@ public static class RuntimeHostBuildService
     }
 
     // Issue #832: the host's pipes are drained within this budget after it exits. A grandchild that inherited them can hold them open.
-    // Same value as RecompiledHostExecutionEngine.PumpDrainTimeoutMs, the drain cap of the other host run path.
-    private const int PipeDrainBudgetMs = 5000;
+    // Shared with RecompiledHostExecutionEngine's drain cap, so the two host run paths cannot drift apart.
+    private const int PipeDrainBudgetMs = RecompiledHostExecutionEngine.PumpDrainTimeoutMs;
 
     /// <summary>
     /// Reads one child pipe on its own thread (see ProtocolPump) and keeps the text read so far. A drain cut short by the budget
@@ -419,6 +419,9 @@ public static class RuntimeHostBuildService
 
         /// <summary>Completes when the pipe reaches its end, and faults when the read fails.</summary>
         public Task Completion { get; }
+
+        /// <summary>The exception that ended the read, or null when the read has not failed (Issue #832 diagnostics).</summary>
+        public Exception? ReadError => Completion.IsFaulted ? Completion.Exception?.InnerException : null;
 
         /// <summary>The text read so far.</summary>
         public string Text
@@ -456,6 +459,7 @@ public static class RuntimeHostBuildService
         }
         catch (AggregateException)
         {
+            // The cause is kept on the collector (PipeCollector.ReadError), so the caller can still see its type and message.
             return RuntimeHostPipeDrain.ReadFailed;
         }
     }
@@ -517,7 +521,9 @@ public static class RuntimeHostBuildService
             if (!process.WaitForExit(timeoutMs))
             {
                 TryKill(process);
-                return RuntimeHostRunResult.Succeeded(int.MinValue, string.Empty, "Runtime host timed out");
+                // Neither pipe was read to its end, so neither is Complete (Issue #832).
+                return RuntimeHostRunResult.Drained(
+                    int.MinValue, string.Empty, "Runtime host timed out", RuntimeHostPipeDrain.TimedOut, RuntimeHostPipeDrain.TimedOut);
             }
 
             // The host has exited, but a grandchild that inherited its pipes can keep them open. Both pipes share one drain budget
