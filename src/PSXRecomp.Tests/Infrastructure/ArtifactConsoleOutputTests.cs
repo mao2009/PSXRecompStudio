@@ -13,12 +13,20 @@ public sealed class ArtifactConsoleOutputTests
 {
     private const string Value = "C0FFEE11";
 
+    // The synthetic stream goes through the function the direct launch uses; its output is what reaches the console.
+    private static string Forwarded(string stdout)
+    {
+        using var console = new StringWriter();
+        ArtifactConsoleOutput.Forward(new StringReader(stdout), console);
+        return console.ToString();
+    }
+
     [Fact]
     public void AFailedRun_PrintsNoHostProtocolLine_AndKeepsTheGuestText()
     {
         var stdout = $"HELLO\nRHOST_TRANSFER 0x80010000 0x{Value} 0x0\nRHOST_OK\nGOODBYE\n";
 
-        var printed = ArtifactConsoleOutput.GuestText(stdout);
+        var printed = Forwarded(stdout);
 
         printed.Should().Be("HELLO\nGOODBYE\n");
         printed.Should().NotContain("RHOST_");
@@ -30,7 +38,7 @@ public sealed class ArtifactConsoleOutputTests
     {
         var stdout = $"HELLO\nRSNAPSHOT_BEGIN\ntermination=0\npc=0x80010000\ngpr[2]=0x{Value}\nRSNAPSHOT_END\nGOODBYE\n";
 
-        var printed = ArtifactConsoleOutput.GuestText(stdout);
+        var printed = Forwarded(stdout);
 
         printed.Should().Be("HELLO\nGOODBYE\n");
         printed.Should().NotContain(Value);
@@ -43,9 +51,9 @@ public sealed class ArtifactConsoleOutputTests
     {
         var stdout = $"HELLO\nRSNAPSHOT_BEGIN\ngpr[2]=0x{Value}\n";
 
-        var printed = ArtifactConsoleOutput.GuestText(stdout);
+        var printed = Forwarded(stdout);
 
-        printed.Should().Be("HELLO");
+        printed.Should().Be("HELLO\n", "the guest's line is written with its line end");
         printed.Should().NotContain(Value);
     }
 }

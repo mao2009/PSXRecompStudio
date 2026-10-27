@@ -325,7 +325,7 @@ public static class Program
             // TTY directly through the sink above.
             if (engine.ConsoleOutput is { Length: > 0 } consoleOutput)
             {
-                Console.Write(ArtifactConsoleOutput.GuestText(consoleOutput));
+                ArtifactConsoleOutput.Forward(new StringReader(consoleOutput), Console.Out);
             }
 
             if (frameOutPath is not null)
