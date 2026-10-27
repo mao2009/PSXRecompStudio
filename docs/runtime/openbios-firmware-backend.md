@@ -154,12 +154,13 @@ not modelled.
 
 ### Generated host (`--engine generated-host`)
 
-The probe compiles the ROM and explicit RAM images before execution, then runs
+The probe compiles the ROM (from `--roots`) and the explicit RAM images before execution. This is a measurement path: its ROM
+compile is not the distribution's AOT, which never compiles ROM code (R1), and this change does not alter the probe. The probe then runs
 `RecompiledHostExecutionEngine` over the common device graph. Unknown or changed
 code uses the counted interpreter fallback. No code is compiled during the run.
 
 ```bash
-python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/aot
 pwsh scripts/demo/synthetic-disc.ps1 -WorkDir /local/fixtures -OpenBiosCompatible
 psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-disc-openbios.bin \
   --engine generated-host --roots /local/aot/rom.roots --load-images /local/aot/images.txt \
@@ -277,8 +278,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   (fetch indices excluded: they count different fetches) and the
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
-`prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
-built ELF pair. Manifest root paths are relative to the manifest. Issue #773 adds the observed-roots directive
+`prepare-aot.py` reads ELF32 MIPS function symbols from the locally built OpenBIOS ELF and writes `rom.roots` and
+`images.txt` (no BIOS RAM image, R1; the shell ELF is no longer an input). Manifest root paths are relative to the manifest. Issue #773 adds the observed-roots directive
 `roots <image> <roots-file> <source-sha256> <load-hex> <words-sha256>`: it names exactly one EXE-based image (`exe`,
 `boot-exe` or `disc-exes`), and the load is refused unless the image's source-file SHA-256, load address and code-word
 SHA-256 all match, and every root is a unique, aligned, in-image, structurally safe PC that is not already a root. The
@@ -324,8 +325,8 @@ program stages into RAM, and overlays may share a load address, which the loaded
 the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific.
 `prepare-aot.py --disc-exes` emits it; it is **opt-in** because, measured on Persona, entry-only roots leave every
 function-pointer target to the interpreter fallback and the mixed execution then ping-pongs (Issue #734, below). Observation
-points must remain interpreted: the generated manifest includes `C0Handler`
-(kernel RAM execution), exception vector/handler, shell and EXE entries.
+points must remain interpreted: the generated manifest holds `interpret` lines for `C0Handler`, the exception vector and
+the exception handler (no BIOS RAM image is written, R1).
 
 `indirect-roots` (Issue #773, **opt-in**) adds the functions an EXE calls only through a function-pointer table to
 that EXE image's roots. A reachable `lui`/`addiu|ori` pair names a table; the table words that are in-image,
@@ -398,28 +399,25 @@ fetches by 1,880, so `differentialPass` is false: device time diverges
 
 ### Ahead-of-time RAM-placed code (`--load-images`, [ADR-026](../adr/026-aot-ram-placed-code.md))
 
-PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. Code the firmware
-places in RAM is compiled before the run from explicit images listed in a manifest
-(`LoadImageManifest`; one directive per line, hex numbers, paths relative to the manifest):
+PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. The RAM-placed code that is compiled before
+the run is the code of the disc's executables, listed in a manifest (`LoadImageManifest`; one directive per line, hex numbers,
+paths relative to the manifest). The BIOS is never an AOT input (owner ruling R1): the manifest has no `image ... rom` line, since a
+RAM image that copies BIOS bytes is refused (`rom-image`). The kernel data, the exception vectors and the shell are not compiled:
+the run loads them from the BIOS image and interprets them (the counted fallback).
 
 ```text
-image kernel-data 0x00000500 rom 0xBFC1DF6C 0x45A0 kernel.roots  # ELF LOAD 0x500 <- ROM 0xBFC1DF6C (.data, RWE)
-image vector-80   0x80000080 rom 0xBFC06DE8 0x10 vector80.roots # exceptionVector (0x80000084)
-image vector-a0   0x000000A0 rom 0xBFC06DF8 0x10                # A0Vector; likewise B0Vector/C0Vector
-image shell       0x80030000 rom 0xBFC0A1F4 0x13D78 shell.roots  # _binary_shell_bin_start
-exe   test-exe    test.exe exe.roots                             # or: boot-exe <name> (SYSTEM.CNF on --disc)
-interpret 0x80000080   # observation points stay interpreted: exception vector, exceptionHandler
-interpret 0x000026A4   # (0x26A4, KernelRunningFromRam), shell entry 0x80030000, EXE entry 0x80010000
+boot-exe boot                        # SYSTEM.CNF's boot executable on --disc (AOT input: the disc's own code)
+disc-exes disc                       # optional: every PS-X EXE on the disc, as guarded images
+exe   test-exe test.exe exe.roots    # an explicit executable file (AOT input)
+interpret 0x80000080                 # observation points stay interpreted: the exception vector
+interpret 0x000026A4                 # OpenBIOS's own exception handler (C0Handler and exceptionHandler are written as interpret lines)
 ```
 
-Addresses come from the pinned build's `openbios.elf` (program headers, `exceptionVector`/`A0Vector`/
-`B0Vector`/`C0Vector`, `_binary_shell_bin_start`/`_size`) and `shell/shell.elf`. The portable helper selects ELF function symbols inside each image plus the aligned words of read-only data that point into the image's code
-(switch tables: `.rodata`/`.data` of the shell, the kernel `.data` and the ROM `.rodata` for the
-kernel). A root that is not really an entry is harmless: its block holds the correct code for those
-bytes and runs only if control reaches it with those bytes in RAM. Each image is compiled at its
-destination (`BuildLoadedImage`), the builds are linked into one `LoadedCodeTable`, and the artifact
-runs a version only while RAM holds exactly its words (page generations, ADR-026); anything else is
-the counted fallback. The report lists every image (`loadedImages`), `loadedCodeVersions`,
+`scripts/openbios/prepare-aot.py <openbios.elf> <output-dir> [--disc-exes]` writes exactly this shape: `rom.roots` (the ROM's code
+roots, read from the ELF's function symbols) and `images.txt` with `boot-exe boot`, the optional `disc-exes disc`, and the `interpret`
+lines. It writes no `image` line, so it emits no BIOS image. Each disc executable is compiled at its load address (`BuildLoadedImage`),
+the builds are linked into one `LoadedCodeTable`, and the artifact runs a version only while RAM holds exactly its words (page
+generations, ADR-026); anything else is the counted fallback. The report lists every image (`loadedImages`), `loadedCodeVersions`,
 `precompileMilliseconds`, `atBoundary` (native instructions and seconds when each differential
 boundary was reached) and, per fallback target, its `cause` (`observation-point`, `version-mismatch`,
 `aot-coverage-gap:loaded-image|rom`, `unknown-code`).
@@ -462,7 +460,7 @@ distribution. The OpenBIOS-booted distribution is selected only by the explicit 
 default must not change until the real-game gate below passes:
 
 ```bash
-python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/aot
 psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800] [--build-timeout-seconds <n>] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]
 ./persona/persona          # persona.exe on Windows
 ```
@@ -479,16 +477,16 @@ given a longer compile budget without extending the game's own run time. The `op
 keeps its own fixed three-minute per-step cap.
 
 **Execution structure (one guest state).** The native artifact *is* the OpenBIOS ROM compiled ahead of time
-(`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions (`LoadedCodeTable`: kernel data,
-vectors, shell and the disc's `boot-exe`, ADR-026). The game is never a second CPU session: OpenBIOS starts at the
+(`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions of the disc's executables (`LoadedCodeTable`:
+the `boot-exe` and any `disc-exes`, ADR-026). The kernel data, the vectors and the shell are not AOT images: they run from the BIOS image. The game is never a second CPU session: OpenBIOS starts at the
 reset vector, its own CD driver reads the disc through the Runtime host's `CdRomDevice`/DMA3/IRQ graph, and `exec`
 jumps into the game in the same RAM, COP0 and device state. The game's calls back into A0/B0/C0 reach OpenBIOS code
 (native if it has a block, counted interpreter fallback otherwise); no `IBiosRuntime` is attached to a guest firmware.
 Unknown or changed RAM code is the explicit, counted, bounded fallback (ADR-025/026); it is reported, never silent.
-The distribution's AOT compiles the probe's post-shell milestones too: `0x80030000` and `0x80010000` are lowered as
-guarded blocks, never kept interpreted (`FirmwareAotPlan.FixedExceptionObservationPcs`); only OpenBIOS's own exception
-vectors (`0x80000080`, `0x26A4`) stay observed/interpreted, and a guarded game block runs only while RAM holds its
-compiled words.
+The distribution's AOT covers the disc's executables: the game's entry `0x80010000` is a guarded block when its image is
+compiled. The shell entry `0x80030000` is BIOS code, not an AOT image (R1), so it runs interpreted from the BIOS image. Only
+OpenBIOS's own exception entry points (`0x80000080`, `0x26A4`) stay observed/interpreted (`FirmwareAotPlan.FixedExceptionObservationPcs`),
+and a guarded game block runs only while RAM holds its compiled words.
 
 | Item | Where |
 |---|---|
@@ -689,8 +687,7 @@ as part of the one guest state.
 
 #### BIOS: refused as an AOT input on confirmed grounds; run-time provenance (Issue #B2)
 
-**Primary guarantee (R1 scope): an input is refused as an ahead-of-time input only on one of four grounds, and the grounds are kept apart.** Three are structural checks: the input kind (`rom-image`, or a kind outside the allowed set, refused fail-closed), and the load range overlapping the BIOS range. The fourth is content identity: the input is the complete 512 KiB BIOS image, every byte equal. None of them proves the historical origin of an input. Partial content matches are diagnostics only. `BiosAddressGuard` refuses at four stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistribution`:
-stages, and each stage is wired through `BiosGuardWiring.Run` in `FirmwareDistribution`:
+**Scope of the refusals (R1).** The manifest stage refuses an AOT input on one of four grounds: the input kind `rom-image` (BIOS bytes placed in RAM), an input kind outside the allowed set (refused fail-closed, the reason being the kind), a load range that overlaps the BIOS range, and a complete BIOS image with every byte equal. These refusals check the structure of an input and its content identity. They say nothing about the historical origin of an input, and a partial content match is a diagnostic only. The refusals are wired through `BiosGuardWiring.Run` in `FirmwareDistribution`, one stage each (`BiosAddressGuard`):
 
 **Terms.** A *structural check* (the input kind, or the load range overlapping the BIOS) is a safety check on how an input is placed; it is not a claim about where the bytes came from. *Content identity* (the input is the complete BIOS image, every byte equal) shows that the content is the BIOS image; it does not show where the input came from. *Historical origin* is not proven by any ground: a packaging cannot establish where a file came from. The kind and the load range come from the internal manifest parser, not from a user-declared label. The declared provenance (`--bios-provenance`) is a recorded label, not evidence, and never a ground for a refusal. Content matching below the complete image is a diagnostic, never a refusal.
 

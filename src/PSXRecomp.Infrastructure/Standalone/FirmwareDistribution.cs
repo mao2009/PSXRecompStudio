@@ -22,16 +22,15 @@ public sealed record FirmwareAotPlan(
     BiosContentDiagnostic? ContentDiagnostic = null)
 {
     /// <summary>
-    /// The only PCs a firmware distribution keeps interpreted: the exception entry points, whose vectors the
-    /// firmware's own exception path must stay able to observe (they match the vector images in <c>images.txt</c>,
-    /// written by <c>scripts/openbios/prepare-aot.py</c>).
+    /// The only PCs a firmware distribution keeps interpreted: OpenBIOS's own exception entry points (<c>0x80000080</c>,
+    /// <c>0x26A4</c>), which the firmware's exception path must stay able to observe. <c>scripts/openbios/prepare-aot.py</c> writes
+    /// them as <c>interpret</c> lines; it writes no BIOS image, because the BIOS is never an AOT input (owner ruling R1).
     /// </summary>
     /// <remarks>
     /// The milestone PCs the <c>openbios-probe</c> parity runs stop at (<c>0x80030000</c> shell load and
-    /// <c>0x80010000</c> executable boundary) are deliberately NOT excluded here. Probe observation belongs to the
-    /// probe (its own run unions them in); a distribution must instead compile those entries, so a game whose entry
-    /// is exactly <c>0x80010000</c> runs from a guarded native block rather than the interpreter fallback
-    /// (Issue #732 P1-2).
+    /// <c>0x80010000</c> executable boundary) are not excluded here. A distribution compiles the disc's executables, so a game
+    /// whose entry is exactly <c>0x80010000</c> runs from a guarded native block when that image is compiled (Issue #732 P1-2).
+    /// The shell at <c>0x80030000</c> is BIOS code, not an AOT image (R1): it runs interpreted from the BIOS image.
     /// </remarks>
     private static readonly uint[] FixedExceptionObservationPcs = [0x80000080u, 0x000026A4u];
 

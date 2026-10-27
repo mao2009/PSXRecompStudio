@@ -39,6 +39,8 @@ public sealed class BiosProductionDiscPathTests
 
         // The production manifest stage, as FirmwareAotPlan.Build calls it.
         var manifest = LoadImageManifest.Read(images, firmware, disc.Source);
+        // Five is a fact of this disc (the Persona measurement), not a rule: a different disc has another count, and the test then
+        // needs its count updated with the measurement that it came from.
         manifest.Images.Should().HaveCount(5, "the disc holds five PS-X executables (the Persona measurement)");
         manifest.Images.Should().OnlyContain(static image => image.Kind == "disc-exe", "every image comes from the disc-exes directive");
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, firmware))).Should().NotThrow(
