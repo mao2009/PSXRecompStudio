@@ -51,6 +51,59 @@ public sealed class ArtifactCodeGuardSpanTests
         output.Should().Be("0", why);
     }
 
+    /// <summary>
+    /// Issue #734 review: the startup loader (embedded init and image, and the file load) writes RAM directly, before
+    /// the first dispatch. Such a write must bump the page generation like every other RAM write, so code that was
+    /// already checked against RAM is never accepted as current after its words change.
+    /// </summary>
+    [Fact]
+    public void CodeCurrent_StartupRamWrite_RejectsPreviouslyCheckedCode()
+    {
+        var source = RecompiledArtifactCodeGen.Generate(GenerateDispatch()).Source!;
+
+        var output = RunCompiled(BuildStartupWriteHarness(source));
+
+        output.Should().Be("0", "a startup write into a checked block changed its words, so the block must not be accepted as current");
+    }
+
+    private static string BuildStartupWriteHarness(string source)
+    {
+        var slice = GuardSlice(source);
+
+        return $$"""
+            #include <stdint.h>
+            #include <stdio.h>
+            #include <stdlib.h>
+            {{slice}}
+            #define BLOCK_VA 0x{{BlockVa:x}}u
+            #define BLOCK_PA 0x{{BlockVa & 0x1FFFFFFFu:x}}u
+            #define BLOCK_WORDS {{BlockWords}}u
+
+            int main(void) {
+                uint32_t words[BLOCK_WORDS];
+                uint32_t i, pa;
+                uint64_t seen = UINT64_MAX;
+                for (i = 0; i < BLOCK_WORDS; i++) {
+                    words[i] = 0x34020000u + i;
+                    pa = BLOCK_PA + 4u * i;
+                    artifact_ram[pa] = (uint8_t)words[i];
+                    artifact_ram[pa + 1u] = (uint8_t)(words[i] >> 8);
+                    artifact_ram[pa + 2u] = (uint8_t)(words[i] >> 16);
+                    artifact_ram[pa + 3u] = (uint8_t)(words[i] >> 24);
+                }
+                if (recompiler_code_current(NULL, BLOCK_VA, words, BLOCK_WORDS, &seen) != 1) {
+                    printf("PRIME_FAILED\n");
+                    return 2;
+                }
+                /* Startup loader write (the image loop in main): one byte of a checked block changes. */
+                pa = BLOCK_PA + 4u * 600u;
+                artifact_ram_load8(pa, artifact_ram[pa] ^ 0x01u);
+                printf("%d\n", recompiler_code_current(NULL, BLOCK_VA, words, BLOCK_WORDS, &seen));
+                return 0;
+            }
+            """;
+    }
+
     private static RecompilerHostCodeGenResult GenerateDispatch()
     {
         var instruction = PSXRecomp.Core.Cpu.R3000aDecoder.Decode(0x34020000u); // ori $v0, $zero, 0

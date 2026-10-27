@@ -1042,7 +1042,7 @@ int main(int argc, char** argv) {
 
     for (uint32_t image_i = 0; image_i < embedded_image_len; image_i++) {
         if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + image_i] = embedded_image[image_i];
-        else artifact_ram[(image_pa + image_i) & (PSX_RAM_SIZE - 1u)] = embedded_image[image_i];
+        else artifact_ram_load8((image_pa + image_i) & (PSX_RAM_SIZE - 1u), embedded_image[image_i]);
     }
     }
 
@@ -1146,6 +1146,13 @@ static int artifact_ram_offset(uint32_t address, uint32_t width, uint32_t* offse
    from; the check is redone (a word compare) whenever a covered page's generation moved, so stale code never runs. */
 static uint64_t artifact_page_gen[PSX_RAM_SIZE >> 12];
 #define ARTIFACT_WROTE(pa, width) (artifact_page_gen[(pa) >> 12]++, artifact_page_gen[((pa) + (width) - 1u) >> 12]++)
+
+/* The startup loader (embedded image, file image) writes RAM directly; it goes through here so that write bumps the
+   generation too, like every other RAM write. */
+static void artifact_ram_load8(uint32_t pa, uint8_t value) {
+    artifact_ram[pa] = value;
+    ARTIFACT_WROTE(pa, 1u);
+}
 
 int recompiler_code_current(void* core, uint32_t pc, const uint32_t* words, uint32_t count, uint64_t* seen) {
     uint32_t pa, i, p, last;
@@ -1840,7 +1847,7 @@ static void artifact_attach_host_bridge(RecompilerState* state) {
         int image_byte = fgetc(image);
         if (image_byte == EOF) { fclose(image); return 95; } /* InvalidImage: truncated */
         if (image_in_rom) artifact_rom[image_pa - PSX_ROM_BASE + (uint32_t)image_i] = (uint8_t)image_byte;
-        else artifact_ram[(image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u)] = (uint8_t)image_byte;
+        else artifact_ram_load8((image_pa + (uint32_t)image_i) & (PSX_RAM_SIZE - 1u), (uint8_t)image_byte);
     }
     int image_extra = fgetc(image);
     fclose(image);
