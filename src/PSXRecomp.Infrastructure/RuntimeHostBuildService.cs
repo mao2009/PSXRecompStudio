@@ -340,8 +340,7 @@ public static class RuntimeHostBuildService
 
     // Drains a child's output on its own thread. A thread-pool read waits behind queued pool work, so a saturated pool
     // leaves the child blocked on a full pipe until the step times out (Issue #822).
-    private static Task<string> DrainOnDedicatedThread(StreamReader reader) =>
-        Task.Factory.StartNew(reader.ReadToEnd, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    private static Task<string> DrainOnDedicatedThread(StreamReader reader) => ProtocolPump.StartFunc(reader.ReadToEnd);
 
     private static string ReadStreamWithinCleanupBudget(Task<string> streamTask, int cleanupMs)
     {
