@@ -308,14 +308,18 @@ execution that a different export would show. A v1 export carries no identity an
 `outcome` (its terminal `TitleExecutionState` and `complete`). Only a run that reached a classified end (`Completed`,
 `Returned`, `RuntimeHandoff`) is planned from; an export of a run that exhausted its budget, failed, or hit an unsupported
 transfer is partial and is refused, and an export without `outcome` is malformed. The probe still writes such an export
-(with its outcome) and reports it on stderr. Each target also carries `ramWord`: the instruction word the interpreter read from guest
-RAM or ROM at that PC, observed at every fallback fetch there. It is `null` when the PC is outside RAM and ROM (the probe reads no
-word there, so a zero is never recorded for it), when a fetch could not be read, or when two fetches at the same PC read different
-words. The planner rejects a `null` `ramWord` as `ram-word-mismatch`. The planner reads a target as a candidate root only when its `ramWord`
-equals the word the EXE file places at that PC; any other target is rejected with the reason `ram-word-mismatch` and is not reported
-as a native route. This check compares what the run fetched with the file, so it can refuse a root whose native block would not run,
-but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that at run time. A `v2` export
-without `ramWord` is malformed and refused. This note records what this repository does not show. Earlier commit
+(with its outcome) and reports it on stderr. The public export carries no RAM word: no instruction word read from guest RAM or ROM is
+published (the ruling on #839). An export that contains `ramWord` is malformed and refused. The RAM word of each target is supplied only by
+the explicit local evidence (`openbios-probe --local-ram-evidence <file.json>`, format `fallback-ram-evidence/v1`), which records the word
+observed at each fallback PC in RAM, and it is bound to one export by that export file's SHA-256. The evidence is written and read only at a
+path outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. `fallback-roots`
+takes it with `--local-ram-evidence <file.json>`. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
+could not be read, or when two fetches at the same PC read different words; such a target has no word. The planner reads a target as a
+candidate root only when its RAM word equals the word the EXE file places at that PC; any target without a word, or with another word, is
+rejected with the reason `ram-word-mismatch` and is not reported as a native route. Without the local evidence no target has a word, so
+no root is adopted (fail closed). The check is never skipped. This check compares what the run fetched with the file, so it can refuse a root
+whose native block would not run, but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that
+at run time. This note records what this repository does not show. Earlier commit
 messages on the observed-roots branch (d164590 and 366b0c1) cite an observation from a Persona real run and loaded-code counts from
 the same work. Neither is recorded in this repository (no run log, export, or measurement is committed), so both are unverified and
 are not evidence for any result here. The `ramWord` check is a code path; its effect on any real run has not been measured. Output safety: the
