@@ -1137,8 +1137,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         var snapshot = ArtifactSnapshotParser.Parse(stdout);
         if (snapshot is null)
         {
-            var message = stdout.Length <= 2000 ? stdout : stdout[..2000] + "...";
-            return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", message);
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", MalformedSnapshotMessage(stdout));
         }
 
         if (bridge is { ExceptionVectorReached: true })
@@ -1152,6 +1152,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         return new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, snapshot, bridge?.DiagnosticCode, bridge?.DiagnosticMessage);
+    }
+
+    /// <summary>
+    /// The diagnostic for a snapshot the parser rejects. It names only the shape (complete or not, and the count of body lines),
+    /// never the raw protocol text: the snapshot carries GPR values, and no line of it may reach a public diagnostic.
+    /// </summary>
+    internal static string MalformedSnapshotMessage(string stdout)
+    {
+        var begin = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal);
+        var end = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotEndMarker, StringComparison.Ordinal);
+        if (begin < 0 || end < begin)
+        {
+            return "The runnable artifact's state snapshot is incomplete.";
+        }
+
+        var lines = stdout[(begin + RecompiledArtifactCodeGen.SnapshotBeginMarker.Length)..end]
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+        return $"The runnable artifact's state snapshot is malformed ({lines} body lines).";
     }
 
     public void Dispose()

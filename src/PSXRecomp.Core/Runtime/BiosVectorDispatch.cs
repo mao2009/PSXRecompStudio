@@ -235,7 +235,7 @@ public static class BiosVectorDispatch
                 {
                     return Stop(
                         UntranslatableTargetDiagnosticCode,
-                        $"{identity.StableKey}: patched jump-table entry names guest address 0x{target:X8}, " +
+                        $"{identity.StableKey}: patched jump-table entry names a guest address, " +
                         "which falls outside every translatable region, so control cannot be transferred to it.");
                 }
 

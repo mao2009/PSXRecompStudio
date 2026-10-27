@@ -394,7 +394,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
         if (!reply.StartsWith(RecompiledArtifactCodeGen.ProtocolFallbackReplyPrefix, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolFallbackReplyPrefix}' reply, received '{Truncate(reply)}'.");
+            throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolFallbackReplyPrefix}' reply, received a reply of {reply.Length} characters.");
         }
 
         var parts = reply[RecompiledArtifactCodeGen.ProtocolFallbackReplyPrefix.Length..]
@@ -410,7 +410,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
             || !int.TryParse(parts[8], NumberStyles.None, CultureInfo.InvariantCulture, out var dirty)
             || dirty > PageCount)
         {
-            throw new InvalidOperationException($"Malformed fallback reply '{Truncate(reply)}'.");
+            throw new InvalidOperationException($"Malformed fallback reply ({reply.Length} characters).");
         }
 
         return new Header(parts[1] == "1", uint.Parse(parts[2], CultureInfo.InvariantCulture), hi, lo, sr, cause, epc, dirty);
@@ -440,7 +440,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
             if (!line.StartsWith(RecompiledArtifactCodeGen.ProtocolFallbackPagePrefix, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolFallbackPagePrefix}' line, received '{Truncate(line)}'.");
+                throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolFallbackPagePrefix}' line, received a line of {line.Length} characters.");
             }
 
             var fields = line[RecompiledArtifactCodeGen.ProtocolFallbackPagePrefix.Length..].Split(' ');
@@ -451,7 +451,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 || fields[1].Length != PageSize * 2
                 || pages.Count >= expected)
             {
-                throw new InvalidOperationException($"Malformed fallback page line '{Truncate(line)}'.");
+                throw new InvalidOperationException($"Malformed fallback page line ({line.Length} characters).");
             }
 
             var data = Convert.FromHexString(fields[1]);
@@ -523,7 +523,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
                 return false;
             }
 
-            throw new InvalidOperationException($"Expected '{RecompiledArtifactCodeGen.ProtocolWriteAck}' to a fallback commit, received '{Truncate(reply)}'.");
+            throw new InvalidOperationException($"Expected '{RecompiledArtifactCodeGen.ProtocolWriteAck}' to a fallback commit, received a reply of {reply.Length} characters.");
         }
 
         foreach (var page in dirty)
@@ -568,5 +568,4 @@ internal sealed class ArtifactFallbackSession : IDisposable
     private static bool TryParseU32(string text, out uint value) =>
         uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value);
 
-    private static string Truncate(string text) => text.Length <= 120 ? text : text[..120] + "...";
 }

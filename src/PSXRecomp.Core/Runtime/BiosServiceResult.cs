@@ -130,7 +130,7 @@ public sealed record BiosServiceResult(
             new BiosDiagnostic(
                 "BIOS_HLE_PATCHED_TARGET",
                 identity,
-                $"{identity.StableKey}: jump-table entry was patched to guest address 0x{targetAddress:X8}; " +
+                $"{identity.StableKey}: jump-table entry was patched to a guest address; " +
                 "this Runtime does not yet execute a patched target (no interpreter/recompiled dispatch trap exists)."));
     }
 }

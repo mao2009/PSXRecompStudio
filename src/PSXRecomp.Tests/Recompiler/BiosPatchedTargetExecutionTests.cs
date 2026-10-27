@@ -147,7 +147,9 @@ public sealed class BiosPatchedTargetExecutionTests
         result.Status.Should().Be(RecompilerExecutionStatus.Completed);
         result.DiagnosticCode.Should().Be(
             RecompilerInterpreterExecutor.BiosUntranslatableTargetDiagnosticCode);
-        result.DiagnosticMessage.Should().Contain("0xC0000000");
+        // Decision A (PR #839, arbitration): the guest address read from the jump table is not exported in a diagnostic.
+        result.DiagnosticMessage.Should().Contain("a guest address");
+        result.DiagnosticMessage.Should().NotContain("0xC0000000");
 
         var snapshot = result.Snapshot!;
         snapshot.Termination.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);

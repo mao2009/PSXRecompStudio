@@ -180,9 +180,11 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal(2, unsupported.Count); // one per (ExcCode, opcode): the second COP2 fault is not new
         Assert.Equal(10u, unsupported[0]!["excCode"]!.GetValue<uint>());
         Assert.Equal("0x80010030", unsupported[0]!["pc"]!.ToString());
-        Assert.Equal("0xFC000000", unsupported[0]!["word"]!.ToString());
+        // Decision A (PR #839, arbitration): a RAM word at a PC is not exported, so the word is withheld.
+        Assert.Null(unsupported[0]!["word"]);
         Assert.Equal(11u, unsupported[1]!["excCode"]!.GetValue<uint>());
-        Assert.Equal(0x12u, unsupported[1]!["opcode"]!.GetValue<uint>());
+        // Decision A (PR #839, arbitration): the opcode is a field of the RAM word, so it is withheld with the word.
+        Assert.Null(unsupported[1]!["opcode"]);
         Assert.Equal("0x80010010", unsupported[1]!["pc"]!.ToString());
         Assert.Equal(1ul, unsupported[1]!["atFallbackFetch"]!.GetValue<ulong>());
     }

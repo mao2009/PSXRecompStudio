@@ -217,11 +217,12 @@ public sealed class OpenBiosProbeValidationTests
     public void WordFor_RomRangePc_WithholdsTheWord(uint pc) =>
         OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().BeNull();
 
+    // Decision A (PR #839, arbitration): a RAM word at a PC is withheld from every output, whatever its PC.
     [Theory]
     [InlineData(0x80010000u)]
     [InlineData(0x00010000u)]
-    public void WordFor_RamPc_ExportsTheWord(uint pc) =>
-        OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().Be(0x24095A5Au);
+    public void WordFor_RamPc_WithholdsTheWord(uint pc) =>
+        OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().BeNull();
 
     // PR #839 (decision A): lui t0, 0x24BE; ori t0, t0, 0xEF01; j reset vector; nop. Each pass leaves t0 = 0x24BEEF01, a register value
     // that no ROM word carries. Every GPR value is withheld from every public artifact, whatever its origin.

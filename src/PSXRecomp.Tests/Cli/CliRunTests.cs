@@ -764,6 +764,20 @@ public sealed class CliRunTests
         var result = json.RootElement.GetProperty("result");
         result.EnumerateObject().Select(static p => p.Name).Should().BeEquivalentTo(
             "outcome", "exitCode", "state", "guestPc", "resultValue", "engineName", "diagnosticCode", "diagnosticMessage");
+        // Decision A (PR #839, arbitration): the marker register is a GPR value and is never exported.
+        result.GetProperty("resultValue").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public void Run_Text_DoesNotPrintTheResultRegisterValue()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+
+        var (exit, output, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        output.Should().NotContain("Result: 0x", "a GPR value is not printed by the run output");
     }
 
     [Fact]

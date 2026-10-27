@@ -99,9 +99,10 @@ public sealed class OpenBiosProbeDifferentialTests
         var ram = diff["ramFirstMismatch"]!;
         Assert.Equal("0x00010100", ram["address"]!.ToString());
         Assert.Equal("0x010000", ram["page"]!.ToString());
-        Assert.Equal("0x000100F0", ram["contextStart"]!.ToString());
-        Assert.Equal("34120000", ram["interpreterBytes"]!.ToString().Substring(32, 8));
-        Assert.Equal("35120000", ram["hostBytes"]!.ToString().Substring(32, 8));
+        // Decision A (PR #839, arbitration): the RAM bytes around the difference are never published, only its metadata.
+        Assert.False(ram.AsObject().ContainsKey("contextStart"));
+        Assert.False(ram.AsObject().ContainsKey("interpreterBytes"));
+        Assert.False(ram.AsObject().ContainsKey("hostBytes"));
         Assert.Equal(1, diff["ramMismatchBytes"]!.GetValue<int>());
         Assert.Equal("0x010000", diff["ramMismatchPages"]![0]!.ToString());
     }
@@ -213,6 +214,44 @@ public sealed class OpenBiosProbeDifferentialTests
         diff["match"]!.GetValue<bool>().Should().BeFalse("the registers differ, so the comparison still fails");
         diff["firstMismatch"]!["name"]!.GetValue<string>().Should().Be("r5");
         output.ToUpperInvariant().Should().NotContain("24BEEF", "a general-purpose register value must not be exported");
+    }
+
+    [Fact]
+    public void Compare_RamOnlyMismatch_WithholdsTheRamBytesAndKeepsTheMetadata()
+    {
+        var interpreter = RegisterState(0x1u);
+        var host = RegisterState(0x1u);
+        interpreter.Ram[0x100] = 0x34;
+        host.Ram[0x100] = 0x35;
+        var output = JsonSerializer.Serialize(ProbeGuestState.Compare(interpreter, host));
+        var diff = JsonNode.Parse(output)!;
+
+        diff["match"]!.GetValue<bool>().Should().BeFalse("the RAM bytes differ, so the comparison still fails");
+        diff["firstMismatch"]!["kind"]!.GetValue<string>().Should().Be("ram");
+        diff["firstMismatch"]!["name"]!.GetValue<string>().Should().Be("0x00000100");
+        diff["firstMismatch"]!["interpreter"].Should().BeNull("a RAM byte value is never exported");
+        diff["firstMismatch"]!["host"].Should().BeNull("a RAM byte value is never exported");
+        diff["ramFirstMismatch"]!["address"]!.GetValue<string>().Should().Be("0x00000100");
+        diff["ramMismatchBytes"]!.GetValue<int>().Should().Be(1);
+        var ram = diff["ramFirstMismatch"]!.AsObject();
+        ram.ContainsKey("interpreterBytes").Should().BeFalse();
+        ram.ContainsKey("hostBytes").Should().BeFalse();
+        output.Should().NotContain("0x34", "no RAM byte is exported as text");
+    }
+
+    [Fact]
+    public void Describe_RamPcWord_IsWithheld()
+    {
+        var state = RegisterState(0x1u);
+        state.Ram[0x100] = 0x78;
+        state.Ram[0x101] = 0x56;
+        state.Ram[0x102] = 0x34;
+        state.Ram[0x103] = 0x12;
+        var output = JsonSerializer.Serialize(new ProbeGuestState(0x00000100u, 1, state.Cpu, state.Devices, state.Ram).Describe());
+        var describe = JsonNode.Parse(output)!;
+
+        describe.AsObject().ContainsKey("instructionWord").Should().BeFalse("a RAM word at the PC is not exported");
+        output.ToUpperInvariant().Should().NotContain("12345678", "the RAM word at the PC must not be exported");
     }
 
     [Fact]

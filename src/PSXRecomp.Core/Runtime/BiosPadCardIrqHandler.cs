@@ -134,7 +134,7 @@ public static class BiosPadCardIrqHandler
         if (padStarted != 0 && buttonDestination != 0 &&
             !context.Writer.TryWrite(buttonDestination, BitConverter.GetBytes(DisconnectedPadButtons)))
         {
-            return Unsupported($"{label}|button_dest 0x{buttonDestination:X8} is not writable");
+            return Unsupported($"{label}|button_dest is not writable");
         }
 
         if (Handle(context.Reader, context.Interrupts) is not (BiosPadCardIrqOutcome.Acknowledged or BiosPadCardIrqOutcome.LeftPending))

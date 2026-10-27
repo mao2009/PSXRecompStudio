@@ -924,10 +924,19 @@ internal static class OpenBiosProbeCommand
     internal static bool IsGuestRamPc(uint pc) => Ps1AddressTranslation.TryTranslate(pc, out var physical) && physical < 0x00800000u;
 
     /// <summary>
-    /// The single decision for every guest word the probe writes out (stdout, JSON, files). A word leaves the probe only when
-    /// its PC is in guest RAM; a word fetched outside RAM (the BIOS ROM range) is withheld, whatever path it came from.
+    /// Decision A (PR #839, arbitration): a RAM word at a PC is withheld from every output the probe writes (stdout, JSON, files),
+    /// as a RAM byte is. The one switch; tests pin it to false.
     /// </summary>
-    internal static uint? WordFor(uint pc, uint word) => IsGuestRamPc(pc) ? word : null;
+    private const bool PublishRamWords = false;
+
+    /// <summary>The single decision for every guest word written out; always null while <see cref="PublishRamWords"/> is false.</summary>
+    internal static uint? WordFor(uint pc, uint word) => PublishRamWords && IsGuestRamPc(pc) ? word : null;
+
+    /// <summary>
+    /// The RAM word of a fallback target as the planner's input document (<c>fallback-targets/v2</c> <c>ramWord</c>). The planner
+    /// checks it against the image's word (ObservedRootPlanner), so it is the one file contract that carries it; a PC outside RAM is null.
+    /// </summary>
+    internal static string? PlannerWordHex(uint pc, uint word) => IsGuestRamPc(pc) ? Hex(word) : null;
 
     /// <summary>
     /// Decision A (PR #839, fixed by the arbitration): a general-purpose register value is never written to a public artifact.
@@ -996,8 +1005,7 @@ internal static class OpenBiosProbeCommand
             entries = t.Entries,
             instructions = t.Instructions,
             lastReturnPc = Hex(t.LastReturnPc),
-            // PR #839 review (MAJOR): a word outside guest RAM (the BIOS ROM range) is withheld by WordFor.
-            ramWord = ramWordOf(t.Target) is { } word ? WordHex(t.Target, word) : null,
+            ramWord = ramWordOf(t.Target) is { } word ? PlannerWordHex(t.Target, word) : null,
         }).ToArray();
         return JsonSerializer.Serialize(new
         {

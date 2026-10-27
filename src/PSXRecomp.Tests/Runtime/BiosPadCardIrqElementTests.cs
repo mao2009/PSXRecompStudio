@@ -373,7 +373,8 @@ public sealed class BiosPadCardIrqElementTests : IDisposable
         var result = BiosPadCardIrqHandler.Run(context);
 
         result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-        result.Detail.Should().Contain("0x800563F0");
+        result.Detail.Should().Contain("button_dest", "the failure still names the field");
+        result.Detail.Should().NotContain("0x800563F0", "button_dest is a GPR-derived value and is not exported");
         _interrupts.Status.Should().Be(VblankBit);
     }
 
