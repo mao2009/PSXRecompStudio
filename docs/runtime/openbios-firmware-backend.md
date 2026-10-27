@@ -476,9 +476,10 @@ is never unbounded. A slower build host (for example the ~515,783-line ROM + AOT
 given a longer compile budget without extending the game's own run time. The `openbios-probe` generated-host build
 keeps its own fixed three-minute per-step cap.
 
-**Execution structure (one guest state).** The native artifact *is* the OpenBIOS ROM compiled ahead of time
-(`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions of the disc's executables (`LoadedCodeTable`:
-the `boot-exe` and any `disc-exes`, ADR-026). The kernel data, the vectors and the shell are not AOT images: they run from the BIOS image. The game is never a second CPU session: OpenBIOS starts at the
+**Execution structure (one guest state).** The native artifact holds the guarded RAM-placed versions of the disc's executables
+(`LoadedCodeTable`: the `boot-exe` and any `disc-exes`, ADR-026). The OpenBIOS ROM itself is not compiled: `FirmwareAotPlan.Build`
+builds an empty program, and the ROM runs from the BIOS image through the counted interpreter fallback (owner ruling R1). The
+kernel data, the vectors and the shell are not AOT images either: they run from the BIOS image. The game is never a second CPU session: OpenBIOS starts at the
 reset vector, its own CD driver reads the disc through the Runtime host's `CdRomDevice`/DMA3/IRQ graph, and `exec`
 jumps into the game in the same RAM, COP0 and device state. The game's calls back into A0/B0/C0 reach OpenBIOS code
 (native if it has a block, counted interpreter fallback otherwise); no `IBiosRuntime` is attached to a guest firmware.
@@ -685,7 +686,7 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
-#### BIOS: refused as an AOT input on confirmed grounds; run-time provenance (Issue #B2)
+#### BIOS: refused as an AOT input on structural and content-identity grounds; run-time provenance (Issue #B2)
 
 **Scope of the refusals (R1).** The manifest stage refuses an AOT input on one of four grounds: the input kind `rom-image` (BIOS bytes placed in RAM), an input kind outside the allowed set (refused fail-closed, the reason being the kind), a load range that overlaps the BIOS range, and a complete BIOS image with every byte equal. These refusals check the structure of an input and its content identity. They say nothing about the historical origin of an input, and a partial content match is a diagnostic only. The refusals are wired through `BiosGuardWiring.Run` in `FirmwareDistribution`, one stage each (`BiosAddressGuard`):
 
@@ -909,7 +910,7 @@ read. Mixed-fallback progress is therefore verified by the stop message and by t
 - The packaged executable loads the BIOS at run time from the path named by `PSXRECOMP_BIOS_ROM` (512 KiB exactly; a direct run
   exits with **95** on another size, the Runtime host with **78**). The packaging pins no digest of the BIOS.
 - Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the .NET SDK apphost template path
-  `D:\a\_work\1\s\src\runtime\artifacts\obj\win-x64.Release\corehost\apphost\standalone\`, a Microsoft CI build path,
+  the Microsoft CI build root of the .NET apphost template (the exact path is `DistributionLeakScanner.ApphostTemplatePath`),
   not a developer path. Matched exactly (case-insensitive) in that relative file only. Removing it needs `UseAppHost=false` (owner decision pending).
 - The generated executable and the native library are stripped (`-s`). The Runtime host is published with `DebugType=none`.
   The intermediate object is removed after linking; a failed removal fails the build.
@@ -929,7 +930,8 @@ read. Mixed-fallback progress is therefore verified by the stop message and by t
 ### Native recompilation status
 
 The IR pipeline lowers COP0 (MFC0/MTC0/RFE), SYSCALL/BREAK as firmware traps and honours
-`SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. Measured on the
+`SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. This is the probe's measurement (the
+`openbios-probe` run compiles it from `--roots`); the distribution compiles no ROM code (R1). Measured on the
 pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector alone; with the
 257 ELF function symbols as explicit roots 9,228 are native. Code that exists only at run time
 (kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) is
