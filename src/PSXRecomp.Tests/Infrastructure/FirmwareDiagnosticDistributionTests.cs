@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
@@ -67,6 +69,51 @@ public sealed class FirmwareDiagnosticDistributionTests
         new FileInfo(linked).LinkTarget.Should().BeNull("a hard link is an entry of the same file, not a symbolic link");
         FirmwareDiagnosticDistribution.HardLinkCount(linked).Should().Be(2, "the link shares the original's file (no copy)");
         OpenBiosRomInput.Sha256HexOfFile(original).Should().Be(before);
+    }
+
+    [Fact]
+    public void Measure_HostPastTheBound_IsStoppedAndTheStopIsRecorded()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // A copy of cmd.exe stands in for the host: with its stdin pipe open it waits, so it is still running at the bound.
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", new byte[OpenBiosFirmware.ImageSize]);
+        var disc = dir.WriteFile("disc/game.chd", new byte[16]);
+        dir.WriteFile("aot/rom.roots", Array.Empty<byte>());
+        dir.WriteFile("aot/images.txt", Array.Empty<byte>());
+        var aot = dir.Combine("aot");
+        var outDir = dir.Combine("out", "measure");
+        Directory.CreateDirectory(outDir);
+        var runtime = Directory.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
+        var host = Path.Combine(runtime, "PSXRecomp.RuntimeHost.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), host);
+        var digests = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["rom"] = OpenBiosRomInput.Sha256HexOfFile(rom),
+            ["disc"] = OpenBiosRomInput.Sha256HexOfFile(disc),
+        };
+        var request = new FirmwareDiagnosticRequest(
+            RomPath: rom, RomSha256: digests["rom"], DiscPath: disc, DiscSha256: digests["disc"], AotDirectory: aot,
+            OutputDirectory: outDir, CodeBytes: 64, InstructionBudget: uint.MaxValue, RunTimeoutMs: 100);
+        var build = new FirmwareDiagnosticBuild(outDir, Path.Combine(outDir, "artifact.exe"), host,
+            Path.Combine(runtime, RuntimeHostLayout.ManifestFileName), digests);
+
+        var result = FirmwareDiagnosticDistribution.Measure(build, request, exitGrace: TimeSpan.FromMilliseconds(500));
+
+        result["status"]!.GetValue<string>().Should().Be("timed-out-stopped");
+        result["valid"]!.GetValue<bool>().Should().BeFalse("a run that was stopped at the bound is not a valid measurement");
+        var stop = result["stop"]!.AsObject();
+        stop["confirmed"]!.GetValue<bool>().Should().BeTrue();
+        stop["refused"].Should().BeNull();
+        stop["residuals"]!.AsArray().Should().BeEmpty("cmd.exe starts no descendant, so no residual is left");
+        var pid = stop["processId"]!.GetValue<int>();
+        pid.Should().BeGreaterThan(0);
+        var gone = () => Process.GetProcessById(pid);
+        gone.Should().Throw<ArgumentException>("the stopped host must no longer be running");
     }
 
     [Fact]

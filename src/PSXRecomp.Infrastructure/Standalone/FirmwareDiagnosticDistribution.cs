@@ -215,7 +215,8 @@ public static class FirmwareDiagnosticDistribution
     /// outcome, the residual processes and the state of each output are recorded in the result instead of thrown. The inputs are
     /// digested again afterwards; a change makes the result invalid.
     /// </summary>
-    public static JsonObject Measure(FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request)
+    /// <param name="exitGrace">The time past the run timeout before the tree is stopped; null uses <see cref="HostExitGrace"/> (tests shorten it).</param>
+    public static JsonObject Measure(FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request, TimeSpan? exitGrace = null)
     {
         ArgumentNullException.ThrowIfNull(build);
         ArgumentNullException.ThrowIfNull(request);
@@ -228,6 +229,8 @@ public static class FirmwareDiagnosticDistribution
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // Stdin is a pipe that stays open until the host ends: a host that waits for input is then not ended by EOF.
+            RedirectStandardInput = true,
             CreateNoWindow = true,
         };
         startInfo.ArgumentList.Add("--diagnostics");
@@ -240,7 +243,7 @@ public static class FirmwareDiagnosticDistribution
         var stderr = new BoundedCapture(process.StandardError, CaptureLimitChars);
 
         // The host enforces its own run timeout; the bound here only catches a host that never exits.
-        var bound = TimeSpan.FromMilliseconds(request.RunTimeoutMs) + HostExitGrace;
+        var bound = TimeSpan.FromMilliseconds(request.RunTimeoutMs) + (exitGrace ?? HostExitGrace);
         using var cancel = new CancellationTokenSource();
         using var stop = new StopRecord();
         stop.Attach(process, cancel.Token);
@@ -267,6 +270,7 @@ public static class FirmwareDiagnosticDistribution
         var residuals = stop.Residuals;
         var exitCode = process.HasExited ? process.ExitCode : (int?)null;
 
+        process.StandardInput.Dispose();
         var stdoutCapture = stdout.Finish(PipeDrainBound);
         var stderrCapture = stderr.Finish(PipeDrainBound);
         File.WriteAllText(Path.Combine(build.Root, HostStdoutFileName), stdoutCapture.Text);
