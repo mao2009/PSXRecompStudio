@@ -64,6 +64,64 @@ public sealed class RuntimeHostToolchainDiagnosticsTests
     }
 
     [Fact]
+    public void FailedStep_WhileTheThreadPoolIsSaturated_StillDrainsItsOutput()
+    {
+        // Pool work queued ahead of the driver's stream reads cannot start until the pool injects threads, which is slow.
+        // A child that fills its stdout pipe then blocks until those reads run, and the step times out.
+        ThreadPool.GetMinThreads(out var minWorkers, out _);
+        var release = new ManualResetEventSlim(false);
+        var holders = new Task[minWorkers * 2];
+        for (var i = 0; i < holders.Length; i++)
+        {
+            holders[i] = Task.Run(() => release.Wait());
+        }
+
+        try
+        {
+            using var dir = new TempDirectory();
+            var result = RunDriver(dir, payloadChars: DiagnosticTailChars + 1000, exitCode: 3, timeoutMs: 5000);
+
+            result.Outcome.Should().Be(RuntimeHostBuildService.ToolchainOutcome.Failed,
+                "the child must not block on a full pipe while the pool is saturated");
+            result.ExitCode.Should().Be(3);
+        }
+        finally
+        {
+            release.Set();
+            // Queued holders must finish before the test ends, or they would starve the pool of later tests.
+            Task.WaitAll(holders);
+        }
+    }
+
+    [Fact]
+    public void RuntimeHost_WhileTheThreadPoolIsSaturated_StillDrainsItsOutput()
+    {
+        // RunRuntimeHost reads the host's streams like RunToolchain, so the same saturation applies (Issue #822).
+        ThreadPool.GetMinThreads(out var minWorkers, out _);
+        var release = new ManualResetEventSlim(false);
+        var holders = new Task[minWorkers * 2];
+        for (var i = 0; i < holders.Length; i++)
+        {
+            holders[i] = Task.Run(() => release.Wait());
+        }
+
+        try
+        {
+            using var dir = new TempDirectory();
+            var result = RunHostDriver(dir, payloadChars: 1_000_000, timeout: TimeSpan.FromSeconds(5));
+
+            result.Stderr.Should().NotBe("Runtime host timed out",
+                "the host must not block on a full pipe while the pool is saturated");
+            result.Stdout.Should().Contain("stdout-tail-marker");
+        }
+        finally
+        {
+            release.Set();
+            Task.WaitAll(holders);
+        }
+    }
+
+    [Fact]
     public void SuccessfulStep_ReturnsSuccessWithoutCapturedOutput()
     {
         using var dir = new TempDirectory();
@@ -73,6 +131,28 @@ public sealed class RuntimeHostToolchainDiagnosticsTests
         result.ExitCode.Should().Be(0);
         result.Stdout.Should().BeEmpty();
         result.Stderr.Should().BeEmpty();
+    }
+
+    // The host is started with the manifest path as its first argument. sh runs the driver script directly. On Windows,
+    // powershell.exe runs the cmd driver named by that first argument, since cmd.exe cannot take a script as its first argument.
+    private static RuntimeHostBuildService.RuntimeHostRunResult RunHostDriver(
+        TempDirectory dir, int payloadChars, TimeSpan timeout)
+    {
+#pragma warning disable AARC003
+        File.WriteAllText(Path.Combine(dir.FullPath, "payload.txt"), new string('a', payloadChars));
+#pragma warning restore AARC003
+
+        var windows = OperatingSystem.IsWindows();
+        var scriptPath = Path.Combine(dir.FullPath, windows ? "driver.cmd" : "driver.sh");
+#pragma warning disable AARC003
+        File.WriteAllText(scriptPath, windows ? CmdDriver : ShDriver);
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Test-only process launch: the host is the Windows PowerShell executable on Windows.
+        var host = windows
+            ? Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe")
+            : "/bin/sh";
+#pragma warning restore AARC003
+        return RuntimeHostBuildService.RunRuntimeHost(host, scriptPath, timeout, extraArguments: ["0"]);
     }
 
     private static RuntimeHostBuildService.ToolchainResult RunDriver(

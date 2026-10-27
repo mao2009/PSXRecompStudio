@@ -308,8 +308,8 @@ public static class RuntimeHostBuildService
 
         using (process)
         {
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = DrainOnDedicatedThread(process.StandardError);
+            var stdoutTask = DrainOnDedicatedThread(process.StandardOutput);
 
             if (!process.WaitForExit(timeoutMs))
             {
@@ -337,6 +337,10 @@ public static class RuntimeHostBuildService
         {
         }
     }
+
+    // Drains a child's output on its own thread. A thread-pool read waits behind queued pool work, so a saturated pool
+    // leaves the child blocked on a full pipe until the step times out (Issue #822).
+    private static Task<string> DrainOnDedicatedThread(StreamReader reader) => ProtocolPump.StartFunc(reader.ReadToEnd);
 
     private static string ReadStreamWithinCleanupBudget(Task<string> streamTask, int cleanupMs)
     {
@@ -416,8 +420,8 @@ public static class RuntimeHostBuildService
 
         using (process)
         {
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = DrainOnDedicatedThread(process.StandardError);
+            var stdoutTask = DrainOnDedicatedThread(process.StandardOutput);
 
             if (!process.WaitForExit(timeoutMs))
             {

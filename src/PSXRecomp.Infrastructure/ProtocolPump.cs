@@ -13,4 +13,8 @@ internal static class ProtocolPump
 {
     internal static Task Start(Action pumpBody) =>
         Task.Factory.StartNew(pumpBody, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+    // Same dedicated thread for a blocking read that produces a result: the drain of a child's whole stream (ReadToEnd).
+    internal static Task<T> StartFunc<T>(Func<T> body) =>
+        Task.Factory.StartNew(body, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 }

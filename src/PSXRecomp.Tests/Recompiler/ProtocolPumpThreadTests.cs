@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
@@ -16,8 +15,9 @@ public sealed class ProtocolPumpThreadTests
     [Fact]
     public void AProtocolPump_StartsPromptly_WhileTheThreadPoolWorkersAreHeld()
     {
-        ThreadPool.GetMinThreads(out var minWorkers, out _);
-        var holders = minWorkers * 4;
+        // Exactly the minimum worker count: the pool starts those immediately. Injecting more is slow (about one thread per
+        // second here), so holding a multiple would make the test wait on the pool itself (Issue #822).
+        ThreadPool.GetMinThreads(out var holders, out _);
         var release = new ManualResetEventSlim(false);
         using var allStarted = new CountdownEvent(holders);
         var tasks = new Task[holders];
@@ -35,13 +35,21 @@ public sealed class ProtocolPumpThreadTests
             // Start the pump only once the blocked work holds its workers.
             allStarted.Wait(TimeSpan.FromSeconds(60)).Should().BeTrue("the blocked work must occupy the pool first");
 
-            var pumpRan = false;
-            var sw = Stopwatch.StartNew();
-            var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() => Volatile.Write(ref pumpRan, true));
-            var completed = pump.Wait(TimeSpan.FromMilliseconds(500));
+            var pumpStarted = new ManualResetEventSlim(false);
+            var pumpOnPool = true;
+            var pump = PSXRecomp.Infrastructure.ProtocolPump.Start(() =>
+            {
+#pragma warning disable AARC003 // Test-only observation of the pump's thread; the test starts and manages no threads itself.
+                pumpOnPool = Thread.CurrentThread.IsThreadPoolThread;
+#pragma warning restore AARC003
+                pumpStarted.Set();
+            });
 
-            completed.Should().BeTrue($"the pump must not wait for a pool worker (not complete after {sw.ElapsedMilliseconds} ms)");
-            pumpRan.Should().BeTrue();
+            // Condition waits, not a wall-clock budget: a loaded machine must not fail the test by timing alone. The thread
+            // check below is deterministic: a pump on a pool worker fails it whenever it runs.
+            pumpStarted.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue("the pump must start while the pool workers are held");
+            pump.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue();
+            pumpOnPool.Should().BeFalse("a pump on a pool worker holds that worker for the child's whole life");
         }
         finally
         {
