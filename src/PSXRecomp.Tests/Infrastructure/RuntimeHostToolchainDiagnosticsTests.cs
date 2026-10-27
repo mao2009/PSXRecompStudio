@@ -113,6 +113,9 @@ public sealed class RuntimeHostToolchainDiagnosticsTests
             result.Stderr.Should().NotBe("Runtime host timed out",
                 "the host must not block on a full pipe while the pool is saturated");
             result.Stdout.Should().Contain("stdout-tail-marker");
+            // A host that exits normally has both pipes read to their end, so neither is reported as cut short (Issue #832).
+            result.StdoutDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.Complete);
+            result.StderrDrain.Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.Complete);
         }
         finally
         {

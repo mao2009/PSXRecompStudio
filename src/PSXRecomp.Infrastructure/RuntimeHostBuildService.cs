@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure.Standalone;
@@ -354,19 +355,109 @@ public static class RuntimeHostBuildService
     /// </summary>
     public sealed class RuntimeHostRunResult
     {
-        private RuntimeHostRunResult(int exitCode, string stdout, string stderr)
+        private RuntimeHostRunResult(
+            int exitCode, string stdout, string stderr, RuntimeHostPipeDrain stdoutDrain, RuntimeHostPipeDrain stderrDrain)
         {
             ExitCode = exitCode;
             Stdout = stdout;
             Stderr = stderr;
+            StdoutDrain = stdoutDrain;
+            StderrDrain = stderrDrain;
         }
 
         public int ExitCode { get; }
+
+        /// <summary>The stdout read from the host. Whole when <see cref="StdoutDrain"/> is Complete, otherwise the part read so far.</summary>
         public string Stdout { get; }
+
+        /// <summary>The stderr read from the host. Whole when <see cref="StderrDrain"/> is Complete, otherwise the part read so far.</summary>
         public string Stderr { get; }
 
+        public RuntimeHostPipeDrain StdoutDrain { get; }
+        public RuntimeHostPipeDrain StderrDrain { get; }
+
         public static RuntimeHostRunResult Succeeded(int exitCode, string stdout, string stderr) =>
-            new(exitCode, stdout, stderr);
+            new(exitCode, stdout, stderr, RuntimeHostPipeDrain.Complete, RuntimeHostPipeDrain.Complete);
+
+        internal static RuntimeHostRunResult Drained(
+            int exitCode, string stdout, string stderr, RuntimeHostPipeDrain stdoutDrain, RuntimeHostPipeDrain stderrDrain) =>
+            new(exitCode, stdout, stderr, stdoutDrain, stderrDrain);
+    }
+
+    /// <summary>
+    /// How one pipe of a Runtime host run ended after the host itself exited (Issue #832).
+    /// </summary>
+    public enum RuntimeHostPipeDrain
+    {
+        /// <summary>The pipe reached its end within the drain budget. Its text is whole.</summary>
+        Complete,
+
+        /// <summary>The pipe was still open when the budget ran out, for example a grandchild holds it. Its text is the part read so far.</summary>
+        TimedOut,
+
+        /// <summary>The read failed. Its text is the part read before the failure.</summary>
+        ReadFailed,
+    }
+
+    // Issue #832: the host's pipes are drained within this budget after it exits. A grandchild that inherited them can hold them open.
+    // Same value as RecompiledHostExecutionEngine.PumpDrainTimeoutMs, the drain cap of the other host run path.
+    private const int PipeDrainBudgetMs = 5000;
+
+    /// <summary>
+    /// Reads one child pipe on its own thread (see ProtocolPump) and keeps the text read so far. A drain cut short by the budget
+    /// therefore still has its partial output, instead of an empty string (Issue #832).
+    /// </summary>
+    internal sealed class PipeCollector
+    {
+        private readonly StringBuilder _text = new();
+        private readonly object _gate = new();
+
+        public PipeCollector(StreamReader reader)
+        {
+            Completion = ProtocolPump.Start(() => Pump(reader));
+        }
+
+        /// <summary>Completes when the pipe reaches its end, and faults when the read fails.</summary>
+        public Task Completion { get; }
+
+        /// <summary>The text read so far.</summary>
+        public string Text
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _text.ToString();
+                }
+            }
+        }
+
+        private void Pump(StreamReader reader)
+        {
+            var buffer = new char[4096];
+            int read;
+            while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                lock (_gate)
+                {
+                    _text.Append(buffer, 0, read);
+                }
+            }
+        }
+    }
+
+    // Waits for one pipe within what is left of the shared drain budget, counted by the caller's clock from the host's exit.
+    internal static RuntimeHostPipeDrain AwaitPipe(PipeCollector pipe, Stopwatch drainClock)
+    {
+        var remainingMs = Math.Max(0, PipeDrainBudgetMs - (int)drainClock.ElapsedMilliseconds);
+        try
+        {
+            return pipe.Completion.Wait(remainingMs) ? RuntimeHostPipeDrain.Complete : RuntimeHostPipeDrain.TimedOut;
+        }
+        catch (AggregateException)
+        {
+            return RuntimeHostPipeDrain.ReadFailed;
+        }
     }
 
     /// <summary>
@@ -420,8 +511,8 @@ public static class RuntimeHostBuildService
 
         using (process)
         {
-            var stderrTask = DrainOnDedicatedThread(process.StandardError);
-            var stdoutTask = DrainOnDedicatedThread(process.StandardOutput);
+            var stderrPipe = new PipeCollector(process.StandardError);
+            var stdoutPipe = new PipeCollector(process.StandardOutput);
 
             if (!process.WaitForExit(timeoutMs))
             {
@@ -429,10 +520,13 @@ public static class RuntimeHostBuildService
                 return RuntimeHostRunResult.Succeeded(int.MinValue, string.Empty, "Runtime host timed out");
             }
 
-            var stdout = stdoutTask.Result;
-            var stderr = stderrTask.Result;
+            // The host has exited, but a grandchild that inherited its pipes can keep them open. Both pipes share one drain budget
+            // from this point. A pipe that is cut short keeps its partial text and reports TimedOut; the exit code still stands.
+            var drainClock = Stopwatch.StartNew();
+            var stdoutDrain = AwaitPipe(stdoutPipe, drainClock);
+            var stderrDrain = AwaitPipe(stderrPipe, drainClock);
 
-            return RuntimeHostRunResult.Succeeded(process.ExitCode, stdout, stderr);
+            return RuntimeHostRunResult.Drained(process.ExitCode, stdoutPipe.Text, stderrPipe.Text, stdoutDrain, stderrDrain);
         }
     }
 
