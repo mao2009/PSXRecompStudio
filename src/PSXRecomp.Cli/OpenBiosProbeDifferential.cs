@@ -96,7 +96,9 @@ internal sealed record ProbeGuestState(
     {
         pc = Hex(Pc),
         atFetch = AtFetch,
-        cpu = Cpu.ToDictionary(static c => c.Name, static c => Hex(c.Value)),
+        // Decision A (PR #839): the general-purpose register values are withheld (gpr is null); the other CPU registers stay.
+        cpu = Cpu.Where(static c => !OpenBiosProbeCommand.IsGprName(c.Name)).ToDictionary(static c => c.Name, static c => Hex(c.Value)),
+        gpr = OpenBiosProbeCommand.GprFor(Cpu.Where(static c => OpenBiosProbeCommand.IsGprName(c.Name)).Select(static c => c.Value)),
         devices = Devices.ToDictionary(static d => d.Name, static d => d.Value),
         // The bounds check only keeps the RAM read in range; the export decision is OpenBiosProbeCommand.WordFor.
         instructionWord = (Pc & 0x1FFFFFFFu) <= RamBytes - 4
@@ -116,7 +118,8 @@ internal sealed record ProbeGuestState(
     public static object Compare(ProbeGuestState interpreter, ProbeGuestState host)
     {
         var cpu = interpreter.Cpu.Zip(host.Cpu).Where(static p => p.First.Value != p.Second.Value)
-            .Select(static p => new { kind = "cpu", name = p.First.Name, interpreter = Hex(p.First.Value), host = Hex(p.Second.Value) }).ToArray();
+            // A mismatching GPR is still named (the comparison is unchanged); its values are withheld as null.
+            .Select(static p => new { kind = "cpu", name = p.First.Name, interpreter = OpenBiosProbeCommand.CpuValueFor(p.First.Name, p.First.Value), host = OpenBiosProbeCommand.CpuValueFor(p.Second.Name, p.Second.Value) }).ToArray();
         var devices = interpreter.Devices.Zip(host.Devices).Where(static p => p.First.Value != p.Second.Value)
             .Select(static p => new { kind = "device", name = p.First.Name, interpreter = p.First.Value, host = p.Second.Value }).ToArray();
 
@@ -144,7 +147,7 @@ internal sealed record ProbeGuestState(
             };
         }
 
-        var firstMismatch = cpu.FirstOrDefault() ?? devices.FirstOrDefault()
+        object? firstMismatch = (object?)cpu.FirstOrDefault() ?? devices.FirstOrDefault()
             ?? (first is { } a ? new { kind = "ram", name = $"0x{a:X8}", interpreter = $"0x{interpreter.Ram[a]:X2}", host = $"0x{host.Ram[a]:X2}" } : null);
         return new
         {

@@ -329,8 +329,9 @@ internal static class OpenBiosProbeCommand
                     // Every fetch at this position is written (an interrupt entry adds fetches without a retirement).
                     var (sr, cause, epc, _) = observed.Cop0Diagnostics;
                     var (hi, lo) = observed.HiLoDiagnostics;
-                    var gpr = string.Join(",", Enumerable.Range(0, 32).Select(r => $"\"0x{observed.ReadGuestGpr(r):X8}\""));
-                    retireWriter.WriteLine($"{{\"g\":{observed.GuestCycles},\"pc\":\"0x{pc:X8}\",\"gpr\":[{gpr}],\"hi\":\"0x{hi:X8}\",\"lo\":\"0x{lo:X8}\",\"sr\":\"0x{sr:X8}\",\"cause\":\"0x{cause:X8}\",\"epc\":\"0x{epc:X8}\",\"pipelineClean\":{(observed.PipelineClean ? "true" : "false")}}}");
+                    // Decision A (PR #839): the register values are withheld; GprFor returns null.
+                    var gpr = JsonSerializer.Serialize(GprFor(Enumerable.Range(0, 32).Select(r => observed.ReadGuestGpr(r))));
+                    retireWriter.WriteLine($"{{\"g\":{observed.GuestCycles},\"pc\":\"0x{pc:X8}\",\"gpr\":{gpr},\"hi\":\"0x{hi:X8}\",\"lo\":\"0x{lo:X8}\",\"sr\":\"0x{sr:X8}\",\"cause\":\"0x{cause:X8}\",\"epc\":\"0x{epc:X8}\",\"pipelineClean\":{(observed.PipelineClean ? "true" : "false")}}}");
                 }
                 if (histogram is not null && (pc & 0x1FFFFFFFu) < RamBytes) histogram[(pc & 0x1FFFFFFFu) >> 2]++;
                 if (pc == capturePc && captured is null)
@@ -346,7 +347,7 @@ internal static class OpenBiosProbeCommand
                     {
                         // PR #839 review (MAJOR): a word outside guest RAM (the BIOS ROM range) is withheld by WordFor.
                         pc = $"0x{pc:X8}", word = WordHex(pc, observed.ReadGuestWord(pc)),
-                        gpr = Enumerable.Range(0, 32).Select(r => $"0x{observed.ReadGuestGpr(r):X8}").ToArray(),
+                        gpr = GprFor(Enumerable.Range(0, 32).Select(r => observed.ReadGuestGpr(r))),
                         lastTransfers = observed.RecentTrace.Transfers.TakeLast(8).Select(t => $"0x{t.From.Pc:X8}->0x{t.To:X8}").ToArray()
                     };
                 }
@@ -434,7 +435,7 @@ internal static class OpenBiosProbeCommand
                 stop,
                 captured,
                 // Issue #447: GTE work done and the displayed frame, as evidence beyond a PC.
-                gte = observed is null ? null : new { commandsExecuted = observed.Gte.CommandsExecuted, lastUnsupportedCommand = observed.Gte.LastUnsupportedCommand },
+                gte = observed is null ? null : new { commandsExecuted = observed.Gte.CommandsExecuted, lastUnsupportedCommandRecorded = observed.Gte.LastUnsupportedCommand is not null },
                 frame = observed?.CaptureFrameEvidence() is { } frame
                     ? new { width = frame.Width, height = frame.Height, nonZeroPixels = frame.Pixels.Count(p => p != 0), sha256 = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant() }
                     : null
@@ -928,6 +929,22 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     internal static uint? WordFor(uint pc, uint word) => IsGuestRamPc(pc) ? word : null;
 
+    /// <summary>
+    /// Decision A (PR #839, fixed by the arbitration): a general-purpose register value is never written to a public artifact.
+    /// Its origin cannot be told from the ROM's words, so no value is matched or exported. The one switch; tests pin it to false.
+    /// </summary>
+    private const bool PublishGprValues = false;
+
+    /// <summary>The GPR values as a public field, or null when they are withheld (<see cref="PublishGprValues"/>).</summary>
+    internal static string[]? GprFor(IEnumerable<uint>? values) =>
+        PublishGprValues && values is not null ? values.Select(Hex).ToArray() : null;
+
+    /// <summary>True for a MIPS general-purpose register name in the CPU list (r1..r31).</summary>
+    internal static bool IsGprName(string name) => name is ['r', >= '0' and <= '9', ..];
+
+    /// <summary>A CPU register value as a public field; a GPR value is withheld (<see cref="GprFor"/>), other registers are exported.</summary>
+    internal static string? CpuValueFor(string name, uint value) => IsGprName(name) && !PublishGprValues ? null : Hex(value);
+
     /// <summary><see cref="WordFor"/> as hexadecimal text, or null when the word is withheld.</summary>
     internal static string? WordHex(uint pc, uint word) => WordFor(pc, word) is { } exported ? Hex(exported) : null;
 
@@ -1024,7 +1041,7 @@ internal static class OpenBiosProbeCommand
         {
             pc = Hex(snapshot?.PC ?? 0),
             sr = Hex(cop0.Sr), cause = Hex(cop0.Cause), epc = Hex(cop0.Epc), badVAddr = Hex(cop0.BadVAddr),
-            gpr = snapshot?.Gpr.Select(Hex).ToArray(),
+            gpr = GprFor(snapshot?.Gpr),
             // The word is exported only through WordHex; a withheld word is written as null.
             lastFetches = trace.Fetches.TakeLast(16).Select(e => $"{Hex(e.Pc)}:{WordHex(e.Pc, e.Word) ?? "null"}").ToArray(),
             lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{WordHex(t.From.Pc, t.From.Word) ?? "null"}->{Hex(t.To)}").ToArray()

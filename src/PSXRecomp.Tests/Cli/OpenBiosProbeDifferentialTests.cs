@@ -93,8 +93,9 @@ public sealed class OpenBiosProbeDifferentialTests
         Assert.False(diff["match"]!.GetValue<bool>());
         Assert.Equal("cpu", diff["firstMismatch"]!["kind"]!.ToString());
         Assert.Equal("r9", diff["firstMismatch"]!["name"]!.ToString());
-        Assert.Equal("0x00001234", diff["firstMismatch"]!["interpreter"]!.ToString());
-        Assert.Equal("0x00001235", diff["firstMismatch"]!["host"]!.ToString());
+        // PR #839 (decision A): the GPR is still the first mismatch, but its values are withheld.
+        Assert.Null(diff["firstMismatch"]!["interpreter"]);
+        Assert.Null(diff["firstMismatch"]!["host"]);
         var ram = diff["ramFirstMismatch"]!;
         Assert.Equal("0x00010100", ram["address"]!.ToString());
         Assert.Equal("0x010000", ram["page"]!.ToString());
@@ -193,5 +194,35 @@ public sealed class OpenBiosProbeDifferentialTests
             Assert.False(diff["match"]!.GetValue<bool>());
             Assert.Equal(name, diff["firstMismatch"]!["name"]!.GetValue<string>());
         }
+    }
+
+    // PR #839 (decision A): a differing general-purpose register is still named as the first mismatch, so the comparison is
+    // unchanged, but neither its interpreter nor its host value is written out. The describe output withholds the GPR values too.
+    private static ProbeGuestState RegisterState(uint r5) => new(
+        0xBFC00028u, 1,
+        [("pc", 0xBFC00028u), ("r5", r5), ("hi", 0), ("lo", 0), ("sr", 0), ("cause", 0), ("epc", 0), ("badvaddr", 0)],
+        [("guest_cycles", "1"), ("scratchpad_sha256", "x")],
+        new byte[ProbeGuestState.RamBytes]);
+
+    [Fact]
+    public void Compare_GprMismatch_NamesTheRegisterButWithholdsItsValues()
+    {
+        var output = JsonSerializer.Serialize(ProbeGuestState.Compare(RegisterState(0x24BEEF01u), RegisterState(0x24BEEF02u)));
+        var diff = JsonNode.Parse(output)!;
+
+        diff["match"]!.GetValue<bool>().Should().BeFalse("the registers differ, so the comparison still fails");
+        diff["firstMismatch"]!["name"]!.GetValue<string>().Should().Be("r5");
+        output.ToUpperInvariant().Should().NotContain("24BEEF", "a general-purpose register value must not be exported");
+    }
+
+    [Fact]
+    public void Describe_GprValues_AreWithheldAndTheOtherRegistersStay()
+    {
+        var output = JsonSerializer.Serialize(RegisterState(0x24BEEF01u).Describe());
+        var describe = JsonNode.Parse(output)!;
+
+        output.ToUpperInvariant().Should().NotContain("24BEEF", "a general-purpose register value must not be exported");
+        describe["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        describe["cpu"]!["pc"]!.GetValue<string>().Should().Be("0xBFC00028", "the non-GPR registers are still exported");
     }
 }

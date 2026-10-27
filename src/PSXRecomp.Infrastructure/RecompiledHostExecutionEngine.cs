@@ -309,6 +309,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         return new ExternalStopScope(_frameReads);
     }
 
+    /// <summary>
+    /// The refusal for an unimplemented GTE command. The low 25 bits of the COP2 instruction are part of a guest word, so the
+    /// message names only the fact; the bits are withheld from every public artifact (PR #839, decision A).
+    /// </summary>
+    internal static string GteRefusalMessage(uint commandBits) => "GTE command is not implemented.";
+
     /// <summary>Ends an attachment: the gate stops watching the run's external token.</summary>
     private sealed class ExternalStopScope(FrameReadGate gate) : IDisposable
     {
@@ -2522,8 +2528,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 case "C":
                     if (!gte.ExecuteCommand(a))
                     {
-                        Refuse("GTE_COMMAND_UNSUPPORTED", string.Create(CultureInfo.InvariantCulture,
-                            $"GTE command 0x{a & 0x3F:X2} (word 0x{a:X7}) is not implemented."));
+                        Refuse("GTE_COMMAND_UNSUPPORTED", GteRefusalMessage(a));
                         return;
                     }
 

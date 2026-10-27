@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using FluentAssertions;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
@@ -221,6 +222,69 @@ public sealed class OpenBiosProbeValidationTests
     [InlineData(0x00010000u)]
     public void WordFor_RamPc_ExportsTheWord(uint pc) =>
         OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().Be(0x24095A5Au);
+
+    // PR #839 (decision A): lui t0, 0x24BE; ori t0, t0, 0xEF01; j reset vector; nop. Each pass leaves t0 = 0x24BEEF01, a register value
+    // that no ROM word carries. Every GPR value is withheld from every public artifact, whatever its origin.
+    private static byte[] GprRom()
+    {
+        uint[] words = [0x3C0824BEu, 0x3508EF01u, 0x08000000u | ((RomBase & 0x0FFFFFFFu) >> 2), 0];
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        for (var i = 0; i < words.Length; i++) BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        return bytes;
+    }
+
+    [Fact]
+    public void Run_GprHoldingTheSyntheticValue_WithholdsTheRegisterValuesFromEveryPublicOutput()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", GprRom());
+        string[] args = [rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000"];
+
+        RunProbe([.. args, "--capture-at", "BFC00008", "--json"], out var captureJson, out _);
+        RunProbe([.. args, "--json"], out var stopJson, out _);
+        RunProbe(args, out var text, out _);
+
+        foreach (var output in new[] { captureJson, stopJson, text })
+        {
+            output.ToUpperInvariant().Should().NotContain("24BEEF01", "a general-purpose register value must not be exported");
+        }
+
+        JsonNode.Parse(captureJson)!["captured"]!["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        JsonNode.Parse(stopJson)!["stop"]!["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        text.Should().Contain("Stop: ", "the stop diagnostics were produced, so the path was exercised");
+    }
+
+    [Fact]
+    public void Run_RetireOut_WithholdsTheRegisterValuesFromTheFile()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", GprRom());
+        var states = dir.WriteFile("states.txt", Encoding.ASCII.GetBytes("3\n4\n"));
+        var retireOut = GetTempPath(dir, "retire.jsonl");
+
+        RunProbe([rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000",
+            "--retire-states", states, "--retire-out", retireOut], out _, out _);
+
+#pragma warning disable AARC003 // Test-only inspection of the probe's retire file, which the probe writes itself.
+        var lines = File.ReadAllLines(retireOut);
+#pragma warning restore AARC003
+        lines.Should().NotBeEmpty("the listed retirement positions were reached");
+        string.Join("\n", lines).ToUpperInvariant().Should().NotContain("24BEEF01", "a register value must not be written to the retire file");
+        foreach (var line in lines)
+        {
+            JsonNode.Parse(line)!["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        }
+    }
+
+    // PR #839 (decision A): the GTE refusal names the fact, not the COP2 instruction bits (a part of a guest word).
+    [Fact]
+    public void GteRefusalMessage_DoesNotExportTheCommandBits()
+    {
+        var message = RecompiledHostExecutionEngine.GteRefusalMessage(0x02BEEF01u);
+
+        message.ToUpperInvariant().Should().NotContain("BEEF01", "the COP2 instruction bits are a part of a guest word");
+        message.Should().Contain("GTE command", "the refusal still names what was refused");
+    }
 
     [Fact]
     public void Run_ListDiscWithoutDisc_Rejected()
