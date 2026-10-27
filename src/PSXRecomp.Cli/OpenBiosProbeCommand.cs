@@ -212,10 +212,13 @@ internal static class OpenBiosProbeCommand
                 return 0;
             }
             var symbols = symbolsPath is null ? null : ProbeSymbols.Parse(File.ReadLines(symbolsPath));
-            var mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
-            var boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
+            OpenBiosProbeMdecLog? mdecLog = null;
+            OpenBiosProbeBoundaryLog? boundaryLog = null;
             try
             {
+                // Created inside the try so that a failure opening the second log still disposes the first.
+                mdecLog = mdecEventsPath is null ? null : new OpenBiosProbeMdecLog(mdecEventsPath, ParseWindowBound(mdecFromText, 0), ParseWindowBound(mdecToText, ulong.MaxValue));
+                boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
                         firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog)
