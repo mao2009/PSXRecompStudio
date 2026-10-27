@@ -186,6 +186,26 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
 
     /// <summary>
+    /// Called on the pump thread at each VBlank of the host scheduler with the run's device graph, the VBlank index and the
+    /// scheduler time (diagnostic observation only, Issue #774 W03: the boundary log). Null leaves the run unchanged.
+    /// </summary>
+    public Action<PsxDeviceGraph, ulong, ulong>? VBlankObserver { get; set; }
+
+    /// <summary>
+    /// The one VBlank callback of a host scheduler: the live frame publish (Issue #818) and the boundary observer (Issue #774)
+    /// both run from it, on the pump thread. Neither is set on the headless path, which leaves the callback unset.
+    /// </summary>
+    internal static void WireVBlank(DeviceScheduler scheduler, PsxDeviceGraph devices, Action<ulong>? live, Action<PsxDeviceGraph, ulong, ulong>? observer)
+    {
+        if (live is null && observer is null) return;
+        scheduler.VblankCallback = vblank =>
+        {
+            live?.Invoke(vblank);
+            observer?.Invoke(devices, vblank, scheduler.ElapsedCycles);
+        };
+    }
+
+    /// <summary>
     /// Opt-in record of RAM-placed code the artifact refused at a handoff (Issue #773). Set before the run; null (the default)
     /// keeps the run exactly as it was. Only read on the handoff path, so it does not change what executes.
     /// </summary>
@@ -784,6 +804,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode, LoadedCodeMismatchDiagnostics)
             {
                 LiveFrames = _liveFrames,
+                VBlankObserver = VBlankObserver,
             };
         _bridge = bridge;
 
@@ -1907,6 +1928,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         /// </summary>
         public LiveFrameSlot? LiveFrames { get; init; }
 
+        /// <summary>The engine's <see cref="RecompiledHostExecutionEngine.VBlankObserver"/>, handed to this run's scheduler (Issue #774 W03).</summary>
+        public Action<PsxDeviceGraph, ulong, ulong>? VBlankObserver { get; init; }
+
         /// <summary>
         /// The gate every read of this run's GPU/VRAM goes through, and the stop predicate it checks (Issue #827, owner requirement). Set by the
         /// engine before the pump starts. Without them the live publisher reads nothing (it fails closed).
@@ -2016,6 +2040,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 // Issue #774 (B-7): the MDEC event observer reports this scheduler's time. Diagnostic only.
                 _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
                 // Issue #818: VBlank is raised inside AdvanceExact on the pump thread, the one thread that owns the GPU.
+                Action<ulong>? liveVBlank = null;
                 if (LiveFrames is { } liveFrames)
                 {
                     var livePublisher = new LiveFrameVBlankPublisher(
@@ -2024,8 +2049,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                         exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"),
                         // Every live read goes through the run's gate, which refuses it once a stop was requested (fails closed without one).
                         action => FrameReads is { } gate && StopNow is { } stopNow && gate.TryRead(stopNow, action));
-                    _scheduler.VblankCallback = _ => livePublisher.OnVBlank();
+                    liveVBlank = _ => livePublisher.OnVBlank();
                 }
+                RecompiledHostExecutionEngine.WireVBlank(_scheduler, _devices, liveVBlank, VBlankObserver);
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)

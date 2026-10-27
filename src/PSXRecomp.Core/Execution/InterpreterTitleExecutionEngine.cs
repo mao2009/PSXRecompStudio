@@ -259,6 +259,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             // Attached (Issue #693): the owner's scheduler, and no Load — the image arrives by RAM sync.
             _scheduler = sharedScheduler;
+            AttachVBlankObserver();
             _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
             _loaded = true;
         }
@@ -339,6 +340,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Active device scheduler, available after Load; used for VBlank-aligned capture.</summary>
     public DeviceScheduler? Scheduler => _scheduler;
 
+    /// <summary>
+    /// Called at each VBlank of this engine's scheduler with the VBlank index and the scheduler time (diagnostic observation
+    /// only, Issue #774 W03). The scheduler is created by Load, so the callback is attached there: set this before the run.
+    /// </summary>
+    public Action<ulong, ulong>? VBlankObserver { get; set; }
+
+    private void AttachVBlankObserver()
+    {
+        if (VBlankObserver is not { } observer || _scheduler is not { } scheduler) return;
+        scheduler.VblankCallback = vblank => observer(vblank, scheduler.ElapsedCycles);
+    }
+
     /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
     public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
 
@@ -379,6 +392,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = _devices.CreateScheduler();
+        AttachVBlankObserver();
         // Issue #774 (B-7): the MDEC event observer reports the scheduler time (= guest retirements). Diagnostic only.
         _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
         _inInterruptHandler = false;
