@@ -40,22 +40,13 @@ internal sealed class OpenBiosProbeBoundaryLog : IDisposable
     public void Write(string engine, PsxDeviceGraph devices, ulong vblank, ulong cycles)
     {
         if (FailureMessage is not null) return;
-        string line;
+        // Every exception is contained here, whatever its type: a device read or the writer can fail in ways not listed
+        // above, and one escaping this call would end the guest run. The first failure is kept in FailureMessage.
         try
         {
-            line = Describe(engine, devices, vblank, cycles).ToJsonString();
+            _writer.WriteLine(Describe(engine, devices, vblank, cycles).ToJsonString());
         }
-        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException or ArgumentException)
-        {
-            Fail(ex);
-            return;
-        }
-
-        try
-        {
-            _writer.WriteLine(line);
-        }
-        catch (Exception ex) when (IsOutputFailure(ex))
+        catch (Exception ex)
         {
             Fail(ex);
         }
@@ -98,14 +89,14 @@ internal sealed class OpenBiosProbeBoundaryLog : IDisposable
     }
 
     /// <summary>
-    /// The first record whose fields differ between two logs, ignoring the engine label. Returns null when the logs match
-    /// (same length, same fields). A length difference is reported as the first boundary that exists on one side only.
+    /// The first record whose fields differ between two logs, ignoring the engine label, over the boundaries both logs hold.
+    /// Returns null when those match. The caller passes equal-length prefixes; a boundary present on one side alone is not
+    /// compared here.
     /// </summary>
     public static (int Index, string Field)? FirstMismatch(IReadOnlyList<string> left, IReadOnlyList<string> right)
     {
-        for (var i = 0; i < Math.Max(left.Count, right.Count); i++)
+        for (var i = 0; i < Math.Min(left.Count, right.Count); i++)
         {
-            if (i >= left.Count || i >= right.Count) return (i, "<missing boundary>");
             var a = JsonNode.Parse(left[i])!.AsObject();
             var b = JsonNode.Parse(right[i])!.AsObject();
             foreach (var key in a.Select(static p => p.Key).Union(b.Select(static p => p.Key)).Where(static k => k != "engine"))

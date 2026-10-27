@@ -51,12 +51,12 @@ public sealed class OpenBiosProbeBoundaryLogTests
     }
 
     [Fact]
-    public void FirstMismatch_Reports_A_Boundary_That_Exists_On_One_Side_Only()
+    public void FirstMismatch_Compares_Only_The_Boundaries_Both_Logs_Hold()
     {
         var left = new[] { Line("interpreter", vram: "aa") };
         var right = new[] { Line("host", vram: "aa"), Line("host", vram: "bb") };
 
-        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().Be((1, "<missing boundary>"));
+        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().BeNull();
     }
 
     [Fact]
@@ -69,6 +69,18 @@ public sealed class OpenBiosProbeBoundaryLogTests
 
         act.Should().NotThrow();
         log.FailureMessage.Should().Contain("IOException");
+    }
+
+    [Fact]
+    public void A_Read_Failure_In_The_Observer_Is_Contained_And_Recorded()
+    {
+        using var log = new OpenBiosProbeBoundaryLog(new StringWriter());
+
+        // A device graph whose reads fail: the exception is not one the log's output path lists, and it must not escape.
+        var act = () => log.Write("interpreter", null!, 1, 0);
+
+        act.Should().NotThrow();
+        log.FailureMessage.Should().Contain("NullReferenceException");
     }
 
     private static string Line(string engine, string vram) =>
