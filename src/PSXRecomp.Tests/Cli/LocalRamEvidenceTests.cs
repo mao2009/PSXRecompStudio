@@ -49,4 +49,31 @@ public sealed class LocalRamEvidenceTests
         words.Should().ContainKey(RamPc).WhoseValue.Should().Be(0x24020BADu);
         words.Should().NotContainKey(RomPc);
     }
+    [Fact]
+    public void RefusalFor_RefusesAPathInsideAGitWorkTree()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var inside = Path.Combine(dir.FullPath, "repo", "ram-evidence.json");
+
+        LocalRamEvidence.RefusalFor(inside, mustBeNew: true).Should().Contain("outside any Git work tree");
+        LocalRamEvidence.RefusalFor(inside, mustBeNew: false).Should().Contain("outside any Git work tree");
+    }
+
+    [Fact]
+    public void RefusalFor_RefusesReplacingAnExistingFile_WhenItIsToBeWritten()
+    {
+        using var dir = new TempDirectory();
+        var existing = dir.WriteFile("existing.json", Encoding.UTF8.GetBytes("{}"));
+
+        LocalRamEvidence.RefusalFor(existing, mustBeNew: true).Should().Contain("already exists");
+        LocalRamEvidence.RefusalFor(existing, mustBeNew: false).Should().BeNull("reading an existing file is allowed");
+    }
+
+    [Fact]
+    public void RefusalFor_AcceptsANewPathOutsideAGitWorkTree()
+    {
+        using var dir = new TempDirectory();
+        LocalRamEvidence.RefusalFor(Path.Combine(dir.FullPath, "fresh.json"), mustBeNew: true).Should().BeNull();
+    }
 }

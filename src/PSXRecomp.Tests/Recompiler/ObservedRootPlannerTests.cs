@@ -178,6 +178,18 @@ public sealed class ObservedRootPlannerTests
         targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, RamWord: null));
     }
 
+    // The public export carries no RAM word (the ruling on #839): an export that names one is malformed and refused.
+    [Fact]
+    public void ReadExport_RefusesAnExportThatCarriesARamWord()
+    {
+        var json = ObservedRootsFixtures.TargetsJson(A, "unknown-code", 100).Replace("\"lastReturnPc\"", "\"ramWord\":\"0x00000000\",\"lastReturnPc\"", StringComparison.Ordinal);
+        json.Should().Contain("\"ramWord\"", "the fixture must carry the word for this test to mean anything");
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*ramWord*");
+    }
+
     private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1}""";
 
     public static TheoryData<string> Malformed => new()

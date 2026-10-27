@@ -771,13 +771,18 @@ public sealed class CliRunTests
     [Fact]
     public void Run_Text_DoesNotPrintTheResultRegisterValue()
     {
+        // The CLI reports V0 as the result register. V0 is loaded with a synthetic, identifiable value just before the marker, so the
+        // run ends with it in V0 (the marker register is not the result register, so an earlier version of this test checked nothing).
         using var dir = new TempDirectory();
-        var exePath = WriteSyntheticExe(dir, "program.exe", SuccessfulProgram());
+        var program = SuccessfulProgram();
+        var withResultValue = program[..4].Concat([Immediate(OriOpcode, (byte)R3000aRegister.V0, 0xBEEFu), program[4]]).ToArray();
+        var exePath = WriteSyntheticExe(dir, "program.exe", withResultValue);
 
         var (exit, output, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("out"));
 
         exit.Should().Be(RecompiledArtifactExitCode.Success);
-        output.Should().NotContain("Result: 0x", "a GPR value is not printed by the run output");
+        output.Should().NotContain("Result:", "the text output prints no result line: a GPR value is never printed");
+        output.ToUpperInvariant().Should().NotContain("BEEF", "the V0 value is not printed in any form");
     }
 
     [Fact]

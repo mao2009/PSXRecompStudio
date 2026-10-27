@@ -33,7 +33,8 @@ internal sealed class OpenBiosProbeAccounting
     private readonly SortedDictionary<string, ulong> _exits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (ulong Transitions, ulong Retired)> _aotClasses = new(StringComparer.Ordinal);
     // The word and its opcode are null when the faulting PC is withheld (OpenBiosProbeCommand.WordFor).
-    private readonly SortedDictionary<(uint ExcCode, uint? Opcode), (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
+    private readonly SortedDictionary<(uint ExcCode, uint Pc, uint? Opcode), // the PC is an address and stays in the key; only the word and its opcode are withheld
+        (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
 
     public ulong FallbackFetches { get; private set; }
 
@@ -85,7 +86,7 @@ internal sealed class OpenBiosProbeAccounting
 
         var at = (cause & 0x80000000u) != 0 ? epc + 4 : epc; // CAUSE.BD: the faulting instruction is in the delay slot
         var word = OpenBiosProbeCommand.WordFor(at, readWord(at));
-        _unsupported.TryAdd((code, word >> 26), (at, word, FallbackFetches));
+        _unsupported.TryAdd((code, at, word is { } w ? w >> 26 : (uint?)null), (at, word, FallbackFetches));
     }
 
     /// <summary>

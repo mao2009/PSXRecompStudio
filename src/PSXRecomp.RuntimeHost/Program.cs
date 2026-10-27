@@ -320,16 +320,12 @@ public static class Program
             // Issue #786 review MINOR-1: marked after the run is classified, so a report says executed only once it has an end.
             RecompiledHostExecutionEngine.MarkLoadedCodeReportFinished(loadedCodeMismatch, execution);
 
-            // Forward console output for native runs: the guest's C stdout contains
-            // the boot/TTY text up to the engine's RSNAPSHOT diagnostic block; the
-            // bridge-pumped path writes TTY directly through the sink above.
+            // Forward console output for native runs: only the guest's own text. The host protocol (RHOST_* lines and the RSNAPSHOT
+            // block, which carries GPR values) is never printed, on a successful run or a failed one. The bridge-pumped path writes
+            // TTY directly through the sink above.
             if (engine.ConsoleOutput is { Length: > 0 } consoleOutput)
             {
-                var end = consoleOutput.IndexOf(
-                    RecompiledArtifactCodeGen.SnapshotBeginMarker,
-                    StringComparison.Ordinal);
-                if (end >= 0) consoleOutput = consoleOutput[..end];
-                Console.Write(consoleOutput);
+                Console.Write(ArtifactConsoleOutput.GuestText(consoleOutput));
             }
 
             if (frameOutPath is not null)
