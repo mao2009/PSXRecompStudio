@@ -2343,7 +2343,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 : [];
             if (fields.Length != 6)
             {
-                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}' reply, received '{reply}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.ReplyMismatch(RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix, reply));
             }
 
             // intEntry is a boolean on the wire: exactly "0" or "1"; anything else fails closed, never reads as false.
@@ -2351,7 +2351,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             {
                 "0" => false,
                 "1" => true,
-                _ => throw new ProtocolFaultException($"Malformed intEntry in '{reply}'."),
+                _ => throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("intEntry", reply)),
             };
 
             return new Cop0Query(
@@ -2487,7 +2487,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || (isWrite && !uint.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out value))
                 || (width < 4 && value >> (8 * width) != 0))
             {
-                throw new InvalidOperationException($"Malformed MMIO request '{fields}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("MMIO request", fields));
             }
 
             LastMmioAccess = new HostMmioAccess(physical, width, isWrite);
@@ -2529,7 +2529,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || !uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var a)
                 || (parts[0] is "R" or "W" && a >= 64))
             {
-                throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("GTE request", fields));
             }
 
             var gte = _devices.Gte;
@@ -2552,7 +2552,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
                     break;
                 default:
-                    throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+                    throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("GTE request", fields));
             }
 
             Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
@@ -2588,7 +2588,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // Validated whole before any effect: a malformed line must not advance the devices and then fail.
             if (!FusedRetiredRequest.TryParse(fields, out var retired, out var isWrite, out var access))
             {
-                throw new ProtocolFaultException($"Malformed fused guest-time report '{fields}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("fused guest-time report", fields));
             }
 
             // A refused report ends the request without the access, exactly as a refused stand-alone report did.
@@ -2604,7 +2604,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || retired == 0
                 || retired > MaxRetiredPerReport)
             {
-                throw new ProtocolFaultException($"Malformed guest-time report '{fields}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("guest-time report", fields));
             }
 
             // Overflow is a refusal, never a wrapped (shorter) elapsed time.
@@ -2736,7 +2736,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var reply = ReadReply();
             if (!reply.StartsWith(RecompiledArtifactCodeGen.ProtocolDataPrefix, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolDataPrefix}' reply, received '{reply}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.ReplyMismatch(RecompiledArtifactCodeGen.ProtocolDataPrefix, reply));
             }
 
             return (byte)ParseUInt(reply[RecompiledArtifactCodeGen.ProtocolDataPrefix.Length..].Trim());
@@ -2751,7 +2751,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var reply = ReadReply();
             if (!string.Equals(reply, RecompiledArtifactCodeGen.ProtocolWriteAck, StringComparison.Ordinal))
             {
-                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolWriteAck}' reply to a RAM write, received '{reply}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.WriteNotAcknowledged(RecompiledArtifactCodeGen.ProtocolWriteAck, reply));
             }
         }
 
