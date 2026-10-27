@@ -178,14 +178,14 @@ public sealed class OpenBiosProbeAccountingTests
         Exception(11u << 2 | 2u << 28, 0x80010010);              // the same PC again: not a new entry
 
         var unsupported = Report(accounting, null, null, []).AsObject()["unsupportedOpcodes"]!.AsArray();
-        Assert.Equal(3, unsupported.Count); // one per (ExcCode, PC, opcode): every fault here is at its own PC, so none is merged
+        Assert.Equal(3, unsupported.Count); // one per (ExcCode, PC): every fault here is at its own PC, so none is merged
         Assert.Equal(10u, unsupported[0]!["excCode"]!.GetValue<uint>());
         Assert.Equal("0x80010030", unsupported[0]!["pc"]!.ToString());
         // Decision A (PR #839, arbitration): a RAM word at a PC is not exported, so the word is withheld.
         Assert.Null(unsupported[0]!["word"]);
         Assert.Equal(11u, unsupported[1]!["excCode"]!.GetValue<uint>());
         // Decision A (PR #839, arbitration): the opcode is a field of the RAM word, so it is withheld with the word.
-        Assert.Null(unsupported[1]!["opcode"]);
+        Assert.False(unsupported[1]!.AsObject().ContainsKey("opcode"), "an entry has no opcode: the opcode is a field of the withheld word");
         Assert.Equal("0x80010010", unsupported[1]!["pc"]!.ToString());
         Assert.Equal(1ul, unsupported[1]!["atFallbackFetch"]!.GetValue<ulong>());
         Assert.Equal(11u, unsupported[2]!["excCode"]!.GetValue<uint>());
@@ -203,7 +203,7 @@ public sealed class OpenBiosProbeAccountingTests
         var unsupported = Report(accounting, null, null, []).AsObject()["unsupportedOpcodes"]!.AsArray();
         Assert.Single(unsupported);
         Assert.Null(unsupported[0]!["word"]);
-        Assert.Null(unsupported[0]!["opcode"]);
+        Assert.False(unsupported[0]!.AsObject().ContainsKey("opcode"), "an entry has no opcode: the opcode is a field of the withheld word");
         Assert.Equal("0xBFC00010", unsupported[0]!["pc"]!.ToString());
     }
 

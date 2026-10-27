@@ -37,6 +37,7 @@ public sealed class CliRunTests
     private const uint EntryPc = 0x80010000u;
     private const uint UncompiledTarget = 0x80020000u;
     private const byte OriOpcode = 0x0D;
+    private const byte LuiOpcode = 0x0F;
     private const byte JalOpcode = 0x03;
     private const byte JumpOpcode = 0x02;
     private const byte MarkerRegister = (byte)R3000aRegister.S1;
@@ -45,6 +46,22 @@ public sealed class CliRunTests
 
     private static uint Immediate(byte opcode, byte rt, uint immediate) =>
         (uint)opcode << 26 | (uint)rt << 16 | (immediate & 0xFFFFu);
+
+    /// <summary>The CLI run reports V0 as its result register. This synthetic, identifiable value is loaded into V0 before the marker.</summary>
+    private const uint ResultValue = 0xC0FFEE11u;
+
+    /// <summary>The synthetic program with <see cref="ResultValue"/> in V0 when it ends: lui v0, hi; ori v0, v0, lo; then the marker.</summary>
+    private static uint[] ProgramWithResultValue()
+    {
+        const byte v0 = (byte)R3000aRegister.V0;
+        var program = SuccessfulProgram();
+        var loadV0 = new[]
+        {
+            Immediate(LuiOpcode, v0, ResultValue >> 16),
+            (uint)OriOpcode << 26 | (uint)v0 << 21 | (uint)v0 << 16 | (ResultValue & 0xFFFFu),
+        };
+        return program[..4].Concat(loadV0).Append(program[4]).ToArray();
+    }
 
     /// <summary>
     /// The successful fixture: putchar('P') through the shared BIOS A0 vector,
@@ -771,18 +788,33 @@ public sealed class CliRunTests
     [Fact]
     public void Run_Text_DoesNotPrintTheResultRegisterValue()
     {
-        // The CLI reports V0 as the result register. V0 is loaded with a synthetic, identifiable value just before the marker, so the
-        // run ends with it in V0 (the marker register is not the result register, so an earlier version of this test checked nothing).
+        // The run goes through the CLI's run command (Program.Execute -> RunCommand), the same path as a user's run. V0, the result
+        // register, ends the run holding ResultValue.
         using var dir = new TempDirectory();
-        var program = SuccessfulProgram();
-        var withResultValue = program[..4].Concat([Immediate(OriOpcode, (byte)R3000aRegister.V0, 0xBEEFu), program[4]]).ToArray();
-        var exePath = WriteSyntheticExe(dir, "program.exe", withResultValue);
+        var exePath = WriteSyntheticExe(dir, "program.exe", ProgramWithResultValue());
 
         var (exit, output, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("out"));
 
         exit.Should().Be(RecompiledArtifactExitCode.Success);
         output.Should().NotContain("Result:", "the text output prints no result line: a GPR value is never printed");
-        output.ToUpperInvariant().Should().NotContain("BEEF", "the V0 value is not printed in any form");
+        output.ToUpperInvariant().Should().NotContain($"{ResultValue:X8}", "the V0 value is not printed in hexadecimal");
+        output.Should().NotContain(ResultValue.ToString(), "the V0 value is not printed in decimal");
+    }
+
+    // The JSON document of the same run, through the same path: no byte of it carries the V0 value, in decimal or hexadecimal.
+    [Fact]
+    public void Run_Json_ExportsNoResultRegisterValue_InAnyForm()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", ProgramWithResultValue());
+
+        var (exit, output, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("out"), "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        using var json = JsonDocument.Parse(output);
+        json.RootElement.GetProperty("result").GetProperty("resultValue").ValueKind.Should().Be(JsonValueKind.Null);
+        output.ToUpperInvariant().Should().NotContain($"{ResultValue:X8}", "the document carries no hexadecimal form of the V0 value");
+        output.Should().NotContain(ResultValue.ToString(), "the document carries no decimal form of the V0 value");
     }
 
     [Fact]

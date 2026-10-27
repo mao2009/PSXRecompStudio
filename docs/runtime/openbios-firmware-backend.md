@@ -264,8 +264,10 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     `region:function`; a PC maps to the nearest text symbol at or below it in
     the same region, by physical address).
   - `unsupportedOpcodes[]`: the first RI (10) / CpU (11) exception per
-    (ExcCode, major opcode) seen at the vector: faulting PC (EPC, +4 in a
-    delay slot), word, fallback fetch index.
+    (ExcCode, PC) seen at the vector: faulting PC (EPC, +4 in a delay slot),
+    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. An entry carries no
+    `opcode` field: it was a field of the withheld word, so it is no longer exported (a schema change from the earlier export, which
+    always had it `null`).
 - `timings` (wall clock, not deterministic): `buildMs` (image analysis),
   `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
   `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −

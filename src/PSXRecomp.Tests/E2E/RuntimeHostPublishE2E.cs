@@ -129,6 +129,11 @@ public sealed class RuntimeHostPublishE2E : IDisposable
 
         // Runtime host output is classification message on stderr
         runResult.Stderr.Should().Contain("classified as Success", "stderr must indicate success");
+
+        // The direct launch's console (its stdout, through the real host process) carries only the guest's text. The artifact prints its
+        // host protocol (RHOST_* lines) and a state snapshot (RSNAPSHOT_*, with GPR values) on every run; neither may reach the console.
+        runResult.Stdout.Should().NotContain("RHOST_", "a host-protocol line is never printed by the direct launch");
+        runResult.Stdout.Should().NotContain("RSNAPSHOT", "the state snapshot, which carries GPR values, is never printed");
     }
 
     /// <summary>
