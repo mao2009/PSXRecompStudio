@@ -61,7 +61,6 @@ public sealed class RuntimeHostManifestPathTests
     }
 
     [Theory]
-    [InlineData("")]
     [InlineData("../artifact-image.bin")]
     [InlineData("/abs/artifact-image.bin")]
     [InlineData("C:/artifact-image.bin")]

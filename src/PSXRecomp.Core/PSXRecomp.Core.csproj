@@ -49,9 +49,14 @@
     was the actual root cause of PSXRecomp.Tests' DllNotFoundException on a
     clean Windows build despite a "successful" `dotnet build`.
   -->
+  <!--
+    Issue #B2 (review M1): the native shared library keeps its symbols. The flag -s is not passed, and it is cleared from the CMake
+    cache (-DCMAKE_SHARED_LINKER_FLAGS_RELEASE= with an empty value) so that a build directory configured earlier with -s does not
+    keep it. Build-path strings are removed by the compile-time prefix maps in src/PSXRecomp.Native/CMakeLists.txt instead.
+  -->
   <Target Name="BuildNative" BeforeTargets="AssignTargetPaths;CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
-    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release"
+    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SHARED_LINKER_FLAGS_RELEASE="
           IgnoreExitCode="false" />
     <Exec Command="cmake --build &quot;$(NativeBuildDir)&quot;"
           IgnoreExitCode="false" />

@@ -152,21 +152,32 @@ NOP is `0xBFC05E4C`). With both, the probe reaches `0x80010000` with
 The optional M path table is not emitted; the optional/extra descriptors are
 not modelled.
 
-### Generated host (`--engine generated-host`)
+### Developer diagnostics: `openbios-probe --engine generated-host` (not the normal procedure)
 
-The probe compiles the ROM and explicit RAM images before execution, then runs
+> **Scope.** This is a developer measurement, run by hand. It is not part of the normal OpenBIOS integration or the
+> `package --bios openbios` procedure, and `package` never calls it. Its `--roots` compile the ROM's own code
+> (`ReachableProgramBuilder.BuildFirmwareImage`), so this path **does** compile BIOS code ahead of time. The distribution
+> compiles no ROM block (owner ruling R1, and the owner's choice for MAJOR-2: the probe is excluded from the normal procedure).
+> The R1 rule therefore does not cover this diagnostic path by itself; the limit is the scope above, not a claim that the path is
+> outside R1.
+>
+> **Handling of its outputs.** The JSON report and any generated code, binary or log are local measurement results. They are never
+> committed to the repository, never placed in CI artifacts, and never included in a distribution package. Keep the `--json` output
+> out of shared locations.
+
+The probe compiles the ROM (from `--roots`) and the explicit RAM images before execution. The probe then runs
 `RecompiledHostExecutionEngine` over the common device graph. Unknown or changed
 code uses the counted interpreter fallback. No code is compiled during the run.
 
 ```bash
-python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+# Developer diagnostic only: prepare the procedure's images, then run the probe on a synthetic disc.
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/aot
 pwsh scripts/demo/synthetic-disc.ps1 -WorkDir /local/fixtures -OpenBiosCompatible
 psxrecomp openbios-probe /local/openbios.bin --disc /local/fixtures/synthetic-disc-openbios.bin \
   --engine generated-host --roots /local/aot/rom.roots --load-images /local/aot/images.txt \
   --code-bytes 37160 --segment-budget 1000000 --segments 230 \
   --stop-at 0x80010014 --differential --json
 ```
-
 `psxrecomp openbios-probe <rom> --segment-budget 1000000 --segments 300 --disc <image> --engine generated-host --roots <file> [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... [--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--json]`
 
 The ROM's code (its first `--code-bytes`, e.g. `.text` + `.text_memcpy` =
@@ -277,8 +288,8 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   (fetch indices excluded: they count different fetches) and the
   interpreter's report. `stopAt`: the PC and whether each run reached it.
 
-`prepare-aot.py` reads ELF32 MIPS symbols and code-pointer roots from the locally
-built ELF pair. Manifest root paths are relative to the manifest. Issue #773 adds the observed-roots directive
+`prepare-aot.py` reads ELF32 MIPS function symbols from the locally built OpenBIOS ELF and writes `rom.roots` and
+`images.txt` (no BIOS RAM image, R1; the shell ELF is no longer an input). Manifest root paths are relative to the manifest. Issue #773 adds the observed-roots directive
 `roots <image> <roots-file> <source-sha256> <load-hex> <words-sha256>`: it names exactly one EXE-based image (`exe`,
 `boot-exe` or `disc-exes`), and the load is refused unless the image's source-file SHA-256, load address and code-word
 SHA-256 all match, and every root is a unique, aligned, in-image, structurally safe PC that is not already a root. The
@@ -324,8 +335,8 @@ program stages into RAM, and overlays may share a load address, which the loaded
 the code actually in RAM. Files too large to be an executable are not read; nothing is title-specific.
 `prepare-aot.py --disc-exes` emits it; it is **opt-in** because, measured on Persona, entry-only roots leave every
 function-pointer target to the interpreter fallback and the mixed execution then ping-pongs (Issue #734, below). Observation
-points must remain interpreted: the generated manifest includes `C0Handler`
-(kernel RAM execution), exception vector/handler, shell and EXE entries.
+points must remain interpreted: the generated manifest holds `interpret` lines for `C0Handler`, the exception vector and
+the exception handler (no BIOS RAM image is written, R1).
 
 `indirect-roots` (Issue #773, **opt-in**) adds the functions an EXE calls only through a function-pointer table to
 that EXE image's roots. A reachable `lui`/`addiu|ori` pair names a table; the table words that are in-image,
@@ -398,28 +409,25 @@ fetches by 1,880, so `differentialPass` is false: device time diverges
 
 ### Ahead-of-time RAM-placed code (`--load-images`, [ADR-026](../adr/026-aot-ram-placed-code.md))
 
-PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. Code the firmware
-places in RAM is compiled before the run from explicit images listed in a manifest
-(`LoadImageManifest`; one directive per line, hex numbers, paths relative to the manifest):
+PSXRecompStudio is AOT-only: nothing is generated or compiled at run time. The RAM-placed code that is compiled before
+the run is the code of the disc's executables, listed in a manifest (`LoadImageManifest`; one directive per line, hex numbers,
+paths relative to the manifest). The canonical pipeline never takes the BIOS as an AOT input (owner ruling R1, narrowed): the manifest has no `image ... rom` line, since a
+RAM image that copies BIOS bytes is refused (`rom-image`). The kernel data, the exception vectors and the shell are not compiled:
+the run loads them from the BIOS image and interprets them (the counted fallback).
 
 ```text
-image kernel-data 0x00000500 rom 0xBFC1DF6C 0x45A0 kernel.roots  # ELF LOAD 0x500 <- ROM 0xBFC1DF6C (.data, RWE)
-image vector-80   0x80000080 rom 0xBFC06DE8 0x10 vector80.roots # exceptionVector (0x80000084)
-image vector-a0   0x000000A0 rom 0xBFC06DF8 0x10                # A0Vector; likewise B0Vector/C0Vector
-image shell       0x80030000 rom 0xBFC0A1F4 0x13D78 shell.roots  # _binary_shell_bin_start
-exe   test-exe    test.exe exe.roots                             # or: boot-exe <name> (SYSTEM.CNF on --disc)
-interpret 0x80000080   # observation points stay interpreted: exception vector, exceptionHandler
-interpret 0x000026A4   # (0x26A4, KernelRunningFromRam), shell entry 0x80030000, EXE entry 0x80010000
+boot-exe boot                        # SYSTEM.CNF's boot executable on --disc (AOT input: the disc's own code)
+disc-exes disc                       # optional: every PS-X EXE on the disc, as guarded images
+exe   test-exe test.exe exe.roots    # an explicit executable file (AOT input)
+interpret 0x80000080                 # observation points stay interpreted: the exception vector
+interpret 0x000026A4                 # OpenBIOS's own exception handler (C0Handler and exceptionHandler are written as interpret lines)
 ```
 
-Addresses come from the pinned build's `openbios.elf` (program headers, `exceptionVector`/`A0Vector`/
-`B0Vector`/`C0Vector`, `_binary_shell_bin_start`/`_size`) and `shell/shell.elf`. The portable helper selects ELF function symbols inside each image plus the aligned words of read-only data that point into the image's code
-(switch tables: `.rodata`/`.data` of the shell, the kernel `.data` and the ROM `.rodata` for the
-kernel). A root that is not really an entry is harmless: its block holds the correct code for those
-bytes and runs only if control reaches it with those bytes in RAM. Each image is compiled at its
-destination (`BuildLoadedImage`), the builds are linked into one `LoadedCodeTable`, and the artifact
-runs a version only while RAM holds exactly its words (page generations, ADR-026); anything else is
-the counted fallback. The report lists every image (`loadedImages`), `loadedCodeVersions`,
+`scripts/openbios/prepare-aot.py <openbios.elf> <output-dir> [--disc-exes]` writes exactly this shape: `rom.roots` (the ROM's code
+roots, read from the ELF's function symbols) and `images.txt` with `boot-exe boot`, the optional `disc-exes disc`, and the `interpret`
+lines. It writes no `image` line, so it emits no BIOS image. Each disc executable is compiled at its load address (`BuildLoadedImage`),
+the builds are linked into one `LoadedCodeTable`, and the artifact runs a version only while RAM holds exactly its words (page
+generations, ADR-026); anything else is the counted fallback. The report lists every image (`loadedImages`), `loadedCodeVersions`,
 `precompileMilliseconds`, `atBoundary` (native instructions and seconds when each differential
 boundary was reached) and, per fallback target, its `cause` (`observation-point`, `version-mismatch`,
 `aot-coverage-gap:loaded-image|rom`, `unknown-code`).
@@ -462,7 +470,7 @@ distribution. The OpenBIOS-booted distribution is selected only by the explicit 
 default must not change until the real-game gate below passes:
 
 ```bash
-python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/shell.elf /local/aot
+python3 scripts/openbios/prepare-aot.py /local/openbios.elf /local/aot
 psxrecomp package /local/game.chd --bios openbios --bios-rom /local/openbios.bin   --aot-dir /local/aot --output ./persona [--code-bytes 37160] [--instruction-budget <n>] [--run-timeout-seconds 1800] [--build-timeout-seconds <n>] [--mixed-fallback|--no-mixed-fallback] [--fallback-segment-budget <n>] [--fallback-max-transitions <n>]
 ./persona/persona          # persona.exe on Windows
 ```
@@ -476,33 +484,34 @@ artifact build; it is independent of `--run-timeout-seconds` (the guest run boun
 three-minute per-step default (`FirmwareDistributionBuilder.DefaultBuildTimeout`); it is validated to `1..86400` and
 is never unbounded. A slower build host (for example the ~515,783-line ROM + AOT dispatch on a low-core CPU) can be
 given a longer compile budget without extending the game's own run time. The `openbios-probe` generated-host build
-keeps its own fixed three-minute per-step cap.
+keeps its own fixed three-minute per-step cap (the developer-only probe; see the Developer diagnostics section).
 
-**Execution structure (one guest state).** The native artifact *is* the OpenBIOS ROM compiled ahead of time
-(`ReachableProgramBuilder.BuildFirmwareImage`) plus the guarded RAM-placed versions (`LoadedCodeTable`: kernel data,
-vectors, shell and the disc's `boot-exe`, ADR-026). The game is never a second CPU session: OpenBIOS starts at the
+**Execution structure (one guest state).** The native artifact holds the guarded RAM-placed versions of the disc's executables
+(`LoadedCodeTable`: the `boot-exe` and any `disc-exes`, ADR-026). The OpenBIOS ROM itself is not compiled: `FirmwareAotPlan.Build`
+builds an empty program, and the ROM runs from the BIOS image through the counted interpreter fallback (owner ruling R1). The
+kernel data, the vectors and the shell are not AOT images either: they run from the BIOS image. The game is never a second CPU session: OpenBIOS starts at the
 reset vector, its own CD driver reads the disc through the Runtime host's `CdRomDevice`/DMA3/IRQ graph, and `exec`
 jumps into the game in the same RAM, COP0 and device state. The game's calls back into A0/B0/C0 reach OpenBIOS code
 (native if it has a block, counted interpreter fallback otherwise); no `IBiosRuntime` is attached to a guest firmware.
 Unknown or changed RAM code is the explicit, counted, bounded fallback (ADR-025/026); it is reported, never silent.
-The distribution's AOT compiles the probe's post-shell milestones too: `0x80030000` and `0x80010000` are lowered as
-guarded blocks, never kept interpreted (`FirmwareAotPlan.FixedExceptionObservationPcs`); only OpenBIOS's own exception
-vectors (`0x80000080`, `0x26A4`) stay observed/interpreted, and a guarded game block runs only while RAM holds its
-compiled words.
+The distribution's AOT covers the disc's executables: the game's entry `0x80010000` is a guarded block when its image is
+compiled. The shell entry `0x80030000` is BIOS code, not an AOT image (R1), so it runs interpreted from the BIOS image. Only
+OpenBIOS's own exception entry points (`0x80000080`, `0x26A4`) stay observed/interpreted (`FirmwareAotPlan.FixedExceptionObservationPcs`),
+and a guarded game block runs only while RAM holds its compiled words.
 
 | Item | Where |
 |---|---|
-| BIOS ROM | user-supplied `--bios-rom`, exactly 512 KiB; copied to `runtime/artifact-image.bin`; SHA-256 re-verified on every run |
+| BIOS ROM | user-supplied path, named at run time by `PSXRECOMP_BIOS_ROM` (exactly 512 KiB); not copied into the distribution, and no BIOS bytes, digest or sidecar are written; the run checks the size and prints the SHA-256 |
 | Disc (CD sector source) | user-supplied, copied to `runtime/disc/disc.{chd,bin}`; SHA-256 re-verified on every run |
 | AOT inputs | `--aot-dir` files (`rom.roots`, `images.txt` and every `image`/`exe` reference, resolved fail-closed against the AOT directory) copied to `runtime/firmware/` preserving their layout; per-file SHA-256 pinned in the boot manifest (`aotInputs`, schema 2) and re-verified before every plan rebuild; the host rebuilds the identical `LoadedCodeTable` (analysis only, no code generation) |
 | Backend / identities | `runtime/firmware-boot.json` (`FirmwareBootManifest`, schema 2), selects the firmware run in the shared RuntimeHost |
 | Run settings | `runtime/runtime-host.json` (`guestFirmware:true`; mixed fallback on by default — `--mixed-fallback`/`--no-mixed-fallback` with `--fallback-segment-budget`/`--fallback-max-transitions` propagate through the manifest, recorded as 0 budgets when off) |
 
-`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a tampered ROM, disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes.
+`FirmwareRuntimeLauncher` builds the engine through `ForPrebuiltArtifact` with the disc and the loaded-code table; a missing or wrong-size BIOS named by `PSXRECOMP_BIOS_ROM`, a tampered disc, backend, AOT input or manifest path stops the run with exit 78 before anything executes. The BIOS is not in the distribution, so packaging pins no digest of it: the run reports the SHA-256 of the image it loaded, and a change to that image during the run fails the run.
 The run prints a `firmware-run` JSON line on stderr with native and fallback instruction counts and the final register file, and `RuntimeHost --diagnostics <path>` additionally writes the Issue #763 stop diagnostic (best-effort; the classified exit code is unchanged).
 
 **Distribution boundary.** The ROM and disc are copied into the *local* output only. Nothing is downloaded, and no
-commercial game or genuine BIOS is bundled. Redistributing OpenBIOS (even the compiled artifact embeds the ROM) waits
+commercial game or genuine BIOS is bundled. Redistributing OpenBIOS waits (the distribution holds no BIOS bytes; the ROM is named by path at run time)
 for the #730 file-by-file license audit; the generated `README.txt` says so. This is a technical verification path,
 not distribution approval.
 
@@ -687,6 +696,275 @@ writes the same Issue #763 stop diagnostic (`RuntimeHostDiagnostic.From`/`FromFa
 classified exit code and `firmware-run` line are unchanged), off by default. `ForPrebuiltArtifact` takes the `disc`
 as part of the one guest state.
 
+#### BIOS: refused as an AOT input on structural and content-identity grounds; run-time provenance (Issue #B2)
+
+**Scope of the refusals (R1).** The manifest stage refuses an AOT input on one of four grounds: the input kind `rom-image` (BIOS bytes placed in RAM), an input kind outside the allowed set (refused fail-closed, the reason being the kind), a load range that overlaps the BIOS range, and a complete BIOS image with every byte equal. These refusals check the structure of an input and its content identity. They say nothing about the historical origin of an input, and a partial content match is a diagnostic only. The refusals are wired through `BiosGuardWiring.Run` in `FirmwareDistribution`, one stage each (`BiosAddressGuard`):
+
+**The R1 guarantee, stated narrowly (owner ruling, split residual: option 1).** The guarantee is that the canonical pipeline
+does not take the BIOS directly as an AOT input: the ROM reader's copies, the ROM range, and the complete BIOS image are refused, and
+the normal packaging never compiles ROM code. It is not a claim that any PS-X input is free of BIOS-derived code. Nothing in this
+project claims complete detection of BIOS data in an input.
+
+**Known limit: a split BIOS is not detected (accepted residual).** A complete BIOS split into N pieces, each placed in its own PS-X
+file, is not detected as BIOS. Each piece is an ordinary executable to the structural checks, and a partial content match is a
+diagnostic only (owner ruling). With N = 4, the measured diagnostic coverage (below) of a 124-byte copy split into four reached the refusal threshold in 4 of 40
+trials, assuming the then-current refusal rule applied; under the present diagnostic-only rule nothing is refused, and such a split is reported. The limit is pinned by
+`BiosSplitLimitationTests` (synthetic input, names begin `KnownLimit_`) and tracked in Issue #835 and Issue #836 (open). A complete BIOS
+image as one input is still refused.
+
+**Input-kind trust boundary (owner ruling, option 2).** A directive keyword selects a reader; it does not decide the class.
+`BiosAddressGuard.DeriveInputClass` derives the class from what was produced: (1) the ROM reader's product (`rom-image`: the bytes are
+read from the ROM by code, at the ROM address the directive names); (2) the actual load address, for the BIOS-range check (for a PS-X
+file the address is the file's own header TextStart, not a user value); (3) the actual words, for the whole-image identity; (4) for an
+executable kind, the evidence that the PS-X file reader verified the bytes (`SourceSha256`, set only after the file parsed as a PS-X
+EXE). Missing or inconsistent evidence, and an unknown kind, derive `Unknown` and are refused fail-closed, with no BIOS origin claimed.
+Relabelling a ROM copy as a disc or file executable does not pass it: its load address decides the range check and its words decide the
+identity check. Metadata that does not validate (a corrupt executable, a malformed directive) stops the production reader before any image
+exists.
+
+**Guarantee and limits.** The derivation refuses every input the ROM reader produced, every input whose actual load range overlaps the
+BIOS, every input whose words are the complete BIOS image, and every unknown or unverified input. It does not refuse a partial BIOS
+fragment carried by a PS-X file at a RAM address: partial content matching is a diagnostic only, by the owner's rule. A deliberately
+crafted file that carries BIOS words at a RAM address is therefore not detected by any structural check; it is reported by the content
+diagnostic. This is the residual risk of the trust boundary. Nothing here establishes the historical origin of any input.
+
+**Terms.** A *structural check* (the input kind, or the load range overlapping the BIOS) is a safety check on how an input is placed; it is not a claim about where the bytes came from. *Content identity* (the input is the complete BIOS image, every byte equal) shows that the content is the BIOS image; it does not show where the input came from. *Historical origin* is not proven by any ground: a packaging cannot establish where a file came from. The class is derived from the reader's product, the actual load address and the actual words (see the trust boundary paragraph); no user-declared label is used. The declared provenance (`--bios-provenance`) is a recorded label, not evidence, and never a ground for a refusal. Content matching below the complete image is a diagnostic, never a refusal.
+
+| Stage | Refuses | Negative test (production path, `BiosWiringIntegrationTests`) |
+|---|---|---|
+| manifest | structural checks on the derived class: the ROM reader's product (`rom-image`), an unknown or unverified kind (fail-closed), a load range overlapping the BIOS range; content identity: the complete BIOS image with every byte equal. A partial content match is a diagnostic only (Issue #B2) | `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`, `AnUnknownInputKind_IsRefusedFailClosed_WithoutAnOriginClaim`, `TheRomKindRefusal_IsItsOwnPath_EvenForAShortCopy`, `AWholeBiosHeldAsInputData_IsRefused_BecauseItsContentIsIdentical`, `ANormalInput_PassesEveryRefusalRoute_ForEachAllowedKind` (negative control) |
+| plan | a loaded block starting in or overlapping the BIOS range | `WithTheManifestAndDispatchStagesDisabled_ThePlanStageRefuses_UnderItsOwnName` |
+| dispatch | the same check on the dispatch the artifact is generated from | `WithTheManifestAndPlanStagesDisabled_TheDispatchStageRefuses_UnderItsOwnName` |
+| source | a generated `recompiler_block_0x…` name at a BIOS address | `WithThreeStagesDisabled_TheSourceStageRefuses_OnTheGeneratedBlockName` |
+
+Address aliases (KUSEG, KSEG0, KSEG1, physical) are reduced by masking `0x1FFFFFFF` before the range test. The load-bearing
+proof: with all four stages disabled, the production path does generate a block at `0xBFC00000`
+(`WithAllFourStagesDisabled_TheBiosBlockReachesTheGeneratedSource`), so the refusals are what keep BIOS code out.
+
+**Status (owner ruling, R1 scope): what refuses and what only reports.** A packaging is refused when an input meets one of the grounds above: a structural check (its kind is `rom-image`, or outside the allowed kinds, refused fail-closed; or its load range overlaps the BIOS), or content identity (the complete BIOS image with every byte equal; `BiosAddressGuard.IsWholeBiosImage`: the length must be 512 KiB, then every word is compared; no digest decides it). A refusal never records that the input came from the BIOS. Partial content matches are a diagnostic (`BiosAddressGuard.DiagnoseContent`, written to `bios-content-diagnostic.txt` in the distribution). It reports the BIOS coverage of the inputs and says that their provenance is unknown (出所不明). It never refuses, and a match does not show a BIOS origin. The diagnostic file holds counts and the reference values only: no BIOS word, byte or digest (test `TheDiagnostic_ContainsNoBiosWords`). Digests: the packaging records no BIOS digest in the distribution, because a digest of the user's own ROM identifies that file and adds nothing to a count. The runtime's `firmware-run` stderr line keeps its existing `romSha256` field, printed on the user's machine only; it is not written into the distribution. The residual risks are listed in the residual-risk section below; the rest of this section describes the content diagnostic and its measurements.
+
+**Content diagnostic: cumulative BIOS coverage (Issue #B2).** The reference values below are the diagnostic's reference points, not refusal
+thresholds. Disc code is an AOT input (`boot-exe`, `disc-exe`, `exe-file`). The BIOS ROM itself, and RAM copies of BIOS code, are refused as an
+AOT input when they meet a refusal ground. The coverage is cumulative over all AOT inputs of one packaging, and it has two levels:
+
+- A **match** is a run of words equal to a run of the BIOS, at least `MinRunWords` = **8 words** (32 bytes) long. A match is either
+  **high variety** (at least `MinDistinctWords` = 4 distinct word values) or **low variety** (two or three distinct values, such as
+  mostly 0x00 and 0xFF). Both are counted: a copy of low-variety code is not a hole in the rule.
+- The measure is the **union** of the BIOS word positions covered by matches over all inputs together. A word covered several times
+  counts once. A fragment that occurs at several BIOS offsets covers all of them, so such a copy is over-counted; this errs toward
+  refusal.
+- The inputs together may hold at most `CopyThresholdBytes` = **96 bytes** (24 words) of high-variety matches, and at most
+  `LowVarietyThresholdBytes` = **256 bytes** (64 words) of all matches. Above either, the diagnostic reports the total
+  (`... N bytes of high-variety BIOS matches`, `... of cumulative BIOS matches`); it does not refuse.
+- A run of one repeated word (for example 64 words of 0x00) is never a match: its 4-word windows are not indexed. Such a copy carries
+  no identity that could show its origin. This is a stated limit, not a pass condition.
+
+**How the thresholds were chosen (measured).** Every number below is printed by `BiosCopyMeasurementTests` (its `b2-measure` lines).
+The test is skipped unless `PSXRECOMP_OPENBIOS_ROM` and `PSXRECOMP_MEASURE_DIR` are set. `PSXRECOMP_MEASURE_LABEL` names the corpus, and
+`PSXRECOMP_MEASURE_MIPS_DIR` adds a MIPS corpus when one exists. The normal corpora are the first 400 `.exe`/`.dll` of
+the Windows system directory by name (`x86`), and the 41 distinct `.dll`/`.exe` files under this project's `src/*/bin/Release/net10.0`
+(`project`). "Singles" tests each input alone (continuous). "Groups" unites k random inputs (cumulative): 200 groups per k, seeded.
+
+Table 1, normal inputs (false positives). "Over" counts the inputs, or groups, above the scheme's threshold.
+
+| Scheme (min words, min distinct) | threshold | x86 singles: over / max bytes | x86 groups over, k = 2 / 8 / 16 / 32 (max bytes at k = 32) | project singles: over / max bytes | project groups over, k = 2 / 8 / 16 / 32 |
+|---|---|---|---|---|---|
+| (4, 2), any match, no 8-word floor | 256 | 394 / 3708 | 200 / 200 / 200 / 200 (5708) | 14 / 1084 | 110 / 198 / 200 / 200 |
+| **(8, 2), all matches: production low-variety rule** | **256** | **0 / 124** | **0 / 0 / 0 / 0 (220)** | **0 / 56** | **0 / 0 / 0 / 0 (56)** |
+| (16, 2) | 256 | 0 / 124 | 0 / 0 / 0 / 0 (124) | 0 / 0 | 0 / 0 / 0 / 0 |
+| (4, 4), high variety, 4-word floor | 96 | 0 / 88 | 0 / 0 / **1** / **13** (108) | 0 / 32 | 0 / 0 / 0 / 0 (60) |
+| **(8, 4), production high-variety rule** | **96** | **0 / 0** | **0 / 0 / 0 / 0 (0)** | **0 / 0** | **0 / 0 / 0 / 0 (0)** |
+| (16, 4) | 96 | 0 / 0 | 0 / 0 / 0 / 0 (0) | 0 / 0 | 0 / 0 / 0 / 0 |
+
+Table 2, BIOS copies inserted into a host (the host is the first 8 System32 binaries; 40 seeded trials per row; the BIOS offsets are
+drawn from code, because padding is never evidence by design). The tables below were measured while the content rule could refuse. Under the owner's ruling (partial content is a diagnostic
+only), the cells now describe what the diagnostic would have flagged, not refusals. Cells are "refused / 40" (read as "would have
+been refused / 40"). "Split n" puts n pieces of the copy into one
+input, separated by 8 non-BIOS words. The low-variety rows draw only from BIOS windows of two or three values; the BIOS holds 390
+such 8-word windows, 10 of 16 words, and none of 24 words or more.
+
+| Copy | Production high (8, 4), T 96: single / split 2 / split 4 | (8, 2), T 256: single / split 2 / split 4 | (4, 4), T 96: single / split 2 / split 4 |
+|---|---|---|---|
+| 32 bytes | 0 / 0 / 0 | 0 / 0 / 0 | 2 / 0 / 0 |
+| 64 bytes | 2 / 0 / 0 | 0 / 0 / 0 | 5 / 0 / 1 |
+| 96 bytes | 1 / 1 / 0 | 0 / 0 / 0 | 7 / 10 / 7 |
+| 124 bytes (31 whole words, the whole-word part of a 127-byte copy) | **40 / 40 / 4** | 0 / 0 / 0 | 40 / 40 / 40 |
+| 128 bytes | 40 / 40 / 40 | 0 / 1 / 0 | 40 / 40 / 40 |
+| 256 bytes | 40 / 40 / 40 | 7 / 1 / 5 | 40 / 40 / 40 |
+
+Low-variety fragments only (the same trials, drawn from low-variety BIOS windows): copies of 32 bytes are refused in 18 / 40 (single),
+11 / 40 (split 2) and 9 / 40 (split 4), because such a fragment occurs at several BIOS offsets and the union over-counts it. Copies of
+64 bytes (only 10 such windows exist) are refused in 0 / 40 (single), 4 / 40 (split 2) and 5 / 40 (split 4). A low-variety copy
+shorter than the 256-byte threshold is therefore not refused in general. This is the size trade-off below, not an absence of counting.
+
+What the tables show:
+
+- The low-variety rule closes the hole: without it, the 8-word all-matches measure is over 96 bytes in 13 of 400 x86 inputs and in 62
+  of 200 groups of eight. At 256 bytes the production low-variety scheme has no false positive up to 32 inputs, in either corpus. Its
+  highest measured group coverage is 220 bytes (x86, k = 16 and 32).
+- The 4-word floor is not usable. Even with the high-variety filter, (4, 4) reaches 92 bytes in a group of eight and 108 bytes in a
+  group of 32 (x86), above the 96-byte threshold: 1 of 200 groups at k = 16 and 13 of 200 at k = 32. The rejected alternative rule, which was not adopted, detects more split copies
+  (its 124-byte split of four reaches the threshold in 40 / 40 trials, against 4 / 40 for production, under the then-current rule assumed for the measurement), but it refuses ordinary inputs, so it is rejected, not left as
+  an option.
+- The 96-byte high-variety threshold is three minimum-length matches. One accidental match cannot refuse a packaging. The measured
+  zero at (8, 4) shows that the production scheme is quiet on these corpora; it does not show that 96 is the tightest safe value.
+- The original requirement was a 127-byte copy split in two being refused. A 127-byte copy holds 31 whole words (124 bytes); its 3
+  trailing bytes are not a word and are not counted. Whole, and split in two pieces of 8 or more words each, it is refused in 40 / 40
+  trials. **Not met:** split into four pieces of 8, 8, 8 and 7 words (the threshold is reached in 4 / 40 trials, under the then-current rule assumed for the measurement; nothing is refused now, and the diagnostic reports the coverage). Three of the 8-word pieces are counted, 24 words, which is 96 bytes: not over the threshold, so the packaging is accepted. The 7-word piece is not a match. The former
+  224-byte threshold could not refuse a 124-byte copy at all.
+
+**Limits of the measurement, stated plainly.**
+
+- **No PS1 (MIPS) corpus.** The local `mipsel-none-elf-gcc` has no assembler or linker, and no PS-X binary is available, so the MIPS
+  false-positive rate is not measured. PS1 code shares short instruction sequences and zero-filled tables with other MIPS code, so the
+  production rules may refuse an ordinary disc. That is the expected false-positive outcome: the packaging is refused and no BIOS code is
+  translated. The thresholds must be checked on a MIPS corpus before they are trusted.
+- **Size trade-off (not met for low variety).** The owner ruling is that BIOS-derived data is refused regardless of size. The low-variety
+  rule refuses only at 256 bytes, because a threshold below that refuses ordinary inputs in the measurement. A low-variety BIOS copy
+  shorter than 256 bytes is therefore not refused in general. High-variety copies are refused at 96 bytes (three matches).
+- A copy split into pieces shorter than 8 words is not counted (`PiecesShorterThanTheMinimumMatch_AreNotCounted_ThisIsTheLimit`).
+- A run of one repeated word is not a match (`AUniformRun_IsNotCounted_ThisIsTheLimit`).
+- A byte-misaligned copy is not matched. MIPS code is word-aligned, so a misaligned copy is not code the CPU runs as such.
+- A diagnostic shows that BIOS words are present in the inputs. An absence of a diagnostic does not show that the code is not BIOS-derived.
+
+The measurement asserts zero false positives for both production schemes when it runs with its inputs (it is skipped otherwise). The always-run guard is `FixedOrdinaryInputs_HaveNoFalsePositive_UnderEitherRule`, on fixed input against the deterministic BIOS; it is not the real-BIOS measurement.
+
+To reproduce the tables: `dotnet test src/PSXRecomp.Tests --filter FullyQualifiedName~BiosCopyMeasurementTests --logger
+"console;verbosity=detailed"`, with `PSXRECOMP_OPENBIOS_ROM` (the BIOS), `PSXRECOMP_MEASURE_DIR` (the corpus), and
+`PSXRECOMP_MEASURE_LABEL` set in the environment.
+
+**MIPS measurement: the PS1 executables of a retail disc (Issue #B2, owner ruling).** The normal inputs of the x86 measurement are not
+enough: the owner asked for real PS1 code. The local `rom/PERSONA.chd` is read in place (`PSXRECOMP_MEASURE_CHD`): its ISO 9660
+volume is walked and every `PS-X EXE` file is extracted to a temporary directory that is removed after the run. Nothing extracted is
+committed or printed; the measurement prints only numbers. The disc holds 5 PS-X executables, 1,034,240 bytes.
+
+Result (production rules; "over" counts the executables refused):
+
+| Scheme | Threshold | Singles: over / max bytes | Groups k = 2, 4: over |
+|---|---|---|---|
+| (8, 4) high variety, production | 96 | 5 / 5 (max 460) | 200 / 200 |
+| (8, 2) all matches, production | 256 | 5 / 5 (max 460) | 200 / 200 |
+| (4, 4) high variety, 4-word floor | 96 | 5 / 5 (max 1352) | 200 / 200 |
+| (16, 4), (16, 2) | 96 / 256 | 0 / 5 | 0 / 0 |
+
+Every PS1 executable of the disc is reported by both diagnostic references, and none is refused: the packaging accepts them (see the MIPS result below). The matches are real code (each counted run holds at least four
+distinct values), so this is not padding. The rule as built cannot separate BIOS-derived code from ordinary PS1 code that shares short
+instruction sequences with the BIOS. A false positive on a retail disc is the expected failure of content matching, and it is the
+blocking result of this measurement. The thresholds are not raised to pass it: raising them above 460 bytes would also give up the
+127-byte and 256-byte detections below.
+
+Boundary sizes, inserted into a disc executable as a host (40 seeded trials each; "refused / 40"; padding excluded for the high and low
+kinds, and uniform windows are never counted by design). "Whole words" are the bytes that form a match.
+
+| Bytes | Whole words | High variety (rule 96) | Low variety (rule 256) | Uniform (never counted) |
+|---|---|---|---|---|
+| 1 | 0 | no match possible | no match possible | no match possible |
+| 7 | 1 | 0 / 40 (no match possible) | no such fragment | 0 / 40 |
+| 9 | 2 | 0 / 40 (no match possible) | 0 / 40 (no match possible) | 0 / 40 |
+| 32 | 8 | 0 / 40 (min covered 32) | 15 / 40 | 0 / 40 |
+| 96 | 24 | 2 / 40 | no such fragment | 0 / 40 |
+| 127 | 31 | 40 / 40 | no such fragment | 0 / 40 |
+| 256 | 64 | 40 / 40 | no such fragment | 0 / 40 |
+
+What this shows: a copy of 127 or 256 bytes of high-variety BIOS code is reported in every trial, in a disc executable as the host. A
+32-byte low-variety copy is refused in 15 / 40 trials, through the over-count described above. Copies shorter than a match cannot be
+counted at all. The 1-, 7- and 9-byte rows are not a detection result, only the word arithmetic.
+
+**Provenance (owner ruling, option 4): what is implemented and what is not.**
+- Implemented, as structural checks (A): an AOT input whose kind is `rom-image` or outside the allowed kinds (fail-closed), or whose load range overlaps the BIOS, is refused regardless of
+  its size or content (`RequireNoBiosImage`, tests `TheRomKindRefusal_IsItsOwnPath_EvenForAShortCopy`, `ProductionBuild_RefusesTheBiosRangeImage_AtTheManifestStage`).
+  The declared provenance (`--bios-provenance`) only warns and is never a ground for a refusal.
+- Not implemented, runtime (A): a RAM copy of BIOS code is not tracked at run time. In a firmware distribution it is not
+  translated: the firmware run uses `RecompiledHostExecutionEngine.ForPrebuiltArtifact` with `loadedCode: plan.LoadedCode`
+  (`FirmwareDistribution.cs` ~:678-689). That table is built only from the manifest images (`FirmwareDistribution.cs` ~:53),
+  and the `LoadedCodeTable` constructor (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs` ~:52) takes image programs only.
+  A RAM copy that is not in the table has no translated block in the artifact; it runs through the interpreter fallback
+  (`HostTransferBridge`) and is not in the generated output. The prebuilt path never regenerates code: `BuildEmbeddedArtifact`
+  (`RecompiledHostExecutionEngine.cs` ~:1232) is called only from the `_embedImage` branch (~:774), not for `_prebuilt` (~:767).
+  A translation of such a copy at run time would need a code path this build does not have. The taint mark on RAM words written
+  from BIOS reads that would make it sound is not built, and it is not a pass.
+- Not possible from content (B): a disc executable whose bytes are copied from the BIOS cannot be shown to be BIOS-derived by any
+  content rule that also accepts ordinary PS1 code, as the measurement above shows. Under the owner's rule this is a requirement not met.
+
+**Binary window scan (supporting only, `DistributionLeakScanner`).** 8-byte windows of the BIOS at every offset are matched
+against every file of the packaged distribution. A match is excused when the identical window is also held by a non-BIOS
+baseline (the same packaging with a synthetic image, and the game disc). The excuse is content identity, for any window shape.
+Limits, stated plainly:
+
+- A BIOS fragment shorter than 8 bytes is never matched.
+- A BIOS fragment built only from windows the baseline also holds is not detected (`ASharedOnlyBiosFragment_IsNotDetectedByTheBinaryCheck_ThePinnedLimit`).
+- Windows that are mostly `0x00`/`0xFF` are excused when the baseline holds them, which is almost always: the real-image
+  run found 104,223 such occurrences in the packaged output, all excused. This is a measured false-negative path.
+- The scan does not prove zero leakage. It does not establish the origin of code. The generation guard refuses on the grounds listed in the BIOS section (structural checks, content identity); it is not a proof that no BIOS-derived code exists in an input.
+
+**Absolute developer path check (`DistributionLeakScanner`, the MSYS rule, Issue #B2).** A distributed file must not name a
+developer or user path in Windows, MSYS or Unix form. The MSYS rule matches a drive letter followed by (a) the user-home root,
+(b) two or more segments with one of two or more characters, or (c) one name of three or more characters followed by `/` or
+`.ext` (`/c/user/x.dll`, `/d/PSXRecompStudio/README.md`). Limits, stated plainly:
+
+- A name directly under the drive with no separator or extension after it is not matched (`/c/user` at the end of a string).
+- A two-character name is not matched (`/c/ab/`). Two single-character segments are not matched (`/H/N/s/`).
+- A cygwin-style `/cygdrive/c/…` path is not matched.
+- A UTF-16 wide string is matched only where its two-byte units line up with one of the two views the scanner reads (even offset,
+  odd offset); a path inside a longer wide string can be missed.
+- Random byte sequences in compiled code can match the rule. Measured on the built DLL and EXE files of this repository
+  (`scripts/ci/measure-leak-rule.py`, 291 files): no file is flagged only by the three-character alternative; its matches are
+  test-data literals in `PSXRecomp.Tests.dll`.
+- The native library is built with `-ffile-prefix-map` on GCC/Clang. An MSVC build keeps the full source path wherever `__FILE__`
+  is recorded (see `src/PSXRecomp.Native/CMakeLists.txt`).
+
+**Provenance, decided at run time (MAJOR-1).** The run classifies the image it loads by SHA-256 (`BiosProvenance`). The
+packaging-time declaration (`--bios-provenance`) is recorded for comparison only and is never evidence.
+
+- `openbios-rom`: the digest is in `BiosProvenance.VerifiedOpenBiosSha256`, an allowlist of independently verified OpenBIOS
+  builds. **The allowlist is empty.** No build has an independently verified, reproducible procedure from a pinned upstream
+  commit (Issues #794, #732, #730). The local build used for the real-image gate is NOT registered.
+- `openbios-synthetic`: the digest is in `BiosProvenance.KnownSyntheticSha256`, the digests of this project's deterministic
+  test stubs (SyntheticRom, the reproducible BIOS-shaped random image, RomWithGame). A stub is not BIOS code.
+- `openbios-unverified`: any other image. It may run locally. It is never a verified OpenBIOS run, and nothing in the docs or
+  the logs calls such a run a success.
+- An unregistered image is never classified synthetic automatically. A declaration that the run does not confirm produces a
+  `runtime host: warning:` line.
+
+**Run evidence (real image, classified `openbios-unverified`, code of `826eb4f`, HEAD `c06c0c2`):**
+
+- Generation stage: `aotBiosBlocks` = 0 and `aotLoadedBlocks` = 0 on the `firmware-run` line.
+- Unbounded run: `RuntimeFailure` with `ARTIFACT_TIMEOUT` at the 300-second bound. The fallback count is null: the interpreter's
+  single fallback segment never ends, so its count is never collected. Nothing about the BIOS's progress can be read from it.
+- Bounded run (fallback budget 2,000,000): `RuntimeFailure` with `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`, a classified stop.
+  `fallbackInstructions` = 1,999,999, `nativeInstructions` = 0, `fallbackTransitions` = 1. The `firmware-run` line carries the
+  interpreter's own stop message (`diagnosticMessage`): "it stopped at pc 0x800327FC". That is the interpreter's final PC for
+  the run, read from the run's output (the message is written by `InterpreterTitleExecutionEngine` at the budget stop).
+  The `guestPc` field (`0xBFC00000`) is not that PC; see below.
+- Progress of the BIOS, from a separate probe: `psxrecomp openbios-probe <image> --segment-budget 2000000 --segments 1 --json`
+  (its own run of `InterpreterTitleExecutionEngine`) ends with `guestPc` = 2147685912 = `0x80031618`, `KernelRunningFromRam`,
+  `VectorsInstalled` and `ShellEntered` all true. The record is `scratchpad/probe-2m.json`. The BIOS leaves the reset vector.
+
+**Why the `guestPc` field of the bounded run is `0xBFC00000`.** It is the artifact process's own snapshot, parsed from its stdout
+(`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`). The interpreter's fallback runs in the host, and its final state is
+not written back into that snapshot, so the field is the segment's entry state. The run's stop message above is the value to
+read. Mixed-fallback progress is therefore verified by the stop message and by the probe, not by `guestPc`.
+
+**Packaging and exceptions.**
+
+- The packaged executable loads the BIOS at run time from the path named by `PSXRECOMP_BIOS_ROM` (512 KiB exactly; a direct run
+  exits with **95** on another size, the Runtime host with **78**). The packaging pins no digest of the BIOS.
+- Path exemption (one only): `runtime/PSXRecomp.RuntimeHost.exe` contains the path of the .NET SDK apphost template's Microsoft
+  CI build root (the exact path is `DistributionLeakScanner.ApphostTemplatePath`). It is not a developer path. Matched exactly (case-insensitive) in that relative file only. Removing it needs `UseAppHost=false` (owner decision pending).
+- The generated executable is stripped (`-s`, the firmware link only). The native library keeps its symbol table; `--strip-debug`
+  removes its DWARF sections. The Runtime host is published with `DebugType=none`.
+  The intermediate object is removed after linking; a failed removal fails the build.
+- **Split BIOS (accepted residual, owner ruling option 1).** A complete BIOS split into several PS-X inputs is not detected as BIOS
+  (`BiosSplitLimitationTests`). This is a known limit, not a guarantee; it is tracked in Issue #835 and Issue #836 (open).
+- **Fragments embedded in a PS-X input (not excludable).** A BIOS fragment built into a disc executable at build time, rather than
+  copied at run time, is not detected by any rule here. The static embedded-fragment question is tracked as a separate open issue
+  (see the PR body). The run-time copy-tracking question is Issue #835.
+- **Developer probe (residual).** `openbios-probe --engine generated-host` compiles ROM blocks. It is a developer-run diagnostic,
+  outside the distribution. Its outputs (the JSON report, generated code, binaries, logs) stay local: they are never committed, never
+  placed in CI artifacts, and never included in a distribution package.
+- **Input-kind trust boundary (residual).** A crafted PS-X file that carries BIOS words at a RAM address is reported by the content
+  diagnostic and not refused (see the trust boundary paragraph).
+
 ### Remaining acceptance gates
 
 1. Run this against the audited pinned Nugget build on Windows/Linux/macOS.
@@ -702,7 +980,8 @@ as part of the one guest state.
 ### Native recompilation status
 
 The IR pipeline lowers COP0 (MFC0/MTC0/RFE), SYSCALL/BREAK as firmware traps and honours
-`SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. Measured on the
+`SR.IsC`; `ReachableProgramBuilder.BuildFirmwareImage` builds the ROM text image. This is the probe's measurement (the
+`openbios-probe` run compiles it from `--roots`); the distribution compiles no ROM code (R1). Measured on the
 pinned ROM: 2,956 of the 9,280 `.text` words are reachable from the reset vector alone; with the
 257 ELF function symbols as explicit roots 9,228 are native. Code that exists only at run time
 (kernel `.data`/ramtext copied to 0x500+, the A0/B0/C0 stubs, the shell, a loaded executable) is

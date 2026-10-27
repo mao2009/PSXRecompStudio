@@ -51,7 +51,12 @@ public sealed record GeneratedHostBuildRequest(
     string BinaryName,
     string? CompilerExecutable = null,
     IReadOnlyList<string>? ExtraCompilerArguments = null,
-    IReadOnlyList<string>? ExtraLinkerArguments = null);
+    IReadOnlyList<string>? ExtraLinkerArguments = null,
+    bool FirmwareDistribution = false)
+{
+    // FirmwareDistribution (Issue #B2, MAJOR-2): only the firmware distribution strips the linked binary (-s) and requires the
+    // intermediate object to be removed. A game build (the default) keeps the link arguments and the intermediate it had before.
+}
 
 /// <summary>The outcome of one <see cref="IGeneratedHostBuildService"/> build.</summary>
 [Domain]

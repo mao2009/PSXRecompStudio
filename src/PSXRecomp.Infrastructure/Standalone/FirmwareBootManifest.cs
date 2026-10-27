@@ -14,7 +14,6 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// </summary>
 /// <param name="SchemaVersion">Must equal <see cref="CurrentSchemaVersion"/>.</param>
 /// <param name="BiosBackend">The backend name; must be an implemented <see cref="BiosBackendKind"/>.</param>
-/// <param name="RomSha256">Lowercase SHA-256 of the 512 KiB ROM (<c>artifact-image.bin</c>); verified before every run.</param>
 /// <param name="CodeBytes">Leading ROM bytes compiled ahead of time (the ROM's code), as probe <c>--code-bytes</c>.</param>
 /// <param name="RootsFile">The ROM block roots, <c>firmware/&lt;leaf&gt;</c> inside <c>runtime/</c>.</param>
 /// <param name="LoadImagesFile">The RAM-placed code manifest (ADR-026), <c>firmware/&lt;leaf&gt;</c> inside <c>runtime/</c>.</param>
@@ -29,7 +28,6 @@ namespace PSXRecomp.Infrastructure.Standalone;
 public sealed record FirmwareBootManifest(
     int SchemaVersion,
     string BiosBackend,
-    string RomSha256,
     uint CodeBytes,
     string RootsFile,
     string LoadImagesFile,
@@ -37,7 +35,11 @@ public sealed record FirmwareBootManifest(
     string DiscSha256,
     IReadOnlyList<FirmwareAotInput> AotInputs)
 {
-    public const int CurrentSchemaVersion = 2;
+    /// <summary>
+    /// Version 3 (Issue #B2) drops the ROM digest: the BIOS is never part of the distribution, so neither its bytes
+    /// nor a digest of them are written at packaging time. The run reports the digest of the image it loaded.
+    /// </summary>
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>The manifest file name, inside <c>runtime/</c>; its presence selects the firmware-boot run.</summary>
     public const string FileName = "firmware-boot.json";
@@ -112,7 +114,6 @@ public static class FirmwareBootManifestJson
             throw new InvalidDataException(exception.Message, exception);
         }
 
-        RequireSha256(m.RomSha256, nameof(m.RomSha256));
         RequireSha256(m.DiscSha256, nameof(m.DiscSha256));
         if (m.CodeBytes is 0 || m.CodeBytes % 4 != 0 || m.CodeBytes > OpenBiosFirmware.ImageSize)
         {

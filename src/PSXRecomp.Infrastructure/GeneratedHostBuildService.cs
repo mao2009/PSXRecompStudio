@@ -24,10 +24,21 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
     internal const string DefaultCompiler = "gcc";
     private static readonly string[] DefaultCompilerArgTokens = ["-std=c11", "-O0", "-Wall", "-Wextra"];
     private readonly int _toolchainTimeoutMs;
+    private readonly Action<string> _removeIntermediate;
 
     /// <summary>Creates a bounded compiler adapter; null retains the normal 30-second per-step limit.</summary>
     public GeneratedHostBuildService(TimeSpan? toolchainTimeout = null)
+        : this(toolchainTimeout, File.Delete)
     {
+    }
+
+    /// <summary>
+    /// The seam for the intermediate-object removal (Issue #B2). Tests inject a failing remover to prove that a build whose
+    /// intermediate cannot be removed is not reported as a success.
+    /// </summary>
+    internal GeneratedHostBuildService(TimeSpan? toolchainTimeout, Action<string> removeIntermediate)
+    {
+        _removeIntermediate = removeIntermediate;
         var milliseconds = (toolchainTimeout ?? TimeSpan.FromSeconds(30)).TotalMilliseconds;
         if (milliseconds < 1 || milliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(toolchainTimeout));
@@ -88,18 +99,40 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         }
 
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
-        var linkArgs = new List<string> { objectPath };
-        if (request.ExtraLinkerArguments is { Count: > 0 })
-        {
-            linkArgs.AddRange(request.ExtraLinkerArguments);
-        }
-        linkArgs.Add("-o");
-        linkArgs.Add(binaryPath);
+        // -s is passed for a firmware distribution only (Issue #B2): it strips the symbols and build-path strings of the shipped firmware host.
+        var linkArgs = LinkArguments(objectPath, binaryPath, request.ExtraLinkerArguments, request.FirmwareDistribution);
 
         var link = RunToolchain(compiler, linkArgs, _toolchainTimeoutMs);
         if (link.Outcome != ToolchainOutcome.Success)
         {
             return ToFailure(link, GeneratedHostBuildStatus.LinkFailed, "LINK_FAILED", "Host link");
+        }
+
+        // The object file is an internal step of the build and carries generated code. It is removed once linked. A removal
+        // that fails is not a link failure, but the build is not reported as a success while the intermediate remains:
+        // the caller then commits nothing (Issue #B2).
+        // Firmware distributions only (MAJOR-2): a game build keeps its object file, as before.
+        if (request.FirmwareDistribution)
+        {
+            string? removalProblem = null;
+            try
+            {
+                _removeIntermediate(objectPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                removalProblem = exception.Message;
+            }
+
+            if (removalProblem is not null || File.Exists(objectPath))
+            {
+                return GeneratedHostBuildResult.Failed(
+                    GeneratedHostBuildStatus.OutputFailed,
+                    "INTERMEDIATE_NOT_REMOVED",
+                    $"The intermediate object '{objectPath}' could not be removed after linking" +
+                    (removalProblem is null ? string.Empty : $": {removalProblem}") +
+                    ". The build is not committed.");
+            }
         }
 
         var resolvedBinaryPath = ResolveBinaryPath(binaryPath);
@@ -164,6 +197,28 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
             throw new ArgumentException(
                 "BinaryName must be a simple file name without path components.", nameof(GeneratedHostBuildRequest.BinaryName));
         }
+    }
+
+    /// <summary>
+    /// The linker arguments of one build (Issue #B2, MAJOR-2). A game build is <c>[object, extra..., -o, binary]</c>, exactly the
+    /// arguments before Issue #B2. A firmware distribution adds <c>-s</c> (strip symbols and build-path strings) after the object.
+    /// </summary>
+    internal static List<string> LinkArguments(string objectPath, string binaryPath, IReadOnlyList<string>? extraLinkerArguments, bool firmwareDistribution)
+    {
+        var linkArgs = new List<string> { objectPath };
+        if (firmwareDistribution)
+        {
+            linkArgs.Add("-s");
+        }
+
+        if (extraLinkerArguments is { Count: > 0 })
+        {
+            linkArgs.AddRange(extraLinkerArguments);
+        }
+
+        linkArgs.Add("-o");
+        linkArgs.Add(binaryPath);
+        return linkArgs;
     }
 
     /// <summary>

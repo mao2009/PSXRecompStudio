@@ -80,12 +80,17 @@ public static class RuntimeHostBuildService
     /// </param>
     /// <param name="provisionTimeout">The bound on the <c>dotnet publish</c> step.</param>
     /// <exception cref="RuntimeHostProvisionFailed">The host could not be provisioned.</exception>
+    /// <param name="firmwareDistribution">
+    /// True only for a firmware distribution (Issue #B2, MAJOR-2): the host is published with <c>DebugType=none</c>, so it carries no
+    /// PDB and no developer build path. A game package keeps its publish arguments unchanged.
+    /// </param>
     public static RuntimeHostProvisionResult ProvisionRuntimeHost(
         string targetDirectory,
         bool selfContained,
         string? targetRid = null,
-        TimeSpan? provisionTimeout = null)
-        => Provision("PSXRecomp.RuntimeHost", targetDirectory, selfContained, targetRid, provisionTimeout);
+        TimeSpan? provisionTimeout = null,
+        bool firmwareDistribution = false)
+        => Provision("PSXRecomp.RuntimeHost", targetDirectory, selfContained, targetRid, provisionTimeout, firmwareDistribution);
 
     /// <summary>
     /// Publishes the packaged GUI host (<c>PSXRecomp.GameWindow</c>, Issue #830) into <paramref name="targetDirectory"/> the same way
@@ -103,7 +108,8 @@ public static class RuntimeHostBuildService
         string targetDirectory,
         bool selfContained,
         string? targetRid,
-        TimeSpan? provisionTimeout)
+        TimeSpan? provisionTimeout,
+        bool firmwareDistribution = false)
     {
         if (string.IsNullOrWhiteSpace(targetDirectory))
         {
@@ -174,6 +180,11 @@ public static class RuntimeHostBuildService
                 "--no-restore",
             };
 
+            // Issue #B2 (MEDIUM-5, MAJOR-2): a firmware distribution ships no PDB, so the host carries no developer build path.
+            if (firmwareDistribution)
+            {
+                args.Add("-p:DebugType=none");
+            }
             if (selfContained)
             {
                 args.Add("-p:SelfContained=true");

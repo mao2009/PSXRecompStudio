@@ -227,16 +227,21 @@ public static class Program
             // Resolve and confine both manifest paths before anything is read or launched
             // (fail closed: an out-of-distribution or linked path never reaches Process.Start).
             var prebuiltArtifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
-            var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
 
             // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
             // --diagnostics is honored here too (Issue #732 P2-1): the same stop diagnostic the HLE path writes.
+            // The BIOS is never part of the distribution (Issue #B2): the run names it by path in the environment.
             if (FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory))
             {
+                // The BIOS mode line is written for a firmware run only (Issue #B2, LOW-1); an HLE run's output is unchanged.
+                Console.Error.WriteLine($"runtime host: bios mode {manifest.BiosMode}");
+                var biosPath = Environment.GetEnvironmentVariable(RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable) ?? string.Empty;
                 return FirmwareRuntimeLauncher.Run(
-                    manifest, manifestDirectory, prebuiltArtifactPath, imagePath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
+                    manifest, manifestDirectory, prebuiltArtifactPath, biosPath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
             }
+
+            var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
 
             // Read the program image for the host-transfer bridge / interpreter fallback
             // (for a prebuilt artifact this is the same image the artifact embeds).

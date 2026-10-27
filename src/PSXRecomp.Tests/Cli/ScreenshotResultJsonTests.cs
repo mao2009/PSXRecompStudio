@@ -52,7 +52,7 @@ public sealed class ScreenshotResultJsonTests
     [InlineData("quote \" and backslash \\ end")]
     [InlineData("control \u0001\u001f and tab\t and cr\r")]
     [InlineData("日本語 and emoji \U0001F3AE")]
-    [InlineData(@"C:\Users\Hobart\Documents\Projects\PSXRecompStudio\shots\persona_vblank_0300.png")]
+    [InlineData(@"C:\Users\user\Documents\Projects\PSXRecompStudio\shots\persona_vblank_0300.png")]
     public void DiagnosticMessage_RoundTripsThroughValidJson(string message)
     {
         var json = ScreenshotCommand.SerializeResult(null, Result(
@@ -65,7 +65,7 @@ public sealed class ScreenshotResultJsonTests
     [Fact]
     public void FilePaths_WithBackslashesQuotesAndNewlines_RoundTrip()
     {
-        var files = new[] { @"C:\Users\Hobart\shots\a b.png", "quote\"name.png", "new\nline.png" };
+        var files = new[] { @"C:\Users\user\shots\a b.png", "quote\"name.png", "new\nline.png" };
         var json = ScreenshotCommand.SerializeResult(null, Result(files: files));
 
         var names = Parse(json).GetProperty("files").EnumerateArray().Select(e => e.GetString()).ToArray();

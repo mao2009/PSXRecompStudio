@@ -23,9 +23,9 @@ public sealed class OpenBiosStandaloneSelectionTests
         [new(roots, Sha), new(images, Sha)];
 
     private static FirmwareBootManifest Manifest(
-        string backend = "openbios", string rom = "", string roots = "firmware/rom.roots",
+        string backend = "openbios", string roots = "firmware/rom.roots",
         string images = "firmware/images.txt", string disc = "disc/disc.chd", uint codeBytes = 37160) =>
-        new(FirmwareBootManifest.CurrentSchemaVersion, backend, rom.Length == 0 ? Sha : rom, codeBytes, roots, images, disc, Sha, Aot(roots, images));
+        new(FirmwareBootManifest.CurrentSchemaVersion, backend, codeBytes, roots, images, disc, Sha, Aot(roots, images));
 
     [Fact]
     public void Default_IsOpenBios_AndNamesRoundTrip()
@@ -90,7 +90,6 @@ public sealed class OpenBiosStandaloneSelectionTests
     [InlineData("images", "firmware/")]
     [InlineData("disc", "disc/a:b")]
     [InlineData("disc", "firmware/disc.chd")]
-    [InlineData("rom", "ABC")]
     public void FirmwareManifest_RejectsEscapingOrMalformedFields(string field, string value)
     {
         var manifest = field switch
@@ -98,7 +97,7 @@ public sealed class OpenBiosStandaloneSelectionTests
             "roots" => Manifest(roots: value),
             "images" => Manifest(images: value),
             "disc" => Manifest(disc: value),
-            _ => Manifest(rom: value),
+            _ => throw new ArgumentOutOfRangeException(nameof(field)),
         };
         ((Action)(() => FirmwareBootManifestJson.Parse(FirmwareBootManifestJson.Serialize(manifest)))).Should().Throw<InvalidDataException>();
     }
@@ -217,7 +216,7 @@ public sealed class OpenBiosStandaloneSelectionTests
     }
 
     [Fact]
-    public void Launcher_RefusesATamperedRomOrDisc_BeforeRunningAnything()
+    public void Launcher_RefusesATamperedDisc_BeforeRunningAnything()
     {
         using var dir = new TempDirectory();
         var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
@@ -226,24 +225,16 @@ public sealed class OpenBiosStandaloneSelectionTests
         var romPath = Path.Combine(runtime, "artifact-image.bin");
         File.WriteAllBytes(romPath, rom);
         File.WriteAllBytes(Path.Combine(runtime, "disc", "disc.bin"), [1, 2, 3]);
-        var boot = new FirmwareBootManifest(FirmwareBootManifest.CurrentSchemaVersion, "openbios", OpenBiosRomInput.Sha256Hex(rom), 64,
+        var boot = new FirmwareBootManifest(FirmwareBootManifest.CurrentSchemaVersion, "openbios", 64,
             "firmware/rom.roots", "firmware/images.txt", "disc/disc.bin", OpenBiosRomInput.Sha256Hex([1, 2, 3]),
             [new("firmware/rom.roots", Sha), new("firmware/images.txt", Sha)]);
         File.WriteAllText(Path.Combine(runtime, FirmwareBootManifest.FileName), FirmwareBootManifestJson.Serialize(boot));
         FirmwareRuntimeLauncher.IsFirmwareDistribution(runtime).Should().BeTrue();
 
-        var host = new RuntimeHostManifest(1, "../g", true, true, 1, 1, OpenBiosFirmware.ResetVector, "artifact-image.bin", [], 0xBFC80000u, null, 1000, OpenBiosFirmware.ResetVector);
+        var host = new RuntimeHostManifest(1, "../g", true, true, 1, 1, OpenBiosFirmware.ResetVector, string.Empty, [], 0xBFC80000u, null, 1000, OpenBiosFirmware.ResetVector);
 
-        rom[0] = 1; // tampered ROM
-        File.WriteAllBytes(romPath, rom);
-        var error = new StringWriter();
-        FirmwareRuntimeLauncher.Run(host, runtime, Path.Combine(dir.FullPath, "g"), romPath, error).Should().Be(FirmwareRuntimeLauncher.SetupFailureExitCode);
-        error.ToString().Should().Contain("does not match the expected");
-
-        rom[0] = 0;
-        File.WriteAllBytes(romPath, rom);
         File.WriteAllBytes(Path.Combine(runtime, "disc", "disc.bin"), [9, 9, 9]); // tampered disc
-        error = new StringWriter();
+        var error = new StringWriter();
         FirmwareRuntimeLauncher.Run(host, runtime, Path.Combine(dir.FullPath, "g"), romPath, error).Should().Be(FirmwareRuntimeLauncher.SetupFailureExitCode);
         error.ToString().Should().Contain("disc image does not match");
     }
