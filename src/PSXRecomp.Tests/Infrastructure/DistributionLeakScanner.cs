@@ -26,13 +26,15 @@ internal static class DistributionLeakScanner
     /// (<c>/home/</c>, <c>/mnt/</c>, <c>/Users/</c>) form. A drive or MSYS letter may not follow a letter or digit, so URLs such
     /// as <c>https://x</c> do not match. An MSYS path is a drive letter followed by either the user-home root (<c>/c/Users/</c>,
     /// <c>/c/users/</c>, whatever follows it) or at least two directory segments, one of which has two or more characters
-    /// (<c>/d/src/x/</c>, <c>/d/a/_work/</c>). A single other segment (<c>/o/u/</c>), or two single-character segments (<c>/H/N/s/</c>),
+    /// (<c>/d/src/x/</c>, <c>/d/a/_work/</c>), or one name of three or more characters directly under the drive, followed by a
+    /// directory separator or an extension (<c>/c/Hobart/</c>, <c>/c/Hobart/x.dll</c>, <c>/d/PSXRecompStudio/README.md</c>). A single other segment (<c>/o/u/</c>), or two single-character segments (<c>/H/N/s/</c>),
     /// occurs at random in compiled binaries and is not evidence of a developer path (Issue #B2: CI flagged <c>/H/N/s/</c> in a built DLL).
     /// </summary>
     private static readonly Regex AbsolutePath = new(
         @"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[A-Za-z0-9_.\- ]+[\\/])+" +
         @"|(?<![A-Za-z0-9_.\-])/[A-Za-z]/(?=(?:[A-Za-z0-9_.\- ]+/){2,})(?=(?:[A-Za-z0-9_.\- ]*/)*?[A-Za-z0-9_.\- ]{2}[A-Za-z0-9_.\- ]*/)(?:[A-Za-z0-9_.\- ]+/){2,}" +
         @"|(?<![A-Za-z0-9_.\-])/[A-Za-z]/(?:Users|users)/" +
+        @"|(?<![A-Za-z0-9_.\-])/[A-Za-z]/[A-Za-z0-9_\- ]{3,}(?:/|\.[A-Za-z0-9]+)" +
         @"|(?<![A-Za-z0-9_.\-])/(?:home|mnt|Users|users)/[A-Za-z0-9_.\-]",
         RegexOptions.CultureInvariant);
 

@@ -99,7 +99,7 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         }
 
         var binaryPath = Path.Combine(request.OutputDirectory, request.BinaryName);
-        // -s is always passed: strip symbols and build-path strings, so the shipped executable carries no developer path (Issue #B2).
+        // -s is passed for a firmware distribution only (Issue #B2): it strips the symbols and build-path strings of the shipped firmware host.
         var linkArgs = LinkArguments(objectPath, binaryPath, request.ExtraLinkerArguments, request.FirmwareDistribution);
 
         var link = RunToolchain(compiler, linkArgs, _toolchainTimeoutMs);
@@ -200,23 +200,6 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
     }
 
     /// <summary>
-    /// Runs one toolchain invocation. The composed arguments are trusted call
-    /// input (the caller owns the output directory and the compiler to run).
-    /// </summary>
-    /// <param name="fileName">The compiler/linker executable to start.</param>
-    /// <param name="arguments">
-    /// The argument tokens to pass to it, each as one process argument (via
-    /// <see cref="ProcessStartInfo.ArgumentList"/>) so an argument containing
-    /// whitespace is not split into multiple arguments.
-    /// </param>
-    /// <param name="timeoutMs">Bounded wait for the process to exit.</param>
-    /// <param name="cleanupMs">
-    /// Bounded cleanup budget: how long to wait for the redirected
-    /// output/error streams to finish, both after a normal exit (a
-    /// descendant can keep an inherited pipe handle open) and after a
-    /// post-timeout kill of the process tree.
-    /// </param>
-    /// <summary>
     /// The linker arguments of one build (Issue #B2, MAJOR-2). A game build is <c>[object, extra..., -o, binary]</c>, exactly the
     /// arguments before Issue #B2. A firmware distribution adds <c>-s</c> (strip symbols and build-path strings) after the object.
     /// </summary>
@@ -238,6 +221,23 @@ public sealed class GeneratedHostBuildService : IGeneratedHostBuildService
         return linkArgs;
     }
 
+    /// <summary>
+    /// Runs one toolchain invocation. The composed arguments are trusted call
+    /// input (the caller owns the output directory and the compiler to run).
+    /// </summary>
+    /// <param name="fileName">The compiler/linker executable to start.</param>
+    /// <param name="arguments">
+    /// The argument tokens to pass to it, each as one process argument (via
+    /// <see cref="ProcessStartInfo.ArgumentList"/>) so an argument containing
+    /// whitespace is not split into multiple arguments.
+    /// </param>
+    /// <param name="timeoutMs">Bounded wait for the process to exit.</param>
+    /// <param name="cleanupMs">
+    /// Bounded cleanup budget: how long to wait for the redirected
+    /// output/error streams to finish, both after a normal exit (a
+    /// descendant can keep an inherited pipe handle open) and after a
+    /// post-timeout kill of the process tree.
+    /// </param>
     internal static ToolchainResult RunToolchain(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, int cleanupMs = ToolchainCleanupMs)
     {

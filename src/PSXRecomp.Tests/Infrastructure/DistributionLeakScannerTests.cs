@@ -202,6 +202,9 @@ public sealed class DistributionLeakScannerTests
     [InlineData("/c/Users/builder")]
     [InlineData("/c/Users/")]
     [InlineData("/c/users/builder/x")]
+    [InlineData("/c/Hobart/x.dll")]
+    [InlineData("/d/PSXRecompStudio/README.md")]
+    [InlineData("/c/Hobart/")]
     public void MsysAbsolutePath_IsFlagged(string path)
     {
         DistributionLeakScanner.FindAbsolutePath([("game.exe", Latin1(path))]).Should().NotBeNull(path);
@@ -213,7 +216,10 @@ public sealed class DistributionLeakScannerTests
     [InlineData("/d/a/")]
     [InlineData("/x/tmp")]
     [InlineData("/H/N/s/")]
+    [InlineData("/h/n/s/")]
     [InlineData("/o/u/x/y/")]
+    [InlineData("/c/ab/")]
+    [InlineData("/c/ab/x.dll")]
     public void MsysSingleSegment_NotTheUserRoot_IsNotFlagged(string path)
     {
         // Two segments are needed unless the segment is the user-home root, and one of them has two or more characters: a single

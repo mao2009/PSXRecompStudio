@@ -50,13 +50,13 @@
     clean Windows build despite a "successful" `dotnet build`.
   -->
   <!--
-    Issue #B2 (MAJOR-2): -DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-s strips the Release shared libraries of this native build. The build
-    is shared by every consumer of PSXRecomp.Core, so the flag affects symbol stripping for all of them; it changes no code.
-    The impact is recorded in the PR (#834) and in docs/runtime/openbios-firmware-backend.md.
+    Issue #B2 (review M1): the native shared library keeps its symbols. The flag -s is not passed, and it is cleared from the CMake
+    cache (-DCMAKE_SHARED_LINKER_FLAGS_RELEASE= with an empty value) so that a build directory configured earlier with -s does not
+    keep it. Build-path strings are removed by the compile-time prefix maps in src/PSXRecomp.Native/CMakeLists.txt instead.
   -->
   <Target Name="BuildNative" BeforeTargets="AssignTargetPaths;CoreCompile"
           Condition="'$(BuildingInsideVisualStudio)' != 'true'">
-    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-s"
+    <Exec Command="cmake -B &quot;$(NativeBuildDir)&quot; -S &quot;$(NativeProjectDir)&quot; -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_SHARED_LINKER_FLAGS_RELEASE="
           IgnoreExitCode="false" />
     <Exec Command="cmake --build &quot;$(NativeBuildDir)&quot;"
           IgnoreExitCode="false" />
