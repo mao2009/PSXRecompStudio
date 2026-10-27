@@ -187,6 +187,20 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal(1ul, unsupported[1]!["atFallbackFetch"]!.GetValue<ulong>());
     }
 
+    // PR #839 re-review (MAJOR): an unsupported instruction at a ROM-range EPC is a BIOS word; neither the word nor its opcode is exported.
+    [Fact]
+    public void Unsupported_AtRomRangeEpc_ExportsNoBiosWordOrOpcode()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnFetch(0x80000080, () => (10u << 2, 0xBFC00010u), _ => 0xFC000000u);
+
+        var unsupported = Report(accounting, null, null, []).AsObject()["unsupportedOpcodes"]!.AsArray();
+        Assert.Single(unsupported);
+        Assert.Null(unsupported[0]!["word"]);
+        Assert.Null(unsupported[0]!["opcode"]);
+        Assert.Equal("0xBFC00010", unsupported[0]!["pc"]!.ToString());
+    }
+
     [Fact]
     public void Symbols_Resolve_Through_Aliases_Within_One_Region_Only()
     {

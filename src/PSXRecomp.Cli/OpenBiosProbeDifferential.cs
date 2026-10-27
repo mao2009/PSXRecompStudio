@@ -98,8 +98,9 @@ internal sealed record ProbeGuestState(
         atFetch = AtFetch,
         cpu = Cpu.ToDictionary(static c => c.Name, static c => Hex(c.Value)),
         devices = Devices.ToDictionary(static d => d.Name, static d => d.Value),
+        // The bounds check only keeps the RAM read in range; the export decision is OpenBiosProbeCommand.WordFor.
         instructionWord = (Pc & 0x1FFFFFFFu) <= RamBytes - 4
-            ? Hex(BitConverter.ToUInt32(Ram, (int)(Pc & 0x1FFFFFFFu))) : null,
+            ? OpenBiosProbeCommand.WordHex(Pc, BitConverter.ToUInt32(Ram, (int)(Pc & 0x1FFFFFFFu))) : null,
         sr = Hex(Value("sr")), cause = Hex(Value("cause")), epc = Hex(Value("epc")),
         ramSha256 = Sha256(Ram),
         guestCycles = Devices.First(static d => d.Name == "guest_cycles").Value,

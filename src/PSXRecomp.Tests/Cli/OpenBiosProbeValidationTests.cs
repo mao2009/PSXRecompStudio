@@ -182,6 +182,46 @@ public sealed class OpenBiosProbeValidationTests
         captured["word"].Should().BeNull("a PC outside guest RAM has no RAM word to export");
     }
 
+    // A ROM spin: addiu t1, zero, 0x5A5A (0x24095A5A), then j 0xBFC00000 with a nop delay slot.
+    private static byte[] SpinRom()
+    {
+        uint[] words = [0x24095A5Au, 0x08000000u | ((RomBase & 0x0FFFFFFFu) >> 2), 0];
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        for (var i = 0; i < words.Length; i++) BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        return bytes;
+    }
+
+    // PR #839 re-review (MAJOR): the stop diagnostics (lastFetches) are built on every interpreter run. A fetch in the BIOS ROM
+    // range must not export its word, on stdout in JSON or text form.
+    [Fact]
+    public void Run_StopPathOnRomRange_DoesNotExportTheBiosWord()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SpinRom());
+        string[] args = [rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000"];
+
+        RunProbe([.. args, "--json"], out var json, out _);
+        RunProbe(args, out var text, out _);
+
+        json.ToUpperInvariant().Should().NotContain("24095A5A", "the BIOS word fetched in the ROM range must not be exported in JSON");
+        text.ToUpperInvariant().Should().NotContain("24095A5A", "the BIOS word fetched in the ROM range must not be exported in text");
+        text.Should().Contain("Stop: ", "the stop diagnostics were produced, so the path was exercised");
+        JsonNode.Parse(json)!["stop"]!["lastFetches"]!.AsArray().Should().NotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(0xBFC00000u)] // the reset vector (KSEG1)
+    [InlineData(0x9FC00000u)] // the ROM through KSEG0
+    [InlineData(0x1FC00000u)] // the ROM physical base
+    public void WordFor_RomRangePc_WithholdsTheWord(uint pc) =>
+        OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().BeNull();
+
+    [Theory]
+    [InlineData(0x80010000u)]
+    [InlineData(0x00010000u)]
+    public void WordFor_RamPc_ExportsTheWord(uint pc) =>
+        OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().Be(0x24095A5Au);
+
     [Fact]
     public void Run_ListDiscWithoutDisc_Rejected()
     {

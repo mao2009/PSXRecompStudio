@@ -344,8 +344,8 @@ internal static class OpenBiosProbeCommand
                     }
                     captured = new
                     {
-                        // PR #839 review (MAJOR): a PC outside guest RAM (the BIOS ROM range) carries no word, so no BIOS word is exported.
-                        pc = $"0x{pc:X8}", word = IsGuestRamPc(pc) ? $"0x{observed.ReadGuestWord(pc):X8}" : null,
+                        // PR #839 review (MAJOR): a word outside guest RAM (the BIOS ROM range) is withheld by WordFor.
+                        pc = $"0x{pc:X8}", word = WordHex(pc, observed.ReadGuestWord(pc)),
                         gpr = Enumerable.Range(0, 32).Select(r => $"0x{observed.ReadGuestGpr(r):X8}").ToArray(),
                         lastTransfers = observed.RecentTrace.Transfers.TakeLast(8).Select(t => $"0x{t.From.Pc:X8}->0x{t.To:X8}").ToArray()
                     };
@@ -923,6 +923,15 @@ internal static class OpenBiosProbeCommand
     internal static bool IsGuestRamPc(uint pc) => Ps1AddressTranslation.TryTranslate(pc, out var physical) && physical < 0x00800000u;
 
     /// <summary>
+    /// The single decision for every guest word the probe writes out (stdout, JSON, files). A word leaves the probe only when
+    /// its PC is in guest RAM; a word fetched outside RAM (the BIOS ROM range) is withheld, whatever path it came from.
+    /// </summary>
+    internal static uint? WordFor(uint pc, uint word) => IsGuestRamPc(pc) ? word : null;
+
+    /// <summary><see cref="WordFor"/> as hexadecimal text, or null when the word is withheld.</summary>
+    internal static string? WordHex(uint pc, uint word) => WordFor(pc, word) is { } exported ? Hex(exported) : null;
+
+    /// <summary>
     /// The per-fetch accounting the probe's fallback fetch observer performs: the boot monitor and the fallback accounting each see the
     /// fetch once, and the first exception-vector entry with no pending cause is captured as the host interrupt. Shared by the probe and
     /// the tests, so the forwarding is exercised by the same code that runs.
@@ -970,8 +979,8 @@ internal static class OpenBiosProbeCommand
             entries = t.Entries,
             instructions = t.Instructions,
             lastReturnPc = Hex(t.LastReturnPc),
-            // PR #839 review (MAJOR): a PC outside guest RAM (the BIOS ROM range) carries no ramWord, so no BIOS word is exported.
-            ramWord = IsGuestRamPc(t.Target) && ramWordOf(t.Target) is { } word ? Hex(word) : null,
+            // PR #839 review (MAJOR): a word outside guest RAM (the BIOS ROM range) is withheld by WordFor.
+            ramWord = ramWordOf(t.Target) is { } word ? WordHex(t.Target, word) : null,
         }).ToArray();
         return JsonSerializer.Serialize(new
         {
@@ -1016,8 +1025,9 @@ internal static class OpenBiosProbeCommand
             pc = Hex(snapshot?.PC ?? 0),
             sr = Hex(cop0.Sr), cause = Hex(cop0.Cause), epc = Hex(cop0.Epc), badVAddr = Hex(cop0.BadVAddr),
             gpr = snapshot?.Gpr.Select(Hex).ToArray(),
-            lastFetches = trace.Fetches.TakeLast(16).Select(e => $"{Hex(e.Pc)}:{Hex(e.Word)}").ToArray(),
-            lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{Hex(t.From.Word)}->{Hex(t.To)}").ToArray()
+            // The word is exported only through WordHex; a withheld word is written as null.
+            lastFetches = trace.Fetches.TakeLast(16).Select(e => $"{Hex(e.Pc)}:{WordHex(e.Pc, e.Word) ?? "null"}").ToArray(),
+            lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{WordHex(t.From.Pc, t.From.Word) ?? "null"}->{Hex(t.To)}").ToArray()
         };
     }
 }
