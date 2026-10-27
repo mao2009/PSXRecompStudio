@@ -163,6 +163,25 @@ public sealed class OpenBiosProbeValidationTests
         error.Should().Contain("--list-disc cannot be combined");
     }
 
+    // PR #839 review (MAJOR): --capture-at at a PC in the BIOS ROM range must not export the BIOS word. The reset vector is
+    // the first fetch, and the first synthetic ROM word (lui t0, 0x8001 = 0x3C088001) must not appear in the probe output.
+    [Fact]
+    public void Run_CaptureAtRomRange_DoesNotExportTheBiosWord()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+
+        RunProbe([
+            rom, "--engine", "interpreter",
+            "--capture-at", "BFC00000", "--segments", "1", "--segment-budget", "2000", "--json"
+        ], out var output, out _);
+
+        output.ToLowerInvariant().Should().NotContain("3c088001", "the BIOS word at a ROM-range capture PC must not be exported");
+        var captured = JsonNode.Parse(output)!["captured"]!;
+        captured["pc"]!.ToString().Should().Be("0xBFC00000");
+        captured["word"].Should().BeNull("a PC outside guest RAM has no RAM word to export");
+    }
+
     [Fact]
     public void Run_ListDiscWithoutDisc_Rejected()
     {

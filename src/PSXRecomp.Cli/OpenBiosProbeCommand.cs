@@ -344,7 +344,8 @@ internal static class OpenBiosProbeCommand
                     }
                     captured = new
                     {
-                        pc = $"0x{pc:X8}", word = $"0x{observed.ReadGuestWord(pc):X8}",
+                        // PR #839 review (MAJOR): a PC outside guest RAM (the BIOS ROM range) carries no word, so no BIOS word is exported.
+                        pc = $"0x{pc:X8}", word = IsGuestRamPc(pc) ? $"0x{observed.ReadGuestWord(pc):X8}" : null,
                         gpr = Enumerable.Range(0, 32).Select(r => $"0x{observed.ReadGuestGpr(r):X8}").ToArray(),
                         lastTransfers = observed.RecentTrace.Transfers.TakeLast(8).Select(t => $"0x{t.From.Pc:X8}->0x{t.To:X8}").ToArray()
                     };
