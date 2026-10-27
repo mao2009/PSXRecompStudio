@@ -21,6 +21,8 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly int _maxScreenshots;
     private readonly List<ulong> _targetVblanks;
     private readonly HashSet<ulong> _capturedVblanks = new();
+    private readonly Func<uint?>? _guestPcSource;
+    private readonly string? _guestPcTiming;
     private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
     private ulong _lastVblank = 0;
@@ -41,13 +43,21 @@ public sealed class ScreenshotCapture : IDisposable
     /// <param name="interval">VBlank interval between captures (default 300).</param>
     /// <param name="maxScreenshots">Maximum number of screenshots to capture (default 10).</param>
     /// <param name="startVblank">First VBlank to capture at (default 300).</param>
+    /// <param name="guestPcSource">Reads the guest PC for each capture; null when the caller cannot know it.</param>
+    /// <param name="guestPcTiming">
+    /// When <paramref name="guestPcSource"/> reads the PC: <c>"capture-instant"</c> (the PC at the moment of capture, OpenBIOS)
+    /// or <c>"segment-boundary"</c> (the PC of the last segment boundary, which can lag the capture by up to one segment, HLE).
+    /// Recorded in the manifest as <c>guestPcTiming</c>.
+    /// </param>
     public ScreenshotCapture(
         GpuDevice gpuDevice,
         DeviceScheduler scheduler,
         string outputDirectory,
         uint interval = 300,
         int maxScreenshots = 10,
-        ulong startVblank = 300)
+        ulong startVblank = 300,
+        Func<uint?>? guestPcSource = null,
+        string? guestPcTiming = null)
     {
         ArgumentNullException.ThrowIfNull(gpuDevice);
         ArgumentNullException.ThrowIfNull(scheduler);
@@ -60,6 +70,8 @@ public sealed class ScreenshotCapture : IDisposable
         _outputDirectory = outputDirectory;
         _interval = interval;
         _maxScreenshots = maxScreenshots;
+        _guestPcSource = guestPcSource;
+        _guestPcTiming = guestPcTiming;
 
         _targetVblanks = new List<ulong>(maxScreenshots);
         for (int i = 1; i <= maxScreenshots; i++)
@@ -258,7 +270,9 @@ public sealed class ScreenshotCapture : IDisposable
         }
 
         var mode = _gpuDevice.GetState().DisplayMode;
-        _frames.Add(new CapturedFrame(fileName, targetVblank, capturedVblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0));
+        var guestPc = _guestPcSource?.Invoke();
+        _frames.Add(new CapturedFrame(fileName, targetVblank, capturedVblank, vramSha256, pngSha256, frame.Width, frame.Height, mode, (mode & 0x10) != 0,
+            guestPc is { } pc ? $"0x{pc:X8}" : null));
         return true;
     }
 
@@ -279,9 +293,9 @@ public sealed class ScreenshotCapture : IDisposable
     /// file) and <c>vramSha256</c> (native halfword hash, diagnostics only). Written atomically; safe after a partial run.
     /// </summary>
     public void WriteManifest(string stopReason, ulong maxVblankReached, TimeSpan elapsed, uint? lastGuestPc,
-        string? exceptionType = null, bool goalReached = false) =>
+        string? exceptionType = null, bool goalReached = false, string? engine = null) =>
         WriteManifestFile(_outputDirectory, stopReason, _frames.Count, maxVblankReached, elapsed, lastGuestPc, _frames,
-            exceptionType, goalReached, WriteFailures, _frames.Select(f => f.File));
+            exceptionType, goalReached, WriteFailures, _frames.Select(f => f.File), engine, _guestPcTiming);
 
     /// <summary>
     /// Writes <c>manifest.json</c> without a capture session, so a run that failed before capture was set up still
@@ -294,7 +308,7 @@ public sealed class ScreenshotCapture : IDisposable
     public static void WriteManifestFile(
         string outputDirectory, string stopReason, int screenshotsTaken, ulong maxVblankReached, TimeSpan elapsed,
         uint? lastGuestPc, IEnumerable<object> frames, string? exceptionType = null, bool goalReached = false,
-        int writeFailures = 0, IEnumerable<string>? ownPngNames = null)
+        int writeFailures = 0, IEnumerable<string>? ownPngNames = null, string? engine = null, string? guestPcTiming = null)
     {
         Directory.CreateDirectory(outputDirectory);
         var own = new HashSet<string>(ownPngNames ?? [], StringComparer.OrdinalIgnoreCase);
@@ -308,6 +322,8 @@ public sealed class ScreenshotCapture : IDisposable
         var manifest = new
         {
             stopReason,
+            engine,
+            guestPcTiming,
             goalReached,
             captureStatus = CaptureStatusOf(goalReached, screenshotsTaken, writeFailures),
             writeFailures,
@@ -350,7 +366,7 @@ public sealed class ScreenshotCapture : IDisposable
         }
     }
 
-    private sealed record CapturedFrame(string File, ulong? TargetVblank, ulong CapturedVblank, string VramSha256, string PngSha256, int Width, int Height, uint DisplayMode, bool Is24Bit);
+    private sealed record CapturedFrame(string File, ulong? TargetVblank, ulong CapturedVblank, string VramSha256, string PngSha256, int Width, int Height, uint DisplayMode, bool Is24Bit, string? GuestPc);
 
     /// <summary>
     /// Converts a FrameSnapshot's VRAM pixels to BGRA32 format.
