@@ -40,7 +40,7 @@ it is not an independent re-run. Items marked `UNVERIFIED` need a rerun before t
 
 | PR | Issue(s) | Condition(s) addressed | Evidence level | Residual |
 |---|---|---|---|---|
-| #828 | #827 (also #630, #820) | Stop result classified from observed process state (`Cancelled` / `Clean` / `Residual` / `NotStopped`); real child-process integration tests for stop during drain, stop racing natural end, residual grandchild, and kill refused by OS | CONFIRMED (tests named in PR, run per PR text), Windows and macOS CI pass | Fallback-run stop and real-window child check (moved to #829); RHOST-wait stop is in no Issue (see section 3); Linux descendant tracking; OS kill refusal only by injection |
+| #828 | #827 (also #630, #820) | Stop result classified from observed process state (`Cancelled` / `Clean` / `Residual` / `NotStopped`); real child-process integration tests for stop during drain, stop racing natural end, residual grandchild, and kill refused by OS | CONFIRMED (tests named in PR, run per PR text). Windows and macOS pass in the manual `cross-platform-verification` run 39769195860 (workflow_dispatch, HEAD `7f5466c`, per PR body). The automatic `.NET Build and Test (macOS)` and `(Windows)` jobs are SKIPPED in `gh pr checks 828` | Fallback-run stop and real-window child check (moved to #829); RHOST-wait stop is in no Issue (see section 3); Linux descendant tracking; OS kill refusal only by injection |
 | #831 | #830 (B1) | `package --gui` produces a console-free launcher; host started suspended and placed in a kill-on-close Job; bounded wait and dialog timeout; GUI README; headless package output unchanged (`RuntimeHostPublishE2E` 15 pass) | CONFIRMED (unit/E2E tests, Windows harness for non-zero exit and 30 s auto-close, residual names count 0) | RGB frame screenshot on the packaged game EXE is not in the PR; Job kill-on-close recovery `UNVERIFIED`; 4-hour run `NOT_RUN`; `--self-contained` `UNVERIFIED` |
 | #834 | #833 (B2) | Packaging with `--bios openbios`; manifest/report labels `biosMode`; no absolute developer paths in generated text; synthetic BIOS stub for wiring; real OpenBIOS run only when a user-supplied file exists | CONFIRMED for the labels and regression tests in `OpenBiosStandalonePackageE2E` (present in `origin/main`). `gh pr checks 834`: all pass except `CodeRabbit` (`fail`), which is recorded here as history. The PR was MERGED on 2026-10-27T04:41:17Z while its body still read "Draft, not mergeable" and "final independent review PENDING_CI" (see section 3) | Label names differ from the Issue text (see section 3); `openbios-rom` is never emitted today (see section 3); real OpenBIOS run `NOT_RUN` in this triage; runtime BIOS-to-RAM provenance tracked in #835, split BIOS in #836 |
 | #821 | #820 (also #630) | `ICancellableExecutionEngine` and `ExecutionOrchestrator.Execute(..., CancellationToken)`; stop before start and during run produce `Cancelled` | CONFIRMED (tests in PR); #820 is already closed | None for #820 |
@@ -70,13 +70,18 @@ Notes:
 - Remaining:
   1. **Acceptance criterion 2 is not met today.** The Issue asks for `biosMode` `hle` / `openbios-rom`, with the two modes labelled separately. The code emits `hle`, `openbios-synthetic`, and `openbios-unverified`. `openbios-rom` is never emitted: `BiosProvenance.VerifiedOpenBiosSha256` is an empty set (`BiosProvenance.cs`), and `BiosProvenanceClassificationTests.TheDefaultRegistries_HoldNoVerifiedOpenBiosDigest` asserts it stays empty. A user's BIOS therefore takes the `openbios-unverified` path on every route. The owner must either accept the implemented vocabulary and update the Issue, or request a change. Either way, the `openbios-rom` case cannot be exercised until a digest is registered with a reproducible procedure (#794, #732, #730).
   2. **Final-HEAD mapping.** The PR body still says "Draft, not mergeable", cites HEAD `3fee551`, and says the final independent review (`34525b8`) is PENDING_CI. `gh pr view 834` reports `headRefOid` `62c06ca`, and `isDraft` false with `mergedAt` 2026-10-27T04:41:17Z. The checks listed by `gh pr checks 834` pass except `CodeRabbit` (`fail`). No final-HEAD independent review is recorded, so the run-to-SHA mapping and the review result are `UNVERIFIED` in this triage.
-  3. **Real OpenBIOS run** with a user-supplied image (acceptance criteria 2 and 5): `NOT_RUN` (outside this worktree). This run is the only evidence that can produce `openbios-rom`.
+  3. **Real OpenBIOS run** with a user-supplied image (acceptance criterion 5, and the label check in criterion 2): `NOT_RUN` (outside this worktree). A run with a user-supplied image can show only `openbios-unverified` and whether the run succeeded or failed. It cannot produce `openbios-rom`, because `VerifiedOpenBiosSha256` is empty (item 1). Without a user-supplied file, criterion 5 accepts a skip with a printed reason, so the printed skip reason is the evidence.
   4. Follow-ups #835 and #836 are separate Issues and are not criteria of #833.
-- Verdict: **not closable yet.** Closing #833 requires the execution evidence above (item 3) and the label decision and final-HEAD review (items 1 and 2). Acceptance criteria 2 and 5 cannot be checked without the real run. Not closed here.
+- Verdict: **not closable yet.** Closing #833 requires all three of the following:
+  - Criterion 2 resolved (item 1): either a digest is registered through a reproducible procedure (#794, #732, #730) so that `openbios-rom` is reachable, or the owner accepts the implemented vocabulary and updates the Issue.
+  - Criterion 5 resolved (item 3): a recorded run with a user-supplied file (labelled `openbios-unverified`, with its result), or, if no user file is supplied, the printed skip reason.
+  - Final-HEAD review and run-to-SHA mapping (item 2).
+
+  Not closed here.
 
 ### #830 (B1, merged as #831)
 
-- Accepted: console-free launcher; `runtime/` contains the host; no absolute paths; ordinary headless output unchanged; window-close path uses the existing cancel API (per PR text, depends on #828).
+- Accepted: console-free launcher; child runtime started with `CREATE_NO_WINDOW` (criterion 2, per the #831 diff and the source assertion in its tests, not re-run); `runtime/` contains the host; no absolute paths; ordinary headless output unchanged; window-close path uses the existing cancel API (per PR text, depends on #828).
 - Remaining (not evidenced for the packaged game EXE):
   - Criterion 5: the red, green, and blue frames are shown in order and checked by screenshot pixels on the packaged EXE. The RGB evidence in #826 used a separate harness.
   - Criterion 4: child-tree recovery through the Job Object (kill-on-close) is explicitly `UNVERIFIED`.
@@ -87,7 +92,7 @@ Notes:
 
 - Accepted by #828: real-process tests for stop during drain, natural-end race, residual grandchild, and OS-refused kill; results are classified, not mixed.
 - Remaining per the PR's own "Not verified" list: stop during fallback execution (moved to #829); stop during GPU frame emission (only a partial window); real-window child check after close (moved to #829); natural-end residual detection (moved to #829).
-- **Unassigned residual: stop while waiting on RHOST reads.** #827 acceptance criterion 2 requires it, and #827 lists it under "未検証". #829's body does not include it (its scope is natural-end residual descendants, fallback stop, orphan recovery, and real-window check). No Issue owns it, so #829 must not be treated as its owner unless the owner adds it.
+- **Unassigned residual: stop while waiting on RHOST reads.** #827 requirement 2 (stop during RHOST read waits) requires it, and the acceptance-criteria list in #827 includes a "RHOST 待機中の停止" test. #828's "Not verified" section does not list it. #829's body does not include it either (its scope is natural-end residual descendants, fallback stop, orphan recovery, and real-window check). No Issue owns it, so #829 must not be treated as its owner unless the owner adds it.
 - Verdict: keep open. Not closable until the RHOST-wait stop is tested, or an owner is assigned for it and the split is accepted.
 
 ## 4. Closure candidates
@@ -95,7 +100,7 @@ Notes:
 | Category | Issues | Reason |
 |---|---|---|
 | Closable with evidence | None strictly in this triage | #820 is already closed. |
-| Not closable yet (execution evidence missing) | #833 | Acceptance criteria 2 and 5 need a real OpenBIOS run (`NOT_RUN`), and `openbios-rom` is unreachable until a digest is registered. Items 1 and 2 in section 3 are also open. |
+| Not closable yet (criterion unmet or evidence missing) | #833 | Criterion 2 is unmet as written: `openbios-rom` is unreachable until a digest is registered or the Issue vocabulary changes (section 3, item 1). Criterion 5 needs either a run with a user-supplied file (`NOT_RUN` in this triage) or the printed skip reason. Final-HEAD review is `UNVERIFIED` (item 2). |
 | Keep open (partially evidenced) | #827, #830 | Remaining items in section 3. #827 also has an unassigned RHOST-wait residual. |
 | Keep open (gate not reached) | #351, #739, #205, #630, #768, #773, #806, #774 | Real-title or real-game evidence `BLOCKED` or unmeasured. |
 
