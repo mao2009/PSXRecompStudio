@@ -18,8 +18,8 @@ public sealed class OpenBiosProbeBoundaryLogTests
         var record = OpenBiosProbeBoundaryLog.Describe("interpreter", graph, 1, 564480);
 
         record.Select(static p => p.Key).Should().Equal(Keys);
-        record["vramSha256"]!.GetValue<string>().Should().HaveLength(64);
-        record.ToJsonString().Should().NotContain("vram\"", "only the hash is written, never VRAM bytes");
+        record["vramSha256"]!.GetValue<string>().Should().Be(
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(graph.GpuDevice.GetVramBytes())).ToLowerInvariant());
     }
 
     [Fact]
