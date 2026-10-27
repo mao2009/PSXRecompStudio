@@ -41,6 +41,24 @@ public sealed class DistributionLeakScannerTests
     }
 
     [Fact]
+    public void PlantedBiosFragment_LeakMessage_CarriesNoBiosBytes()
+    {
+        var bios = Bios(4096, seed: 1);
+        var file = Bios(2048, seed: 2);
+        Array.Copy(bios, 0x400, file, 0x200, 64);
+
+        var leak = DistributionLeakScanner.FindBiosLeak(
+            [("game.exe", file)], DistributionLeakScanner.BiosWindows(bios), []);
+
+        var window = bios.AsSpan(0x400, DistributionLeakScanner.WindowLength).ToArray();
+        var hex = Convert.ToHexString(window);
+        leak.Should().NotBeNull();
+        leak.Should().NotContain(hex).And.NotContain(hex.ToLowerInvariant());
+        leak.Should().NotContain(Encoding.Latin1.GetString(window));
+        leak.Should().Contain("file offset 0x200").And.Contain("BIOS offset 0x400");
+    }
+
+    [Fact]
     public void CleanFile_IsNotFlagged()
     {
         var bios = Bios(4096, seed: 1);

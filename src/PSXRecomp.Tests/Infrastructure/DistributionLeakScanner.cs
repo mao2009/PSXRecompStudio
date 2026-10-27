@@ -163,8 +163,9 @@ internal static class DistributionLeakScanner
                 if (!isExcused)
                 {
                     leaks++;
+                    // Offsets only: the matched BIOS bytes must not reach a failure message, a log, or a CI artifact.
                     first ??= $"{name} contains an {WindowLength}-byte window of the BIOS: file offset 0x{i:X}, " +
-                              $"BIOS offset 0x{biosOffset:X}, bytes {Convert.ToHexString(bytes, i, WindowLength)}";
+                              $"BIOS offset 0x{biosOffset:X}";
                 }
             }
         }
