@@ -902,6 +902,19 @@ public sealed class CliRunTests
         (output + error).Should().Contain("loads into the BIOS range");
     }
 
+    // Issue #B2 (R1 scope, review): the package command reaches the same lowering guard directly, not only through recompile and run.
+    [Fact]
+    public void BiosRange_PackageWithTextStartInBiosRange_IsRefusedByTheProductionLowering()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExeAt(dir, "bios-range-package.exe", SuccessfulProgram(), 0xBFC00000u);
+
+        var (exit, output, error) = Invoke("package", exePath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().NotBe(RecompiledArtifactExitCode.Success);
+        (output + error).Should().Contain("loads into the BIOS range");
+    }
+
     private static string WriteSyntheticExeAt(TempDirectory dir, string name, uint[] words, uint textStart) =>
         dir.WriteFile(name, BuildSyntheticExe(words, textStart));
 }
