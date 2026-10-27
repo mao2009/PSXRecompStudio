@@ -29,7 +29,7 @@ No ROM, BIOS, or extracted binary is referenced or committed by this page.
 | Issue | Scope | Status | Basis |
 |---|---|---|---|
 | #205 | Parent roadmap | OPEN, KPI 4 in progress, KPI 6 open | Roadmap checklist: 13 of 15 items checked. Unchecked: real-title bring-up gaps (evidence-driven) and "#351 reached or roadmap updated to the next release gate". |
-| #351 | v0.1.0 Persona title-screen gate | OPEN, not reached | None of the nine acceptance criteria can be checked for the real title. Last measured first blocker in the issue body is `A0:70 _bu_init` (#712, 2026-10-08); the 2026-10-22 note records standalone display still differing from the interpreter (#774). |
+| #351 | v0.1.0 Persona title-screen gate | OPEN, not reached | None of the nine acceptance criteria can be checked for the real title. The latest status in the issue body is the 2026-10-22 note: standalone display still differs from the interpreter (#774), and that note names no first blocker. The first blocker `A0:70 _bu_init` (#712, 2026-10-08) is historical: the 2026-10-07 section that names it is annotated as superseded, and the 2026-10-15 note limits it to the BIOS HLE bring-up and does not generalize it to the OpenBIOS main path. |
 | #739 | Generated game executable shows the Persona opening | OPEN, not met | The 2026-10-11 scope correction makes a standalone generated game executable (`persona` / `persona.exe`) the primary gate. Merged work (#831) packages a synthetic PS-X EXE only. The real-ROM opening remains `BLOCKED`. |
 
 ## 2. Merged PRs mapped to Issue conditions
@@ -40,9 +40,9 @@ it is not an independent re-run. Items marked `UNVERIFIED` need a rerun before t
 
 | PR | Issue(s) | Condition(s) addressed | Evidence level | Residual |
 |---|---|---|---|---|
-| #828 | #827 (also #630, #820) | Stop result classified from observed process state (`Cancelled` / `Clean` / `Residual` / `NotStopped`); real child-process integration tests for stop during drain, stop racing natural end, residual grandchild, and kill refused by OS | CONFIRMED (tests named in PR, run per PR text), Windows and macOS CI pass | Fallback-run stop, real-window child check (both moved to #829); Linux descendant tracking; OS kill refusal only by injection |
+| #828 | #827 (also #630, #820) | Stop result classified from observed process state (`Cancelled` / `Clean` / `Residual` / `NotStopped`); real child-process integration tests for stop during drain, stop racing natural end, residual grandchild, and kill refused by OS | CONFIRMED (tests named in PR, run per PR text), Windows and macOS CI pass | Fallback-run stop and real-window child check (moved to #829); RHOST-wait stop is in no Issue (see section 3); Linux descendant tracking; OS kill refusal only by injection |
 | #831 | #830 (B1) | `package --gui` produces a console-free launcher; host started suspended and placed in a kill-on-close Job; bounded wait and dialog timeout; GUI README; headless package output unchanged (`RuntimeHostPublishE2E` 15 pass) | CONFIRMED (unit/E2E tests, Windows harness for non-zero exit and 30 s auto-close, residual names count 0) | RGB frame screenshot on the packaged game EXE is not in the PR; Job kill-on-close recovery `UNVERIFIED`; 4-hour run `NOT_RUN`; `--self-contained` `UNVERIFIED` |
-| #834 | #833 (B2) | Packaging with `--bios openbios`; manifest/report labels `biosMode`; no absolute developer paths in generated text; synthetic BIOS stub for wiring; real OpenBIOS run only when a user-supplied file exists | CONFIRMED for the labels and regression tests in `OpenBiosStandalonePackageE2E` (present in `origin/main`); CI pass on the PR checks | Label names differ from the Issue text (see section 3); real OpenBIOS run `NOT_RUN` in this triage; runtime BIOS-to-RAM provenance tracked in #835, split BIOS in #836 |
+| #834 | #833 (B2) | Packaging with `--bios openbios`; manifest/report labels `biosMode`; no absolute developer paths in generated text; synthetic BIOS stub for wiring; real OpenBIOS run only when a user-supplied file exists | CONFIRMED for the labels and regression tests in `OpenBiosStandalonePackageE2E` (present in `origin/main`). `gh pr checks 834`: all pass except `CodeRabbit` (`fail`), which is recorded here as history. The PR was MERGED on 2026-10-27T04:41:17Z while its body still read "Draft, not mergeable" and "final independent review PENDING_CI" (see section 3) | Label names differ from the Issue text (see section 3); `openbios-rom` is never emitted today (see section 3); real OpenBIOS run `NOT_RUN` in this triage; runtime BIOS-to-RAM provenance tracked in #835, split BIOS in #836 |
 | #821 | #820 (also #630) | `ICancellableExecutionEngine` and `ExecutionOrchestrator.Execute(..., CancellationToken)`; stop before start and during run produce `Cancelled` | CONFIRMED (tests in PR); #820 is already closed | None for #820 |
 | #824 | #630, #823 | Synthetic GP0 red/green/blue program shown in a GUI-only host through the real runtime and `LiveFrameSlot` | CONFIRMED (PR text, Windows run) | Live Persona frames `BLOCKED` |
 | #826 | #630, #825 | Disk-loaded synthetic PS-X EXE read by existing loader and shown in GUI | CONFIRMED on Windows (red to green to blue, per PR text) | Persona disk EXE `BLOCKED` |
@@ -68,11 +68,11 @@ Notes:
 
 - Accepted (CONFIRMED in `origin/main`): `biosMode` is written to the report; regression tests for the OpenBIOS standalone package exist; the BIOS image is not committed; the real OpenBIOS run is skipped when no user file is supplied, and the skip reason is printed.
 - Remaining:
-  1. **Label mismatch.** The Issue asks for `biosMode`: `hle` / `openbios-rom`. The code uses `hle`, `openbios-synthetic`, and `openbios-unverified`. `openbios-rom` is emitted only for an allowlisted, independently verified digest (`BiosProvenance.cs`). The owner must either accept the implemented vocabulary and update the Issue, or request a change.
-  2. **Final-HEAD mapping.** The PR body still says Draft with CI queued and cites HEAD `3fee551`; `gh` reports the head as `62c06ca`. The checks listed by `gh pr checks 834` all pass, but the run-to-SHA mapping is `UNVERIFIED` in this triage.
-  3. **Real OpenBIOS run** with a user-supplied image: `NOT_RUN` (outside this worktree).
+  1. **Acceptance criterion 2 is not met today.** The Issue asks for `biosMode` `hle` / `openbios-rom`, with the two modes labelled separately. The code emits `hle`, `openbios-synthetic`, and `openbios-unverified`. `openbios-rom` is never emitted: `BiosProvenance.VerifiedOpenBiosSha256` is an empty set (`BiosProvenance.cs`), and `BiosProvenanceClassificationTests.TheDefaultRegistries_HoldNoVerifiedOpenBiosDigest` asserts it stays empty. A user's BIOS therefore takes the `openbios-unverified` path on every route. The owner must either accept the implemented vocabulary and update the Issue, or request a change. Either way, the `openbios-rom` case cannot be exercised until a digest is registered with a reproducible procedure (#794, #732, #730).
+  2. **Final-HEAD mapping.** The PR body still says "Draft, not mergeable", cites HEAD `3fee551`, and says the final independent review (`34525b8`) is PENDING_CI. `gh pr view 834` reports `headRefOid` `62c06ca`, and `isDraft` false with `mergedAt` 2026-10-27T04:41:17Z. The checks listed by `gh pr checks 834` pass except `CodeRabbit` (`fail`). No final-HEAD independent review is recorded, so the run-to-SHA mapping and the review result are `UNVERIFIED` in this triage.
+  3. **Real OpenBIOS run** with a user-supplied image (acceptance criteria 2 and 5): `NOT_RUN` (outside this worktree). This run is the only evidence that can produce `openbios-rom`.
   4. Follow-ups #835 and #836 are separate Issues and are not criteria of #833.
-- Verdict: closable after items 1 and 2 are settled. Not closed here.
+- Verdict: **not closable yet.** Closing #833 requires the execution evidence above (item 3) and the label decision and final-HEAD review (items 1 and 2). Acceptance criteria 2 and 5 cannot be checked without the real run. Not closed here.
 
 ### #830 (B1, merged as #831)
 
@@ -86,16 +86,17 @@ Notes:
 ### #827 (stop integration, merged as #828; residual split to #829)
 
 - Accepted by #828: real-process tests for stop during drain, natural-end race, residual grandchild, and OS-refused kill; results are classified, not mixed.
-- Remaining per the PR's own "Not verified" list: stop during fallback execution; stop while waiting on RHOST reads (not listed as tested); stop during GPU frame emission (only a partial window); real-window child check after close (moved to #829); natural-end residual detection (moved to #829).
-- Verdict: keep open until fallback and RHOST-wait stops are tested, or until #829 is merged and the owner accepts the split.
+- Remaining per the PR's own "Not verified" list: stop during fallback execution (moved to #829); stop during GPU frame emission (only a partial window); real-window child check after close (moved to #829); natural-end residual detection (moved to #829).
+- **Unassigned residual: stop while waiting on RHOST reads.** #827 acceptance criterion 2 requires it, and #827 lists it under "未検証". #829's body does not include it (its scope is natural-end residual descendants, fallback stop, orphan recovery, and real-window check). No Issue owns it, so #829 must not be treated as its owner unless the owner adds it.
+- Verdict: keep open. Not closable until the RHOST-wait stop is tested, or an owner is assigned for it and the split is accepted.
 
 ## 4. Closure candidates
 
 | Category | Issues | Reason |
 |---|---|---|
 | Closable with evidence | None strictly in this triage | #820 is already closed. |
-| Closable after a named confirmation | #833 | Items 1 and 2 in section 3. |
-| Keep open (partially evidenced) | #827, #830 | Remaining items in section 3. |
+| Not closable yet (execution evidence missing) | #833 | Acceptance criteria 2 and 5 need a real OpenBIOS run (`NOT_RUN`), and `openbios-rom` is unreachable until a digest is registered. Items 1 and 2 in section 3 are also open. |
+| Keep open (partially evidenced) | #827, #830 | Remaining items in section 3. #827 also has an unassigned RHOST-wait residual. |
 | Keep open (gate not reached) | #351, #739, #205, #630, #768, #773, #806, #774 | Real-title or real-game evidence `BLOCKED` or unmeasured. |
 
 ## 5. Blockers and next steps
@@ -103,5 +104,5 @@ Notes:
 1. Provide the Persona CHD (`rom/PERSONA.chd`) in the local checkout to unblock real-ROM evidence for #351 and #739 (`BLOCKED`).
 2. Decide the `biosMode` vocabulary for #833 (section 3).
 3. Run the packaged `--gui` synthetic EXE to capture RGB frames by pixel check, and record Job Object recovery, for #830.
-4. Add or confirm the fallback-stop and RHOST-wait stop tests for #827 (or accept #829 as the owner of these).
+4. Add or confirm the fallback-stop and RHOST-wait stop tests for #827. Fallback stop is owned by #829; the RHOST-wait stop has no owner, so the owner must assign it (to #829 or another Issue) or add the test.
 5. Re-measure the Persona root and fallback picture (#773, #806) once the CHD is available.
