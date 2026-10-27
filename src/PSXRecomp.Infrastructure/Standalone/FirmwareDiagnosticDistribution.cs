@@ -59,6 +59,15 @@ public static class FirmwareDiagnosticDistribution
     private const string Schema = "psxrecomp.firmware-diagnostic.v1";
     private const string FirmwareRunPrefix = "{\"kind\":\"firmware-run\"";
 
+    /// <summary>The longest the host may run past its own run timeout before its tree is stopped.</summary>
+    private static readonly TimeSpan HostExitGrace = TimeSpan.FromMinutes(2);
+
+    /// <summary>The longest a pipe may stay open after the host has ended (a grandchild holding it) before its output is taken as is.</summary>
+    private static readonly TimeSpan PipeDrainBound = TimeSpan.FromSeconds(10);
+
+    /// <summary>The most characters kept of each output stream; the rest is drained and the stream is marked truncated.</summary>
+    private const int CaptureLimitChars = 4 * 1024 * 1024;
+
     /// <summary>
     /// Writes the measurement layout under <see cref="FirmwareDiagnosticRequest.OutputDirectory"/> (which must not exist yet). The
     /// inputs are verified before anything is created; any failure removes the directory it created.
@@ -201,7 +210,10 @@ public static class FirmwareDiagnosticDistribution
 
     /// <summary>
     /// Runs the measurement's Runtime host once, the way a packaged distribution runs it (<c>PSXRECOMP_BIOS_ROM</c> names the ROM;
-    /// the host launches the artifact as its child). The inputs are digested again afterwards; a change makes the result invalid.
+    /// the host launches the artifact as its child). The wait is bounded: past the bound the child's tracked process tree is stopped
+    /// through <see cref="StopRecord"/> (only descendants claimed by parent identity; other processes are never named), and the
+    /// outcome, the residual processes and the state of each output are recorded in the result instead of thrown. The inputs are
+    /// digested again afterwards; a change makes the result invalid.
     /// </summary>
     public static JsonObject Measure(FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request)
     {
@@ -224,34 +236,75 @@ public static class FirmwareDiagnosticDistribution
         startInfo.Environment[RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romPath;
 
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("The runtime host did not start.");
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-        // The host enforces its own run timeout; the bound here only catches a host that never exits. The process is not killed:
-        // a run that has not ended is reported as an invalid measurement instead.
-        var bound = TimeSpan.FromMilliseconds(request.RunTimeoutMs) + TimeSpan.FromMinutes(2);
-        if (!process.WaitForExit(bound))
+        var stdout = new BoundedCapture(process.StandardOutput, CaptureLimitChars);
+        var stderr = new BoundedCapture(process.StandardError, CaptureLimitChars);
+
+        // The host enforces its own run timeout; the bound here only catches a host that never exits.
+        var bound = TimeSpan.FromMilliseconds(request.RunTimeoutMs) + HostExitGrace;
+        using var cancel = new CancellationTokenSource();
+        using var stop = new StopRecord();
+        stop.Attach(process, cancel.Token);
+        var clock = Stopwatch.StartNew();
+        var timedOut = false;
+        while (!process.WaitForExit(StopRecord.PollMs))
         {
-            throw new TimeoutException($"The runtime host did not exit within {bound}; the measurement is invalid and was not killed.");
+            stop.SampleTree();
+            if (clock.Elapsed >= bound)
+            {
+                timedOut = true;
+                cancel.Cancel(); // the stop runs synchronously: it kills the tracked tree and waits for each exit
+                break;
+            }
         }
 
-        var stdout = stdoutTask.GetAwaiter().GetResult();
-        var stderr = stderrTask.GetAwaiter().GetResult();
-        File.WriteAllText(Path.Combine(build.Root, HostStdoutFileName), stdout);
-        File.WriteAllText(Path.Combine(build.Root, HostStderrFileName), stderr);
+        if (!timedOut)
+        {
+            process.WaitForExit();
+        }
+
+        stop.Seal();
+        var (confirmed, refused) = stop.Outcome;
+        var residuals = stop.Residuals;
+        var exitCode = process.HasExited ? process.ExitCode : (int?)null;
+
+        var stdoutCapture = stdout.Finish(PipeDrainBound);
+        var stderrCapture = stderr.Finish(PipeDrainBound);
+        File.WriteAllText(Path.Combine(build.Root, HostStdoutFileName), stdoutCapture.Text);
+        File.WriteAllText(Path.Combine(build.Root, HostStderrFileName), stderrCapture.Text);
 
         RequireInputsUnchanged(build.InputDigests, CurrentDigests(request));
 
-        var firmwareRun = stderr.Split('\n')
+        var firmwareRun = stderrCapture.Text.Split('\n')
             .Select(static l => l.TrimEnd('\r'))
             .LastOrDefault(l => l.StartsWith(FirmwareRunPrefix, StringComparison.Ordinal));
         var diagnostic = File.Exists(diagnosticPath) ? JsonNode.Parse(File.ReadAllText(diagnosticPath)) : null;
 
+        var status = !timedOut ? "completed" : confirmed && refused is null ? "timed-out-stopped" : "timed-out-not-confirmed";
         return new JsonObject
         {
             ["schema"] = Schema,
-            ["hostExitCode"] = process.ExitCode,
+            ["status"] = status,
+            ["valid"] = !timedOut && stdoutCapture.Status == "complete" && stderrCapture.Status == "complete" && residuals.Count == 0,
+            ["hostExitCode"] = exitCode,
             ["inputsUnchanged"] = true,
-            ["summary"] = Summary(process.ExitCode, firmwareRun, diagnostic),
+            ["stop"] = new JsonObject
+            {
+                ["processId"] = stop.ProcessId,
+                ["confirmed"] = confirmed,
+                ["refused"] = refused,
+                ["residuals"] = new JsonArray(residuals.Select(r => (JsonNode)new JsonObject
+                {
+                    ["pid"] = r.ProcessId,
+                    ["state"] = r.State.ToString(),
+                    ["reason"] = r.Reason,
+                }).ToArray()),
+            },
+            ["capture"] = new JsonObject
+            {
+                ["stdout"] = stdoutCapture.ToJson(),
+                ["stderr"] = stderrCapture.ToJson(),
+            },
+            ["summary"] = Summary(exitCode, firmwareRun, diagnostic),
             ["firmwareRun"] = firmwareRun is null ? null : JsonNode.Parse(firmwareRun),
             ["diagnostic"] = diagnostic,
         };
@@ -381,7 +434,7 @@ public static class FirmwareDiagnosticDistribution
         return digests;
     }
 
-    private static JsonObject Summary(int hostExitCode, string? firmwareRun, JsonNode? diagnostic)
+    private static JsonObject Summary(int? hostExitCode, string? firmwareRun, JsonNode? diagnostic)
     {
         var run = firmwareRun is null ? null : JsonNode.Parse(firmwareRun)?.AsObject();
         return new JsonObject
@@ -423,6 +476,91 @@ public static class FirmwareDiagnosticDistribution
     }
 
     private static string Sha(string path) => OpenBiosRomInput.Sha256HexOfFile(path);
+
+    /// <summary>
+    /// One output stream of the host, read on its own thread and kept up to a limit. Its status tells a complete stream, a
+    /// truncated one (the limit was reached), a read that failed (with its message) and a pipe still held open at the deadline.
+    /// Only a complete stream is a whole output.
+    /// </summary>
+    private sealed class BoundedCapture
+    {
+        private readonly object _gate = new();
+        private readonly System.Text.StringBuilder _text = new();
+        private readonly Task _pump;
+        private readonly int _limit;
+        private bool _truncated;
+        private bool _ended;
+        private string? _readError;
+
+        public BoundedCapture(StreamReader reader, int limit)
+        {
+            _limit = limit;
+            _pump = Task.Run(() => Pump(reader));
+        }
+
+        private void Pump(StreamReader reader)
+        {
+            var buffer = new char[4096];
+            try
+            {
+                int read;
+                while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    lock (_gate)
+                    {
+                        var room = _limit - _text.Length;
+                        if (room > 0)
+                        {
+                            _text.Append(buffer, 0, Math.Min(room, read));
+                        }
+
+                        if (read > room)
+                        {
+                            _truncated = true;
+                        }
+                    }
+                }
+
+                lock (_gate)
+                {
+                    _ended = true;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                lock (_gate)
+                {
+                    _readError = exception.Message;
+                }
+            }
+        }
+
+        /// <summary>Waits at most <paramref name="drain"/> for the end of the stream, then takes what was read so far.</summary>
+        public CapturedOutput Finish(TimeSpan drain)
+        {
+            var finished = _pump.Wait(drain);
+            lock (_gate)
+            {
+                var status = _readError is not null ? "read-error"
+                    : !finished || !_ended ? "pipe-held"
+                    : _truncated ? "truncated"
+                    : "complete";
+                return new CapturedOutput(_text.ToString(), status, _truncated, _readError);
+            }
+        }
+    }
+
+    /// <summary>A captured stream: the text kept, and its status (complete, truncated, read-error or pipe-held).</summary>
+    private sealed record CapturedOutput(string Text, string Status, bool Truncated, string? ReadError)
+    {
+        public JsonObject ToJson() => new()
+        {
+            ["status"] = Status,
+            ["truncated"] = Truncated,
+            ["readError"] = ReadError,
+            ["characters"] = Text.Length,
+        };
+    }
 
     private static void TryDeleteDirectory(string path)
     {

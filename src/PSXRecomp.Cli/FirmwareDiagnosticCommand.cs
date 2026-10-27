@@ -22,7 +22,7 @@ internal static class FirmwareDiagnosticCommand
     {
         string? rom = null, romSha = null, disc = null, discSha = null, aot = null, outDir = null, hostFrom = null, artifactFrom = null;
         uint codeBytes = 37160, budget = uint.MaxValue;
-        int runTimeoutMs = 120_000;
+        int runTimeoutMs = 1_800_000; // the product package default (FirmwarePackageCommand.DefaultRunTimeoutSeconds = 1800)
         int? buildTimeoutSeconds = null;
         var run = false;
         var seen = new HashSet<string>(StringComparer.Ordinal);
