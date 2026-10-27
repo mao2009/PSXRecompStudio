@@ -700,6 +700,17 @@ as part of the one guest state.
 
 **Scope of the refusals (R1).** The manifest stage refuses an AOT input on one of four grounds: the input kind `rom-image` (BIOS bytes placed in RAM), an input kind outside the allowed set (refused fail-closed, the reason being the kind), a load range that overlaps the BIOS range, and a complete BIOS image with every byte equal. These refusals check the structure of an input and its content identity. They say nothing about the historical origin of an input, and a partial content match is a diagnostic only. The refusals are wired through `BiosGuardWiring.Run` in `FirmwareDistribution`, one stage each (`BiosAddressGuard`):
 
+**The R1 guarantee, stated narrowly (owner ruling, split residual: option 1).** The guarantee is that the canonical pipeline
+does not take the BIOS directly as an AOT input: the ROM reader's copies, the ROM range, and the complete BIOS image are refused, and
+the normal packaging never compiles ROM code. It is not a claim that any PS-X input is free of BIOS-derived code. Nothing in this
+project claims complete detection of BIOS data in an input.
+
+**Known limit: a split BIOS is not detected (accepted residual).** A complete BIOS split into N pieces, each placed in its own PS-X
+file, is not detected as BIOS. Each piece is an ordinary executable to the structural checks, and a partial content match is a
+diagnostic only (owner ruling). With N = 4, the cumulative content rule (measured below) would have refused a 124-byte copy split
+into four in only 4 of 40 trials; under the diagnostic-only rule nothing here is refused, and such a split is reported, not refused. The limit is pinned by
+`BiosSplitLimitationTests` (synthetic input, names begin `KnownLimit_`). A complete BIOS image as one input is still refused.
+
 **Input-kind trust boundary (owner ruling, option 2).** A directive keyword selects a reader; it does not decide the class.
 `BiosAddressGuard.DeriveInputClass` derives the class from what was produced: (1) the ROM reader's product (`rom-image`: the bytes are
 read from the ROM by code, at the ROM address the directive names); (2) the actual load address, for the BIOS-range check (for a PS-X
@@ -765,7 +776,9 @@ Table 1, normal inputs (false positives). "Over" counts the inputs, or groups, a
 | (16, 4) | 96 | 0 / 0 | 0 / 0 / 0 / 0 (0) | 0 / 0 | 0 / 0 / 0 / 0 |
 
 Table 2, BIOS copies inserted into a host (the host is the first 8 System32 binaries; 40 seeded trials per row; the BIOS offsets are
-drawn from code, because padding is never evidence by design). Cells are "refused / 40". "Split n" puts n pieces of the copy into one
+drawn from code, because padding is never evidence by design). The tables below were measured while the content rule could refuse. Under the owner's ruling (partial content is a diagnostic
+only), the cells now describe what the diagnostic would have flagged, not refusals. Cells are "refused / 40" (read as "would have
+been refused / 40"). "Split n" puts n pieces of the copy into one
 input, separated by 8 non-BIOS words. The low-variety rows draw only from BIOS windows of two or three values; the BIOS holds 390
 such 8-word windows, 10 of 16 words, and none of 24 words or more.
 
@@ -940,6 +953,11 @@ read. Mixed-fallback progress is therefore verified by the stop message and by t
 - The generated executable is stripped (`-s`, the firmware link only). The native library keeps its symbol table; `--strip-debug`
   removes its DWARF sections. The Runtime host is published with `DebugType=none`.
   The intermediate object is removed after linking; a failed removal fails the build.
+- **Split BIOS (accepted residual, owner ruling option 1).** A complete BIOS split into several PS-X inputs is not detected as BIOS
+  (`BiosSplitLimitationTests`). This is a known limit, not a guarantee.
+- **Fragments embedded in a PS-X input (not excludable).** A BIOS fragment built into a disc executable at build time, rather than
+  copied at run time, is not detected by any rule here. The static embedded-fragment question is tracked as a separate open issue
+  (see the PR body). The run-time copy-tracking question is Issue #835.
 - **Developer probe (residual).** `openbios-probe --engine generated-host` compiles ROM blocks. It is a developer-run diagnostic,
   outside the distribution. Its outputs (the JSON report, generated code, binaries, logs) stay local: they are never committed, never
   placed in CI artifacts, and never included in a distribution package.
