@@ -326,8 +326,6 @@ public sealed class GeneratedHostBuildServiceTests
         RuntimeHostBuildService.AwaitPipe(pipe, Stopwatch.StartNew())
             .Should().Be(RuntimeHostBuildService.RuntimeHostPipeDrain.ReadFailed);
         pipe.Text.Should().Be("partial text", "the text read before the failure is kept, not discarded");
-        pipe.ReadError.Should().BeOfType<IOException>("the cause of a ReadFailed drain must stay visible for diagnosis")
-            .Which.Message.Should().Be("simulated read failure");
     }
 
     // Yields its bytes on the first read, then fails. The read path's failure is reported, and the partial text stays with it.

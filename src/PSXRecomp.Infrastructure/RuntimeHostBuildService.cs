@@ -367,10 +367,16 @@ public static class RuntimeHostBuildService
 
         public int ExitCode { get; }
 
-        /// <summary>The stdout read from the host. Whole when <see cref="StdoutDrain"/> is Complete, otherwise the part read so far.</summary>
+        /// <summary>
+        /// The stdout read from the host. Whole when <see cref="StdoutDrain"/> is Complete, otherwise the part read so far.
+        /// When the host timed out and was killed, the run returns no output and this is empty (the pipes are not read).
+        /// </summary>
         public string Stdout { get; }
 
-        /// <summary>The stderr read from the host. Whole when <see cref="StderrDrain"/> is Complete, otherwise the part read so far.</summary>
+        /// <summary>
+        /// The stderr read from the host. Whole when <see cref="StderrDrain"/> is Complete, otherwise the part read so far.
+        /// When the host timed out and was killed, the run returns no output and this is empty; stderr then holds <c>Runtime host timed out</c>.
+        /// </summary>
         public string Stderr { get; }
 
         public RuntimeHostPipeDrain StdoutDrain { get; }
@@ -392,7 +398,10 @@ public static class RuntimeHostBuildService
         /// <summary>The pipe reached its end within the drain budget. Its text is whole.</summary>
         Complete,
 
-        /// <summary>The pipe was still open when the budget ran out, for example a grandchild holds it. Its text is the part read so far.</summary>
+        /// <summary>
+        /// The pipe was still open when the budget ran out, for example a grandchild holds it. Its text is the part read so far.
+        /// A host killed for its own timeout reports TimedOut on both pipes with empty text, since neither pipe is read.
+        /// </summary>
         TimedOut,
 
         /// <summary>The read failed. Its text is the part read before the failure.</summary>
@@ -419,9 +428,6 @@ public static class RuntimeHostBuildService
 
         /// <summary>Completes when the pipe reaches its end, and faults when the read fails.</summary>
         public Task Completion { get; }
-
-        /// <summary>The exception that ended the read, or null when the read has not failed (Issue #832 diagnostics).</summary>
-        public Exception? ReadError => Completion.IsFaulted ? Completion.Exception?.InnerException : null;
 
         /// <summary>The text read so far.</summary>
         public string Text
@@ -459,7 +465,7 @@ public static class RuntimeHostBuildService
         }
         catch (AggregateException)
         {
-            // The cause is kept on the collector (PipeCollector.ReadError), so the caller can still see its type and message.
+            // The read failure is reported as ReadFailed; its cause is not carried on the run result.
             return RuntimeHostPipeDrain.ReadFailed;
         }
     }
