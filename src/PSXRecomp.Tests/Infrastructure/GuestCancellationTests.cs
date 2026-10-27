@@ -1622,6 +1622,105 @@ public sealed class GuestCancellationTests
         RecompiledHostExecutionEngine.ApplyStopOutcome(completed, stop).Should().BeSameAs(completed);
     }
 
+    // Issue #828 outcome table (ApplyStopOutcome). The four rows are produced by real stops, with no seam set on the record's state, so each
+    // row's inputs (StoppedAt, ChildEndedBeforeStop, Outcome.Confirmed) are asserted before the rule is applied.
+
+    /// <summary>A classified result that is not Completed, so a test shows the result stands as it was given.</summary>
+    private static RecompilerExecutionResult ClassifiedFailure() =>
+        RecompilerExecutionResult.Failed(RecompilerExecutionStatus.ExecutionFailed, "SAMPLE_CLASSIFIED", "the run's own failure");
+
+    [Fact]
+    public void ApplyStopOutcome_Row4_StopNeverProcessed_KeepsTheResult()
+    {
+        // Spec row 4: no stop reached the record (StoppedAt is null). The run's own result stands.
+        var classified = ClassifiedFailure();
+        using var stop = new StopRecord();
+        stop.Seal();
+
+        stop.StoppedAt.Should().BeNull("no stop reached the record");
+        RecompiledHostExecutionEngine.ApplyStopOutcome(classified, stop).Should().BeSameAs(classified);
+    }
+
+    [Fact]
+    public void ApplyStopOutcome_Row1_ChildEndedBeforeStop_KeepsTheResult()
+    {
+        // Spec row 1: the child ended on its own before the stop reached it. The stop does not kill it, so its result stands.
+        var classified = ClassifiedFailure();
+        using var dir = new TempDirectory();
+        using var child = StartShortLivedChild(dir);
+        child.WaitForExit(StopWait).Should().BeTrue("the child ends on its own about one second in");
+        using var cts = new CancellationTokenSource();
+        using var stop = new StopRecord();
+        using var stopSeal = stop.Attach(child, cts.Token);
+
+        // The child has already ended: the stop arrives after its exit.
+        cts.Cancel();
+        stop.Seal();
+
+        stop.StoppedAt.Should().NotBeNull("the stop reached the record");
+        stop.ChildEndedBeforeStop.Should().BeTrue("the child ended before the stop acted on it");
+        stop.Outcome.Confirmed.Should().BeFalse("no kill was confirmed for a child that had already ended");
+        RecompiledHostExecutionEngine.ApplyStopOutcome(classified, stop).Should().BeSameAs(classified);
+    }
+
+    [Fact]
+    public void ApplyStopOutcome_Row3_LiveChildKillRefused_KeepsTheResult()
+    {
+        // Spec row 3: the stop itself failed (the OS refused the kill), so the child is still running. The run's own result stands; the refusal is
+        // a diagnostic.
+        var classified = ClassifiedFailure();
+        using var dir = new TempDirectory();
+        using var child = StartSleeper(dir);
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            using var stop = new StopRecord
+            {
+                KillForTest = _ => throw new System.ComponentModel.Win32Exception(5, "Access is denied."),
+            };
+            using var stopSeal = stop.Attach(child, cts.Token);
+            cts.Cancel();
+            stop.Seal();
+
+            stop.StoppedAt.Should().NotBeNull("the stop reached the record");
+            stop.ChildEndedBeforeStop.Should().BeFalse("the child was alive when the stop acted on it");
+            stop.Outcome.Confirmed.Should().BeFalse("the kill was refused");
+            stop.Outcome.Refused.Should().Contain("kill was refused", "the refusal is recorded with its reason");
+            RecompiledHostExecutionEngine.ApplyStopOutcome(classified, stop).Should().BeSameAs(classified);
+        }
+        finally
+        {
+            // The stop's kill was replaced, so the sleeper is ended here, not by the stop under test.
+            if (!child.HasExited)
+            {
+                child.Kill(true);
+            }
+        }
+    }
+
+    [Fact]
+    public void ApplyStopOutcome_Row2_LiveChildKilledAndConfirmed_IsCancelled()
+    {
+        // Spec row 2: the stop arrived first, killed the live child, and saw its exit. Only this row is Cancelled.
+        using var dir = new TempDirectory();
+        using var child = StartSleeper(dir);
+        using var cts = new CancellationTokenSource();
+        using var stop = new StopRecord();
+        using var stopSeal = stop.Attach(child, cts.Token);
+        cts.Cancel();
+        stop.Seal();
+
+        stop.StoppedAt.Should().NotBeNull("the stop reached the record");
+        stop.ChildEndedBeforeStop.Should().BeFalse("the child was alive when the stop acted on it");
+        stop.Outcome.Confirmed.Should().BeTrue("the kill of the live child was confirmed");
+        stop.Outcome.Refused.Should().BeNull("the stop itself was not refused");
+
+        var result = RecompiledHostExecutionEngine.ApplyStopOutcome(ClassifiedFailure(), stop);
+
+        result.Status.Should().Be(RecompilerExecutionStatus.Cancelled);
+        result.DiagnosticCode.Should().Be(RecompiledHostExecutionEngine.CancelledDiagnosticCode);
+    }
+
     [Fact]
     public async Task RealArtifact_DescendantThatCannotBeChecked_EndsCancelled_WithAnUnidentifiedResidual()
     {

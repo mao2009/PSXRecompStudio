@@ -924,6 +924,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             drainTimedOut,
             drainCutWhileAlive,
             OutputBudgetMsForTest ?? _runTimeoutMs);
+        // Issue #829: a fallback segment stopped by the stop request reaches the same decision as any other child (ResolveOutcome, which applies
+        // the stop's outcome table, Issue #828). No separate override here: a child that ended before the stop keeps its own result.
 
         var stopRequested = stopToken.IsCancellationRequested || _frameReads.StopRequested;
         LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested);
@@ -2034,7 +2036,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                     // above stay the only ones; only RAM and CPU state are copied.
                     _fallback = new ArtifactFallbackSession(
                         _mixedFallback, _imageWords, _imageLoadAddress, _blockEntryPcs, _devices, _scheduler, _deviceRam,
-                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode, _loadedCodeMismatch);
+                        _biosRuntimeFactory, _exceptionChain, Send, ReadReply, _guestFirmware, _fallbackFetchObserver, _fallbackTransitionObserver, _loadedCode, _loadedCodeMismatch,
+                        stopNow: () => StopNow is { } stop && stop());
                 }
                 Send(string.Create(CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolInterruptLineCommand} {(_devices.Core.GetInterruptPending() ? 1 : 0)}"));
