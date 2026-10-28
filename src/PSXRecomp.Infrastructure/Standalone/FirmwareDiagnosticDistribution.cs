@@ -585,6 +585,12 @@ public static class FirmwareDiagnosticDistribution
 
         // A previously published host is copied as published (its files, unchanged); the run then uses those bytes.
         var source = Path.GetFullPath(request.HostSourceDirectory);
+        if (IsReparsePoint(source))
+        {
+            // The entries below are checked for links, but a junction at the host directory itself would be followed before any entry is seen.
+            throw new InvalidDataException($"The host directory is a link, which the copy refuses: {source}");
+        }
+
         if (!File.Exists(Path.Combine(source, RuntimeHostLayout.HostFileName(windows))))
         {
             throw new InvalidDataException($"The host directory does not hold {RuntimeHostLayout.HostFileName(windows)}: {source}");
@@ -796,7 +802,10 @@ public static class FirmwareDiagnosticDistribution
         {
             _outputDir = outputDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             _observe = observe;
+            _fileName = Path.GetFileName(_outputDir);
         }
+
+        private readonly string _fileName;
 
         /// <summary>The staging directory, once <see cref="Open"/> has been called.</summary>
         public string Root => _root ?? throw new InvalidOperationException("The staging area is not open.");
@@ -974,19 +983,19 @@ public static class FirmwareDiagnosticDistribution
 
         /// <summary>
         /// Refuses a path longer than <see cref="MaxPathCharacters"/> before a write, so the refusal names the limit rather than a raw Win32 code.
-        /// The limit is the one this build applies to every write; it is conservative per call type. Directory creation (CreateDirectoryW, no
-        /// long-path prefix) fails above the classic MAX_PATH limit: a 265-character directory was refused and a 204-character one accepted in
-        /// a probe on the development machine. File creation (FileStream CreateNew) succeeded at 300 characters in a probe on the same machine,
-        /// so the check for files is stricter than the platform needs; it is kept for one rule across all writes, and the staging name adds about
-        /// 42 characters to the output path. None of these limits is verified on other machines or configurations.
+        /// One bound is applied to every write. The code does not claim it is the platform's exact limit for each call type, and it is not
+        /// verified on other machines or configurations. The message states the limit in terms of the output path the user sets.
         /// </summary>
-        private static void RequireWithinPathLimit(string path)
+        private void RequireWithinPathLimit(string path)
         {
             if (path.Length > MaxPathCharacters)
             {
                 throw new IOException(
                     $"The path is {path.Length} characters long, over the {MaxPathCharacters}-character limit this build uses without long-path support: {path}. " +
-                    "The staging name adds about 42 characters to the output path; choose an output path under about 205 characters.");
+                    $"The output path is {_outputDir.Length} characters and its file name is {_fileName.Length} characters. " +
+                    "A generated artifact needs the output path at most 161 characters (its reserved toolchain name is the output path plus 86 characters), " +
+                    "and the output path plus the file-name length at most 198 characters (the artifact's .c name is that sum plus 49). " +
+                    "These limits are sufficient for the files this build names itself; a published host with longer file names needs a shorter output path too.");
             }
         }
 
@@ -1001,7 +1010,7 @@ public static class FirmwareDiagnosticDistribution
         }
 
         /// <summary>Creates one directory with the Win32 call that fails when the name exists (Directory.CreateDirectory would adopt it).</summary>
-        private static void ExclusiveCreateDirectory(string path)
+        private void ExclusiveCreateDirectory(string path)
         {
             RequireWithinPathLimit(path);
             if (!WindowsDirectoryInterop.CreateDirectoryW(path, IntPtr.Zero))
