@@ -206,6 +206,11 @@ public sealed class FirmwareDiagnosticDistributionTests
     [Fact]
     public void Build_DirectoryCreatedAfterTheExistenceCheck_IsPreservedAndNeverBuiltInto()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // the staged build is Windows-only; the refusal on other platforms is Build_OnNonWindows_IsRefused...
+        }
+
         // The race: another process creates the output directory between the existence check and the build's own creation.
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -230,6 +235,11 @@ public sealed class FirmwareDiagnosticDistributionTests
     [Fact]
     public void Build_FailureWithAForeignFileInStaging_DeletesOnlyItsOwnOutput()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // the staging hook is reached only on Windows; see Build_OnNonWindows_IsRefusedBeforeAnyOutputIsCreated
+        }
+
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
         var request = ValidRequest(dir, output, roots: "nope\n");
@@ -255,6 +265,11 @@ public sealed class FirmwareDiagnosticDistributionTests
     [Fact]
     public void Build_FailureMidBuild_RemovesOnlyItsOwnTemporaryOutput()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // the staged build is Windows-only; see Build_OnNonWindows_IsRefusedBeforeAnyOutputIsCreated
+        }
+
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
         var request = ValidRequest(dir, output, roots: "nope\n");
@@ -337,7 +352,8 @@ public sealed class FirmwareDiagnosticDistributionTests
             }
         });
 
-        act.Should().Throw<InvalidDataException>("the host directory holds no runtime host");
+        act.Should().Throw<IOException>().WithMessage("*kept at*does not hold*",
+            "the failure is reported with the kept staging directory and the host directory's refusal");
         runtime.Should().NotBeNull("the host step ran");
         File.ReadAllText(Path.Combine(runtime!, "foreign.txt")).Should().Be("written by another process during the step",
             "content another process writes during a step is never deleted by the failure cleanup");
@@ -376,6 +392,148 @@ public sealed class FirmwareDiagnosticDistributionTests
         Directory.GetFileSystemEntries(elsewhere).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
             "nothing is written through the junction, and the cleanup does not delete through it");
         Directory.Exists(output).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Build_OnNonWindows_IsRefusedBeforeAnyOutputIsCreated()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // the refusal is the non-Windows behaviour; the Windows path is covered by the other tests
+        }
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: false)))
+            .Should().Throw<PlatformNotSupportedException>();
+        Directory.Exists(output).Should().BeFalse();
+        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+            "the refused build leaves nothing behind, not even a staging directory");
+    }
+
+    [Fact]
+    public void Build_ForeignFileAppearingAtACopyTarget_IsRefusedAndNeverDeleted()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // The foreign file appears between the claim check and the copy: the copy must refuse it, and the cleanup must keep it.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+        const string foreign = "someone else's roots";
+        string? target = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "file" && Path.GetFileName(path) == "rom.roots")
+            {
+                target = path;
+                File.WriteAllText(path, foreign);
+            }
+        });
+
+        act.Should().Throw<Exception>();
+        target.Should().NotBeNull("the copy of rom.roots was reached");
+        File.ReadAllText(target!).Should().Be(foreign, "a file another process created at a name the build writes is never deleted");
+    }
+
+    [Fact]
+    public void Build_ForeignFileAppearingAtTheBootManifest_IsNeverOverwritten()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+        string? target = null;
+        const string foreign = "someone else's boot manifest";
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "file" && Path.GetFileName(path) == FirmwareBootManifest.FileName)
+            {
+                target = path;
+                File.WriteAllText(path, foreign); // another process creates the name between the claim and the write
+            }
+        });
+
+        act.Should().Throw<Exception>("the boot manifest's name is taken by another process");
+        target.Should().NotBeNull("the boot manifest was reached");
+        File.ReadAllText(target!).Should().Be(foreign, "a file another process created is never overwritten");
+    }
+
+    [Fact]
+    public void Build_DirectoryInjectedIntoTheAdoptionWindow_IsNotRemoved()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // Another process creates the runtime/firmware directory after the build has decided to create it and before the creation.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+        string? injected = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "directory" && Path.GetFileName(path) == FirmwareBootManifest.FirmwareDirectory)
+            {
+                injected = path;
+                Directory.CreateDirectory(path);
+            }
+        });
+
+        act.Should().Throw<Exception>("the build cannot create a directory that another process has already created");
+        injected.Should().NotBeNull("the directory creation was reached");
+        Directory.Exists(injected!).Should().BeTrue("a directory this build did not create is never removed");
+    }
+
+    [Fact]
+    public void Build_JunctionSwappedUnderRuntimeFirmware_IsNeverWrittenThrough()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // The firmware directory is replaced by a junction after it was created and before its first file is written.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+        var foreign = dir.CreateSubdirectory("foreign");
+        File.WriteAllText(Path.Combine(foreign, "keep.txt"), "x");
+        var swapped = false;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            var name = Path.GetFileName(path);
+            if (phase == "file" && !swapped && (name == "rom.roots" || name == "images.txt"))
+            {
+                swapped = true;
+                var firmware = Path.GetDirectoryName(path)!;
+                Directory.Move(firmware, firmware + "-aside");
+                MakeJunction(firmware, foreign);
+            }
+        });
+
+        act.Should().Throw<Exception>();
+        swapped.Should().BeTrue("the swap happened before the first file write");
+        Directory.GetFileSystemEntries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+            "nothing is written through the junction");
     }
 
     [Fact]

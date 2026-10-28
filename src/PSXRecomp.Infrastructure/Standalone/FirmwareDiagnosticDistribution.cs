@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PSXRecomp.Architecture;
@@ -80,12 +81,17 @@ public static class FirmwareDiagnosticDistribution
     /// only when complete; a failure removes the entries this call named before writing them, and never a directory it did not create
     /// or content another process placed in the staging area.
     /// <para>
-    /// Operator notes: a process that is killed mid-build leaves its staging directory <c>.&lt;name&gt;.staging-&lt;guid&gt;</c> beside
-    /// the output name, and nothing deletes it automatically. Files the runtime-host publish writes (names not known in advance) are
-    /// not claimed, so a failure after that step leaves them in <c>runtime/</c>; remove the staging directory by hand after checking it.
-    /// The publish is a Windows-only no-replace rename, and the build is refused on other platforms.
+    /// Ownership: every file is created with an exclusive create (it fails when the name exists) and recorded only after that create
+    /// succeeds; every directory is created exclusively (Win32 CreateDirectoryW, which fails on an existing name) and recorded only then.
+    /// Nothing is adopted, so a failure never removes a directory or file this call did not create.
     /// </para>
-    ///
+    /// <para>
+    /// Operator notes: a failed build that cannot remove everything it created reports the staging directory it kept in the exception
+    /// message. A process that is killed mid-build leaves its staging directory <c>.&lt;name&gt;.staging-&lt;guid&gt;</c> beside the output
+    /// name, and nothing deletes it automatically. Files the runtime-host publish writes (names not known in advance) are not recorded,
+    /// so a failure after that step leaves them in <c>runtime/</c>. Remove a kept staging directory by hand after checking it.
+    /// The build runs on Windows only; it is refused on other platforms before anything is created.
+    /// </para>
     /// </summary>
     public static FirmwareDiagnosticBuild Build(FirmwareDiagnosticRequest request, bool windows)
         => Build(request, windows, observe: null);
@@ -142,7 +148,7 @@ public static class FirmwareDiagnosticDistribution
                 "The measurement is built on Windows only: its no-replace publish of the output directory is not available elsewhere.");
         }
 
-        var area = new StagingArea(outputDir);
+        var area = new StagingArea(outputDir, observe);
         try
         {
             area.Open(artifactName);
@@ -157,7 +163,7 @@ public static class FirmwareDiagnosticDistribution
                 var destination = Path.Combine(firmwareDir, relative.Replace('/', Path.DirectorySeparatorChar));
                 area.CreateDirectory(Path.GetDirectoryName(destination)
                     ?? throw new InvalidDataException($"The AOT input '{relative}' has no file name."));
-                File.Copy(source, area.Claim(destination), overwrite: false);
+                area.CopyNewFile(source, destination);
             }
 
             var (stagedAotInputs, _) = FirmwareAotBundle.Collect(firmwareDir);
@@ -170,12 +176,11 @@ public static class FirmwareDiagnosticDistribution
             if (request.DirectDiscReference)
             {
                 // Nothing is linked or copied: the marker names the original, which the host opens read-only.
-                area.Claim(Path.Combine(runtimeDir, DiscMarkerFileName));
-                WriteDiscMarker(runtimeDir, discPath, request.DiscSha256);
+                area.WriteNewFile(Path.Combine(runtimeDir, DiscMarkerFileName), DiscMarkerText(discPath, request.DiscSha256));
             }
             else
             {
-                LinkDiscInPlace(discPath, area.Claim(Path.Combine(discDir, discLeaf)));
+                area.LinkNew(discPath, Path.Combine(discDir, discLeaf));
             }
 
             FirmwareAotPlan plan;
@@ -200,14 +205,13 @@ public static class FirmwareDiagnosticDistribution
             else
             {
                 // The earlier artifact is copied under this measurement's name; its bytes are not rebuilt.
-                artifactPath = area.Claim(Path.Combine(staging, artifactFile));
-                File.Copy(Path.GetFullPath(request.ArtifactSourcePath), artifactPath, overwrite: false);
+                artifactPath = Path.Combine(staging, artifactFile);
+                area.CopyNewFile(Path.GetFullPath(request.ArtifactSourcePath), artifactPath);
                 artifactSource = "reused:" + Path.GetFileName(request.ArtifactSourcePath);
             }
 
             var hostSource = ProvisionOrCopyHost(area, runtimeDir, request, windows, observe);
 
-            var bootPath = area.Claim(Path.Combine(runtimeDir, FirmwareBootManifest.FileName));
             var boot = new FirmwareBootManifest(
                 FirmwareBootManifest.CurrentSchemaVersion,
                 BiosBackendSelection.NameOf(BiosBackendKind.OpenBios),
@@ -217,7 +221,7 @@ public static class FirmwareDiagnosticDistribution
                 $"{FirmwareBootManifest.DiscDirectory}/{discLeaf}",
                 request.DiscSha256,
                 stagedAotInputs);
-            File.WriteAllText(bootPath, FirmwareBootManifestJson.Serialize(boot));
+            area.WriteNewFile(Path.Combine(runtimeDir, FirmwareBootManifest.FileName), FirmwareBootManifestJson.Serialize(boot));
 
             var blockEntryPcs = plan.Program.Blocks.Select(static b => b.EntryPc).Order().Distinct().ToArray();
             var host = new RuntimeHostManifest(
@@ -235,8 +239,8 @@ public static class FirmwareDiagnosticDistribution
                 RunTimeoutMs: request.RunTimeoutMs,
                 EntryPc: OpenBiosFirmware.ResetVector,
                 BiosProvenance: RuntimeHostManifest.BiosProvenanceSynthetic);
-            var manifestPath = area.Claim(Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName));
-            File.WriteAllText(manifestPath, RuntimeHostManifestJson.Serialize(host));
+            var manifestPath = Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName);
+            area.WriteNewFile(manifestPath, RuntimeHostManifestJson.Serialize(host));
 
             var hostPath = Path.Combine(runtimeDir, RuntimeHostLayout.HostFileName(windows));
             var identity = new JsonObject
@@ -255,18 +259,25 @@ public static class FirmwareDiagnosticDistribution
                     ["wiring"] = "FirmwareAotPlan.Build + RecompilerHostCodeGen.Generate + RecompiledArtifactCodeGen.GenerateStandalone(hostBridge: true, externalBios: true)",
                 },
             };
-            var identityPath = area.Claim(Path.Combine(staging, IdentityFileName));
-            File.WriteAllText(identityPath, identity.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
+            area.WriteNewFile(Path.Combine(staging, IdentityFileName),
+                identity.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
 
             // Only a completely written measurement is published; the rename refuses a name that is taken by now.
             area.Commit();
             return new FirmwareDiagnosticBuild(
                 outputDir, area.Rebase(artifactPath), area.Rebase(hostPath), area.Rebase(manifestPath), digests);
         }
-        catch
+        catch (Exception exception)
         {
-            area.Discard();
-            throw;
+            var kept = area.Discard();
+            if (kept is null)
+            {
+                throw;
+            }
+
+            throw new IOException(
+                $"The measurement failed and its staging directory was kept at {kept} (remove it by hand after checking it): {exception.Message}",
+                exception);
         }
     }
 
@@ -425,10 +436,10 @@ public static class FirmwareDiagnosticDistribution
         return Path.GetFullPath(path);
     }
 
-    private static void WriteDiscMarker(string runtimeDir, string discPath, string sha256)
+    private static string DiscMarkerText(string discPath, string sha256)
     {
         var marker = new JsonObject { ["schema"] = DiscMarkerSchema, ["path"] = discPath, ["sha256"] = sha256, ["access"] = "read-only" };
-        File.WriteAllText(Path.Combine(runtimeDir, DiscMarkerFileName), marker.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
+        return marker.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine;
     }
 
     /// <summary>Creates a hard link at <paramref name="linkPath"/> to <paramref name="originalPath"/>. Never copies the bytes.</summary>
@@ -465,7 +476,6 @@ public static class FirmwareDiagnosticDistribution
     private static string GenerateArtifact(
         StagingArea area, FirmwareAotPlan plan, FirmwareDiagnosticRequest request, string artifactName, string artifactFile, bool windows)
     {
-        var outputDir = area.Root;
         var dispatch = RecompilerHostCodeGen.Generate(
             plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled, allowEmptyProgram: true);
         if (!dispatch.Success)
@@ -484,18 +494,23 @@ public static class FirmwareDiagnosticDistribution
         }
 
         BiosGuardWiring.Run(BiosGuardWiring.Source, () => BiosAddressGuard.RequireNoBiosSource(source.Source!));
-        // The toolchain writes exactly these three names into the staging directory; each is claimed before it can be written.
-        area.Claim(Path.Combine(outputDir, artifactFile + ".c"));
-        area.Claim(Path.Combine(outputDir, artifactFile + ".o"));
-        area.Claim(Path.Combine(outputDir, artifactFile));
+        // The toolchain writes its outputs under a name chosen here at random, so no other process can have placed a file there in
+        // advance. Its three names are reserved (each must not exist) before the toolchain can write them. After a successful build
+        // the source and the binary are moved to the measurement's names; a move refuses an existing name.
+        var staging = area.Root;
+        var toolName = "host-" + Guid.NewGuid().ToString("N") + (windows ? ".exe" : string.Empty);
+        area.Reserve(Path.Combine(staging, toolName + ".c"));
+        area.Reserve(Path.Combine(staging, toolName + ".o"));
+        area.Reserve(Path.Combine(staging, toolName));
         var build = new GeneratedHostBuildService(request.BuildTimeout ?? FirmwareDistributionBuilder.DefaultBuildTimeout).Build(
-            new GeneratedHostBuildRequest(source.Source!, outputDir, artifactFile, FirmwareDistribution: true));
+            new GeneratedHostBuildRequest(source.Source!, staging, toolName, FirmwareDistribution: true));
         if (build.Status != GeneratedHostBuildStatus.Succeeded)
         {
             throw new InvalidOperationException($"Artifact build failed ({build.Status}). {build.DiagnosticMessage}");
         }
 
-        return Path.Combine(outputDir, Path.GetFileName(build.Artifact!.BinaryPath));
+        area.MoveNew(Path.Combine(staging, toolName + ".c"), Path.Combine(staging, artifactFile + ".c"));
+        return area.MoveNew(Path.Combine(staging, Path.GetFileName(build.Artifact!.BinaryPath)), Path.Combine(staging, artifactFile));
     }
 
     private static string ProvisionOrCopyHost(
@@ -506,7 +521,7 @@ public static class FirmwareDiagnosticDistribution
         {
             // The publish writes a set of files whose names are not known in advance; only the host executable is claimed by name.
             // Those other published files are not claimed, so after a failure they remain in the staging directory.
-            area.Claim(Path.Combine(runtimeDir, RuntimeHostLayout.HostFileName(windows)));
+            area.Reserve(Path.Combine(runtimeDir, RuntimeHostLayout.HostFileName(windows)));
             try
             {
                 RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, selfContained: false, firmwareDistribution: true);
@@ -528,7 +543,7 @@ public static class FirmwareDiagnosticDistribution
 
         foreach (var file in Directory.EnumerateFiles(source))
         {
-            File.Copy(file, area.Claim(Path.Combine(runtimeDir, Path.GetFileName(file))), overwrite: false);
+            area.CopyNewFile(file, Path.Combine(runtimeDir, Path.GetFileName(file)));
         }
 
         return "copied:" + Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -695,62 +710,61 @@ public static class FirmwareDiagnosticDistribution
     }
 
     /// <summary>
-    /// The private staging directory one measurement is written into, and the entries that build claimed by name before writing them.
-    /// The output name is claimed only by <see cref="Commit"/> (a rename that refuses an existing name).
+    /// The private staging directory one measurement is written into. Every entry is created exclusively, and ownership is recorded only
+    /// after the exclusive create succeeded, so nothing that already existed (or that another process creates in a race) is adopted or
+    /// removed. Directories are created with the Win32 call that fails on an existing name. Every write first checks that the staging
+    /// directory and the chain below it are not links, and the cleanup never deletes through a link. The output name is claimed only by
+    /// <see cref="Commit"/>, a rename that refuses an existing name.
     /// <para>
-    /// Ownership is by name, never by a directory snapshot: a file another process writes into the staging area is not claimed, so the
-    /// cleanup never deletes it, even when it appears during a step. A claim refuses a path that already exists. Directories are removed
-    /// only when empty. Every write first checks that the staging directory and the chain below it are not links, and cleanup does not
-    /// delete through a link. The one gap is the runtime-host publish, whose output names are not known in advance: those files are not
-    /// claimed, so they remain after a failure (see the operator notes on the Build method).
+    /// Residual gap (not closed): the link check runs immediately before each create, but a same-user process that swaps a directory
+    /// of the staging area for a junction in the few system calls between that check and the create is not excluded. Closing it needs a
+    /// handle held on each directory without delete sharing, which this class does not take. The check narrows the window; it does not close it.
     /// </para>
     /// </summary>
     private sealed class StagingArea
     {
+        private static readonly UTF8Encoding Utf8WithoutBom = new(encoderShouldEmitUTF8Identifier: false);
+
         private readonly string _outputDir;
-        private readonly List<string> _ancestors = [];
-        private readonly List<string> _owned = [];
+        private readonly Action<string, string>? _observe;
+        private readonly List<string> _ancestors = [];   // created by Open, shallowest first
+        private readonly List<string> _owned = [];       // created by this build, recorded after each successful create
         private string? _root;
 
-        public StagingArea(string outputDir) => _outputDir = outputDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        public StagingArea(string outputDir, Action<string, string>? observe)
+        {
+            _outputDir = outputDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            _observe = observe;
+        }
 
-        /// <summary>The staging directory, once <see cref="Open"/> has created it.</summary>
+        /// <summary>The staging directory, once <see cref="Open"/> has been called.</summary>
         public string Root => _root ?? throw new InvalidOperationException("The staging area is not open.");
 
-        /// <summary>Creates the missing parent directories (recorded for cleanup) and a new staging directory with a unique name beside the output.</summary>
+        /// <summary>Creates the missing parent directories and a new staging directory with a unique name beside the output, all exclusively.</summary>
         public void Open(string artifactName)
         {
             var parent = Path.GetDirectoryName(_outputDir)
                 ?? throw new InvalidDataException($"The output directory has no parent directory: {_outputDir}");
-            for (var path = parent; path is not null && !Directory.Exists(path); path = Path.GetDirectoryName(path))
+            var missing = new List<string>();
+            for (var path = parent; path is not null && !Path.Exists(path); path = Path.GetDirectoryName(path))
             {
-                _ancestors.Add(path); // deepest first
+                missing.Add(path);
             }
 
-            Directory.CreateDirectory(parent);
+            missing.Reverse(); // shallowest first
+            foreach (var path in missing)
+            {
+                ExclusiveCreateDirectory(path);
+                _ancestors.Add(path);
+            }
+
             _root = Path.Combine(parent, $".{artifactName}.staging-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(_root);
+            ExclusiveCreateDirectory(_root);
         }
 
         /// <summary>
-        /// Claims one path this build is about to write, by name. It is recorded before the write, so a partial write is cleaned up too.
-        /// A path that already exists is refused rather than claimed: an entry this build did not create is never adopted.
-        /// </summary>
-        public string Claim(string path)
-        {
-            RequireRealChain(path);
-            if (Path.Exists(path) || IsReparsePoint(path))
-            {
-                throw new IOException($"The staging area already holds an entry the measurement did not create: {path}");
-            }
-
-            _owned.Add(path);
-            return path;
-        }
-
-        /// <summary>
-        /// Creates <paramref name="path"/> inside the staging directory, claiming each directory it creates. A directory that already
-        /// exists (and was not created here) is never claimed.
+        /// Creates <paramref name="path"/> inside the staging directory. Each missing directory on the way is created exclusively and
+        /// recorded only after the create succeeded. A directory that exists is never adopted: the exclusive create refuses it.
         /// </summary>
         public void CreateDirectory(string path)
         {
@@ -761,18 +775,96 @@ public static class FirmwareDiagnosticDistribution
                 missing.Add(current); // deepest first
             }
 
+            missing.Reverse(); // shallowest first
             foreach (var directory in missing)
             {
-                Claim(directory);
+                _observe?.Invoke("directory", directory); // SEAM: another process acts here, between the existence check and the create
+                RequireRealChain(directory);
+                ExclusiveCreateDirectory(directory);
+                _owned.Add(directory);
+            }
+        }
+
+        /// <summary>Creates a new file with <paramref name="destination"/>'s name and copies the bytes of <paramref name="source"/> into it.</summary>
+        public void CopyNewFile(string source, string destination)
+        {
+            _observe?.Invoke("file", destination); // SEAM: another process acts here, before the check made immediately before the write
+            RequireRealChain(destination);
+            using var input = File.OpenRead(source);
+            using var output = CreateNewFile(destination);
+            input.CopyTo(output);
+        }
+
+        /// <summary>Creates a new UTF-8 (no byte-order mark) text file; it fails if the name exists.</summary>
+        public void WriteNewFile(string path, string text)
+        {
+            _observe?.Invoke("file", path); // SEAM: another process acts here, before the check made immediately before the write
+            RequireRealChain(path);
+            using var output = CreateNewFile(path);
+            using var writer = new StreamWriter(output, Utf8WithoutBom);
+            writer.Write(text);
+        }
+
+        /// <summary>Creates a hard link at <paramref name="link"/> to <paramref name="original"/> (CreateHardLink refuses an existing name).</summary>
+        public void LinkNew(string original, string link)
+        {
+            _observe?.Invoke("file", link); // SEAM: another process acts here, before the check made immediately before the write
+            RequireRealChain(link);
+            LinkDiscInPlace(original, link);
+            _owned.Add(link);
+        }
+
+        /// <summary>
+        /// Reserves a name that a toolchain will write, when that name must not exist beforehand. Used only for names this build chose at random.
+        /// </summary>
+        public void Reserve(string path)
+        {
+            RequireRealChain(path);
+            if (Path.Exists(path) || IsReparsePoint(path))
+            {
+                throw new IOException($"The staging area already holds an entry the measurement did not create: {path}");
             }
 
-            Directory.CreateDirectory(path);
+            _owned.Add(path);
         }
+
+        /// <summary>Moves a file this build created to a name this build chooses. Refuses an existing destination.</summary>
+        public string MoveNew(string source, string destination)
+        {
+            RequireRealChain(destination);
+            File.Move(source, destination);
+            _owned.Add(destination);
+            return destination;
+        }
+
+        private FileStream CreateNewFile(string path)
+        {
+            var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            _owned.Add(path); // recorded only after the exclusive create succeeded
+            return stream;
+        }
+
+        /// <summary>Creates one directory with the Win32 call that fails when the name exists (Directory.CreateDirectory would adopt it).</summary>
+        private static void ExclusiveCreateDirectory(string path)
+        {
+            if (!WindowsDirectoryInterop.CreateDirectoryW(path, IntPtr.Zero))
+            {
+                var error = Marshal.GetLastPInvokeError();
+                throw new IOException(error == WindowsDirectoryInterop.ErrorAlreadyExists
+                    ? $"A directory already exists at {path}; this build did not create it and does not use it."
+                    : $"Could not create the directory {path} (Win32 error {error}).");
+            }
+        }
+
 
         /// <summary>The path <paramref name="path"/> has inside the published output.</summary>
         public string Rebase(string path) => Path.Combine(_outputDir, Path.GetRelativePath(Root, path));
 
-        /// <summary>Renames the finished staging directory to the output name. Directory.Move refuses a name that is taken.</summary>
+        /// <summary>
+        /// Renames the finished staging directory to the output name. Directory.Move refuses a name that is taken. Residual gap: the check
+        /// just before the rename is not atomic with it. A same-user process that swaps the staging directory for a link in that interval
+        /// can make the rename move the link. This is narrowed to no I/O between the check and the rename, and it is not closed.
+        /// </summary>
         public void Commit()
         {
             RequireRealDirectory();
@@ -780,17 +872,13 @@ public static class FirmwareDiagnosticDistribution
         }
 
         /// <summary>
-        /// Removes what this build claimed: the claimed entries deepest first, then the staging and parent directories if they are empty.
-        /// Nothing is removed through a link: if the staging directory or any claimed path's chain below it is a link, that part is kept.
+        /// Removes what this build created, deepest first: the recorded entries, then the staging directory and the ancestors it created,
+        /// each only when empty. Nothing is removed through a link. Returns the staging path when it is still present (it holds content
+        /// this build did not create, or it is no longer a real directory), so the caller can name it; otherwise null.
         /// </summary>
-        public void Discard()
+        public string? Discard()
         {
-            if (_root is null)
-            {
-                return;
-            }
-
-            if (IsRealDirectory(_root))
+            if (_root is not null && IsRealDirectory(_root))
             {
                 foreach (var path in _owned.Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(p => p.Length))
                 {
@@ -803,10 +891,12 @@ public static class FirmwareDiagnosticDistribution
                 RemoveIfEmpty(_root);
             }
 
-            foreach (var ancestor in _ancestors)
+            for (var index = _ancestors.Count - 1; index >= 0; index--)
             {
-                RemoveIfEmpty(ancestor);
+                RemoveIfEmpty(_ancestors[index]);
             }
+
+            return _root is not null && Directory.Exists(_root) ? _root : null;
         }
 
         /// <summary>Fails closed unless the staging directory is still a real directory (not a link) and no directory on the way to <paramref name="path"/> is one.</summary>
