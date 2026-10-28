@@ -1630,6 +1630,66 @@ public sealed class GuestCancellationTests
         }
     }
 
+    [Fact]
+    public void StopKillsTheChild_AndNoHeldPipeIsReported_WhileTheStderrPumpLags()
+    {
+        // Stop-racing flake: the child is killed by the stop, its stdout ends at once, and its stderr pump lags behind. The pump is held
+        // for one second by the seam (it is not a grandchild holding the pipe). The stop's pipe check must wait for that pump, so no
+        // residual names a held pipe.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "pumplag");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", copy, "-n", "60", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60; :" });
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+                cts.Cancel();
+            });
+
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                fileName, arguments, timeoutMs: 60_000, cts.Token, stderrPumpGate: Task.Delay(TimeSpan.FromSeconds(1)));
+            stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
+
+            (outcome.Leftover ?? string.Empty).Should().NotContain("an output pipe is still held", "the stderr pump ended with the child: no holder is left");
+            ProcessNameProbe.IsRunning(name).Should().BeFalse("the child is gone");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    [Fact]
+    public void ACompletedChild_WhoseStderrPumpLagsItsExit_KeepsTheWholeSnapshot()
+    {
+        // Artifact flake (exit 0, empty stderr): the child writes a complete snapshot to stderr and exits 0, and its stderr pump lags the
+        // stdout end by a second (the seam). The run must wait for the stderr text: read at the stdout end, the snapshot is missing and the
+        // run is a failure.
+        using var dir = new TempDirectory();
+        var snapshotPath = dir.WriteFile("snapshot.txt", System.Text.Encoding.UTF8.GetBytes(LaggedSnapshot()));
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/d", "/c", $"type {snapshotPath} 1>&2" })
+            : ("/bin/sh", new[] { "-c", $"cat '{snapshotPath}' >&2" });
+
+        var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+            fileName, arguments, timeoutMs: 60_000, CancellationToken.None, stderrPumpGate: Task.Delay(TimeSpan.FromSeconds(1)));
+
+        outcome.Result.Status.Should().Be(RecompilerExecutionStatus.Completed, "the complete snapshot on stderr was read, not the empty text read at the stdout end");
+    }
+
+    private static string LaggedSnapshot() =>
+        RecompiledArtifactCodeGen.SnapshotBeginMarker + "\n"
+        + "termination=0\npc=0x80010000\nhi=0x00000000\nlo=0x00000000\n"
+        + string.Concat(Enumerable.Range(0, 32).Select(i => $"gpr[{i}]=0x00000000\n"))
+        + "exception.raised=0\nexception.code=0x00000000\nexception.faultPc=0x00000000\nexception.inDelaySlot=0\n"
+        + "cop0.sr=0x00000000\ncop0.cause=0x00000000\ncop0.epc=0x00000000\n"
+        + RecompiledArtifactCodeGen.SnapshotEndMarker + "\n";
+
     /// <summary>A scheduler that never runs a queued task: a continuation given to it stays pending (a test seam for the timing race).</summary>
     private sealed class NeverRunsTaskScheduler : TaskScheduler
     {

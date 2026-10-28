@@ -1366,7 +1366,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs, out bool timedOut, out bool drainTimedOut,
         out bool drainCutWhileAlive, HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord,
-        TaskScheduler? stderrContinuationScheduler = null)
+        TaskScheduler? stderrContinuationScheduler = null, Task? stderrPumpGate = null)
     {
         // The stdout drain of a child that ended on its own is bounded by outputBudgetMs; drainTimedOut reports that it ran out (Issue #827).
         // drainCutWhileAlive reports that the child was still alive (it was killed at its budget) and its output could not be drained.
@@ -1415,7 +1415,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // stderr is read by a sink, as stdout is: a drain cut short keeps the text read so far. That is how the state snapshot survives a grandchild
         // that holds the pipe open after the child ended. stderrTask is the whole text once the stream has ended (the bridge uses it).
         var stderrSink = new OutputSink();
-        var stderrPump = stderrSink.Pump(process.StandardError);
+        var stderrPump = stderrSink.Pump(process.StandardError, stderrPumpGate);
         var stderrTask = stderrPump.ContinueWith(_ => stderrSink.Text, stderrContinuationScheduler ?? TaskScheduler.Default);
 
         if (bridge is null)
@@ -1452,7 +1452,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var stdout = stdoutSink.Text;
             // stderr carries the state snapshot. It is waited for within the same drain budget, measured from drainStart as stdout is; the sink
             // keeps the text read so far, so a stderr pipe still held by a grandchild does not lose a complete snapshot already written.
-            var stderr = stderrSink.Text;
+            // The stderr pump can lag the stdout end, so the text is read when the pump ends, not at the stdout end.
+            var stderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, drainStart);
             RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
             return (process.ExitCode, stdout, stderr, false, true);
         }
@@ -1674,7 +1675,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         Func<Process, DateTime?>? startTime = null,
         int? outputBudgetMs = null,
         Action<Process>? descendantKill = null,
-        TaskScheduler? stderrContinuationScheduler = null)
+        TaskScheduler? stderrContinuationScheduler = null,
+        Task? stderrPumpGate = null)
     {
         var stopRecord = new StopRecord
         {
@@ -1690,7 +1692,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool drainCutWhileAlive;
         try
         {
-            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord, stderrContinuationScheduler);
+            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord, stderrContinuationScheduler, stderrPumpGate);
         }
         finally
         {
@@ -1775,8 +1777,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         /// <summary>Reads the stream to its end, appending each chunk as it arrives.</summary>
-        public async Task Pump(StreamReader reader)
+        public async Task Pump(StreamReader reader, Task? gate = null)
         {
+            // gate is a test seam (null in production): reading starts only when it completes, which makes a lagging stderr pump reproducible.
+            if (gate is not null)
+            {
+                await gate;
+            }
+
             var buffer = new char[4096];
             int read;
             while ((read = await reader.ReadAsync(buffer.AsMemory())) > 0)
