@@ -134,7 +134,7 @@ internal static class FirmwareDiagnosticCommand
 
             var measurement = FirmwareDiagnosticDistribution.Measure(build, request);
             var path = Path.Combine(build.Root, FirmwareDiagnosticDistribution.MeasurementFileName);
-            File.WriteAllText(path, measurement.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
+            FirmwareDiagnosticDistribution.WriteNewMeasurementFile(path, measurement.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
             output.WriteLine($"firmware-diagnostic measured: {path}");
             output.WriteLine(measurement["summary"]!.ToJsonString());
             return 0;

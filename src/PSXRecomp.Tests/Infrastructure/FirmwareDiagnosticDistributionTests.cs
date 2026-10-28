@@ -1219,6 +1219,144 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [SkippableFact]
+    public void Build_SecondHardLinkAddedAtTheFileSeam_IsRefusedFromTheHandleAndPublishesNothing()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The file seam for the host file "late.bin" runs after the path-based pre-check and before the copy opens the file. At that point this
+        // test adds a second link to the host file, outside the host directory. The copy must count the links on the handle it reads from.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var hostLate = dir.WriteFile("host/late.bin", "host content"u8.ToArray());
+        var outside = dir.CreateSubdirectory("outside");
+        var alias = dir.Combine("outside", "alias.bin");
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+        var linked = false;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "file" && !linked && Path.GetFileName(path) == "late.bin")
+            {
+                linked = true;
+                FirmwareDiagnosticDistribution.LinkDiscInPlace(hostLate, alias);
+            }
+        });
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*late.bin has 2 hard links*Guarantee*",
+            "the copy counts the links on the handle it reads and refuses the file that gained a second link");
+        linked.Should().BeTrue("the seam ran between the pre-check and the open");
+        Directory.Exists(output).Should().BeFalse("a refused copy creates no output directory");
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("no staging directory is left on disk");
+        File.ReadAllText(hostLate).Should().Be("host content", "the host file is not modified");
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture read); it reads a file this test created inside its own temporary directory and does not change it.
+        File.ReadAllText(alias).Should().Be("host content", "the external target is not modified");
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads a directory this test created inside its own temporary directory and does not change it.
+        Directory.Exists(outside).Should().BeTrue("the external directory is left as it was");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Measure_WaitLoopThrows_TheLaunchedHostIsKilled()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A copy of cmd.exe stands in for the host and waits on its stdin. The test makes the guarded wait fail right after the launch. The
+        // launched host must then be killed and awaited, not left running.
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", new byte[OpenBiosFirmware.ImageSize]);
+        var disc = dir.WriteFile("disc/game.chd", new byte[16]);
+        dir.WriteFile("aot/rom.roots", Array.Empty<byte>());
+        dir.WriteFile("aot/images.txt", Array.Empty<byte>());
+        var aot = dir.Combine("aot");
+        var outDir = dir.Combine("out", "measure");
+        var runtime = dir.CreateSubdirectory(Path.Combine("out", "measure", "runtime"));
+        var host = Path.Combine(runtime, "PSXRecomp.RuntimeHost.exe");
+#pragma warning disable AARC003 // Justified: this line calls File.Copy and Environment.SystemDirectory (test fixture copy); it copies the system cmd.exe into this test's own temporary directory as the stand-in host, and the copy is never run outside the test.
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), host);
+#pragma warning restore AARC003
+        var digests = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["rom"] = OpenBiosRomInput.Sha256HexOfFile(rom),
+            ["disc"] = OpenBiosRomInput.Sha256HexOfFile(disc),
+        };
+        var request = new FirmwareDiagnosticRequest(
+            RomPath: rom, RomSha256: digests["rom"], DiscPath: disc, DiscSha256: digests["disc"], AotDirectory: aot,
+            OutputDirectory: outDir, CodeBytes: 64, InstructionBudget: uint.MaxValue, RunTimeoutMs: 100);
+        var build = new FirmwareDiagnosticBuild(outDir, Path.Combine(outDir, "artifact.exe"), host,
+            Path.Combine(runtime, RuntimeHostLayout.ManifestFileName), digests);
+        var stillRunningBeforeRelease = (bool?)null;
+
+        var act = () => FirmwareDiagnosticDistribution.Measure(build, request, TimeSpan.FromMilliseconds(500),
+            afterLaunch: _ => throw new InvalidOperationException("the guarded wait failed"),
+            beforeRelease: launchedHost =>
+            {
+#pragma warning disable AARC003 // Justified: these lines call Process.HasExited and Process.Kill (test observation of the stand-in host this test launched, before its Process object is released); the kill only cleans up a host that the production kill did not end, so the test leaves nothing running.
+                stillRunningBeforeRelease = !launchedHost.HasExited;
+                if (stillRunningBeforeRelease == true)
+                {
+                    launchedHost.Kill(true);
+                }
+#pragma warning restore AARC003
+            });
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("the guarded wait failed");
+        stillRunningBeforeRelease.Should().NotBeNull("the release point was reached after the wait failed");
+        stillRunningBeforeRelease.Should().BeFalse(
+            "the launched host was killed and awaited in the finally block, before its Process object was released, so it is not left running");
+    }
+
+    [SkippableFact]
+    public void Junction_LinkNameWithAPipe_IsRefusedWithAReason()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A pipe is a character a Windows path cannot hold. The fixture returns a reason; it does not throw.
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("target");
+
+        var fixture = JunctionFixture.TryCreate(dir, dir.Combine("a|b"), target, out var reason);
+
+        fixture.Should().BeNull("a name Windows cannot hold is refused");
+        reason.Should().Contain("cannot hold", "the reason says why no launch was made");
+    }
+
+    [SkippableFact]
+    public void Junction_InsideTheOwnedDirectoryPointingOutside_BlocksALinkOutsideIt()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // "out-link" lies inside the owned directory but is a junction to a directory outside it. A link created through it lies outside.
+        using var dir = new TempDirectory();
+        using var bystander = new TempDirectory();
+        using var outLink = JunctionFixture.Create(dir, dir.Combine("out-link"), bystander.FullPath);
+        var target = dir.CreateSubdirectory("target");
+
+        ((Action)(() => JunctionFixture.TryCreate(dir, dir.Combine("out-link", "newlink"), target, out _)))
+            .Should().Throw<InvalidOperationException>().WithMessage("*inside the test-owned directory*");
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads the bystander directory this test created and changes nothing.
+        Directory.Exists(Path.Combine(bystander.FullPath, "newlink")).Should().BeFalse("no link is created outside the owned directory");
+#pragma warning restore AARC003
+    }
+
+    [Fact]
+    public void WriteNewMeasurementFile_RefusesAnExistingFileAndKeepsIt()
+    {
+        using var dir = new TempDirectory();
+        var path = dir.WriteFile("measurement.json", "previous evidence"u8.ToArray());
+
+        ((Action)(() => FirmwareDiagnosticDistribution.WriteNewMeasurementFile(path, "new measurement")))
+            .Should().Throw<IOException>("a measurement file that exists is never overwritten");
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture read); it reads the file this test created inside its own temporary directory and does not change it.
+        File.ReadAllText(path).Should().Be("previous evidence");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
     public void Build_Success_ManifestAndExecutableReferencesAreConsistent()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
@@ -1377,10 +1515,11 @@ internal sealed class JunctionFixture : IDisposable
     /// </summary>
     public static JunctionFixture? TryCreate(TempDirectory owner, string link, string target, out string reason)
     {
-        // A path that cannot be quoted is refused first: Path.GetFullPath throws on a double quote, so the owner check must not see it.
-        if (!QuotablePath.IsMatch(link) || !QuotablePath.IsMatch(target))
+        // A name that cannot be used is refused first, with a reason. It is checked before any path API that could throw on it.
+        var nameRefusal = NameRefusal(link, target);
+        if (nameRefusal is not null)
         {
-            reason = $"a path has a character that cannot be quoted for cmd.exe (a double quote, a percent sign, a caret, or a control character), so no launch is made: {link} / {target}";
+            reason = $"{nameRefusal}: {link} / {target}";
             return null;
         }
 
@@ -1516,12 +1655,61 @@ internal sealed class JunctionFixture : IDisposable
         return null;
     }
 
+    /// <summary>The reason a name cannot be used, or null. It never throws: a name Windows cannot hold is a refusal, not an exception.</summary>
+    private static string? NameRefusal(string link, string target)
+    {
+        if (!QuotablePath.IsMatch(link) || !QuotablePath.IsMatch(target))
+        {
+            return "a path has a character that cannot be quoted for cmd.exe (a double quote, a percent sign, a caret, or a control character), so no launch is made";
+        }
+
+        if (link.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || target.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+        {
+            return "a path has a character that a Windows path cannot hold (for example a pipe), so no launch is made";
+        }
+
+        try
+        {
+            _ = Path.GetFullPath(link);
+            _ = Path.GetFullPath(target);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return $"Windows cannot resolve a path ({exception.Message}), so no launch is made";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Refuses a link whose parent, after following every junction on the way, is outside the owned directory. This is the one exception the
+    /// fixture throws: a link outside the owned directory is a bug in the test, not an environment condition.
+    /// </summary>
     private static void RequireInsideOwner(TempDirectory owner, string path)
     {
-        var root = Path.GetFullPath(owner.FullPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (!Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        var root = ResolvedDirectory(owner.FullPath);
+        var parent = ResolvedDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        var inside = string.Equals(parent, root, StringComparison.OrdinalIgnoreCase)
+            || parent.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        if (!inside)
         {
             throw new InvalidOperationException($"A junction fixture must be created inside the test-owned directory: {path}");
+        }
+    }
+
+    /// <summary>The real location of a directory: every junction or symbolic link on the way is followed to its target.</summary>
+    private static string ResolvedDirectory(string directory)
+    {
+        var full = Path.GetFullPath(directory);
+        var info = new DirectoryInfo(full);
+        try
+        {
+            var target = info.ResolveLinkTarget(returnFinalTarget: true);
+            return Path.GetFullPath((target ?? info).FullName).TrimEnd(Path.DirectorySeparatorChar);
+        }
+        catch (IOException)
+        {
+            return full.TrimEnd(Path.DirectorySeparatorChar);
         }
     }
 

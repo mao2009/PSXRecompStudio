@@ -72,6 +72,9 @@ public static class FirmwareDiagnosticDistribution
     /// <summary>The longest a pipe may stay open after the host has ended (a grandchild holding it) before its output is taken as is.</summary>
     private static readonly TimeSpan PipeDrainBound = TimeSpan.FromSeconds(10);
 
+    /// <summary>The longest the launched host may take to exit after it has been killed before the measurement reports it still running.</summary>
+    private static readonly TimeSpan KillAwaitBound = TimeSpan.FromSeconds(10);
+
     /// <summary>The most characters kept of each output stream; the rest is drained and the stream is marked truncated.</summary>
     private const int CaptureLimitChars = 4 * 1024 * 1024;
 
@@ -311,7 +314,17 @@ public static class FirmwareDiagnosticDistribution
     /// digested again afterwards; a change makes the result invalid.
     /// </summary>
     /// <param name="exitGrace">The time past the run timeout before the tree is stopped; null uses <see cref="HostExitGrace"/> (tests shorten it).</param>
-    public static JsonObject Measure(FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request, TimeSpan? exitGrace = null)
+    public static JsonObject Measure(FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request, TimeSpan? exitGrace = null) =>
+        Measure(build, request, exitGrace, afterLaunch: null, beforeRelease: null);
+
+    /// <summary>
+    /// The measurement with observation points for tests. <paramref name="afterLaunch"/> receives the launched host's Process object, inside
+    /// the guarded wait, so a test can make the wait fail. <paramref name="beforeRelease"/> receives the same object after the launched host has
+    /// been killed in the finally block and before the Process object is released, so a test can see whether the host is still running.
+    /// </summary>
+    internal static JsonObject Measure(
+        FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request, TimeSpan? exitGrace, Action<Process>? afterLaunch,
+        Action<Process>? beforeRelease)
     {
         ArgumentNullException.ThrowIfNull(build);
         ArgumentNullException.ThrowIfNull(request);
@@ -341,23 +354,41 @@ public static class FirmwareDiagnosticDistribution
         var bound = TimeSpan.FromMilliseconds(request.RunTimeoutMs) + (exitGrace ?? HostExitGrace);
         using var cancel = new CancellationTokenSource();
         using var stop = new StopRecord();
-        stop.Attach(process, cancel.Token);
         var clock = Stopwatch.StartNew();
         var timedOut = false;
-        while (!process.WaitForExit(StopRecord.PollMs))
+        string? killFailure = null;
+        try
         {
-            stop.SampleTree();
-            if (clock.Elapsed >= bound)
+            afterLaunch?.Invoke(process);
+            stop.Attach(process, cancel.Token);
+            while (!process.WaitForExit(StopRecord.PollMs))
             {
-                timedOut = true;
-                cancel.Cancel(); // the stop runs synchronously: it kills the tracked tree and waits for each exit
-                break;
+                stop.SampleTree();
+                if (clock.Elapsed >= bound)
+                {
+                    timedOut = true;
+                    cancel.Cancel(); // the stop runs synchronously: it kills the tracked tree and waits for each exit
+                    break;
+                }
+            }
+
+            if (!timedOut)
+            {
+                process.WaitForExit();
             }
         }
-
-        if (!timedOut)
+        finally
         {
-            process.WaitForExit();
+            // A fault that leaves the wait (in the sampler, or in a wait call) must not leave the host running. The host this method launched is
+            // killed through its own Process object and awaited here. A kill that fails is reported after the wait, and it never replaces the
+            // exception already in flight, because nothing is thrown from this block.
+            killFailure = KillLaunchedTreeIfRunning(process);
+            beforeRelease?.Invoke(process);
+        }
+
+        if (killFailure is not null)
+        {
+            throw new InvalidOperationException(killFailure);
         }
 
         stop.Seal();
@@ -368,8 +399,8 @@ public static class FirmwareDiagnosticDistribution
         process.StandardInput.Dispose();
         var stdoutCapture = stdout.Finish(PipeDrainBound);
         var stderrCapture = stderr.Finish(PipeDrainBound);
-        File.WriteAllText(Path.Combine(build.Root, HostStdoutFileName), stdoutCapture.Text);
-        File.WriteAllText(Path.Combine(build.Root, HostStderrFileName), stderrCapture.Text);
+        WriteNewMeasurementFile(Path.Combine(build.Root, HostStdoutFileName), stdoutCapture.Text);
+        WriteNewMeasurementFile(Path.Combine(build.Root, HostStderrFileName), stderrCapture.Text);
 
         RequireInputsUnchanged(build.InputDigests, CurrentDigests(request));
 
@@ -509,12 +540,61 @@ public static class FirmwareDiagnosticDistribution
     public static uint HardLinkCount(string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (!WindowsHardLinkInterop.GetFileInformationByHandle(stream.SafeFileHandle.DangerousGetHandle(), out WindowsHardLinkInterop.ByHandleFileInformation info))
+        return HardLinkCountOf(stream.SafeFileHandle);
+    }
+
+    /// <summary>The number of directory entries of the file that an open handle refers to, read from that handle.</summary>
+    internal static uint HardLinkCountOf(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
+    {
+        if (!WindowsHardLinkInterop.GetFileInformationByHandle(handle.DangerousGetHandle(), out WindowsHardLinkInterop.ByHandleFileInformation info))
         {
             throw new IOException($"Could not read the file information (Win32 error {Marshal.GetLastPInvokeError()}).");
         }
 
         return info.NumberOfLinks;
+    }
+
+    /// <summary>
+    /// Writes a measurement output file, which must not exist yet. The file is created exclusively: an existing file, a link at that name, or a
+    /// file another process created is refused with an exception, and is never overwritten. A rerun writes into a new output directory.
+    /// </summary>
+    public static void WriteNewMeasurementFile(string path, string text)
+    {
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        writer.Write(text);
+    }
+
+    /// <summary>
+    /// Kills the host's process tree when it is still running, and waits for it. It acts only on the Process object that <see cref="Measure"/>
+    /// launched. Returns null when the host is no longer running afterwards; otherwise the reason it still runs. A kill that fails, or that
+    /// races a natural exit, is recorded in that reason and never thrown from a finally block.
+    /// </summary>
+    private static string? KillLaunchedTreeIfRunning(Process process)
+    {
+        if (process.HasExited)
+        {
+            return null;
+        }
+
+        string? killError = null;
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception exception)
+        {
+            killError = exception.Message;
+        }
+
+        if (process.WaitForExit((int)KillAwaitBound.TotalMilliseconds))
+        {
+            return null;
+        }
+
+        return killError is null
+            ? "The runtime host did not exit after it was killed; it may still be running."
+            : $"The runtime host could not be killed ({killError}) and did not exit; it may still be running.";
     }
 
     private static string GenerateArtifact(
@@ -939,6 +1019,38 @@ public static class FirmwareDiagnosticDistribution
             input.CopyTo(output);
         }
 
+        /// <summary>
+        /// Copies one host file. The source is opened once, its link count is read from that same handle, and the copy reads from that handle.
+        /// A count above one is refused before the destination is created. Reading the count and copying use one open file, so a link added to the
+        /// file before the open is seen, and the copy never re-opens the file by path.
+        /// </summary>
+        public void CopyHostFile(string source, string destination)
+        {
+            _observe?.Invoke("file", destination); // SEAM: another process acts here, before the open and the count
+            RequireRealChain(destination);
+            using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            uint links;
+            try
+            {
+                links = HardLinkCountOf(input.SafeFileHandle);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidDataException(
+                    $"The hard-link count of the host file {source} could not be read, so the copy refuses it. Guarantee: no host file whose link count is unknown is copied.",
+                    exception);
+            }
+
+            if (links > 1)
+            {
+                throw new InvalidDataException(
+                    $"The host file {source} has {links} hard links, and the copy refuses a file with more than one link, because its bytes may come from another entry outside the host directory. Guarantee: no host file with more than one link is copied.");
+            }
+
+            using var output = CreateNewFile(destination);
+            input.CopyTo(output);
+        }
+
         /// <summary>Creates a new UTF-8 (no byte-order mark) text file; it fails if the name exists.</summary>
         public void WriteNewFile(string path, string text)
         {
@@ -962,10 +1074,9 @@ public static class FirmwareDiagnosticDistribution
                     throw new InvalidDataException($"The host directory holds a link, which the copy refuses: {file}");
                 }
 
-                // The link count is read again immediately before this file is copied: a hard link created after the pre-check, during the
-                // copy, is refused here, and the build publishes nothing. The count is read per file, so a late link is seen when it is reached.
-                RequireSingleHardLink(file);
-                CopyNewFile(file, Path.Combine(destination, Path.GetFileName(file)));
+                // Each file is copied through CopyHostFile: the link count is read from the same open handle that the copy reads from, so a hard link
+                // added after the path-based pre-check, at any point before this file is opened, is refused, and the build publishes nothing.
+                CopyHostFile(file, Path.Combine(destination, Path.GetFileName(file)));
             }
 
             foreach (var directory in Directory.EnumerateDirectories(source))

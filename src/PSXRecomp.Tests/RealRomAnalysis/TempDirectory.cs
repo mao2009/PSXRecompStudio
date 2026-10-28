@@ -55,6 +55,15 @@ public sealed class TempDirectory : IDisposable
         {
             // Links are removed by their own names first, so the recursive delete below never enters a link's target. If a link cannot be
             // removed, the exception skips the recursive delete: nothing outside this directory is touched.
+            // The root itself is checked first. If it is a link, it is removed by its own name and nothing is enumerated through it.
+            if (IsReparsePoint(FullPath))
+            {
+#pragma warning disable AARC003 // Justified: this line calls Directory.Delete (temp file); it removes this test's own temporary link by its own name, without entering it.
+                Directory.Delete(FullPath);
+#pragma warning restore AARC003
+                return;
+            }
+
             RemoveReparsePoints(FullPath);
 #pragma warning disable AARC003 // Justified: this line calls Directory.Delete (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
             Directory.Delete(FullPath, recursive: true);
@@ -75,6 +84,12 @@ public sealed class TempDirectory : IDisposable
     /// directory is removed with a non-recursive delete, which removes the link only; a file link is removed with File.Delete. Plain directories
     /// are entered, so every link in the tree is reached.
     /// </summary>
+    private static bool IsReparsePoint(string path)
+    {
+        var attributes = (int)new DirectoryInfo(path).Attributes;
+        return attributes != -1 && (attributes & (int)FileAttributes.ReparsePoint) != 0;
+    }
+
     private static void RemoveReparsePoints(string directory)
     {
         foreach (var entry in Directory.GetFileSystemEntries(directory))
