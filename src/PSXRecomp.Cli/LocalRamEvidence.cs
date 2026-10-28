@@ -88,7 +88,7 @@ internal static class LocalRamEvidence
         {
             handle = create is null ? CreateNewHandle(real) : create(real);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return $"{real} could not be created exclusively ({ex.Message})";
         }
@@ -203,7 +203,7 @@ internal static class LocalRamEvidence
             real = candidate;
             return null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return $"{full}: its location could not be verified ({ex.GetType().Name}); refusing";
         }

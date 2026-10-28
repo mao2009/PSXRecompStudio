@@ -32,7 +32,22 @@ public sealed class LoadedCodeMismatchDiagnosticsTests
         record["mismatchedWordsRange"]!.AsArray().Select(static n => n!.GetValue<int>()).Should().Equal(1, 1);
         record["windowStartPc"]!.GetValue<string>().Should().Be("0x80030C44", "the window is clamped at the start of the range");
         record["windowAot"]!.AsArray().Select(static n => n!.GetValue<string>()).Should().Equal("0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000005");
-        record["windowRam"]!.AsArray().Select(static n => n!.GetValue<string>()).Should().Equal("0x00000001", "0x00000002", "0x00000009", "0x00000004", "0x00000005");
+    }
+
+    // PR #839 MAJOR: the report must not carry a RAM word. The RAM word here (0x5EEDCAFE) differs from every image word; the report names no
+    // RAM word, and the RAM range is only hashed (ramSha256).
+    [Fact]
+    public void Report_CarriesNoRamWordValue_OnlyTheImageWindowAndHashes()
+    {
+        var diagnostics = new LoadedCodeMismatchDiagnostics();
+        var ram = new uint[] { 1, 2, 0x5EEDCAFE, 4, 5 };
+
+        diagnostics.Observe(Pc, [Version(Pc, 1, 2, 3, 4, 5)], address => ram[(address - Pc) / 4]);
+
+        var json = diagnostics.ToJson();
+        json.Should().NotContain("windowRam");
+        json.Should().NotContain("5EEDCAFE").And.NotContain("5eedcafe");
+        Records(diagnostics)[0]!["ramSha256"]!.GetValue<string>().Should().HaveLength(64, "the RAM range is hashed, not written");
     }
 
     [Fact]

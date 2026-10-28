@@ -220,6 +220,34 @@ public sealed class LocalRamEvidenceTests
         refusal.Should().Contain("the write failed");
     }
 
+    // PR #839 MAJOR follow-up item 2: a NotSupportedException from the path resolution is a refusal, not an exception that escapes. Deterministic
+    // through the resolver seam (the real EntryExists path that can throw it is not reproducible here).
+    [Fact]
+    public void Resolve_WhenTheLocationQueryThrowsNotSupported_IsARefusal()
+    {
+        using var dir = new TempDirectory();
+        var outside = dir.CreateSubdirectory("outside");
+
+        var refusal = LocalRamEvidence.RefusalFor(Path.Combine(outside, "ram.json"), mustBeNew: true,
+            resolveExisting: _ => throw new NotSupportedException("the path format is not supported"));
+
+        refusal.Should().Contain("could not be verified");
+    }
+
+    // PR #839 MAJOR follow-up item 2: the create's exceptions (on POSIX, File.OpenHandle) are refusals too.
+    [Fact]
+    public void WriteNew_WhenTheCreateThrowsNotSupported_IsARefusal()
+    {
+        using var dir = new TempDirectory();
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [1], RealPathInterop.TryGetRealPath, resolveHandle: null, beforeCreate: null,
+            create: _ => throw new NotSupportedException("handle type not supported"));
+
+        refusal.Should().Contain("could not be created exclusively");
+        File.Exists(target).Should().BeFalse();
+    }
+
     [Fact]
     public void NormalizeFinalPath_KeepsOnlyDriveAbsoluteAndUncLocations()
     {

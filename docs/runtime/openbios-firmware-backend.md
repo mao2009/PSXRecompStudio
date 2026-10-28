@@ -332,7 +332,7 @@ whose real location cannot be determined is refused. The file is created exclusi
 POSIX systems the guard relies on the path checks alone. That is a documented limit. The threat model is an accidental commit, not an adversary. `fallback-roots`
 takes it with `--local-ram-evidence <file.json>`.
 `openbios-probe --dump-ram <file>` (the raw 2 MiB of RAM at `--capture-at`, a local diagnostic) is written under the same rule: a new file,
-outside every Git work tree, refused before the run when it is not. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
+outside every Git work tree, refused before the run when it is not. An existing file is refused as well: an earlier build overwrote it. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
 could not be read, or when two fetches at the same PC read different words; such a target has no word. The planner reads a target as a
 candidate root only when its RAM word equals the word the EXE file places at that PC; any target without a word, or with another word, is
 rejected with the reason `ram-word-mismatch` and is not reported as a native route. Without the local evidence no target has a word, so
