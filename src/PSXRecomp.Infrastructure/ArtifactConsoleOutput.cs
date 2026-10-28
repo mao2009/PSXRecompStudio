@@ -4,10 +4,11 @@ namespace PSXRecomp.Infrastructure;
 
 /// <summary>
 /// The forwarding of an artifact's stdout to the console on a direct launch: only the guest's own text is written. The host protocol never
-/// reaches the console. A protocol marker is recognised anywhere in a line, not only at its start: guest text that has no line end before a
-/// marker (<c>HELLO</c> then <c>RSNAPSHOT_BEGIN</c> on one line) keeps the text before the marker and drops the marker and everything after
-/// it on that line. So every <c>RHOST_*</c> line is dropped, and the <c>RSNAPSHOT_*</c> block is dropped with its markers and body, because its
-/// body carries the GPR values. A block that is never closed drops everything after its begin marker (fail closed).
+/// reaches the console. A protocol token is recognised anywhere in a line, not only at its start, and each token is found on its own: the
+/// line is cut at the first <c>RHOST_</c> or <c>RSNAPSHOT_</c> (so a leading token cannot hide a later one), the guest text before the cut is
+/// kept, and the rest of the line is withheld. A <c>RSNAPSHOT_BEGIN</c> found anywhere in the withheld part opens the block, and a
+/// <c>RSNAPSHOT_END</c> found anywhere closes it. The block's body, which carries the GPR values, is withheld in full. A block that is never
+/// closed drops everything after its begin marker (fail closed).
 /// </summary>
 [Infrastructure]
 public static class ArtifactConsoleOutput
@@ -28,7 +29,7 @@ public static class ArtifactConsoleOutput
         {
             if (inSnapshot)
             {
-                // Only the end marker matters inside the block; everything else (the body, GPR values included) is dropped.
+                // Inside the block only the end marker matters, wherever it is on the line; the rest of that line is withheld too.
                 if (line.Contains(SnapshotEnd, StringComparison.Ordinal))
                 {
                     inSnapshot = false;
@@ -37,30 +38,36 @@ public static class ArtifactConsoleOutput
                 continue;
             }
 
-            var marker = FirstMarker(line);
-            if (marker < 0)
+            var cut = FirstProtocolToken(line);
+            if (cut < 0)
             {
                 console.Write(line);
                 console.Write('\n');
                 continue;
             }
 
-            // The guest's text before the marker is kept; the marker and the rest of the line are not.
-            if (marker > 0)
+            // The guest's text before the first token is kept; the token and the rest of the line are not.
+            if (cut > 0)
             {
-                console.Write(line.AsSpan(0, marker));
+                console.Write(line.AsSpan(0, cut));
                 console.Write('\n');
             }
 
-            if (string.CompareOrdinal(line, marker, SnapshotBegin, 0, SnapshotBegin.Length) == 0)
+            // A begin marker anywhere in the withheld part opens the block. Every RSNAPSHOT_BEGIN starts with RSNAPSHOT_, so it cannot lie
+            // before the cut. An end marker after it on the same line closes the block again, at once.
+            var begin = line.IndexOf(SnapshotBegin, cut, StringComparison.Ordinal);
+            if (begin >= 0)
             {
-                inSnapshot = true;
+                inSnapshot = line.IndexOf(SnapshotEnd, begin + SnapshotBegin.Length, StringComparison.Ordinal) < 0;
             }
         }
     }
 
-    /// <summary>The index of the earliest protocol marker prefix in the line, or -1 when there is none.</summary>
-    private static int FirstMarker(string line)
+    /// <summary>
+    /// The index of the earliest protocol token on the line, or -1 when there is none. <c>RSNAPSHOT_</c> is taken as a whole, so every
+    /// <c>RSNAPSHOT_*</c> token (begin, end and any other) starts a cut; each token's own position is found independently.
+    /// </summary>
+    private static int FirstProtocolToken(string line)
     {
         var host = line.IndexOf(HostProtocolPrefix, StringComparison.Ordinal);
         var snapshot = line.IndexOf(SnapshotPrefix, StringComparison.Ordinal);

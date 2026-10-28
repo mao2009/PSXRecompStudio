@@ -113,4 +113,71 @@ public sealed class ArtifactConsoleOutputTests
         printed.Should().Be("X \nGOODBYE\n");
         printed.Should().NotContain(Value);
     }
+
+    // PR #839 MAJOR (re-review of cb40910): an earlier protocol token on the line must not hide a later RSNAPSHOT_BEGIN. Each input is followed by
+    // a body line (gpr[2]=0x{Value}) that must not reach the console; the guest text before the first token still prints.
+    private static readonly string Body = $"gpr[2]=0x{Value}\n";
+
+    [Fact]
+    public void BeginAfterAnRsnapshotPrefix_OpensTheBlock_AndTheBodyIsWithheld()
+    {
+        var printed = Forwarded("RSNAPSHOT_FOORSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("GOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void BeginAfterAnRhostPrefix_OpensTheBlock_AndTheBodyIsWithheld()
+    {
+        var printed = Forwarded("RHOST_RSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("GOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void BeginAfterGuestTextAndAnRhostPrefix_KeepsTheGuestText_AndWithholdsTheBody()
+    {
+        var printed = Forwarded("AB RHOST_OK RSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("AB \nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void BeginAfterAnotherRsnapshotPrefix_OpensTheBlock_AndTheBodyIsWithheld()
+    {
+        var printed = Forwarded("RSNAPSHOT_RSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("GOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void AnEndAfterAPrefixInsideTheBlock_ClosesTheBlock_AndTheRestOfThatLineIsWithheld()
+    {
+        var printed = Forwarded($"HELLO\nRSNAPSHOT_BEGIN\ngpr[2]=0x{Value}RHOST_X RSNAPSHOT_END RHOST_Y\nGOODBYE\n");
+
+        printed.Should().Be("HELLO\nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("RHOST_");
+    }
+
+    [Fact]
+    public void AnEndAfterAPrefixOnTheBeginLine_ClosesTheBlockAtOnce()
+    {
+        var printed = Forwarded($"RHOST_RSNAPSHOT_BEGINgpr[2]=0x{Value} RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("GOODBYE\n");
+        printed.Should().NotContain(Value);
+    }
+
+    [Fact]
+    public void GuestTextBeforeTheFirstToken_StillPrints_WhenTheTokenHidesALaterBegin()
+    {
+        var printed = Forwarded("HELLO RSNAPSHOT_FOORSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("HELLO \nGOODBYE\n");
+        printed.Should().NotContain(Value);
+    }
 }
