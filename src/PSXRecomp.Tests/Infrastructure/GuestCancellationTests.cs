@@ -1597,6 +1597,52 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
+    public void StopKillsTheChild_ItsPipesEnd_AndNoHeldPipeIsReported_EvenWhileTheTextContinuationHasNotRun()
+    {
+        // Stop-racing flake: a pipe is reported as held when its text continuation has not run yet, although the pipe's pump
+        // has ended. The seam holds the continuation pending (a scheduler that never runs it). The child is killed by the stop, and its pipes
+        // end with it: no holder exists, so no residual may name a held pipe.
+        using var dir = new TempDirectory();
+        var copy = NamedCopy(dir, SleepBinary, "pipeend");
+        var name = Path.GetFileNameWithoutExtension(copy);
+        var (fileName, arguments) = OperatingSystem.IsWindows()
+            ? ("cmd.exe", new[] { "/c", copy, "-n", "60", "127.0.0.1" })
+            : ("/bin/sh", new[] { "-c", $"{copy} 60; :" });
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            var stopper = Task.Run(() =>
+            {
+                WaitUntil(() => ProcessNameProbe.IsRunning(name), StopWait);
+                cts.Cancel();
+            });
+
+            var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+                fileName, arguments, timeoutMs: 60_000, cts.Token, stderrContinuationScheduler: new NeverRunsTaskScheduler());
+            stopper.Wait(StopWait).Should().BeTrue("the stopper finished within the test's bound");
+
+            (outcome.Leftover ?? string.Empty).Should().NotContain("an output pipe is still held", "the child's pipes ended with the child: no holder is left");
+            ProcessNameProbe.IsRunning(name).Should().BeFalse("the child is gone");
+        }
+        finally
+        {
+            KillNamed(copy);
+        }
+    }
+
+    /// <summary>A scheduler that never runs a queued task: a continuation given to it stays pending (a test seam for the timing race).</summary>
+    private sealed class NeverRunsTaskScheduler : TaskScheduler
+    {
+        protected override void QueueTask(Task task)
+        {
+        }
+
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued) => false;
+
+        protected override IEnumerable<Task> GetScheduledTasks() => Array.Empty<Task>();
+    }
+
+    [Fact]
     public void ACompletedRun_WithARecordedRefusal_KeepsItsResult_AndTheRefusalStaysInTheDiagnostics()
     {
         // Issue #827, decided in review round 10: the run's result stands; a refusal is a diagnostic. It is not written into the result.

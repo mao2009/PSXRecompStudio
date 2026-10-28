@@ -1365,7 +1365,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// caller then neither reads nor disposes those devices (Issue #762).</returns>
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs, out bool timedOut, out bool drainTimedOut,
-        out bool drainCutWhileAlive, HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord)
+        out bool drainCutWhileAlive, HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord,
+        TaskScheduler? stderrContinuationScheduler = null)
     {
         // The stdout drain of a child that ended on its own is bounded by outputBudgetMs; drainTimedOut reports that it ran out (Issue #827).
         // drainCutWhileAlive reports that the child was still alive (it was killed at its budget) and its output could not be drained.
@@ -1415,7 +1416,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // that holds the pipe open after the child ended. stderrTask is the whole text once the stream has ended (the bridge uses it).
         var stderrSink = new OutputSink();
         var stderrPump = stderrSink.Pump(process.StandardError);
-        var stderrTask = stderrPump.ContinueWith(_ => stderrSink.Text, TaskScheduler.Default);
+        var stderrTask = stderrPump.ContinueWith(_ => stderrSink.Text, stderrContinuationScheduler ?? TaskScheduler.Default);
 
         if (bridge is null)
         {
@@ -1452,7 +1453,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // stderr carries the state snapshot. It is waited for within the same drain budget, measured from drainStart as stdout is; the sink
             // keeps the text read so far, so a stderr pipe still held by a grandchild does not lose a complete snapshot already written.
             var stderr = stderrSink.Text;
-            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
+            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
             return (process.ExitCode, stdout, stderr, false, true);
         }
 
@@ -1539,7 +1540,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         timedOut = false;
         // The bridged run's stderr carries the snapshot: read it as the no-bridge run does, so a pipe a grandchild still holds keeps the text read so far.
         var bridgeStderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp());
-        RecordPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
+        RecordPipeHeldAfterStop(stopToken, stopRecord, stderrPump);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
 
@@ -1645,6 +1646,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     private static void RecordPipeHeldAfterStop(CancellationToken stopToken, StopRecord stopRecord, params Task[] pipes)
     {
+        // The pipes are the read pumps: a pump's completion is the end of its stream. A continuation of a pump (the text task) runs later,
+        // so a check on it reports a pipe as held after its end was already read.
         // A child that ended before the stop reached it is not a stop's failure: a pipe it leaves to a console host is the drain's business.
         if (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
         {
@@ -1670,7 +1673,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         Action<Process>? kill = null,
         Func<Process, DateTime?>? startTime = null,
         int? outputBudgetMs = null,
-        Action<Process>? descendantKill = null)
+        Action<Process>? descendantKill = null,
+        TaskScheduler? stderrContinuationScheduler = null)
     {
         var stopRecord = new StopRecord
         {
@@ -1686,7 +1690,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool drainCutWhileAlive;
         try
         {
-            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord);
+            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord, stderrContinuationScheduler);
         }
         finally
         {
