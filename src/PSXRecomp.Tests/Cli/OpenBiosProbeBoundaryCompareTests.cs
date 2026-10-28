@@ -58,6 +58,34 @@ public sealed class OpenBiosProbeBoundaryCompareTests
     }
 
     [Fact]
+    public void Identical_Invalid_Records_Are_Refused_With_A_Diagnostic_Not_A_Match()
+    {
+        using var dir = new TempDirectory();
+        var left = dir.WriteFile("left.jsonl", System.Text.Encoding.UTF8.GetBytes("{\"foo\":1}\n"));
+        var right = dir.WriteFile("right.jsonl", System.Text.Encoding.UTF8.GetBytes("{\"foo\":1}\n"));
+
+        var exit = Compare(left, right, out var output, out var error);
+
+        exit.Should().Be(1);
+        output.Should().BeEmpty();
+        error.Should().Contain("left log line 1: missing required field");
+    }
+
+    [Fact]
+    public void A_JSON_Array_Line_Is_Refused_Without_An_Unhandled_Exception()
+    {
+        using var dir = new TempDirectory();
+        var left = dir.WriteFile("left.jsonl", Lines("interpreter", "aa"));
+        var right = dir.WriteFile("right.jsonl", System.Text.Encoding.UTF8.GetBytes("[1,2,3]\n"));
+
+        var exit = Compare(left, right, out var output, out var error);
+
+        exit.Should().Be(1);
+        output.Should().BeEmpty();
+        error.Should().Contain("right log line 1: expected a JSON object");
+    }
+
+    [Fact]
     public void A_Missing_File_Is_Refused()
     {
         using var dir = new TempDirectory();
@@ -84,7 +112,7 @@ public sealed class OpenBiosProbeBoundaryCompareTests
         var text = string.Concat(vramHashes.Select((vram, i) =>
             "{\"engine\":\"" + engine + "\",\"vblank\":" + (i + 1) + ",\"cycles\":0,\"iStat\":\"0x00000000\",\"iMask\":\"0x00000000\"," +
             "\"dicr\":\"0x00000000\",\"gpuStat\":\"0x00000000\",\"displayMode\":\"0x00000000\",\"displayVramStart\":\"0x00000000\"," +
-            "\"vramSha256\":\"" + vram + "\"}\n"));
+            "\"vramSha256\":\"" + vram.PadLeft(64, '0') + "\"}\n"));
         return System.Text.Encoding.UTF8.GetBytes(text);
     }
 }

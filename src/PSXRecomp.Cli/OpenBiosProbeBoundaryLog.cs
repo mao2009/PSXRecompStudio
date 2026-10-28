@@ -89,19 +89,52 @@ internal sealed class OpenBiosProbeBoundaryLog : IDisposable
     }
 
     /// <summary>
-    /// The first record whose fields differ between two logs, ignoring the engine label, over the boundaries both logs hold.
-    /// Returns null when those match. The caller passes equal-length prefixes; a boundary present on one side alone is not
-    /// compared here.
+    /// Parses every non-blank line of one boundary log into typed records. Each line must be a valid record (see
+    /// <see cref="OpenBiosProbeBoundaryRecord.Parse"/>), and VBlank numbers must be strictly increasing, so a duplicated or
+    /// reordered boundary is refused rather than compared. <paramref name="side"/> names the log in the diagnostic.
     /// </summary>
-    public static (int Index, string Field)? FirstMismatch(IReadOnlyList<string> left, IReadOnlyList<string> right)
+    /// <exception cref="BoundaryLogFormatException">A line is not a valid record, or the VBlank numbers do not increase.</exception>
+    public static IReadOnlyList<OpenBiosProbeBoundaryRecord> ParseLog(IEnumerable<string> lines, string side)
+    {
+        var records = new List<OpenBiosProbeBoundaryRecord>();
+        var lineNumber = 0;
+        foreach (var line in lines)
+        {
+            lineNumber++;
+            if (line.Trim().Length == 0) continue;
+            OpenBiosProbeBoundaryRecord record;
+            try
+            {
+                record = OpenBiosProbeBoundaryRecord.Parse(line);
+            }
+            catch (BoundaryLogFormatException ex)
+            {
+                throw new BoundaryLogFormatException($"{side} log line {lineNumber}: {ex.Message}");
+            }
+            if (records.Count > 0 && record.VBlank <= records[^1].VBlank)
+            {
+                throw new BoundaryLogFormatException(
+                    $"{side} log line {lineNumber}: vblank {record.VBlank} does not follow vblank {records[^1].VBlank}; VBlank numbers must strictly increase");
+            }
+            records.Add(record);
+        }
+        return records;
+    }
+
+    /// <summary>
+    /// The first field whose value differs between two parsed logs, over the boundaries both logs hold, as (index, field).
+    /// The engine label is not compared. Returns null when the common boundaries match. A boundary present on one side alone
+    /// is not compared here. A VBlank number that differs at the same index is reported as the field "vblank".
+    /// </summary>
+    public static (int Index, string Field)? FirstMismatch(IReadOnlyList<OpenBiosProbeBoundaryRecord> left, IReadOnlyList<OpenBiosProbeBoundaryRecord> right)
     {
         for (var i = 0; i < Math.Min(left.Count, right.Count); i++)
         {
-            var a = JsonNode.Parse(left[i])!.AsObject();
-            var b = JsonNode.Parse(right[i])!.AsObject();
-            foreach (var key in a.Select(static p => p.Key).Union(b.Select(static p => p.Key)).Where(static k => k != "engine"))
+            var a = left[i].ComparedFields();
+            var b = right[i].ComparedFields();
+            for (var f = 0; f < a.Count; f++)
             {
-                if (!JsonNode.DeepEquals(a[key], b[key])) return (i, key);
+                if (a[f].Value != b[f].Value) return (i, a[f].Name);
             }
         }
         return null;

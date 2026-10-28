@@ -265,11 +265,16 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     private static int CompareBoundaryLogs(string leftPath, string rightPath, TextWriter output, TextWriter error)
     {
-        string[] left, right;
+        IReadOnlyList<OpenBiosProbeBoundaryRecord> left, right;
         try
         {
-            left = File.ReadAllLines(leftPath).Where(static l => l.Trim().Length > 0).ToArray();
-            right = File.ReadAllLines(rightPath).Where(static l => l.Trim().Length > 0).ToArray();
+            left = OpenBiosProbeBoundaryLog.ParseLog(File.ReadLines(leftPath), "left");
+            right = OpenBiosProbeBoundaryLog.ParseLog(File.ReadLines(rightPath), "right");
+        }
+        catch (BoundaryLogFormatException ex)
+        {
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.Message}");
+            return 1;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -277,30 +282,22 @@ internal static class OpenBiosProbeCommand
             return 1;
         }
 
-        var common = Math.Min(left.Length, right.Length);
+        var common = Math.Min(left.Count, right.Count);
         JsonNode? first = null;
-        try
+        if (OpenBiosProbeBoundaryLog.FirstMismatch(left, right) is { } mismatch)
         {
-            if (OpenBiosProbeBoundaryLog.FirstMismatch(left[..common], right[..common]) is { } mismatch)
+            first = new JsonObject
             {
-                first = new JsonObject
-                {
-                    ["index"] = mismatch.Index,
-                    ["vblank"] = JsonNode.Parse(left[mismatch.Index])!["vblank"]!.DeepClone(),
-                    ["field"] = mismatch.Field,
-                };
-            }
-        }
-        catch (Exception ex) when (ex is JsonException or FormatException or NullReferenceException)
-        {
-            error.WriteLine($"openbios-probe: --compare-boundary-logs: a line is not a boundary record: {ex.Message}");
-            return 1;
+                ["index"] = mismatch.Index,
+                ["vblank"] = left[mismatch.Index].VBlank,
+                ["field"] = mismatch.Field,
+            };
         }
 
         var document = new JsonObject
         {
-            ["leftBoundaries"] = left.Length,
-            ["rightBoundaries"] = right.Length,
+            ["leftBoundaries"] = left.Count,
+            ["rightBoundaries"] = right.Count,
             ["commonBoundaries"] = common,
             ["firstMismatch"] = first,
         };

@@ -42,9 +42,9 @@ public sealed class OpenBiosProbeBoundaryLogTests
     [Fact]
     public void FirstMismatch_Ignores_The_Engine_Label_And_Names_The_First_Differing_Field()
     {
-        var left = new[] { Line("interpreter", vram: "aa"), Line("interpreter", vram: "bb") };
-        var same = new[] { Line("host", vram: "aa"), Line("host", vram: "bb") };
-        var diverged = new[] { Line("host", vram: "aa"), Line("host", vram: "cc") };
+        var left = Parse(Line("interpreter", vram: "aa"), Line("interpreter", vram: "bb"));
+        var same = Parse(Line("host", vram: "aa"), Line("host", vram: "bb"));
+        var diverged = Parse(Line("host", vram: "aa"), Line("host", vram: "cc"));
 
         OpenBiosProbeBoundaryLog.FirstMismatch(left, same).Should().BeNull();
         OpenBiosProbeBoundaryLog.FirstMismatch(left, diverged).Should().Be((1, "vramSha256"));
@@ -53,11 +53,132 @@ public sealed class OpenBiosProbeBoundaryLogTests
     [Fact]
     public void FirstMismatch_Compares_Only_The_Boundaries_Both_Logs_Hold()
     {
-        var left = new[] { Line("interpreter", vram: "aa") };
-        var right = new[] { Line("host", vram: "aa"), Line("host", vram: "bb") };
+        var left = Parse(Line("interpreter", vram: "aa"));
+        var right = Parse(Line("host", vram: "aa"), Line("host", vram: "bb", vblank: 2));
 
         OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().BeNull();
     }
+
+    [Fact]
+    public void Identical_Invalid_Json_On_Both_Sides_Is_Rejected_Not_Matched()
+    {
+        Action parse = () => OpenBiosProbeBoundaryLog.ParseLog(["{\"foo\":1}"], "left");
+        Action both = () =>
+        {
+            var left = OpenBiosProbeBoundaryLog.ParseLog(["{\"foo\":1}"], "left");
+            var right = OpenBiosProbeBoundaryLog.ParseLog(["{\"foo\":1}"], "right");
+            OpenBiosProbeBoundaryLog.FirstMismatch(left, right);
+        };
+
+        parse.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: missing required field *");
+        both.Should().Throw<BoundaryLogFormatException>();
+    }
+
+    [Fact]
+    public void JSON_Array_Input_Is_Rejected_With_A_Diagnostic_Not_An_Unhandled_Exception()
+    {
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog(["[1,2,3]"], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: expected a JSON object, got a JSON array");
+    }
+
+    [Fact]
+    public void Non_Object_And_Malformed_Lines_Are_Rejected()
+    {
+        Action scalar = () => OpenBiosProbeBoundaryLog.ParseLog(["42"], "left");
+        Action malformed = () => OpenBiosProbeBoundaryLog.ParseLog(["{\"engine\":"], "left");
+
+        scalar.Should().Throw<BoundaryLogFormatException>().WithMessage("*expected a JSON object*");
+        malformed.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: not valid JSON*");
+    }
+
+    [Fact]
+    public void A_Missing_Required_Field_Is_Rejected()
+    {
+        var withoutVram = Line("interpreter", vram: "aa").Replace(",\"vramSha256\":\"" + Sha("aa") + "\"", "", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([withoutVram], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: missing required field \"vramSha256\"");
+    }
+
+    [Fact]
+    public void An_Unexpected_Extra_Field_Is_Rejected()
+    {
+        var extra = Line("interpreter", vram: "aa").Replace("\"vramSha256\"", "\"extra\":1,\"vramSha256\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([extra], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: unexpected field \"extra\"");
+    }
+
+    [Fact]
+    public void A_Field_Of_The_Wrong_Type_Is_Rejected()
+    {
+        // vblank as a string, not a number.
+        var stringVBlank = Line("interpreter", vram: "aa").Replace("\"vblank\":1", "\"vblank\":\"1\"", StringComparison.Ordinal);
+        // cycles as a fraction, and a hex field without the 0x prefix.
+        var fractionCycles = Line("interpreter", vram: "aa").Replace("\"cycles\":0", "\"cycles\":1.5", StringComparison.Ordinal);
+        var badHex = Line("interpreter", vram: "aa").Replace("\"iStat\":\"0x00000000\"", "\"iStat\":\"00000000\"", StringComparison.Ordinal);
+
+        Action a = () => OpenBiosProbeBoundaryLog.ParseLog([stringVBlank], "left");
+        Action b = () => OpenBiosProbeBoundaryLog.ParseLog([fractionCycles], "left");
+        Action c = () => OpenBiosProbeBoundaryLog.ParseLog([badHex], "left");
+
+        a.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"vblank\" must be a non-negative integer");
+        b.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"cycles\" must be a non-negative integer");
+        c.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"iStat\" must be *");
+    }
+
+    [Fact]
+    public void A_Duplicated_Or_Backwards_VBlank_Number_Is_Rejected()
+    {
+        Action duplicated = () => OpenBiosProbeBoundaryLog.ParseLog([Line("i", "aa", vblank: 2), Line("i", "aa", vblank: 2)], "left");
+        Action backwards = () => OpenBiosProbeBoundaryLog.ParseLog([Line("i", "aa", vblank: 3), Line("i", "aa", vblank: 2)], "right");
+
+        duplicated.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 2: vblank 2 does not follow vblank 2*");
+        backwards.Should().Throw<BoundaryLogFormatException>().WithMessage("right log line 2: vblank 2 does not follow vblank 3*");
+    }
+
+    [Fact]
+    public void A_Mismatched_Corresponding_VBlank_Number_Is_Detected()
+    {
+        var left = Parse(Line("interpreter", vram: "aa", vblank: 1), Line("interpreter", vram: "aa", vblank: 2));
+        var right = Parse(Line("host", vram: "aa", vblank: 1), Line("host", vram: "aa", vblank: 3));
+
+        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().Be((1, "vblank"));
+    }
+
+    [Fact]
+    public void An_Exact_Match_Passes()
+    {
+        var left = Parse(Line("interpreter", vram: "aa"), Line("interpreter", vram: "bb", vblank: 2));
+        var right = Parse(Line("host", vram: "aa"), Line("host", vram: "bb", vblank: 2));
+
+        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().BeNull();
+    }
+
+    [Fact]
+    public void The_First_Real_Difference_Is_Reported_As_The_First_Mismatch()
+    {
+        var left = Parse(Line("i", "aa"), Line("i", "bb", vblank: 2), Line("i", "cc", vblank: 3));
+        var right = Parse(Line("h", "aa"), Line("h", "dd", vblank: 2), Line("h", "ee", vblank: 3));
+
+        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().Be((1, "vramSha256"));
+    }
+
+    [Fact]
+    public void A_Later_Boundary_Present_On_One_Side_Only_Is_Not_A_Mismatch()
+    {
+        var left = Parse(Line("i", "aa"), Line("i", "bb", vblank: 2), Line("i", "cc", vblank: 3));
+        var right = Parse(Line("h", "aa"));
+
+        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().BeNull();
+        OpenBiosProbeBoundaryLog.FirstMismatch(right, left).Should().BeNull();
+    }
+
+    private static IReadOnlyList<OpenBiosProbeBoundaryRecord> Parse(params string[] lines) =>
+        OpenBiosProbeBoundaryLog.ParseLog(lines, "test");
 
     [Fact]
     public void A_Failing_Writer_Is_Contained_And_Recorded()
@@ -83,10 +204,13 @@ public sealed class OpenBiosProbeBoundaryLogTests
         log.FailureMessage.Should().Contain("NullReferenceException");
     }
 
-    private static string Line(string engine, string vram) =>
-        "{\"engine\":\"" + engine + "\",\"vblank\":1,\"cycles\":0,\"iStat\":\"0x00000000\",\"iMask\":\"0x00000000\"," +
+    private static string Line(string engine, string vram, ulong vblank = 1) =>
+        "{\"engine\":\"" + engine + "\",\"vblank\":" + vblank + ",\"cycles\":0,\"iStat\":\"0x00000000\",\"iMask\":\"0x00000000\"," +
         "\"dicr\":\"0x00000000\",\"gpuStat\":\"0x00000000\",\"displayMode\":\"0x00000000\",\"displayVramStart\":\"0x00000000\"," +
-        "\"vramSha256\":\"" + vram + "\"}";
+        "\"vramSha256\":\"" + Sha(vram) + "\"}";
+
+    // A synthetic digest: the short tag left-padded to the 64 lowercase hex digits a real SHA-256 has.
+    private static string Sha(string tag) => tag.PadLeft(64, '0');
 
     private sealed class FailingWriter : TextWriter
     {
