@@ -1313,15 +1313,24 @@ public sealed class GuestCancellationTests
         try
         {
             using var cts = new CancellationTokenSource();
+            var observed = 0;
             var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
                 "cmd.exe",
                 ["/c", middle, "/c", grandchild, "-n", "60", "127.0.0.1", "&", "ping", "-n", "30", "127.0.0.1", ">nul"],
                 60_000,
-                cts.Token));
+                cts.Token,
+                observe: (_, _, _, ended) =>
+                {
+                    Interlocked.Increment(ref observed);
+                    return ended;
+                }));
 
-            // The grandchild runs under the middle; the tree is sampled for half a second while both are alive.
+            // The run samples the process tree once per wait (StopRecord.PollMs), and each sample precedes its observed wait. The grandchild
+            // is tracked only by a sample taken after it started. So the test waits for two observed waits that begin after the grandchild
+            // runs: the second one's sample is then taken with the grandchild alive and the middle alive (Issue #827 timing).
             WaitUntil(() => ProcessNameProbe.IsRunning(grandName), StopWait);
-            SpinFor(TimeSpan.FromMilliseconds(500));
+            var observedAtStart = Volatile.Read(ref observed);
+            WaitUntil(() => Volatile.Read(ref observed) >= observedAtStart + 2, StopWait);
 
             // The test ends the middle alone, without its tree, so the grandchild is left running with no living parent. The root is still
             // alive, waiting on its second command.
@@ -1690,6 +1699,66 @@ public sealed class GuestCancellationTests
         + "cop0.sr=0x00000000\ncop0.cause=0x00000000\ncop0.epc=0x00000000\n"
         + RecompiledArtifactCodeGen.SnapshotEndMarker + "\n";
 
+    [SkippableFact]
+    public void StderrOnlyHolder_OnTheNaturalEndPath_CostsTheOutputBudget()
+    {
+        // Measured latency (review MINOR 1, owner decision): a grandchild that holds only stderr, after its child ended with exit 0 on its own,
+        // now costs the output budget (2 s here). Before the stderr wait the run returned at once. The holder is a background sleep that
+        // sends its stdout to /dev/null and keeps the inherited stderr; it ends by itself after 5 s. The bound is pinned both ways: at least
+        // the budget (the wait is real), and well below the run's own timeout (the cost stays bounded).
+        var shell = OperatingSystem.IsWindows() ? @"C:\Program Files\Git\usr\bin\sh.exe" : "/bin/sh";
+        Skip.IfNot(File.Exists(shell), "NOT RUN: no POSIX shell to background a stderr-only holder");
+        var clock = Stopwatch.StartNew();
+        var outcome = RecompiledHostExecutionEngine.RunChildUntilStopped(
+            shell, ["-c", "sleep 5 >/dev/null & exit 0"], timeoutMs: 60_000, CancellationToken.None, outputBudgetMs: 2000);
+        clock.Stop();
+
+        outcome.ExitCode.Should().Be(0, "the child ended on its own with exit 0");
+        clock.Elapsed.Should().BeGreaterThan(TimeSpan.FromMilliseconds(1500), "the stderr drain waits for the output budget");
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(15), "the cost is bounded by the output budget, not by the run's timeout");
+    }
+
+    [SkippableFact]
+    public void AHolderOfStderrOnly_SurvivingTheStop_IsRecordedAsAPipeResidual()
+    {
+        // Positive case of the stderr branch of RecordPipeHeldAfterStop (review MINOR 3). The child starts a background sleep through an inner
+        // shell that exits at once, so the sleep is an orphan with stdout on /dev/null and the child's stderr. The child then keeps running.
+        // No descendant listing is given, so the stop cannot reap the orphan, and the child's kill releases the tree but not that pipe. The
+        // stop must record the stderr pipe as held.
+        var shell = OperatingSystem.IsWindows() ? @"C:\Program Files\Git\usr\bin\sh.exe" : "/bin/sh";
+        Skip.IfNot(File.Exists(shell), "NOT RUN: no POSIX shell to background a stderr-only holder");
+        using var cts = new CancellationTokenSource();
+        var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
+            shell,
+            ["-c", "sh -c 'sleep 15 >/dev/null &'; sleep 15"],
+            60_000,
+            cts.Token,
+            descendantsProbe: _ => Array.Empty<Process>(),
+            outputBudgetMs: 2000));
+
+        // Let the orphan start, then the inner shell has exited: the child is alive and the orphan is running.
+        SpinFor(TimeSpan.FromMilliseconds(800));
+        run.IsCompleted.Should().BeFalse("the child is still alive when the stop is sent");
+
+        cts.Cancel();
+        var outcome = ResultWithin(run);
+
+        outcome.Confirmed.Should().BeTrue("the child was killed and its exit seen");
+        outcome.Leftover.Should().Contain("an output pipe is still held", "the stderr pipe is held by the orphan that outlived the child");
+    }
+
+    [SkippableFact]
+    public void ABridgedChild_TimedOutWithStderrText_IsTimedOut()
+    {
+        // Review MINOR 4: the bridged timeout path reads stderr as partial text, as the no-bridge path does. A timeout never reads stderr
+        // (ClassifyArtifactRun returns TimedOut first), so the classification is the same either way; this pins it.
+        Skip.IfNot(OperatingSystem.IsWindows(), "the child is a Windows cmd.exe");
+        var result = RecompiledHostExecutionEngine.RunBridgedChildForTest(
+            "cmd.exe", ["/c", "echo", "partial", "1>&2", "&", "ping", "-n", "30", "127.0.0.1", ">nul"], timeoutMs: 1500, outputBudgetMs: 5000);
+
+        result.Status.Should().Be(RecompilerExecutionStatus.TimedOut);
+    }
+
     /// <summary>A scheduler that never runs a queued task: a continuation given to it stays pending (a test seam for the timing race).</summary>
     private sealed class NeverRunsTaskScheduler : TaskScheduler
     {
@@ -1726,6 +1795,52 @@ public sealed class GuestCancellationTests
         var completed = new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, null, null, null);
 
         RecompiledHostExecutionEngine.ApplyStopOutcome(completed, stop).Should().BeSameAs(completed);
+    }
+
+    [Fact]
+    public void RealArtifact_StopAfterANaturalEnd_WithALaggingStderrPump_KeepsTheCompletedResult()
+    {
+        // Deterministic form of the named flake (attempt 0 of RealArtifact_StopRacingANaturalEnd_...): the child ends normally, the stop
+        // settles before the run's end, and the stderr pump lags the stdout end (the seam holds its read for one second). The run must keep
+        // its completed result. Read at the stdout end, the snapshot is missing and the run fails (MALFORMED or ARTIFACT_FAILED).
+        uint[] words = [.. Li(T0, 0x1234u), Nop];
+        var program = ReachableProgramBuilder.Build(Entry, words, Entry, []);
+        var blockEntryPcs = new HashSet<uint>(program.Blocks.Select(b => b.EntryPc));
+        using var dir = new TempDirectory();
+        using (var builder = new RecompiledHostExecutionEngine(
+            program, words, Entry, new GeneratedHostBuildService(), dir.FullPath, embedImage: true))
+        {
+            new ExecutionOrchestrator().Execute(builder, handoff: null, Request(Entry, 64))
+                .FinalSnapshot.Should().NotBeNull("the embedded-image build itself must run");
+        }
+
+        var binary = UniqueArtifactCopy(BuiltBinary(dir), dir);
+        using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(binary, blockEntryPcs: blockEntryPcs, imageWords: words, imageLoadAddress: Entry);
+        // The stderr pump starts reading only one second after the child has exited (the gate is opened from the observation below), so the
+        // stderr text is not yet available when the stop settles and the run reads its output.
+        var stderrGate = new TaskCompletionSource();
+        engine.StderrPumpGateForTest = stderrGate.Task;
+        using var cts = new CancellationTokenSource();
+        var observed = false;
+        engine.WaitObservedForTest = (record, child, phase, ended) =>
+        {
+            if (observed)
+            {
+                return ended;
+            }
+
+            observed = true;
+            WaitUntil(() => child.HasExited, StopWait);
+            _ = Task.Delay(TimeSpan.FromSeconds(1)).ContinueWith(_ => stderrGate.TrySetResult());
+            cts.Cancel();
+            WaitUntil(() => record.Settled, StopWait);
+            return false;
+        };
+
+        var result = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(Entry, 64), cancellationToken: cts.Token);
+
+        result.FinalSnapshot.Should().NotBeNull($"a child that ended normally keeps its result: {result.DiagnosticCode} {result.DiagnosticMessage}");
+        result.FinalSnapshot!.Gpr[(int)T0].Should().Be(0x1234u);
     }
 
     [Fact]

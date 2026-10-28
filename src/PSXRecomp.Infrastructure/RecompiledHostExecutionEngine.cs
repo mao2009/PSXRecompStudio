@@ -259,6 +259,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Func<StopRecord, Process, string, bool, bool>? WaitObservedForTest { get; set; }
 
     /// <summary>
+    /// Test seam: delays the start of the stderr read of a segment's child until this task completes (see <c>OutputSink.Pump</c>). It makes a
+    /// stderr pump that lags the stdout end reproducible. Null in production.
+    /// </summary>
+    internal Task? StderrPumpGateForTest { get; set; }
+
+    /// <summary>
     /// Test seam (Issue #827): replaces the kill of the child, so a test injects the OS refusal on the stop and timeout paths. Null
     /// in production.
     /// </summary>
@@ -863,7 +869,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool drainCutWhileAlive;
         try
         {
-            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord);
+            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord,
+                stderrPumpGate: StderrPumpGateForTest);
         }
         catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop)
         {
@@ -1413,7 +1420,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // Declared after the process, so it is sealed before the process is disposed on any return path (Issue #827).
         using var stopSeal = stopRecord.Attach(process, stopToken);
         // stderr is read by a sink, as stdout is: a drain cut short keeps the text read so far. That is how the state snapshot survives a grandchild
-        // that holds the pipe open after the child ended. stderrTask is the whole text once the stream has ended (the bridge uses it).
+        // that holds the pipe open after the child ended. The text is read through the pump's end (SinkText), never from a continuation.
         var stderrSink = new OutputSink();
         var stderrPump = stderrSink.Pump(process.StandardError, stderrPumpGate);
         var stderrTask = stderrPump.ContinueWith(_ => stderrSink.Text, stderrContinuationScheduler ?? TaskScheduler.Default);
@@ -1437,7 +1444,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return (
                     int.MinValue,
                     stdoutSink.Text,
-                    DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, cleanupStart, out _),
+                    SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, cleanupStart),
                     false,
                     true);
             }
@@ -1453,8 +1460,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // stderr carries the state snapshot. It is waited for within the same drain budget, measured from drainStart as stdout is; the sink
             // keeps the text read so far, so a stderr pipe still held by a grandchild does not lose a complete snapshot already written.
             // The stderr pump can lag the stdout end, so the text is read when the pump ends, not at the stdout end.
-            var stderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, drainStart);
-            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
+            var stderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, drainStart);            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
             return (process.ExitCode, stdout, stderr, false, true);
         }
 
@@ -1494,7 +1500,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryKillTree(process, stopRecord, stopToken);
             Trace.WriteLine($"Host-transfer pump failed: {exception}");
             timedOut = false;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), true, true);
+            return (int.MinValue, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), true, true);
         }
 
         if (!pumpCompleted && drainTimedOut)
@@ -1526,7 +1532,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryReleaseStdout(process);
             var pumpEnded = drainedOnItsOwn || HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromSeconds(1));
             timedOut = true;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, pumpEnded);
+            return (int.MinValue, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), false, pumpEnded);
         }
 
         if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
@@ -1535,12 +1541,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // the bridge's devices any more.
             TryKillTree(process, stopRecord, stopToken);
             timedOut = true;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, true);
+            return (int.MinValue, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), false, true);
         }
 
         timedOut = false;
         // The bridged run's stderr carries the snapshot: read it as the no-bridge run does, so a pipe a grandchild still holds keeps the text read so far.
         var bridgeStderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp());
+        // Only the stderr pump is checked. Reaching this point requires pumpCompleted (the protocol pump on stdout has ended; the returns
+        // above handle the other cases), so the stdout pipe is not held here and needs no check of its own.
         RecordPipeHeldAfterStop(stopToken, stopRecord, stderrPump);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
@@ -1735,11 +1743,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Consumes a redirected stream within <paramref name="budgetMs"/>. A stop that arrives during the drain caps the rest of it at the
-    /// cleanup budget, measured from the stop, so a stop never waits for the full budget (Issue #827). <paramref name="timedOut"/> reports
-    /// that the budget ran out before the stream ended; the result is then empty, and the caller reports it.
-    /// </summary>
-    /// <summary>
     /// The text a sink has read when the budget ends. A stream still held open keeps the text read so far, so a complete snapshot already on the
     /// pipe is not lost. <see cref="DrainUntil"/> returns nothing for a drain that did not complete.
     /// </summary>
@@ -1747,12 +1750,6 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     {
         WaitForDrain(pump, budgetMs, stop, drainStart, out _);
         return sink.Text;
-    }
-
-    private static string DrainUntil(Task<string> readTask, int budgetMs, StopRecord stop, long drainStart, out bool timedOut)
-    {
-        var completed = WaitForDrain(readTask, budgetMs, stop, drainStart, out timedOut);
-        return completed && readTask.IsCompletedSuccessfully ? readTask.Result : string.Empty;
     }
 
     /// <summary>
