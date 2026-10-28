@@ -60,8 +60,10 @@ This command:
   `kernelBooted:true` only when all hold; `bootVerified:true` additionally needs
   `titleStarted` (control left the shell for user RAM outside the shell image). Running a
   fixed number of instructions is never evidence. `--capture-at <pc>` snapshots registers
-  and recent transfers when a PC is first fetched; a stop prints PC, word, COP0, GPRs,
-  recent fetches/transfers, and the first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
+  and recent transfers when a PC is first fetched. The snapshot carries `pc`, `word` and `gpr`
+  (both withheld: `null`), and `lastTransfers` without words. A stop prints `pc`, COP0 (`sr`, `cause`,
+  `epc`, `badVAddr`), `gpr` (`null`), and `lastFetches`/`lastTransfers` whose words are `null`, plus the
+  first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
   Local diagnostics for the interpreter engine (output is never committed): `--dump-ram <file>`
   writes the 2 MiB of main RAM at the `--capture-at` PC, `--dump-frame <file.ppm>` the displayed
   frame at the end (24-bit aware), `--pc-histogram <file.json>` the guest-RAM fetch counts (top PCs and
@@ -265,9 +267,9 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     the same region, by physical address).
   - `unsupportedOpcodes[]`: the first RI (10) / CpU (11) exception per
     (ExcCode, PC) seen at the vector: faulting PC (EPC, +4 in a delay slot),
-    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. An entry carries no `opcode` field. An earlier export had one: the 6-bit opcode field of the word (`word >> 26`), a number when the word was
-    present and `null` otherwise. The word is always withheld, so in practice the earlier export always had it `null`; the field is still removed,
-    because it is derived from the word and no value derived from a withheld word may be published.
+    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. There is no `opcode`
+    field. An earlier export had one, the word's 6-bit opcode (`word >> 26`), a number whenever the word was present. It is derived
+    from the withheld word, so it is removed as well.
 - `timings` (wall clock, not deterministic): `buildMs` (image analysis),
   `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
   `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −
@@ -279,13 +281,20 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   compared, every boundary the interpreter reached matched in the host, and
   the milestones match; null without `--differential`.
 - `differential.<pc>`: `match`, `firstMismatch` (`kind` cpu/device/ram, `name`,
-  both values; CPU before devices before RAM), `cpuMismatches[]` (PC, r1–r31,
-  HI, LO, SR, CAUSE, EPC, BadVAddr), `deviceMismatches[]` (I_STAT, I_MASK, IRQ
-  line, DMA DPCR/DICR/MADR/BCR/CHCR and IRQ, timer counter/target/IRQ, SIO0
-  IRQ, GPUSTAT, VRAM SHA-256, CD-ROM index/status/IF/IE/FIFO counts/last
-  command/mode), `ramFirstMismatch` (address, 4 KiB page, 16 bytes either side
-  in both runs), `ramMismatchBytes`, `ramMismatchPages`, both RAM SHA-256.
+  both values; CPU before devices before RAM; a RAM mismatch has `null` values),
+  `cpuMismatches[]` (PC, HI, LO, SR, CAUSE, EPC, BadVAddr, and the GPR names
+  r1–r31 with `null` values, since their values are withheld), `deviceMismatches[]`
+  (I_STAT, I_MASK, IRQ line, DMA DPCR/DICR/MADR/BCR/CHCR and IRQ, timer
+  counter/target/IRQ, SIO0 IRQ, GPUSTAT, VRAM SHA-256, CD-ROM index/status/IF/IE/FIFO
+  counts/last command/mode), `ramFirstMismatch` (`address` and 4 KiB `page` only:
+  the bytes either side are withheld), `ramMismatchBytes` (a count),
+  `ramMismatchPages`, and both RAM SHA-256 (`interpreterRamSha256`, `hostRamSha256`).
   Only side-effect-free reads are used (no timer mode, no FIFO pops).
+- The boundary snapshots (`boundaries.<pc>`, and `firstInterrupt.interpreter` /
+  `firstInterrupt.host`) carry `pc`, `atFetch`, `cpu` (every non-GPR CPU register; no
+  `r0`–`r31` keys), `gpr` (`null`), `devices`, `sr`, `cause`, `epc`, `ramSha256`,
+  `guestCycles`, `scratchpadSha256`. The earlier `instructionWord` field (the RAM word
+  at the PC) is removed. The GPR values are not exported: they are not keys of `cpu`, and `gpr` is `null`.
 - `milestoneComparison`: whether both runs reached the same milestones
   (fetch indices excluded: they count different fetches) and the
   interpreter's report. `stopAt`: the PC and whether each run reached it.

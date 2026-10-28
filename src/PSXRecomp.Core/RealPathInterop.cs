@@ -58,6 +58,48 @@ public static class RealPathInterop
         return rest.Length >= 3 && char.IsAsciiLetter(rest[0]) && rest[1] == ':' && rest[2] == '\\' ? rest : null;
     }
 
+    /// <summary>
+    /// Creates a new file at <paramref name="path"/> (Windows only) and returns its open handle. The handle has the access needed to delete
+    /// the file through it (<see cref="TryDeleteByHandle"/>), and no sharing, so nothing else can open it meanwhile. Fails when anything exists
+    /// at the name, a dangling link included; it does not follow a link.
+    /// </summary>
+    public static SafeFileHandle CreateNewFile(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("the create-and-delete-by-handle path is Windows only");
+        }
+
+        const uint GenericWrite = 0x40000000;
+        const uint Delete = 0x00010000;
+        const uint FileReadAttributes = 0x80;
+        const uint CreateNew = 1;
+        const uint FileAttributeNormal = 0x80;
+        var handle = CreateFileW(path, GenericWrite | Delete | FileReadAttributes, 0, IntPtr.Zero, CreateNew, FileAttributeNormal, IntPtr.Zero);
+        if (handle == new IntPtr(-1))
+        {
+            throw new IOException($"the file could not be created exclusively (Win32 error {Marshal.GetLastPInvokeError()})");
+        }
+
+        return new SafeFileHandle(handle, ownsHandle: true);
+    }
+
+    /// <summary>
+    /// Marks the file the handle refers to for deletion; it is removed when the last handle to it closes. Deletes that file, whatever name it
+    /// has now. Windows only; false elsewhere or when the request fails.
+    /// </summary>
+    public static bool TryDeleteByHandle(SafeFileHandle handle)
+    {
+        if (!OperatingSystem.IsWindows() || handle.IsInvalid)
+        {
+            return false;
+        }
+
+        const int FileDispositionInfo = 4;
+        byte deleteFile = 1;
+        return SetFileInformationByHandle(handle.DangerousGetHandle(), FileDispositionInfo, ref deleteFile, sizeof(byte));
+    }
+
     // The handle is opened by following the links (no FILE_FLAG_OPEN_REPARSE_POINT), so its final path is the resolved one.
     private static string? WindowsRealPath(string path)
     {
@@ -110,6 +152,9 @@ public static class RealPathInterop
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(IntPtr file, int fileInformationClass, ref byte fileInformation, uint bufferSize);
 
     [DllImport("libc", SetLastError = true)]
     private static extern IntPtr realpath(string path, IntPtr resolved);

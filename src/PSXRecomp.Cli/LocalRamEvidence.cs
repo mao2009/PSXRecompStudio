@@ -45,16 +45,19 @@ internal static class LocalRamEvidence
     /// <summary>
     /// Creates a new file with <paramref name="bytes"/>. Returns the refusal, or null when the file was written. The path is checked, the
     /// check is repeated, and the file is created exclusively at the verified real location, not through the link the caller named. On
-    /// Windows the created file is then checked through its open handle, before any byte is written. Nothing is written when a check fails.
+    /// Windows the created file is then checked through the handle that created it, before any byte is written. Nothing is written when a
+    /// check fails; a file that failed the handle check is deleted through that same handle when it is still empty.
     /// </summary>
     public static string? WriteNewBytes(string path, byte[] bytes) =>
-        WriteNewBytes(path, bytes, RealPathInterop.TryGetRealPath, RealPathInterop.CanResolveHandle ? RealPathInterop.TryGetRealPath : null);
+        WriteNewChecked(path, bytes, RealPathInterop.TryGetRealPath, RealPathInterop.CanResolveHandle ? RealPathInterop.TryGetRealPath : null, beforeCreate: null);
 
     /// <summary>
-    /// The write with its two seams: <paramref name="resolveExisting"/> resolves a path before the create, and <paramref name="resolveHandle"/>
-    /// resolves the created file through its handle (null skips that check, which is used only where the platform cannot confirm a handle).
+    /// The write with its seams: <paramref name="resolveExisting"/> resolves a path, <paramref name="resolveHandle"/> resolves the created file
+    /// through its handle (null skips that check, used only where the platform cannot confirm a handle), and <paramref name="beforeCreate"/>
+    /// runs between the last check and the create (a test hook for a link swapped into that window).
     /// </summary>
-    internal static string? WriteNewBytes(string path, byte[] bytes, Func<string, string?> resolveExisting, Func<SafeFileHandle, string?>? resolveHandle)
+    internal static string? WriteNewChecked(
+        string path, byte[] bytes, Func<string, string?> resolveExisting, Func<SafeFileHandle, string?>? resolveHandle, Action? beforeCreate)
     {
         if (Resolve(path, mustBeNew: true, resolveExisting, out var real) is { } refusal)
         {
@@ -73,44 +76,57 @@ internal static class LocalRamEvidence
             return $"{path}: its location changed while it was being checked; choose a new path";
         }
 
-        FileStream stream;
+        beforeCreate?.Invoke();
+
+        SafeFileHandle handle;
         try
         {
-            // FileMode.CreateNew fails when anything exists at the name, a dangling link included, and it does not follow a link.
-            stream = new FileStream(real, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            handle = CreateNewHandle(real);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return $"{real} could not be created exclusively ({ex.Message})";
         }
 
-        using (stream)
+        using (handle)
         {
             if (resolveHandle is not null)
             {
-                // The file just created must be the one at the verified location. Checked before any byte is written. A file that is not
-                // where it was verified to be is left in place (deleting by path could remove a file that is not ours), and it holds no RAM.
-                var handleLocation = resolveHandle(stream.SafeFileHandle);
-                if (handleLocation is null || !SameLocation(handleLocation, real))
+                var location = resolveHandle(handle);
+                if (location is null || !SameLocation(location, real))
                 {
-                    return $"{real}: the file created there resolves to {handleLocation ?? "an unknown location"}, not to the verified location; " +
-                        "no bytes were written to it. It is empty; remove it yourself and choose another path.";
+                    var where = location ?? "an unknown location";
+                    // This call created the file and holds its handle, so the handle names it. It is deleted through the handle only when it is
+                    // still empty; nothing is deleted by path.
+                    if (RandomAccess.GetLength(handle) == 0 && RealPathInterop.TryDeleteByHandle(handle))
+                    {
+                        return $"{real}: the file created there resolves to {where}, not to the verified location; it was empty, so it was deleted " +
+                            "through its handle and nothing was written.";
+                    }
+
+                    return $"{real}: the file created there resolves to {where}, not to the verified location; nothing was written, but the file " +
+                        $"could not be removed by this call. It was created at {real} and must be removed by hand.";
                 }
             }
 
             try
             {
-                stream.Write(bytes, 0, bytes.Length);
+                RandomAccess.Write(handle, bytes, 0);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (IOException ex)
             {
-                // The file was created by this call and is partial now. It is not deleted by path (see above); the caller reports it.
                 return $"{real}: the write failed ({ex.Message}); the file is partial and must be removed by hand";
             }
         }
 
         return null;
     }
+
+    /// <summary>Creates the file exclusively and returns a handle to it: a delete-capable handle on Windows, a plain one elsewhere.</summary>
+    private static SafeFileHandle CreateNewHandle(string real) =>
+        OperatingSystem.IsWindows()
+            ? RealPathInterop.CreateNewFile(real)
+            : File.OpenHandle(real, FileMode.CreateNew, FileAccess.Write, FileShare.None);
 
     private static bool SameLocation(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 

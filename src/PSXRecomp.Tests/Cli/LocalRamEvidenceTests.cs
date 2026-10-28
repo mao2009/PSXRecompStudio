@@ -214,28 +214,59 @@ public sealed class LocalRamEvidenceTests
         RealPathInterop.NormalizeFinalPath(@"C:\repo").Should().BeNull("a path without the final-path prefix is not a verified location");
     }
 
-    // Finding 3: the created file is checked through its handle before any byte is written. A file that is not where it was verified to be
-    // receives nothing, and is not deleted by path.
-    [Fact]
-    public void WriteNew_WhenTheCreatedFileIsNotAtTheVerifiedLocation_WritesNothing()
+    // Finding 3 and PR #839 re-review item 1: the created file is checked through its handle before any byte is written. A file that is not
+    // where it was verified to be receives nothing, and the empty file this call created is deleted through its handle (never by path).
+    [SkippableFact]
+    public void WriteNew_WhenTheCreatedFileIsNotAtTheVerifiedLocation_WritesNothing_AndDeletesItsEmptyFile()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: the handle check and deletion through the handle are Windows only");
         using var dir = new TempDirectory();
         var target = Path.Combine(dir.FullPath, "ram.bin");
 
-        var refusal = LocalRamEvidence.WriteNewBytes(target, [1, 2, 3], RealPathInterop.TryGetRealPath, _ => Path.Combine(dir.FullPath, "elsewhere.bin"));
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [1, 2, 3], RealPathInterop.TryGetRealPath,
+            _ => Path.Combine(dir.FullPath, "elsewhere.bin"), beforeCreate: null);
 
-        refusal.Should().Contain("no bytes were written");
-        new FileInfo(target).Length.Should().Be(0, "the bytes are written only after the handle check");
+        refusal.Should().Contain("nothing was written").And.Contain("deleted through its handle");
+        File.Exists(target).Should().BeFalse("the empty file this call created is removed, so no empty evidence file stays behind");
+        File.Exists(Path.Combine(dir.FullPath, "elsewhere.bin")).Should().BeFalse();
     }
 
-    [Fact]
-    public void WriteNew_WhenTheCreatedFileCannotBeConfirmed_WritesNothing()
+    [SkippableFact]
+    public void WriteNew_WhenTheCreatedFileCannotBeConfirmed_WritesNothing_AndDeletesItsEmptyFile()
     {
+        Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: the handle check and deletion through the handle are Windows only");
         using var dir = new TempDirectory();
         var target = Path.Combine(dir.FullPath, "ram.bin");
 
-        LocalRamEvidence.WriteNewBytes(target, [1, 2, 3], RealPathInterop.TryGetRealPath, _ => null).Should().Contain("no bytes were written");
-        new FileInfo(target).Length.Should().Be(0);
+        LocalRamEvidence.WriteNewChecked(target, [1, 2, 3], RealPathInterop.TryGetRealPath, _ => null, beforeCreate: null)
+            .Should().Contain("nothing was written");
+        File.Exists(target).Should().BeFalse();
+    }
+
+    // PR #839 re-review item 5: a real directory-junction swap in the create window, made deterministic by a hook that runs after the last
+    // check and before the create. Without the handle check the file would be created inside the work tree.
+    [SkippableFact]
+    public void CreateWindow_DirectorySwappedForAJunctionIntoTheWorkTree_IsCaughtByTheHandleCheck_AndNothingLandsInTheWorkTree()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: directory junctions and the handle check are Windows only");
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var reports = dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var outside = dir.CreateSubdirectory("outside");
+        var target = Path.Combine(outside, "ram.bin");
+        var inWorkTree = Path.Combine(reports, "ram.bin");
+        var swapped = false;
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [1, 2, 3], RealPathInterop.TryGetRealPath, RealPathInterop.TryGetRealPath, beforeCreate: () =>
+        {
+            Directory.Delete(outside);
+            Skip.IfNot(TryCreateJunction(outside, reports, out var error), $"NOT RUN: the junction could not be created in the create window: {error}");
+            swapped = true;
+        });
+
+        swapped.Should().BeTrue("the swap ran in the create window");
+        refusal.Should().Contain("resolves to").And.Contain("nothing was written");
+        File.Exists(inWorkTree).Should().BeFalse("no file may be created in the work tree through the swapped directory");
     }
 
     [Fact]
