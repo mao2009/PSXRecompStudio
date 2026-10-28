@@ -232,7 +232,7 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
             var result = BiosTimerVblankIrqHandler.Run(Context());
 
             result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-            result.Detail.Should().Contain($"IRQ{irq}").And.Contain($"flag={flag}")
+            result.Detail.Should().Contain($"IRQ{irq}").And.NotContain("flag=")
                 .And.Contain($"event 0x{0xF2000000u + t:X8},2").And.Contain("#687");
             for (var other = 0u; other <= 3; other++)
             {

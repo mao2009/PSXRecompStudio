@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using FluentAssertions;
+using PSXRecomp.Core;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure.Cli;
@@ -187,6 +188,64 @@ public sealed class LocalRamEvidenceTests
     {
         using var dir = new TempDirectory();
         LocalRamEvidence.RefusalFor(Path.Combine(dir.FullPath, "fresh.json"), mustBeNew: true).Should().BeNull();
+    }
+
+    // Finding 1 (PR #839 re-review): a volume with no drive letter resolves to \\?\Volume{GUID}\..., which is not an absolute location. Stripping
+    // its prefix would leave a relative path, anchored to the working directory, so the Git check would look at the wrong tree. Refused.
+    [Fact]
+    public void ResolvedVolumeGuidPath_WithoutADriveLetter_IsRefused_NotAnchoredToTheWorkingDirectory()
+    {
+        using var dir = new TempDirectory();
+        var outsideLooking = dir.CreateSubdirectory("outside");
+        const string VolumeForm = "Volume{8c0c2e4f-0000-0000-0000-100000000000}\\repo\\reports";
+
+        LocalRamEvidence.RefusalFor(Path.Combine(outsideLooking, "ram.json"), mustBeNew: true, resolveExisting: _ => VolumeForm)
+            .Should().Contain("cannot be determined");
+        LocalRamEvidence.RefusalFor(Path.Combine(outsideLooking, "ram.json"), mustBeNew: false, resolveExisting: _ => VolumeForm)
+            .Should().Contain("cannot be determined");
+    }
+
+    [Fact]
+    public void NormalizeFinalPath_KeepsOnlyDriveAbsoluteAndUncLocations()
+    {
+        RealPathInterop.NormalizeFinalPath(@"\\?\C:\repo\reports").Should().Be(@"C:\repo\reports");
+        RealPathInterop.NormalizeFinalPath(@"\\?\UNC\server\share\reports").Should().Be(@"\\server\share\reports");
+        RealPathInterop.NormalizeFinalPath(@"\\?\Volume{8c0c2e4f-0000-0000-0000-100000000000}\repo").Should().BeNull("a volume with no drive letter is not a location");
+        RealPathInterop.NormalizeFinalPath(@"C:\repo").Should().BeNull("a path without the final-path prefix is not a verified location");
+    }
+
+    // Finding 3: the created file is checked through its handle before any byte is written. A file that is not where it was verified to be
+    // receives nothing, and is not deleted by path.
+    [Fact]
+    public void WriteNew_WhenTheCreatedFileIsNotAtTheVerifiedLocation_WritesNothing()
+    {
+        using var dir = new TempDirectory();
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        var refusal = LocalRamEvidence.WriteNewBytes(target, [1, 2, 3], RealPathInterop.TryGetRealPath, _ => Path.Combine(dir.FullPath, "elsewhere.bin"));
+
+        refusal.Should().Contain("no bytes were written");
+        new FileInfo(target).Length.Should().Be(0, "the bytes are written only after the handle check");
+    }
+
+    [Fact]
+    public void WriteNew_WhenTheCreatedFileCannotBeConfirmed_WritesNothing()
+    {
+        using var dir = new TempDirectory();
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        LocalRamEvidence.WriteNewBytes(target, [1, 2, 3], RealPathInterop.TryGetRealPath, _ => null).Should().Contain("no bytes were written");
+        new FileInfo(target).Length.Should().Be(0);
+    }
+
+    [Fact]
+    public void WriteNewBytes_OutsideTheRepository_WritesTheBytesExactly()
+    {
+        using var dir = new TempDirectory();
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        LocalRamEvidence.WriteNewBytes(target, [0x00, 0xFF, 0x10]).Should().BeNull();
+        File.ReadAllBytes(target).Should().Equal(0x00, 0xFF, 0x10);
     }
 
     private static bool TryCreateJunction(string link, string target, out string error) =>

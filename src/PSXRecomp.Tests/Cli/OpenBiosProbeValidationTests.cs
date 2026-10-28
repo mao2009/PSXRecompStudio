@@ -137,6 +137,27 @@ public sealed class OpenBiosProbeValidationTests
         new FileInfo(boundaryLog).Exists.Should().BeFalse("the refusal happens before the log is opened");
     }
 
+#pragma warning disable AARC003 // Test-only check that the refused dump file was not created.
+    // Finding 2 (PR #839 re-review): --dump-ram carries RAM words, so it is refused inside a Git work tree, before the run starts.
+    [Fact]
+    public void Run_DumpRamInsideAWorkTree_IsRefusedBeforeTheRun()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+
+        var exit = RunProbe([
+            rom, "--engine", "interpreter", "--capture-at", "80010000",
+            "--dump-ram", Path.Combine(dir.FullPath, "repo", "reports", "ram.bin")
+        ], out _, out var error);
+
+        exit.Should().Be(1);
+        error.Should().Contain("--dump-ram").And.Contain("outside any Git work tree");
+        File.Exists(Path.Combine(dir.FullPath, "repo", "reports", "ram.bin")).Should().BeFalse();
+    }
+#pragma warning restore AARC003
+
     [Theory]
     [InlineData("--dump-ram")]
     [InlineData("--dump-frame")]

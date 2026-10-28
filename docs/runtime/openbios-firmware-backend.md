@@ -265,9 +265,9 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     the same region, by physical address).
   - `unsupportedOpcodes[]`: the first RI (10) / CpU (11) exception per
     (ExcCode, PC) seen at the vector: faulting PC (EPC, +4 in a delay slot),
-    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. An entry carries no
-    `opcode` field: it was a field of the withheld word, so it is no longer exported (a schema change from the earlier export, which
-    always had it `null`).
+    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. An entry carries no `opcode` field. An earlier export had one: the 6-bit opcode field of the word (`word >> 26`), a number when the word was
+    present and `null` otherwise. The word is always withheld, so in practice the earlier export always had it `null`; the field is still removed,
+    because it is derived from the word and no value derived from a withheld word may be published.
 - `timings` (wall clock, not deterministic): `buildMs` (image analysis),
   `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
   `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −
@@ -317,7 +317,9 @@ observed at each fallback PC in RAM, and it is bound to one export by that expor
 real location outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. The check
 resolves every symbolic link and junction on the path first (a link named outside a repository that points into it is refused), and a path
 whose real location cannot be determined is refused. The file is created exclusively, so an existing file is never replaced. `fallback-roots`
-takes it with `--local-ram-evidence <file.json>`. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
+takes it with `--local-ram-evidence <file.json>`.
+`openbios-probe --dump-ram <file>` (the raw 2 MiB of RAM at `--capture-at`, a local diagnostic) is written under the same rule: a new file,
+outside every Git work tree, refused before the run when it is not. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
 could not be read, or when two fetches at the same PC read different words; such a target has no word. The planner reads a target as a
 candidate root only when its RAM word equals the word the EXE file places at that PC; any target without a word, or with another word, is
 rejected with the reason `ram-word-mismatch` and is not reported as a native route. Without the local evidence no target has a word, so

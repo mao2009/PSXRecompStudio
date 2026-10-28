@@ -187,6 +187,12 @@ internal static class OpenBiosProbeCommand
             error.WriteLine(Usage);
             return 1;
         }
+        // The raw RAM dump carries RAM words: a local file only, outside any Git work tree (the same guard as the RAM evidence).
+        if (dumpRamPath is not null && LocalRamEvidence.RefusalFor(dumpRamPath, mustBeNew: true) is { } dumpRefusal)
+        {
+            error.WriteLine($"openbios-probe: --dump-ram: {dumpRefusal}");
+            return 1;
+        }
         if (listDiscPath is not null && discPath is null)
         {
             error.WriteLine("openbios-probe: --list-disc requires --disc to specify the disc image to list");
@@ -236,7 +242,7 @@ internal static class OpenBiosProbeCommand
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
                         firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath), localRamEvidencePath), json, output, error, mdecLog)
-                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, error, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
             }
             finally
             {
@@ -308,12 +314,13 @@ internal static class OpenBiosProbeCommand
         text is null ? fallback : ulong.Parse(text, NumberStyles.None, CultureInfo.InvariantCulture);
 
     private static int RunInterpreter(
-        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
+        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output, TextWriter error,
         string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
         object? captured = null;
+        string? ramDumpRefusal = null;
         var observed = engine as InterpreterTitleExecutionEngine;
         uint lastFetch = 0;
         if (mdecLog is not null && observed is not null)
@@ -351,10 +358,10 @@ internal static class OpenBiosProbeCommand
                 {
                     if (dumpRamPath is not null)
                     {
-                        // Raw 2 MiB main RAM (KSEG0) for offline disassembly; local diagnostic output only.
+                        // Raw 2 MiB main RAM (KSEG0) for offline disassembly. A local diagnostic: a new file outside any Git work tree.
                         var ram = new byte[RamBytes];
                         for (var a = 0; a < RamBytes; a += 4) BitConverter.TryWriteBytes(ram.AsSpan(a), observed.ReadGuestWord(0x80000000u + (uint)a));
-                        File.WriteAllBytes(dumpRamPath, ram);
+                        ramDumpRefusal = LocalRamEvidence.WriteNewBytes(dumpRamPath, ram);
                     }
                     captured = new
                     {
@@ -464,6 +471,12 @@ internal static class OpenBiosProbeCommand
             }
             output.WriteLine($"Kernel boot milestones: {JsonSerializer.Serialize(report)} => kernelBooted={kernelBooted}");
             output.WriteLine("Title boot: NOT VERIFIED (kernel boot is not a game boot).");
+        }
+
+        if (ramDumpRefusal is not null)
+        {
+            error.WriteLine($"openbios-probe: --dump-ram: {ramDumpRefusal}");
+            return 1;
         }
 
         // Exit 0 means only that the kernel booted to its shell (see OpenBiosBootMonitor); a title has not
@@ -672,12 +685,20 @@ internal static class OpenBiosProbeCommand
                     error.WriteLine($"openbios-probe: --fallback-targets: the run ended in {result.State}; the export is partial and fallback-roots will refuse it.");
                 }
 
+                // The evidence path is checked before the export is written, so a refused evidence path leaves no export behind.
+                if (probe.LocalRamEvidencePath is not null && LocalRamEvidence.RefusalFor(probe.LocalRamEvidencePath, mustBeNew: true) is { } preEvidenceRefusal)
+                {
+                    error.WriteLine($"openbios-probe: --local-ram-evidence: {preEvidenceRefusal}");
+                    return 1;
+                }
+
                 WriteAtomically(probe.FallbackTargetsPath, exportJson);
                 if (probe.LocalRamEvidencePath is not null)
                 {
                     // The local evidence (RAM words, never published) is bound to this export's exact bytes, and is written only outside any Git work tree.
                     var exportSha = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(exportJson))).ToLowerInvariant();
-                    // Checked again at the write: the path is resolved to its real location, and a link swapped in since the start is refused.
+                    // Checked again at the write, on the real location. If this refuses, the export above is already written and holds no RAM word; it is not
+                    // evidence for fallback-roots without the evidence, which the planner then refuses (fail closed).
                     if (LocalRamEvidence.WriteNew(probe.LocalRamEvidencePath, BuildRamEvidenceDocument(exportSha, evidence!.Targets.Select(static t => t.Target), ramWords.Get)) is { } writeRefusal)
                     {
                         error.WriteLine($"openbios-probe: --local-ram-evidence: {writeRefusal}");
@@ -943,13 +964,14 @@ internal static class OpenBiosProbeCommand
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
-    /// <summary>True when a guest PC translates into the 2 MiB of RAM. A PC outside RAM (the BIOS ROM range) has no RAM word to export.</summary>
+    /// <summary>True when a guest PC translates into the physical RAM range below 8 MiB (2 MiB of RAM and its mirrors). A PC outside it (the BIOS ROM range) has no RAM word to export.</summary>
     internal static bool IsGuestRamPc(uint pc) => Ps1AddressTranslation.TryTranslate(pc, out var physical) && physical < 0x00800000u;
 
     /// <summary>
-    /// The ruling on #839: no guest word from RAM is published. Every stdout, JSON and public file output withholds it. The one
-    /// exception is the explicit local RAM evidence (<c>--local-ram-evidence</c>, see <see cref="BuildRamEvidenceDocument"/>), which
-    /// is written only outside any Git work tree. The switch is pinned to false by tests.
+    /// The ruling on #839: no guest word from RAM is published. Every stdout, JSON and public file output withholds it. The explicit
+    /// local outputs are the exceptions, each written only as a new file outside any Git work tree: the RAM evidence
+    /// (<c>--local-ram-evidence</c>, see <see cref="BuildRamEvidenceDocument"/>) and the raw RAM dump (<c>--dump-ram</c>). The switch is pinned
+    /// to false by tests.
     /// </summary>
     private const bool PublishRamWords = false;
 

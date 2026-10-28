@@ -126,6 +126,7 @@ internal sealed class UnitTraceRun : IDisposable
         WriteRecord(line);
     }
 
+    // LOCAL ONLY: these are register values (Decision A, PR #839); see docs/development/unit-trace.md.
     /// <summary>
     /// The optional CPU state of a fallback record (Issue #774, B-6b): <c>,"name":{...}</c>, or nothing when the state is absent.
     /// Written in hex, one value per register, in the order gpr[0..31], then hi, lo, sr, cause and epc.
