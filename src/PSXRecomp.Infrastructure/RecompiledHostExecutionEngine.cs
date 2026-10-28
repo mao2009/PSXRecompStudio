@@ -826,6 +826,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
         }
 
+        // The state snapshot is written to stderr only for a run this engine manages, and only when it asks for it (PR #839 ruling).
+        arguments.Add(RecompiledArtifactCodeGen.HostSnapshotFlag);
+
         // What a stop did to this child. It alone decides a Cancelled or refused result (see ApplyStopOutcome).
         var stopRecord = new StopRecord
         {
@@ -879,7 +882,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             stopRecord.Seal();
         }
 
-        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = run;
+        var (exit, stdout, stderr, hostProtocolFaulted, pumpEnded) = run;
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
         // guest's console output (the boot/TTY text before the engine's
@@ -925,7 +928,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // The outcome first: ResolveOutcome adds the residuals of the output drains (a pipe holder, a cut drain). The diagnostics are taken after
         // it, so they include every residual (owner spec, round 17; a snapshot taken earlier missed them).
         var result = ResolveOutcome(
-            ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge),
+            ClassifyArtifactRun(exit, stdout, stderr, hostProtocolFaulted, timedOut, bridge),
             stopRecord,
             drainTimedOut,
             drainCutWhileAlive,
@@ -1083,8 +1086,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             stop.Residuals));
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
+    /// <param name="stdout">The guest's text and the bridge's own protocol. It is never read for the snapshot.</param>
+    /// <param name="stderr">The child's stderr. The state snapshot is written here, and only here, for a run the engine manages.</param>
     private static RecompilerExecutionResult ClassifyArtifactRun(
-        int exit, string stdout, bool hostProtocolFaulted, bool timedOut, HostTransferBridge? bridge)
+        int exit, string stdout, string stderr, bool hostProtocolFaulted, bool timedOut, HostTransferBridge? bridge)
     {
         if (hostProtocolFaulted)
         {
@@ -1128,23 +1133,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 "The artifact rejected a malformed mixed-execution fallback command.");
         }
 
-        if (exit < 0 || exit > byte.MaxValue || !stdout.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
+        if (exit < 0 || exit > byte.MaxValue || !stderr.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed, "ARTIFACT_FAILED", $"The runnable artifact failed (exit {exit}).");
         }
 
-        var snapshot = ArtifactSnapshotParser.Parse(stdout);
+        var snapshot = ArtifactSnapshotParser.Parse(stderr);
         if (snapshot is null)
         {
             return RecompilerExecutionResult.Failed(
-                RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", MalformedSnapshotMessage(stdout));
+                RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", MalformedSnapshotMessage(stderr));
         }
 
         if (bridge is { ExceptionVectorReached: true })
         {
             // Issue #680: the INT entry state, so the diagnostic says what the CPU delivered.
-            var entry = ArtifactSnapshotParser.ReadCop0(stdout) is { } c
+            var entry = ArtifactSnapshotParser.ReadCop0(stderr) is { } c
                 ? $"EPC=0x{c.Epc:X8}, CAUSE=0x{c.Cause:X8}, SR=0x{c.Sr:X8}"
                 : "COP0 state unavailable";
             return new RecompilerExecutionResult(
@@ -1153,6 +1158,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         return new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, snapshot, bridge?.DiagnosticCode, bridge?.DiagnosticMessage);
     }
+
+    /// <summary>
+    /// The classification of a run with no bridge, from its exit, stdout and stderr (the snapshot is read from stderr). Internal for the
+    /// channel tests: a snapshot on stdout is not accepted, and a snapshot on stderr is.
+    /// </summary>
+    internal static RecompilerExecutionResult ClassifyWithoutBridge(int exit, string stdout, string stderr, bool hostProtocolFaulted, bool timedOut) =>
+        ClassifyArtifactRun(exit, stdout, stderr, hostProtocolFaulted, timedOut, bridge: null);
 
     /// <summary>
     /// The diagnostic for a snapshot the parser rejects. It names only the shape (complete or not, and the count of body lines),
@@ -1377,7 +1389,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // If the request arrived before this point, the registration runs at once and the child is killed here.
         // Declared after the process, so it is sealed before the process is disposed on any return path (Issue #827).
         using var stopSeal = stopRecord.Attach(process, stopToken);
-        var stderrTask = process.StandardError.ReadToEndAsync();
+        // stderr is read by a sink, as stdout is: a drain cut short keeps the text read so far. That is how the state snapshot survives a grandchild
+        // that holds the pipe open after the child ended. stderrTask is the whole text once the stream has ended (the bridge uses it).
+        var stderrSink = new OutputSink();
+        var stderrPump = stderrSink.Pump(process.StandardError);
+        var stderrTask = stderrPump.ContinueWith(_ => stderrSink.Text, TaskScheduler.Default);
 
         if (bridge is null)
         {
@@ -1411,7 +1427,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var drainStart = Stopwatch.GetTimestamp();
             WaitForDrain(stdoutTask, outputBudgetMs, stopRecord, drainStart, out drainTimedOut);
             var stdout = stdoutSink.Text;
-            var stderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, drainStart, out _);
+            // stderr carries the state snapshot, so it gets its own budget from when it is read: a held stdout pipe must not use it up first.
+            WaitForDrain(stderrPump, outputBudgetMs, stopRecord, drainStart, out _);
+            var stderr = stderrSink.Text;
             RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
             return (process.ExitCode, stdout, stderr, false, true);
         }
@@ -1656,7 +1674,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         // The harness classifies its child by the engine's own rule (round 19, MEDIUM 2): an exit 0 without a snapshot is a failure, exactly as in
         // a segment. Then the same resolution and the same shutdown diagnostics as RunSegment, so the Windows tests check the same contract.
-        var classified = ClassifyArtifactRun(run.exit, run.stdout, run.hostProtocolFaulted, timedOut, bridge: null);
+        var classified = ClassifyArtifactRun(run.exit, run.stdout, run.stderr, run.hostProtocolFaulted, timedOut, bridge: null);
         var result = ResolveOutcome(classified, stopRecord, drainTimedOut, drainCutWhileAlive, outputBudgetMs ?? timeoutMs);
         var diagnostics = ShutdownDiagnostics(stopRecord, stopToken.IsCancellationRequested);
         return (run.exit, run.stdout, timedOut, confirmed, refused, diagnostics?.ResidualText, result);

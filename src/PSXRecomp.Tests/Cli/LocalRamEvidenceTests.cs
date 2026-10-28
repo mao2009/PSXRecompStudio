@@ -205,6 +205,60 @@ public sealed class LocalRamEvidenceTests
             .Should().Contain("cannot be determined");
     }
 
+    // PR #839 re-review item 3: a write failure with a non-IO exception is a refusal, not an exception that escapes. Deterministic: the create
+    // seam hands back a read-only handle, which RandomAccess.Write cannot write to.
+    [Fact]
+    public void WriteNew_WhenTheWriteFails_ReturnsARefusal_AndDoesNotThrow()
+    {
+        using var dir = new TempDirectory();
+        var readOnly = dir.WriteFile("readonly.bin", [1, 2, 3]);
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [9, 9], RealPathInterop.TryGetRealPath, resolveHandle: null, beforeCreate: null,
+            create: _ => File.OpenHandle(readOnly, FileMode.Open, FileAccess.Read));
+
+        refusal.Should().Contain("the write failed");
+    }
+
+    // PR #839 MAJOR follow-up item 2: a NotSupportedException from the path resolution is a refusal, not an exception that escapes. Deterministic
+    // through the resolver seam (the real EntryExists path that can throw it is not reproducible here).
+    [Fact]
+    public void Resolve_WhenTheLocationQueryThrowsNotSupported_IsARefusal()
+    {
+        using var dir = new TempDirectory();
+        var outside = dir.CreateSubdirectory("outside");
+
+        var refusal = LocalRamEvidence.RefusalFor(Path.Combine(outside, "ram.json"), mustBeNew: true,
+            resolveExisting: _ => throw new NotSupportedException("the path format is not supported"));
+
+        refusal.Should().Contain("could not be verified");
+    }
+
+    // PR #839 MAJOR follow-up item 2: the create's exceptions (on POSIX, File.OpenHandle) are refusals too.
+    [Fact]
+    public void WriteNew_WhenTheCreateThrowsNotSupported_IsARefusal()
+    {
+        using var dir = new TempDirectory();
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [1], RealPathInterop.TryGetRealPath, resolveHandle: null, beforeCreate: null,
+            create: _ => throw new NotSupportedException("handle type not supported"));
+
+        refusal.Should().Contain("could not be created exclusively");
+        File.Exists(target).Should().BeFalse();
+    }
+
+    // PR #839 MINOR item 2: a path beyond the Windows limit makes GetFullPath throw PathTooLongException (an IOException); the probe's pre-check
+    // must get a refusal, not an exception that escapes.
+    [SkippableFact]
+    public void RefusalFor_APathBeyondTheWindowsLimit_IsARefusal_NotAnException()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: the path-length limit exercised here is Windows' (32767 characters)");
+        var tooLong = Path.Combine(Path.GetTempPath(), new string('a', 40000) + ".json");
+
+        LocalRamEvidence.RefusalFor(tooLong, mustBeNew: true).Should().Contain("is not a valid path");
+    }
+
     [Fact]
     public void NormalizeFinalPath_KeepsOnlyDriveAbsoluteAndUncLocations()
     {
@@ -244,9 +298,10 @@ public sealed class LocalRamEvidenceTests
     }
 
     // PR #839 re-review item 5: a real directory-junction swap in the create window, made deterministic by a hook that runs after the last
-    // check and before the create. Without the handle check the file would be created inside the work tree.
+    // check and before the create. The create makes an empty file in the work tree before the handle check deletes it, so the transient
+    // file is not observed; this test asserts the end state only (no file remains in the work tree, and the write is refused).
     [SkippableFact]
-    public void CreateWindow_DirectorySwappedForAJunctionIntoTheWorkTree_IsCaughtByTheHandleCheck_AndNothingLandsInTheWorkTree()
+    public void CreateWindow_DirectorySwappedForAJunction_IsRefusedByTheHandleCheck_AndNoFileRemainsInTheWorkTree()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: directory junctions and the handle check are Windows only");
         using var dir = new TempDirectory();

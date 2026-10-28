@@ -52,12 +52,14 @@ internal static class LocalRamEvidence
         WriteNewChecked(path, bytes, RealPathInterop.TryGetRealPath, RealPathInterop.CanResolveHandle ? RealPathInterop.TryGetRealPath : null, beforeCreate: null);
 
     /// <summary>
-    /// The write with its seams: <paramref name="resolveExisting"/> resolves a path, <paramref name="resolveHandle"/> resolves the created file
-    /// through its handle (null skips that check, used only where the platform cannot confirm a handle), and <paramref name="beforeCreate"/>
-    /// runs between the last check and the create (a test hook for a link swapped into that window).
+    /// The write with its seams: <paramref name="resolveExisting"/> resolves a path; <paramref name="resolveHandle"/> resolves the created file
+    /// through its handle (null skips that check: used only where the platform cannot confirm a handle, which is POSIX, a documented limit);
+    /// <paramref name="beforeCreate"/> runs between the last check and the create (a test hook for a link swapped into that window); and
+    /// <paramref name="create"/> makes the handle (a test hook; the default creates the file exclusively at the verified location).
     /// </summary>
     internal static string? WriteNewChecked(
-        string path, byte[] bytes, Func<string, string?> resolveExisting, Func<SafeFileHandle, string?>? resolveHandle, Action? beforeCreate)
+        string path, byte[] bytes, Func<string, string?> resolveExisting, Func<SafeFileHandle, string?>? resolveHandle, Action? beforeCreate,
+        Func<string, SafeFileHandle>? create = null)
     {
         if (Resolve(path, mustBeNew: true, resolveExisting, out var real) is { } refusal)
         {
@@ -78,12 +80,15 @@ internal static class LocalRamEvidence
 
         beforeCreate?.Invoke();
 
+        // The create below makes an empty file at the verified location, and it is in the work tree from then until the handle check has run
+        // (on Windows, a few instructions later, when the check fails it is deleted through the handle). That transient zero-byte file is
+        // the one stated exception to "nothing is created in the work tree"; it holds no RAM.
         SafeFileHandle handle;
         try
         {
-            handle = CreateNewHandle(real);
+            handle = create is null ? CreateNewHandle(real) : create(real);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return $"{real} could not be created exclusively ({ex.Message})";
         }
@@ -98,7 +103,7 @@ internal static class LocalRamEvidence
                     var where = location ?? "an unknown location";
                     // This call created the file and holds its handle, so the handle names it. It is deleted through the handle only when it is
                     // still empty; nothing is deleted by path.
-                    if (RandomAccess.GetLength(handle) == 0 && RealPathInterop.TryDeleteByHandle(handle))
+                    if (IsEmpty(handle) && RealPathInterop.TryDeleteByHandle(handle))
                     {
                         return $"{real}: the file created there resolves to {where}, not to the verified location; it was empty, so it was deleted " +
                             "through its handle and nothing was written.";
@@ -113,13 +118,26 @@ internal static class LocalRamEvidence
             {
                 RandomAccess.Write(handle, bytes, 0);
             }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
             {
-                return $"{real}: the write failed ({ex.Message}); the file is partial and must be removed by hand";
+                return $"{real}: the write failed ({ex.Message}); the file may be partial and must be removed by hand";
             }
         }
 
         return null;
+    }
+
+    /// <summary>True when the file behind the handle is known to be empty; false when it is not, or its length cannot be read.</summary>
+    private static bool IsEmpty(SafeFileHandle handle)
+    {
+        try
+        {
+            return RandomAccess.GetLength(handle) == 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Creates the file exclusively and returns a handle to it: a delete-capable handle on Windows, a plain one elsewhere.</summary>
@@ -138,7 +156,7 @@ internal static class LocalRamEvidence
         {
             full = Path.GetFullPath(path);
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
         {
             return $"{path} is not a valid path";
         }
@@ -185,7 +203,7 @@ internal static class LocalRamEvidence
             real = candidate;
             return null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return $"{full}: its location could not be verified ({ex.GetType().Name}); refusing";
         }

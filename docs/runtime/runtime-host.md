@@ -31,7 +31,9 @@ that:
    `loaded-code-mismatch/1`, of host-side RAM comparisons at fallback handoffs to
    RAM-placed code; off by default and observation only. `rejections` counts the
    host's RAM comparison at the handoff, not a confirmed native guard refusal
-   (`guardDecisionRecorded` is `false`). The comparison is bounded by a word
+   (`guardDecisionRecorded` is `false`). The report carries no RAM word: the RAM
+   range at the handoff is hashed (`ramSha256`), and its words are not written. The
+   words of the image are kept only in `windowAot`. The comparison is bounded by a word
    budget, enforced per version; a version that does not fit is skipped whole and
    reported in `skippedVersions`/`skippedWords`, and `incomplete: true` marks a
    report cut short by the budget or the record cap; `origins` repeats the
