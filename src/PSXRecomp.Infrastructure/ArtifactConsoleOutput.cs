@@ -4,11 +4,16 @@ namespace PSXRecomp.Infrastructure;
 
 /// <summary>
 /// The forwarding of an artifact's stdout to the console on a direct launch: only the guest's own text is written. The host protocol never
-/// reaches the console. A protocol token is recognised anywhere in a line, not only at its start, and each token is found on its own: the
-/// line is cut at the first <c>RHOST_</c> or <c>RSNAPSHOT_</c> (so a leading token cannot hide a later one), the guest text before the cut is
-/// kept, and the rest of the line is withheld. A <c>RSNAPSHOT_BEGIN</c> found anywhere in the withheld part opens the block, and a
-/// <c>RSNAPSHOT_END</c> found anywhere closes it. The block's body, which carries the GPR values, is withheld in full. A block that is never
-/// closed drops everything after its begin marker (fail closed).
+/// reaches the console. Its tokens are recognised anywhere in a line, and the line is read with its tokens in mind:
+/// <list type="bullet">
+/// <item>Guest text before the first protocol token (<c>RHOST_</c> or <c>RSNAPSHOT_</c>) is kept when no block was open at the start of the line.</item>
+/// <item>The block state after a line is decided by the line's LAST begin and LAST end marker: a begin after the last end opens the block, an end
+/// after the last begin closes it. The native emitter writes each marker as the last token of its own line, so for the real block this holds
+/// whatever guest text precedes it.</item>
+/// <item>Text after the last end marker, up to the next protocol token, is guest text and is kept (a closed block's text is not the block's body).</item>
+/// <item>While a block is open, nothing on the line is printed except text after an end marker. The body, which carries the GPR values, is withheld.
+/// A block that is never closed drops everything after its begin marker (fail closed).</item>
+/// </list>
 /// </summary>
 [Infrastructure]
 public static class ArtifactConsoleOutput
@@ -27,46 +32,62 @@ public static class ArtifactConsoleOutput
         string? line;
         while ((line = stdout.ReadLine()) is not null)
         {
-            if (inSnapshot)
+            var firstToken = FirstProtocolToken(line);
+            var lastBegin = line.LastIndexOf(SnapshotBegin, StringComparison.Ordinal);
+            var lastEnd = line.LastIndexOf(SnapshotEnd, StringComparison.Ordinal);
+
+            if (!inSnapshot)
             {
-                // Inside the block only the end marker matters, wherever it is on the line; the rest of that line is withheld too.
-                if (line.Contains(SnapshotEnd, StringComparison.Ordinal))
+                // Guest text before the first token is not body: no block was open when the line began, and every marker starts at or after it.
+                if (firstToken < 0)
                 {
-                    inSnapshot = false;
+                    console.Write(line);
+                    console.Write('\n');
+                    continue;
                 }
 
-                continue;
+                WriteText(console, line.AsSpan(0, firstToken));
             }
 
-            var cut = FirstProtocolToken(line);
-            if (cut < 0)
+            // Text after the last end marker, up to the next token: outside any block that closed on this line.
+            if (lastEnd >= 0)
             {
-                console.Write(line);
-                console.Write('\n');
-                continue;
+                WriteText(console, TextUpToNextToken(line, lastEnd + SnapshotEnd.Length));
             }
 
-            // The guest's text before the first token is kept; the token and the rest of the line are not.
-            if (cut > 0)
+            // The state after the line: the last marker decides it. A line with no marker keeps the state it began with.
+            if (lastBegin >= 0 && lastBegin > lastEnd)
             {
-                console.Write(line.AsSpan(0, cut));
-                console.Write('\n');
+                inSnapshot = true;
             }
-
-            // A begin marker anywhere in the withheld part opens the block. Every RSNAPSHOT_BEGIN starts with RSNAPSHOT_, so it cannot lie
-            // before the cut. An end marker after it on the same line closes the block again, at once.
-            var begin = line.IndexOf(SnapshotBegin, cut, StringComparison.Ordinal);
-            if (begin >= 0)
+            else if (lastEnd >= 0)
             {
-                inSnapshot = line.IndexOf(SnapshotEnd, begin + SnapshotBegin.Length, StringComparison.Ordinal) < 0;
+                inSnapshot = false;
             }
         }
     }
 
-    /// <summary>
-    /// The index of the earliest protocol token on the line, or -1 when there is none. <c>RSNAPSHOT_</c> is taken as a whole, so every
-    /// <c>RSNAPSHOT_*</c> token (begin, end and any other) starts a cut; each token's own position is found independently.
-    /// </summary>
+    /// <summary>The text from <paramref name="start"/> up to the first protocol token after it (the whole rest of the line when there is none).</summary>
+    private static ReadOnlySpan<char> TextUpToNextToken(string line, int start)
+    {
+        var rest = line.AsSpan(start);
+        var token = FirstProtocolToken(rest.ToString());
+        return token < 0 ? rest : rest[..token];
+    }
+
+    /// <summary>Writes a line's guest text, with its line end, unless it holds nothing but white space.</summary>
+    private static void WriteText(TextWriter console, ReadOnlySpan<char> text)
+    {
+        if (text.IsWhiteSpace())
+        {
+            return;
+        }
+
+        console.Write(text);
+        console.Write('\n');
+    }
+
+    /// <summary>The index of the earliest protocol token (<c>RHOST_</c> or <c>RSNAPSHOT_</c>, the whole <c>RSNAPSHOT_*</c> family) on the line, or -1.</summary>
     private static int FirstProtocolToken(string line)
     {
         var host = line.IndexOf(HostProtocolPrefix, StringComparison.Ordinal);

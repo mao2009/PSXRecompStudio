@@ -180,4 +180,55 @@ public sealed class ArtifactConsoleOutputTests
         printed.Should().Be("HELLO \nGOODBYE\n");
         printed.Should().NotContain(Value);
     }
+
+    // PR #839 MAJOR (re-review of 78777cb): an END on the same line as a BEGIN must not close the real block. The real block's BEGIN is the last
+    // token of its line (the emitter writes "RSNAPSHOT_BEGIN\n"), so guest text printed without a line end is glued in front of it, here as
+    // "... RSNAPSHOT_END" followed by the real "RSNAPSHOT_BEGIN". Each case must withhold the real body line that follows.
+    [Fact]
+    public void GuestBeginAndEndBeforeTheRealBegin_KeepsTheGuestText_AndWithholdsTheBody()
+    {
+        var printed = Forwarded("HELLO RSNAPSHOT_BEGIN RSNAPSHOT_ENDRSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("HELLO \nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void AnRhostPrefixThenGuestBeginAndEnd_BeforeTheRealBegin_WithholdsTheBody()
+    {
+        var printed = Forwarded("RHOST_OK RSNAPSHOT_BEGIN RSNAPSHOT_ENDRSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("GOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void GuestBeginEndBeginOnOneLine_ThenTheBody_IsWithheld()
+    {
+        var printed = Forwarded("RSNAPSHOT_BEGIN RSNAPSHOT_END RSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("GOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    // A guest-printed END before a BEGIN on the same line (no line end between them), then the real block: the body is withheld, and the guest
+    // text before the END is kept.
+    [Fact]
+    public void AGuestEndBeforeTheRealBegin_KeepsTheGuestText_AndWithholdsTheBody()
+    {
+        var printed = Forwarded("X RSNAPSHOT_ENDRSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_END\nGOODBYE\n");
+
+        printed.Should().Be("X \nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    // Guest text after a closed block (the END and the text on one line) still prints.
+    [Fact]
+    public void GuestTextAfterAClosedBlock_StillPrints()
+    {
+        var printed = Forwarded("RSNAPSHOT_BEGIN\n" + Body + "RSNAPSHOT_ENDGUEST TEXT\nGOODBYE\n");
+
+        printed.Should().Be("GUEST TEXT\nGOODBYE\n");
+        printed.Should().NotContain(Value);
+    }
 }
