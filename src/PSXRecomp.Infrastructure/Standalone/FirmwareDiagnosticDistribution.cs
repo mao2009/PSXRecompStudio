@@ -634,6 +634,36 @@ public static class FirmwareDiagnosticDistribution
             {
                 RequireNoLinksBelow(entry);
             }
+            else
+            {
+                RequireSingleHardLink(entry);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Refuses a host file with more than one hard link. Its bytes are the bytes of another directory entry, which may lie outside the host
+    /// directory, so copying it would copy content the host directory does not own. A count that cannot be read is refused too: the copy
+    /// fails closed rather than copy a file whose link count is unknown. This applies only to the host copy, not to the disc link.
+    /// </summary>
+    private static void RequireSingleHardLink(string file)
+    {
+        uint links;
+        try
+        {
+            links = HardLinkCount(file);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException(
+                $"The hard-link count of the host file {file} could not be read, so the copy refuses it. Guarantee: no host file whose link count is unknown is copied.",
+                exception);
+        }
+
+        if (links > 1)
+        {
+            throw new InvalidDataException(
+                $"The host file {file} has {links} hard links, and the copy refuses a file with more than one link, because its bytes may come from another entry outside the host directory. Guarantee: no host file with more than one link is copied.");
         }
     }
 

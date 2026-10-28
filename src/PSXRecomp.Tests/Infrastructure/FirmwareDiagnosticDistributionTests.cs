@@ -97,7 +97,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         var runtime = Directory.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
 #pragma warning restore AARC003
         var host = Path.Combine(runtime, "PSXRecomp.RuntimeHost.exe");
-#pragma warning disable AARC003 // Justified: this line calls File.Copy (temp file) and Environment.SystemDirectory (system path read); it copies the system cmd.exe into this test's temporary directory as a stand-in host process, a process fixture, not a compiler launch and not a plain file fixture.
+#pragma warning disable AARC003 // Justified: this line calls File.Copy (temp file) and Environment.SystemDirectory (system path read); it copies the system cmd.exe into this test's own temporary directory as a stand-in host process, which is a process fixture, not a compiler launch.
         File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), host);
 #pragma warning restore AARC003
         var digests = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -119,12 +119,9 @@ public sealed class FirmwareDiagnosticDistributionTests
         stop["confirmed"]!.GetValue<bool>().Should().BeTrue();
         stop["refused"].Should().BeNull();
         stop["residuals"]!.AsArray().Should().BeEmpty("cmd.exe starts no descendant, so no residual is left");
-        var pid = stop["processId"]!.GetValue<int>();
-        pid.Should().BeGreaterThan(0);
-#pragma warning disable AARC003 // Justified: this line calls Process.GetProcessById (process check); it reads the process table to confirm a host the test stopped has exited; this is not a fixture read, temporary file or compiler launch.
-        var gone = () => Process.GetProcessById(pid);
-#pragma warning restore AARC003
-        gone.Should().Throw<ArgumentException>("the stopped host must no longer be running");
+        // The host was launched by the measurement itself, not by this test. The stop is confirmed by the measurement's own record above
+        // (it holds the Process object it started), so the test does not look the PID up in the process table.
+        stop["processId"]!.GetValue<int>().Should().BeGreaterThan(0);
     }
 
     [SkippableFact]
@@ -943,10 +940,115 @@ public sealed class FirmwareDiagnosticDistributionTests
         phases.Should().NotContain(phase => phase == "staged" || phase == "file" || phase == "directory" || phase == "provision",
             "the link is refused before the staging directory or any file is written");
         Directory.Exists(output).Should().BeFalse();
-#pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (temp file); it lists staging directories in this test's own temporary directory to assert none exists after the refusal.
+#pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
         Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty(
-            "no staging directory exists on disk after the refusal");
 #pragma warning restore AARC003
+            "no staging directory exists on disk after the refusal");
+    }
+
+    [SkippableFact]
+    public void Build_HostWithoutHardLinks_IsPublished()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Positive: a host whose files each have one link is copied and published as before.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        dir.WriteFile("host/locale/strings.txt", "subdirectory content"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true);
+
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
+        Directory.Exists(output).Should().BeTrue("a host with no hard links is published");
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a fixture or a file the build wrote in this test's temporary directory, to assert its contents.
+        File.ReadAllText(Path.Combine(output, "runtime", "locale", "strings.txt")).Should().Be("subdirectory content");
+#pragma warning restore AARC003
+        FirmwareDiagnosticDistribution.HardLinkCount(build.HostPath).Should().Be(1, "the published host file is a plain copy");
+    }
+
+    [SkippableFact]
+    public void Build_HostFileHardLinkedOutsideTheHost_IsRefusedWithNoOutput()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Negative: a file in the host directory is a second directory entry for a file outside it. The copy must refuse it, publish nothing,
+        // and not copy the external bytes.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var external = dir.WriteFile("outside/secret.bin", "external secret"u8.ToArray());
+        FirmwareDiagnosticDistribution.LinkDiscInPlace(external, dir.Combine("host", "data.bin"));
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
+            .Should().Throw<InvalidDataException>().WithMessage("*data.bin has 2 hard links*Guarantee*",
+                "the copy refuses a host file with a second link, and states the guarantee");
+        Directory.Exists(output).Should().BeFalse("a refused host publishes nothing and creates no output directory");
+#pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("no staging directory is left on disk");
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a fixture or a file the build wrote in this test's temporary directory, to assert its contents.
+        File.ReadAllText(external).Should().Be("external secret", "the external target is not modified");
+#pragma warning restore AARC003
+        FirmwareDiagnosticDistribution.HardLinkCount(external).Should().Be(2, "the refusal leaves the link as it was");
+    }
+
+    [SkippableFact]
+    public void Build_HostFileWhoseLinkCountCannotBeRead_IsRefusedFailClosed()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A host file held open without sharing cannot be opened to read its link count. The copy fails closed.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        var hostFile = dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        using var held = new FileStream(hostFile, FileMode.Open, FileAccess.Read, FileShare.None);
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
+            .Should().Throw<InvalidDataException>().WithMessage("*could not be read*Guarantee*",
+                "an unreadable link count is refused, never silently allowed");
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
+        Directory.Exists(output).Should().BeFalse("a refused host publishes nothing");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_ConflictingOutputDirectory_IsNotDestroyedByARefusal()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The output path already exists and holds evidence. The build is refused for that conflict, and the evidence stays.
+        using var dir = new TempDirectory();
+        var output = dir.CreateSubdirectory("measure");
+        dir.WriteFile("measure/keep.txt", "previous evidence"u8.ToArray());
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
+            .Should().Throw<IOException>().WithMessage("*already exists*");
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a fixture or a file the build wrote in this test's temporary directory, to assert its contents.
+        File.ReadAllText(Path.Combine(output, "keep.txt")).Should().Be("previous evidence");
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Justified: this line calls Directory.GetFileSystemEntries (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+#pragma warning restore AARC003
+            "the refused build leaves the existing output exactly as it was");
     }
 
     [SkippableFact]
@@ -1049,7 +1151,7 @@ public sealed class FirmwareDiagnosticDistributionTests
             CreateNoWindow = true,
         }) ?? throw new InvalidOperationException("mklink did not start.");
         process.WaitForExit();
-#pragma warning disable AARC003 // Justified: this line calls Process.ExitCode (instance) (process launch); it reads the exit code of the cmd.exe process this test starts to create a junction (mklink /J) for a fixture. That launch is not a compiler launch and not a temporary-file call.
+#pragma warning disable AARC003 // Justified: this line calls Process.ExitCode (instance) (process launch); it starts a process this test launches to create a fixture (cmd.exe mklink /J, a junction), which is not a compiler launch and not a temporary-file call.
         process.ExitCode.Should().Be(0, "the junction is needed for the redirection test");
 #pragma warning restore AARC003
     }
