@@ -14,6 +14,11 @@ The unit trace records, for one run of the generated host, every native unit it 
 
 The trace is a measurement aid. It does not change what the run computes.
 
+**Local only (register values).** The `state` fields (`gpr`, `hi`, `lo`, `sr`, `cause`, `epc`) carry CPU register values. Decision A of PR #839 withholds
+register values from every public output, and this trace is the one deliberate exception: it is a local diagnostic. The file is written to the path
+named by `PSX_UNIT_TRACE_FILE` (or the trace option). That path must be a local file outside any Git work tree, and the trace must never be attached to
+a PR, a CI artifact or any published output. The program does not check the path; this is the operator's rule.
+
 ## Enabling
 
 | Setting | Effect |

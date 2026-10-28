@@ -225,7 +225,8 @@ public sealed class BiosPadCardIrqElementTests : IDisposable
         var result = Run();
 
         result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-        result.Detail.Should().Contain("PadCardIrq").And.Contain($"0x{value:X}");
+        result.Detail.Should().Contain("PadCardIrq").And.Contain("outside 0 and 1")
+            .And.NotContain($"0x{value:X}", "a RAM-derived value is withheld from the diagnostic");
         _interrupts.Status.Should().Be(VblankBit);
         Snapshot().Should().Equal(before);
         _ram.Read32(ButtonDest).Should().Be(Sentinel);
