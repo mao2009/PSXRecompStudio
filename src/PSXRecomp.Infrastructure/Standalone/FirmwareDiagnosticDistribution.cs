@@ -989,6 +989,7 @@ public static class FirmwareDiagnosticDistribution
         {
             RequireRealChain(destination);
             RequireWithinPathLimit(destination);
+            RequireTreeWithinPathLimit(source, destination);
             RefuseExisting(destination);
             Directory.Move(source, destination);
             _owned.Add(destination);
@@ -1007,6 +1008,20 @@ public static class FirmwareDiagnosticDistribution
 
             Directory.Delete(path);
             _owned.Remove(path);
+        }
+
+        /// <summary>Checks the destination path of every entry nested under a directory that is about to be moved, before the move.</summary>
+        private void RequireTreeWithinPathLimit(string source, string destination)
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(source))
+            {
+                var target = Path.Combine(destination, Path.GetFileName(entry));
+                RequireWithinPathLimit(target);
+                if (Directory.Exists(entry) && !IsReparsePoint(entry))
+                {
+                    RequireTreeWithinPathLimit(entry, target);
+                }
+            }
         }
 
         private static void RefuseExisting(string path)
@@ -1033,7 +1048,7 @@ public static class FirmwareDiagnosticDistribution
                     "and the output path plus the file-name length at most 198 characters (the artifact's .c name is that sum plus 49). " +
                     "Checked before each write: the paths this build names itself, and each copied host or artifact file name. " +
                     "Not checked before dotnet publish writes them: the names the runtime-host publish chooses. Each of those is checked when it is " +
-                    "moved into runtime/, and its path in the publish directory has the same length as that destination.");
+                    "moved into runtime/, nested entries included, and its path in the publish directory has the same length as that destination.");
             }
         }
 
