@@ -156,7 +156,7 @@ internal static class LocalRamEvidence
         {
             full = Path.GetFullPath(path);
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
         {
             return $"{path} is not a valid path";
         }

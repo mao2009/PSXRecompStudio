@@ -56,4 +56,61 @@ public sealed class ArtifactConsoleOutputTests
         printed.Should().Be("HELLO\n", "the guest's line is written with its line end");
         printed.Should().NotContain(Value);
     }
+
+    // PR #839 MAJOR item 1: guest text with no line end before a protocol marker. The native code prints the marker right after the guest text,
+    // so the marker is not at the start of the line; it must still be withheld, and the body that follows it too.
+    [Fact]
+    public void UnterminatedGuestText_BeforeRsnapshotBegin_KeepsTheTextAndWithholdsTheBlock()
+    {
+        var stdout = $"HELLORSNAPSHOT_BEGIN\ntermination=0\ngpr[2]=0x{Value}\nRSNAPSHOT_END\nGOODBYE\n";
+
+        var printed = Forwarded(stdout);
+
+        printed.Should().Be("HELLO\nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("gpr[");
+    }
+
+    [Fact]
+    public void UnterminatedGuestText_BeforeRhostData_KeepsTheTextAndWithholdsTheRamWord()
+    {
+        var stdout = $"HELLORHOST_DATA {Value}\nGOODBYE\n";
+
+        var printed = Forwarded(stdout);
+
+        printed.Should().Be("HELLO\nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("RHOST_");
+    }
+
+    [Fact]
+    public void UnterminatedGuestText_BeforeRsnapshotEnd_WithholdsTheGprLineAndTheTextAfterTheMarker()
+    {
+        var stdout = $"HELLO\nRSNAPSHOT_BEGIN\ntermination=0\ngpr[2]=0x{Value}\nWORLDRSNAPSHOT_END\nGOODBYE\n";
+
+        var printed = Forwarded(stdout);
+
+        printed.Should().Be("HELLO\nGOODBYE\n");
+        printed.Should().NotContain(Value).And.NotContain("WORLD");
+    }
+
+    [Fact]
+    public void AMarkerInTheMiddleOfALine_KeepsOnlyTheTextBeforeIt()
+    {
+        var stdout = $"AB RHOST_OK CD{Value}\nGOODBYE\n";
+
+        var printed = Forwarded(stdout);
+
+        printed.Should().Be("AB \nGOODBYE\n");
+        printed.Should().NotContain("CD").And.NotContain(Value);
+    }
+
+    [Fact]
+    public void ASnapshotBeginInTheMiddleOfALine_OpensTheBlock_AndItsBodyIsWithheld()
+    {
+        var stdout = $"X RSNAPSHOT_BEGIN gpr[2]=0x{Value}\ngpr[3]=0x{Value}\nRSNAPSHOT_END\nGOODBYE\n";
+
+        var printed = Forwarded(stdout);
+
+        printed.Should().Be("X \nGOODBYE\n");
+        printed.Should().NotContain(Value);
+    }
 }

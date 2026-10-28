@@ -4,8 +4,10 @@ namespace PSXRecomp.Infrastructure;
 
 /// <summary>
 /// The forwarding of an artifact's stdout to the console on a direct launch: only the guest's own text is written. The host protocol never
-/// reaches the console: every <c>RHOST_*</c> line is removed (a failed run prints them too), and so is the <c>RSNAPSHOT_*</c> block, markers and
-/// body included, because its body carries the GPR values. A block that is never closed drops everything after its begin marker (fail closed).
+/// reaches the console. A protocol marker is recognised anywhere in a line, not only at its start: guest text that has no line end before a
+/// marker (<c>HELLO</c> then <c>RSNAPSHOT_BEGIN</c> on one line) keeps the text before the marker and drops the marker and everything after
+/// it on that line. So every <c>RHOST_*</c> line is dropped, and the <c>RSNAPSHOT_*</c> block is dropped with its markers and body, because its
+/// body carries the GPR values. A block that is never closed drops everything after its begin marker (fail closed).
 /// </summary>
 [Infrastructure]
 public static class ArtifactConsoleOutput
@@ -24,10 +26,10 @@ public static class ArtifactConsoleOutput
         string? line;
         while ((line = stdout.ReadLine()) is not null)
         {
-            var trimmed = line.Trim();
             if (inSnapshot)
             {
-                if (trimmed.StartsWith(SnapshotEnd, StringComparison.Ordinal))
+                // Only the end marker matters inside the block; everything else (the body, GPR values included) is dropped.
+                if (line.Contains(SnapshotEnd, StringComparison.Ordinal))
                 {
                     inSnapshot = false;
                 }
@@ -35,19 +37,35 @@ public static class ArtifactConsoleOutput
                 continue;
             }
 
-            if (trimmed.StartsWith(SnapshotBegin, StringComparison.Ordinal))
+            var marker = FirstMarker(line);
+            if (marker < 0)
+            {
+                console.Write(line);
+                console.Write('\n');
+                continue;
+            }
+
+            // The guest's text before the marker is kept; the marker and the rest of the line are not.
+            if (marker > 0)
+            {
+                console.Write(line.AsSpan(0, marker));
+                console.Write('\n');
+            }
+
+            if (string.CompareOrdinal(line, marker, SnapshotBegin, 0, SnapshotBegin.Length) == 0)
             {
                 inSnapshot = true;
-                continue;
             }
-
-            if (trimmed.StartsWith(HostProtocolPrefix, StringComparison.Ordinal) || trimmed.StartsWith(SnapshotPrefix, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            console.Write(line);
-            console.Write('\n');
         }
+    }
+
+    /// <summary>The index of the earliest protocol marker prefix in the line, or -1 when there is none.</summary>
+    private static int FirstMarker(string line)
+    {
+        var host = line.IndexOf(HostProtocolPrefix, StringComparison.Ordinal);
+        var snapshot = line.IndexOf(SnapshotPrefix, StringComparison.Ordinal);
+        if (host < 0) return snapshot;
+        if (snapshot < 0) return host;
+        return Math.Min(host, snapshot);
     }
 }

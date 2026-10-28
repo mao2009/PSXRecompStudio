@@ -248,6 +248,17 @@ public sealed class LocalRamEvidenceTests
         File.Exists(target).Should().BeFalse();
     }
 
+    // PR #839 MINOR item 2: a path beyond the Windows limit makes GetFullPath throw PathTooLongException (an IOException); the probe's pre-check
+    // must get a refusal, not an exception that escapes.
+    [SkippableFact]
+    public void RefusalFor_APathBeyondTheWindowsLimit_IsARefusal_NotAnException()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: the path-length limit exercised here is Windows' (32767 characters)");
+        var tooLong = Path.Combine(Path.GetTempPath(), new string('a', 40000) + ".json");
+
+        LocalRamEvidence.RefusalFor(tooLong, mustBeNew: true).Should().Contain("is not a valid path");
+    }
+
     [Fact]
     public void NormalizeFinalPath_KeepsOnlyDriveAbsoluteAndUncLocations()
     {

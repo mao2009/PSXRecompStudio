@@ -270,7 +270,7 @@ internal static class FallbackRootsCommand
         }
         catch (Exception ex) when (
             ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
-                or FileNotFoundException or DirectoryNotFoundException or FormatException)
+                or FileNotFoundException or DirectoryNotFoundException or DllNotFoundException or FormatException)
         {
             error.WriteLine($"fallback-roots: {ex.GetType().Name}: {ex.Message}");
             return 1;
