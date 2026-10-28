@@ -205,6 +205,21 @@ public sealed class LocalRamEvidenceTests
             .Should().Contain("cannot be determined");
     }
 
+    // PR #839 re-review item 3: a write failure with a non-IO exception is a refusal, not an exception that escapes. Deterministic: the create
+    // seam hands back a read-only handle, which RandomAccess.Write cannot write to.
+    [Fact]
+    public void WriteNew_WhenTheWriteFails_ReturnsARefusal_AndDoesNotThrow()
+    {
+        using var dir = new TempDirectory();
+        var readOnly = dir.WriteFile("readonly.bin", [1, 2, 3]);
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [9, 9], RealPathInterop.TryGetRealPath, resolveHandle: null, beforeCreate: null,
+            create: _ => File.OpenHandle(readOnly, FileMode.Open, FileAccess.Read));
+
+        refusal.Should().Contain("the write failed");
+    }
+
     [Fact]
     public void NormalizeFinalPath_KeepsOnlyDriveAbsoluteAndUncLocations()
     {
@@ -244,9 +259,10 @@ public sealed class LocalRamEvidenceTests
     }
 
     // PR #839 re-review item 5: a real directory-junction swap in the create window, made deterministic by a hook that runs after the last
-    // check and before the create. Without the handle check the file would be created inside the work tree.
+    // check and before the create. The create makes an empty file in the work tree before the handle check deletes it, so the transient
+    // file is not observed; this test asserts the end state only (no file remains in the work tree, and the write is refused).
     [SkippableFact]
-    public void CreateWindow_DirectorySwappedForAJunctionIntoTheWorkTree_IsCaughtByTheHandleCheck_AndNothingLandsInTheWorkTree()
+    public void CreateWindow_DirectorySwappedForAJunction_IsRefusedByTheHandleCheck_AndNoFileRemainsInTheWorkTree()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: directory junctions and the handle check are Windows only");
         using var dir = new TempDirectory();

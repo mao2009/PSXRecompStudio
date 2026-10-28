@@ -270,6 +270,9 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. There is no `opcode`
     field. An earlier export had one, the word's 6-bit opcode (`word >> 26`), a number whenever the word was present. It is derived
     from the withheld word, so it is removed as well.
+- `gte` (`null` without an observed run): `commandsExecuted` (a count) and `lastUnsupportedCommandRecorded` (a boolean: an unsupported GTE command
+  was seen). The earlier `lastUnsupportedCommand` (a `uint?` holding that command word) is renamed to the boolean, and the command word is no longer
+  published.
 - `timings` (wall clock, not deterministic): `buildMs` (image analysis),
   `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
   `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −
@@ -325,7 +328,8 @@ the explicit local evidence (`openbios-probe --local-ram-evidence <file.json>`, 
 observed at each fallback PC in RAM, and it is bound to one export by that export file's SHA-256. The evidence is written and read only at a
 real location outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. The check
 resolves every symbolic link and junction on the path first (a link named outside a repository that points into it is refused), and a path
-whose real location cannot be determined is refused. The file is created exclusively, so an existing file is never replaced. `fallback-roots`
+whose real location cannot be determined is refused. The file is created exclusively, so an existing file is never replaced. The handle check that confirms where a new file went is Windows only: on
+POSIX systems the guard relies on the path checks alone. That is a documented limit. The threat model is an accidental commit, not an adversary. `fallback-roots`
 takes it with `--local-ram-evidence <file.json>`.
 `openbios-probe --dump-ram <file>` (the raw 2 MiB of RAM at `--capture-at`, a local diagnostic) is written under the same rule: a new file,
 outside every Git work tree, refused before the run when it is not. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
