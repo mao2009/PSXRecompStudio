@@ -163,7 +163,8 @@ public static class FirmwareDiagnosticDistribution
         }
 
         // A host directory is checked for links in full before anything is written, so a link refuses the build before the AOT copy,
-        // the disc link or the artifact copy can run. The copy itself checks each entry again.
+        // the disc link or the artifact copy can run. The copy checks each entry again for links, and it reads each file's link count again
+        // immediately before that file is copied, so a link created after this pre-check is refused as well.
         if (request.HostSourceDirectory is not null)
         {
             RequireNoLinksInHostDirectory(Path.GetFullPath(request.HostSourceDirectory));
@@ -961,6 +962,9 @@ public static class FirmwareDiagnosticDistribution
                     throw new InvalidDataException($"The host directory holds a link, which the copy refuses: {file}");
                 }
 
+                // The link count is read again immediately before this file is copied: a hard link created after the pre-check, during the
+                // copy, is refused here, and the build publishes nothing. The count is read per file, so a late link is seen when it is reached.
+                RequireSingleHardLink(file);
                 CopyNewFile(file, Path.Combine(destination, Path.GetFileName(file)));
             }
 
