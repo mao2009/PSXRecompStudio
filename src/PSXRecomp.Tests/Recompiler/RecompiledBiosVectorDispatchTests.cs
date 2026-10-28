@@ -225,7 +225,8 @@ public sealed class RecompiledBiosVectorDispatchTests
             patchedTargetOverride: untranslatable));
 
         result.DiagnosticCode.Should().Be(BiosVectorDispatch.UntranslatableTargetDiagnosticCode);
-        result.DiagnosticMessage.Should().Contain("0xC0000000");
+        result.DiagnosticMessage.Should().Contain("a guest address", "the diagnostic still names the failure");
+        result.DiagnosticMessage.Should().NotContain("0xC0000000", "a guest address read from RAM is not exported");
         result.Snapshot!.Termination.Should().Be(RecompilerIrTerminationReason.UnresolvedIndirectFlow);
     }
 

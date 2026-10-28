@@ -86,15 +86,15 @@ public sealed class BiosBlockingCallWait
         if (_call is { } outstanding && outstanding != call)
         {
             return (NestedDiagnosticCode,
-                $"{identity.StableKey} (ra=0x{ra:X8}) is pending while {outstanding.Family}:{outstanding.Function:X2} " +
-                $"(ra=0x{outstanding.Ra:X8}) has not completed; nested blocking calls are not modelled.");
+                $"{identity.StableKey} is pending while {outstanding.Family}:{outstanding.Function:X2} " +
+                $"has not completed; nested blocking calls are not modelled.");
         }
 
         _call = call;
         if (++_polls > MaxPolls)
         {
             return (TimeoutDiagnosticCode,
-                $"{identity.StableKey} (ra=0x{ra:X8}) did not complete within {MaxWaitVblanks} VBlank intervals " +
+                $"{identity.StableKey} did not complete within {MaxWaitVblanks} VBlank intervals " +
                 $"({MaxPolls} polls of {PollCycles} cycles).");
         }
 

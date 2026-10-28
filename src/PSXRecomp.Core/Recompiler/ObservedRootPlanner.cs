@@ -54,6 +54,13 @@ internal sealed record ObservedRunIdentity(
 [Domain]
 internal sealed record ObservedFallbackExport(ObservedRunIdentity Run, IReadOnlyList<ObservedFallbackTarget> Targets);
 
+/// <summary>
+/// A budget-exhausted partial export, read only by the explicit diagnostic mode (Issue #773). Its evidence is partial and is
+/// never a complete observation: <see cref="State"/> and <see cref="DiagnosticCode"/> say why the run stopped.
+/// </summary>
+[Domain]
+internal sealed record ObservedPartialExport(ObservedFallbackExport Export, TitleExecutionState State, string? DiagnosticCode);
+
 /// <summary>One accepted observed root with the run evidence that selected it.</summary>
 [Domain]
 internal sealed record ObservedRoot(uint Pc, ulong Instructions, ulong Entries);
@@ -317,14 +324,89 @@ internal static class ObservedRootPlanner
     /// <summary>Reads the targets of an export; the run identity is parsed but not checked here (see <see cref="Verify"/>).</summary>
     public static IReadOnlyList<ObservedFallbackTarget> ReadTargets(string json) => ReadExport(json).Targets;
 
+    /// <summary>The format of the local RAM evidence document: the RAM word observed at each fallback PC, bound to one export.</summary>
+    public const string RamEvidenceFormat = "fallback-ram-evidence/v1";
+
+    /// <summary>
+    /// Reads the local RAM evidence for one public export. It is bound to that export by the export file's SHA-256 (the file's bytes,
+    /// not its content), so evidence from another run is refused. Fail closed: a malformed document, a duplicate PC, or a foreign export
+    /// throws. A PC the evidence does not name gets no word (see <see cref="ApplyRamEvidence"/>).
+    /// </summary>
+    public static IReadOnlyDictionary<uint, uint> ReadRamEvidence(string json, string exportSha256)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.GetProperty("format").GetString() != RamEvidenceFormat)
+            {
+                throw new InvalidDataException($"fallback RAM evidence: the format must be '{RamEvidenceFormat}'.");
+            }
+
+            if (root.GetProperty("exportSha256").GetString() != exportSha256)
+            {
+                throw new InvalidDataException("fallback RAM evidence: it belongs to a different export (exportSha256 differs).");
+            }
+
+            var words = new Dictionary<uint, uint>();
+            foreach (var element in root.GetProperty("words").EnumerateArray())
+            {
+                var pc = ParsePc(element.GetProperty("pc").GetString());
+                if (!words.TryAdd(pc, ParsePc(element.GetProperty("word").GetString())))
+                {
+                    throw new InvalidDataException($"fallback RAM evidence: 0x{pc:X8} is listed more than once.");
+                }
+            }
+
+            return words;
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or FormatException or InvalidOperationException or JsonException)
+        {
+            throw new InvalidDataException($"fallback RAM evidence: malformed document ({ex.Message}).", ex);
+        }
+    }
+
+    /// <summary>
+    /// The targets with the RAM word the evidence names. A target the evidence does not name keeps no word, so <see cref="Plan"/> refuses
+    /// it: nothing is inferred from a missing word (fail closed). <see cref="Plan"/>'s own word check is unchanged.
+    /// </summary>
+    public static IReadOnlyList<ObservedFallbackTarget> ApplyRamEvidence(IReadOnlyList<ObservedFallbackTarget> targets, IReadOnlyDictionary<uint, uint> words) =>
+        targets.Select(target => target with { RamWord = words.TryGetValue(target.Pc, out var word) ? word : null }).ToArray();
+
+    /// <summary>
+    /// Whether a run that ended this way exhausted its budget: the outer budget (<see cref="TitleExecutionState.BudgetExhausted"/>), or a
+    /// fallback segment or transition budget (a <c>RuntimeFailure</c> whose diagnostic code names the budget). A crash, a protocol
+    /// failure and any other classified failure are not budget stops.
+    /// </summary>
+    internal static bool IsBudgetPartial(TitleExecutionState state, string? diagnosticCode) =>
+        state == TitleExecutionState.BudgetExhausted
+        || (state == TitleExecutionState.RuntimeFailure
+            && diagnosticCode is MixedFallbackDiagnostics.SegmentBudgetExhausted or MixedFallbackDiagnostics.TransitionBudgetExhausted);
+
     /// <summary>
     /// Reads a fallback-target export. Fail closed: the format must match, the run identity must be present and well formed
     /// (its firmware hash equal to the top-level <c>sha256</c>), every target must carry a valid PC, cause, entries and
     /// instructions, and a PC may appear only once. The run must have ended at a classified end (see <see cref="IsCompleteOutcome"/>).
     /// </summary>
-    public static ObservedFallbackExport ReadExport(string json)
+    public static ObservedFallbackExport ReadExport(string json) => Parse(json, partialAllowed: false, out _, out _);
+
+    /// <summary>
+    /// The explicit diagnostic reader (Issue #773): reads a budget-exhausted partial export and records its outcome. Every other
+    /// check of <see cref="ReadExport"/> applies, and a complete run, a crash or any other outcome is refused. The result is partial
+    /// evidence for diagnosis only: it is never a complete observation and must not be planned into a production manifest.
+    /// </summary>
+    public static ObservedPartialExport ReadPartialExport(string json)
+    {
+        var export = Parse(json, partialAllowed: true, out var state, out var diagnosticCode);
+        return new ObservedPartialExport(export, state, diagnosticCode);
+    }
+
+    private static ObservedFallbackExport Parse(string json, bool partialAllowed, out TitleExecutionState outState, out string? outDiagnosticCode)
     {
         ArgumentNullException.ThrowIfNull(json);
+        outState = default;
+        outDiagnosticCode = null;
         try
         {
             using var document = JsonDocument.Parse(json);
@@ -353,7 +435,19 @@ internal static class ObservedRootPlanner
                 throw new InvalidDataException($"fallback targets: 'outcome.complete' contradicts the state {state}.");
             }
 
-            if (!IsCompleteOutcome(state))
+            outState = state;
+            outDiagnosticCode = outcome.TryGetProperty("diagnosticCode", out var causeElement) && causeElement.ValueKind == JsonValueKind.String
+                ? causeElement.GetString()
+                : null;
+            if (partialAllowed)
+            {
+                if (!IsBudgetPartial(state, outDiagnosticCode))
+                {
+                    throw new InvalidDataException(
+                        $"fallback targets: the run ended in {state} (cause {outDiagnosticCode ?? "none"}), which is not a budget-exhausted partial run; the diagnostic mode reads only that.");
+                }
+            }
+            else if (!IsCompleteOutcome(state))
             {
                 throw new InvalidDataException(
                     $"fallback targets: the run ended in {state}, so its evidence is partial and is refused; re-run openbios-probe to a classified end.");
@@ -384,8 +478,14 @@ internal static class ObservedRootPlanner
             {
                 var pc = ParsePc(element.GetProperty("pc").GetString());
                 var cause = element.GetProperty("cause").GetString() ?? throw new InvalidDataException("fallback targets: a cause is null.");
-                var ramWord = element.GetProperty("ramWord") is { ValueKind: not JsonValueKind.Null } w ? ParsePc(w.GetString()) : (uint?)null;
-                var target = new ObservedFallbackTarget(pc, cause, element.GetProperty("entries").GetUInt64(), element.GetProperty("instructions").GetUInt64(), ramWord);
+                // The public export never carries a RAM word (the ruling on #839): the word is supplied only by the local RAM evidence
+                // (ReadRamEvidence / ApplyRamEvidence). A target without it has no word, and the planner refuses it as ram-word-mismatch.
+                if (element.TryGetProperty("ramWord", out _))
+                {
+                    throw new InvalidDataException("fallback targets: 'ramWord' is not part of the public export; a RAM word comes only from the local RAM evidence.");
+                }
+
+                var target = new ObservedFallbackTarget(pc, cause, element.GetProperty("entries").GetUInt64(), element.GetProperty("instructions").GetUInt64(), RamWord: null);
                 if (!seen.Add(pc))
                 {
                     throw new InvalidDataException($"fallback targets: 0x{pc:X8} is listed more than once.");

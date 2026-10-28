@@ -7,6 +7,7 @@ using PSXRecomp.Architecture;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Core.Runtime;
 using PSXRecomp.Core.Runtime.CdRom;
 using PSXRecomp.Infrastructure.Standalone;
 
@@ -24,7 +25,7 @@ internal static class OpenBiosProbeCommand
 
     private const int RamBytes = 0x200000;
 
-    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>] " +
+    internal const string Usage = "usage: psxrecomp openbios-probe <openbios.bin> [--segment-budget <n>] [--segments <n>] [--disc <image.chd|image.bin>] [--capture-at <hex-pc>] [--dump-ram <file>] [--dump-frame <file.ppm>] [--pc-histogram <file.json>] [--list-disc <file.json>] [--fallback-targets <file.json>] [--local-ram-evidence <file.json>] " +
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--boundary-log <file.jsonl>] [--json]";
 
@@ -38,7 +39,7 @@ internal static class OpenBiosProbeCommand
 
         uint segmentBudget = 100_000, segments = 10, codeBytes = 0;
         bool json = false, differential = false, standalone = false;
-        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, engineKind = "interpreter";
+        string? dumpRamPath = null, dumpFramePath = null, histogramPath = null, listDiscPath = null, discPath = null, rootsPath = null, symbolsPath = null, loadImagesPath = null, fallbackTargetsPath = null, localRamEvidencePath = null, engineKind = "interpreter";
         uint? capturePc = null, stopAt = null;
         string? retireTargetsPath = null, retireOutPath = null;
         string? mdecEventsPath = null, mdecFromText = null, mdecToText = null, boundaryLogPath = null;
@@ -70,7 +71,7 @@ internal static class OpenBiosProbeCommand
                 continue;
             }
 
-            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets" or "--boundary-log")
+            if (option is "--disc" or "--roots" or "--engine" or "--symbols" or "--load-images" or "--dump-ram" or "--dump-frame" or "--pc-histogram" or "--list-disc" or "--retire-states" or "--retire-out" or "--mdec-events" or "--mdec-from" or "--mdec-to" or "--fallback-targets" or "--local-ram-evidence" or "--boundary-log")
             {
                 if (++i >= args.Count || string.IsNullOrWhiteSpace(args[i]) || args[i].StartsWith("--", StringComparison.Ordinal))
                 {
@@ -87,6 +88,7 @@ internal static class OpenBiosProbeCommand
                 else if (option == "--symbols") symbolsPath = args[i];
                 else if (option == "--load-images") loadImagesPath = args[i];
                 else if (option == "--fallback-targets") fallbackTargetsPath = args[i];
+                else if (option == "--local-ram-evidence") localRamEvidencePath = args[i];
                 else if (option == "--retire-states") retireTargetsPath = args[i];
                 else if (option == "--retire-out") retireOutPath = args[i];
                 else if (option == "--mdec-events") mdecEventsPath = args[i];
@@ -154,6 +156,18 @@ internal static class OpenBiosProbeCommand
             error.WriteLine($"openbios-probe: --fallback-targets {fallbackTargetsPath} already exists; choose a new path");
             return 1;
         }
+        // The local RAM evidence: explicit, bound to an export, and only at a path outside any Git work tree (see LocalRamEvidence).
+        if (localRamEvidencePath is not null && fallbackTargetsPath is null)
+        {
+            error.WriteLine("openbios-probe: --local-ram-evidence requires --fallback-targets (the evidence is bound to that export)");
+            return 1;
+        }
+
+        if (localRamEvidencePath is not null && LocalRamEvidence.RefusalFor(localRamEvidencePath, mustBeNew: true) is { } evidenceRefusal)
+        {
+            error.WriteLine($"openbios-probe: --local-ram-evidence: {evidenceRefusal}");
+            return 1;
+        }
         // Issue #774 (W03): the VBlank boundary log is taken from the interpreter's scheduler only; the host scheduler is not exposed to the probe.
         if (boundaryLogPath is not null && engineKind != "interpreter")
         {
@@ -171,6 +185,12 @@ internal static class OpenBiosProbeCommand
         {
             error.WriteLine("openbios-probe: --dump-ram requires --capture-at to specify the PC at which to capture RAM");
             error.WriteLine(Usage);
+            return 1;
+        }
+        // The raw RAM dump carries RAM words: a local file only, outside any Git work tree (the same guard as the RAM evidence).
+        if (dumpRamPath is not null && LocalRamEvidence.RefusalFor(dumpRamPath, mustBeNew: true) is { } dumpRefusal)
+        {
+            error.WriteLine($"openbios-probe: --dump-ram: {dumpRefusal}");
             return 1;
         }
         if (listDiscPath is not null && discPath is null)
@@ -221,8 +241,8 @@ internal static class OpenBiosProbeCommand
                 boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
-                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog)
-                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath), localRamEvidencePath), json, output, error, mdecLog)
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, error, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
             }
             finally
             {
@@ -294,12 +314,13 @@ internal static class OpenBiosProbeCommand
         text is null ? fallback : ulong.Parse(text, NumberStyles.None, CultureInfo.InvariantCulture);
 
     private static int RunInterpreter(
-        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
+        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output, TextWriter error,
         string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
         object? captured = null;
+        string? ramDumpRefusal = null;
         var observed = engine as InterpreterTitleExecutionEngine;
         uint lastFetch = 0;
         if (mdecLog is not null && observed is not null)
@@ -328,23 +349,25 @@ internal static class OpenBiosProbeCommand
                     // Every fetch at this position is written (an interrupt entry adds fetches without a retirement).
                     var (sr, cause, epc, _) = observed.Cop0Diagnostics;
                     var (hi, lo) = observed.HiLoDiagnostics;
-                    var gpr = string.Join(",", Enumerable.Range(0, 32).Select(r => $"\"0x{observed.ReadGuestGpr(r):X8}\""));
-                    retireWriter.WriteLine($"{{\"g\":{observed.GuestCycles},\"pc\":\"0x{pc:X8}\",\"gpr\":[{gpr}],\"hi\":\"0x{hi:X8}\",\"lo\":\"0x{lo:X8}\",\"sr\":\"0x{sr:X8}\",\"cause\":\"0x{cause:X8}\",\"epc\":\"0x{epc:X8}\",\"pipelineClean\":{(observed.PipelineClean ? "true" : "false")}}}");
+                    // Decision A (PR #839): the register values are withheld; GprFor returns null.
+                    var gpr = JsonSerializer.Serialize(GprFor(Enumerable.Range(0, 32).Select(r => observed.ReadGuestGpr(r))));
+                    retireWriter.WriteLine($"{{\"g\":{observed.GuestCycles},\"pc\":\"0x{pc:X8}\",\"gpr\":{gpr},\"hi\":\"0x{hi:X8}\",\"lo\":\"0x{lo:X8}\",\"sr\":\"0x{sr:X8}\",\"cause\":\"0x{cause:X8}\",\"epc\":\"0x{epc:X8}\",\"pipelineClean\":{(observed.PipelineClean ? "true" : "false")}}}");
                 }
                 if (histogram is not null && (pc & 0x1FFFFFFFu) < RamBytes) histogram[(pc & 0x1FFFFFFFu) >> 2]++;
                 if (pc == capturePc && captured is null)
                 {
                     if (dumpRamPath is not null)
                     {
-                        // Raw 2 MiB main RAM (KSEG0) for offline disassembly; local diagnostic output only.
+                        // Raw 2 MiB main RAM (KSEG0) for offline disassembly. A local diagnostic: a new file outside any Git work tree.
                         var ram = new byte[RamBytes];
                         for (var a = 0; a < RamBytes; a += 4) BitConverter.TryWriteBytes(ram.AsSpan(a), observed.ReadGuestWord(0x80000000u + (uint)a));
-                        File.WriteAllBytes(dumpRamPath, ram);
+                        ramDumpRefusal = LocalRamEvidence.WriteNewBytes(dumpRamPath, ram);
                     }
                     captured = new
                     {
-                        pc = $"0x{pc:X8}", word = $"0x{observed.ReadGuestWord(pc):X8}",
-                        gpr = Enumerable.Range(0, 32).Select(r => $"0x{observed.ReadGuestGpr(r):X8}").ToArray(),
+                        // PR #839 review (MAJOR): a word outside guest RAM (the BIOS ROM range) is withheld by WordFor.
+                        pc = $"0x{pc:X8}", word = WordHex(pc, observed.ReadGuestWord(pc)),
+                        gpr = GprFor(Enumerable.Range(0, 32).Select(r => observed.ReadGuestGpr(r))),
                         lastTransfers = observed.RecentTrace.Transfers.TakeLast(8).Select(t => $"0x{t.From.Pc:X8}->0x{t.To:X8}").ToArray()
                     };
                 }
@@ -432,7 +455,7 @@ internal static class OpenBiosProbeCommand
                 stop,
                 captured,
                 // Issue #447: GTE work done and the displayed frame, as evidence beyond a PC.
-                gte = observed is null ? null : new { commandsExecuted = observed.Gte.CommandsExecuted, lastUnsupportedCommand = observed.Gte.LastUnsupportedCommand },
+                gte = observed is null ? null : new { commandsExecuted = observed.Gte.CommandsExecuted, lastUnsupportedCommandRecorded = observed.Gte.LastUnsupportedCommand is not null },
                 frame = observed?.CaptureFrameEvidence() is { } frame
                     ? new { width = frame.Width, height = frame.Height, nonZeroPixels = frame.Pixels.Count(p => p != 0), sha256 = Convert.ToHexString(frame.ComputeStableHash()).ToLowerInvariant() }
                     : null
@@ -450,6 +473,12 @@ internal static class OpenBiosProbeCommand
             output.WriteLine("Title boot: NOT VERIFIED (kernel boot is not a game boot).");
         }
 
+        if (ramDumpRefusal is not null)
+        {
+            error.WriteLine($"openbios-probe: --dump-ram: {ramDumpRefusal}");
+            return 1;
+        }
+
         // Exit 0 means only that the kernel booted to its shell (see OpenBiosBootMonitor); a title has not
         // started, so bootVerified stays false. Anything less fails closed.
         return kernelBooted ? 0 : 2;
@@ -461,7 +490,7 @@ internal static class OpenBiosProbeCommand
     private sealed record GeneratedHostProbe(
         OpenBiosFirmware Firmware, string Hash, ICdSectorSource? Disc, IReadOnlyList<uint> Roots, uint CodeBytes,
         uint Segments, uint SegmentBudget, bool Differential, IReadOnlySet<uint> CompareAt, uint? StopAt, ProbeSymbols? Symbols, string? LoadImagesPath,
-        bool Standalone, string? FallbackTargetsPath, string? DiscSha256);
+        bool Standalone, string? FallbackTargetsPath, string? DiscSha256, string? LocalRamEvidencePath);
 
     /// <summary>
     /// Issue #732: runs the ROM through the generated host. The ROM's code (its first <c>CodeBytes</c> bytes, or all of
@@ -560,7 +589,7 @@ internal static class OpenBiosProbeCommand
             double BuildOffsetMs() => probe.Standalone ? measuredBuild.Milliseconds : 0;
             clock.Restart();
             uint? lastFallbackFetch = null;
-            // Issue #773: the RAM word the interpreter fetched at each fallback PC (the observation the planner checks against the file).
+            // Issue #773: the RAM word the interpreter fetched at each fallback PC. It goes only to the local RAM evidence (never to a public output).
             var ramWords = new FallbackRamWordLog();
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
@@ -645,7 +674,7 @@ internal static class OpenBiosProbeCommand
                 // report above is unchanged; this file is written only when requested. A run that did not finish has no
                 // evidence, and an export of it would read as "no targets" to the planner, so none is written.
                 var exportJson = BuildFallbackTargetsDocument(evidence, probe.Hash, manifest, FallbackCause, result.State, probe.DiscSha256, probe.CodeBytes, probe.Roots, probe.StopAt,
-                    ramWords.Get, probe.Segments, probe.SegmentBudget);
+                    probe.Segments, probe.SegmentBudget, result.DiagnosticCode);
                 if (exportJson is null)
                 {
                     error.WriteLine("openbios-probe: --fallback-targets: the run did not finish, so it has no fallback evidence; no export was written.");
@@ -657,7 +686,26 @@ internal static class OpenBiosProbeCommand
                     error.WriteLine($"openbios-probe: --fallback-targets: the run ended in {result.State}; the export is partial and fallback-roots will refuse it.");
                 }
 
+                // The evidence path is checked before the export is written, so a refused evidence path leaves no export behind.
+                if (probe.LocalRamEvidencePath is not null && LocalRamEvidence.RefusalFor(probe.LocalRamEvidencePath, mustBeNew: true) is { } preEvidenceRefusal)
+                {
+                    error.WriteLine($"openbios-probe: --local-ram-evidence: {preEvidenceRefusal}");
+                    return 1;
+                }
+
                 WriteAtomically(probe.FallbackTargetsPath, exportJson);
+                if (probe.LocalRamEvidencePath is not null)
+                {
+                    // The local evidence (RAM words, never published) is bound to this export's exact bytes, and is written only outside any Git work tree.
+                    var exportSha = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(exportJson))).ToLowerInvariant();
+                    // Checked again at the write, on the real location. If this refuses, the export above is already written and holds no RAM word; it is not
+                    // evidence for fallback-roots without the evidence, which the planner then refuses (fail closed).
+                    if (LocalRamEvidence.WriteNew(probe.LocalRamEvidencePath, BuildRamEvidenceDocument(exportSha, evidence!.Targets.Select(static t => t.Target), ramWords.Get)) is { } writeRefusal)
+                    {
+                        error.WriteLine($"openbios-probe: --local-ram-evidence: {writeRefusal}");
+                        return 1;
+                    }
+                }
             }
 
             var document = new
@@ -917,6 +965,55 @@ internal static class OpenBiosProbeCommand
 
     private static string Hex(uint v) => $"0x{v:X8}";
 
+    /// <summary>True when a guest PC translates into the physical RAM range below 8 MiB (2 MiB of RAM and its mirrors). A PC outside it (the BIOS ROM range) has no RAM word to export.</summary>
+    internal static bool IsGuestRamPc(uint pc) => Ps1AddressTranslation.TryTranslate(pc, out var physical) && physical < 0x00800000u;
+
+    /// <summary>
+    /// The ruling on #839: no guest word from RAM is published. Every stdout, JSON and public file output withholds it. The explicit
+    /// local outputs are the exceptions, each written only as a new file outside any Git work tree: the RAM evidence
+    /// (<c>--local-ram-evidence</c>, see <see cref="BuildRamEvidenceDocument"/>) and the raw RAM dump (<c>--dump-ram</c>). The switch is pinned
+    /// to false by tests.
+    /// </summary>
+    private const bool PublishRamWords = false;
+
+    /// <summary>The single decision for every guest word written to a public output; always null while <see cref="PublishRamWords"/> is false.</summary>
+    internal static uint? WordFor(uint pc, uint word) => PublishRamWords && IsGuestRamPc(pc) ? word : null;
+
+    /// <summary>
+    /// The local RAM evidence document (<c>fallback-ram-evidence/v1</c>): the RAM word observed at each fallback PC in RAM, bound to one
+    /// public export by its SHA-256. It is the only file that carries RAM words, and it is never a public artifact. A PC outside RAM
+    /// (the BIOS ROM range) or without an observed word is left out, so the planner refuses it.
+    /// </summary>
+    internal static string BuildRamEvidenceDocument(string exportSha256, IEnumerable<uint> targetPcs, Func<uint, uint?> ramWordOf)
+    {
+        var words = targetPcs
+            .Where(IsGuestRamPc)
+            .Select(pc => (pc, word: ramWordOf(pc)))
+            .Where(entry => entry.word is not null)
+            .Select(entry => new { pc = Hex(entry.pc), word = Hex(entry.word!.Value) })
+            .ToArray();
+        return JsonSerializer.Serialize(new { format = ObservedRootPlanner.RamEvidenceFormat, exportSha256, words }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>
+    /// Decision A (PR #839, fixed by the arbitration): a general-purpose register value is never written to a public artifact.
+    /// Its origin cannot be told from the ROM's words, so no value is matched or exported. The one switch; tests pin it to false.
+    /// </summary>
+    private const bool PublishGprValues = false;
+
+    /// <summary>The GPR values as a public field, or null when they are withheld (<see cref="PublishGprValues"/>).</summary>
+    internal static string[]? GprFor(IEnumerable<uint>? values) =>
+        PublishGprValues && values is not null ? values.Select(Hex).ToArray() : null;
+
+    /// <summary>True for a MIPS general-purpose register name in the CPU list (r1..r31).</summary>
+    internal static bool IsGprName(string name) => name is ['r', >= '0' and <= '9', ..];
+
+    /// <summary>A CPU register value as a public field; a GPR value is withheld (<see cref="GprFor"/>), other registers are exported.</summary>
+    internal static string? CpuValueFor(string name, uint value) => IsGprName(name) && !PublishGprValues ? null : Hex(value);
+
+    /// <summary><see cref="WordFor"/> as hexadecimal text, or null when the word is withheld.</summary>
+    internal static string? WordHex(uint pc, uint word) => WordFor(pc, word) is { } exported ? Hex(exported) : null;
+
     /// <summary>
     /// The per-fetch accounting the probe's fallback fetch observer performs: the boot monitor and the fallback accounting each see the
     /// fetch once, and the first exception-vector entry with no pending cause is captured as the host interrupt. Shared by the probe and
@@ -947,11 +1044,11 @@ internal static class OpenBiosProbeCommand
     /// <summary>
     /// The <c>fallback-targets/v2</c> document for a run (Issue #773), or null when the run has no fallback evidence (it did not
     /// finish). Null is never a valid export: the planner would read it as a run with no targets. The run's <c>outcome</c> is
-    /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer).
+    /// recorded so the planner can refuse a set that is partial (budget exhausted, failed, unsupported transfer). The export carries no RAM word (the ruling on #839).
     /// </summary>
     internal static string? BuildFallbackTargetsDocument(
         MixedFallbackEvidence? evidence, string hash, LoadImageManifest manifest, Func<uint, string> causeOf, TitleExecutionState state,
-        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt, Func<uint, uint?> ramWordOf, uint segments = 10, uint segmentBudget = 100_000)
+        string? discSha256, uint codeBytes, IReadOnlyList<uint> roots, uint? stopAt, uint segments = 10, uint segmentBudget = 100_000, string? diagnosticCode = null)
     {
         if (evidence is null)
         {
@@ -965,14 +1062,13 @@ internal static class OpenBiosProbeCommand
             entries = t.Entries,
             instructions = t.Instructions,
             lastReturnPc = Hex(t.LastReturnPc),
-            ramWord = ramWordOf(t.Target) is { } word ? Hex(word) : null,
         }).ToArray();
         return JsonSerializer.Serialize(new
         {
             format = ObservedRootPlanner.TargetFormat,
             sha256 = hash,
             run = ObservedRootPlanner.RunDocument(ObservedRootPlanner.DescribeRun(hash, manifest, discSha256, ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots, segments, segmentBudget))),
-            outcome = new { state = state.ToString(), complete = ObservedRootPlanner.IsCompleteOutcome(state), stopAt = stopAt is { } stop ? Hex(stop) : null },
+            outcome = new { state = state.ToString(), complete = ObservedRootPlanner.IsCompleteOutcome(state), stopAt = stopAt is { } stop ? Hex(stop) : null, diagnosticCode },
             targets,
         }, new JsonSerializerOptions { WriteIndented = true });
     }
@@ -1009,9 +1105,10 @@ internal static class OpenBiosProbeCommand
         {
             pc = Hex(snapshot?.PC ?? 0),
             sr = Hex(cop0.Sr), cause = Hex(cop0.Cause), epc = Hex(cop0.Epc), badVAddr = Hex(cop0.BadVAddr),
-            gpr = snapshot?.Gpr.Select(Hex).ToArray(),
-            lastFetches = trace.Fetches.TakeLast(16).Select(e => $"{Hex(e.Pc)}:{Hex(e.Word)}").ToArray(),
-            lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{Hex(t.From.Word)}->{Hex(t.To)}").ToArray()
+            gpr = GprFor(snapshot?.Gpr),
+            // The word is exported only through WordHex; a withheld word is written as null.
+            lastFetches = trace.Fetches.TakeLast(16).Select(e => $"{Hex(e.Pc)}:{WordHex(e.Pc, e.Word) ?? "null"}").ToArray(),
+            lastTransfers = trace.Transfers.TakeLast(16).Select(t => $"{Hex(t.From.Pc)}:{WordHex(t.From.Pc, t.From.Word) ?? "null"}->{Hex(t.To)}").ToArray()
         };
     }
 }

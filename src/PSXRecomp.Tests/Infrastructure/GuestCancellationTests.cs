@@ -284,10 +284,10 @@ public sealed class GuestCancellationTests
         var path = Path.Combine(dir.FullPath, "holder.sh");
         // The snapshot's pc is the program's entry block (a pc with no block would be an unresolved transfer, not the child's result).
         var script = "#!/bin/sh\n"
-            + $"printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x{Entry:x8}\\nhi=0x0\\nlo=0x0\\n'\n"
-            + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i; i=$((i+1)); done\n"
-            + "printf 'RSNAPSHOT_END\\n'\n"
-            + "sh -c 'sleep 60 &'\n"
+            + $"printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x{Entry:x8}\\nhi=0x0\\nlo=0x0\\n' >&2\n"
+            + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i >&2; i=$((i+1)); done\n"
+            + "printf 'RSNAPSHOT_END\\n' >&2\n"
+            + "sh -c 'sleep 60 2>/dev/null &'\n"
             + tail + "\n";
         File.WriteAllText(path, script);
 #pragma warning disable AARC003 // Test-layer fixture: the shell artifact must be executable to be launched as the prebuilt child
@@ -859,8 +859,8 @@ public sealed class GuestCancellationTests
         if (OperatingSystem.IsWindows())
         {
             var batch = Path.Combine(dir.FullPath, "snapshot.cmd");
-            var text = "@echo off\r\necho RSNAPSHOT_BEGIN\r\necho termination=0\r\necho pc=0x80010000\r\necho hi=0x0\r\necho lo=0x0\r\n"
-                + "for /L %%i in (0,1,31) do @echo gpr[%%i]=0x0\r\necho RSNAPSHOT_END\r\n"
+            var text = "@echo off\r\necho RSNAPSHOT_BEGIN 1>&2\r\necho termination=0 1>&2\r\necho pc=0x80010000 1>&2\r\necho hi=0x0 1>&2\r\necho lo=0x0 1>&2\r\n"
+                + "for /L %%i in (0,1,31) do @echo gpr[%%i]=0x0 1>&2\r\necho RSNAPSHOT_END 1>&2\r\n"
                 + string.Concat(windowsLines.Select(line => line + "\r\n"))
                 + "exit /b 0\r\n";
             File.WriteAllText(batch, text);
@@ -868,9 +868,9 @@ public sealed class GuestCancellationTests
         }
 
         var script = Path.Combine(dir.FullPath, "snapshot.sh");
-        var body = "printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x80010000\\nhi=0x0\\nlo=0x0\\n'\n"
-            + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i; i=$((i+1)); done\n"
-            + "printf 'RSNAPSHOT_END\\n'\n"
+        var body = "printf 'RSNAPSHOT_BEGIN\\ntermination=0\\npc=0x80010000\\nhi=0x0\\nlo=0x0\\n' >&2\n"
+            + "i=0; while [ $i -lt 32 ]; do printf 'gpr[%d]=0x0\\n' $i >&2; i=$((i+1)); done\n"
+            + "printf 'RSNAPSHOT_END\\n' >&2\n"
             + string.Concat(posixLines.Select(line => line + "\n"));
         File.WriteAllText(script, body);
         return ("/bin/sh", [script]);
@@ -1355,7 +1355,7 @@ public sealed class GuestCancellationTests
         // The budget is injected (500 ms), so the test does not wait for the run's real budget.
         using var dir = new TempDirectory();
         var copy = NamedCopy(dir, SleepBinary, "drain");
-        var (fileName, arguments) = SnapshotChild(dir, [$"start /b \"\" \"{copy}\" -n 60 127.0.0.1"], [$"\"{copy}\" 60 &"]);
+        var (fileName, arguments) = SnapshotChild(dir, [$"start /b \"\" \"{copy}\" -n 60 127.0.0.1"], [$"\"{copy}\" 60 2>/dev/null &"]);
         try
         {
             var clock = Stopwatch.StartNew();

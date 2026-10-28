@@ -203,7 +203,6 @@ public sealed class LoadedCodeMismatchDiagnostics
         // would hold up to the whole comparison budget in memory (#786 review).
         private string? _lastRamSha256;
         private uint[] _windowAot = [];
-        private uint[] _windowRam = [];
         private int _windowStart;
 
         public Entry(uint pc, int version, int versionCount, IReadOnlyList<uint> aot, IReadOnlyList<LoadedImageOrigin> origins)
@@ -265,12 +264,12 @@ public sealed class LoadedCodeMismatchDiagnostics
 
             if (Rejections == 1)
             {
-                // The window is taken at the first refusal only: a bounded sample, not a dump of the image.
+                // The window is taken at the first refusal only: a bounded sample, not a dump of the image. Only the image's own words
+                // (windowAot) are kept: the RAM words are hashed and never stored or written (PR #839 ruling).
                 _windowStart = Math.Max(0, firstMismatch - WindowRadius);
                 var end = Math.Min(_aot.Count, firstMismatch + WindowRadius + 1);
                 _windowAot = new uint[end - _windowStart];
                 for (var i = 0; i < _windowAot.Length; i++) _windowAot[i] = _aot[_windowStart + i];
-                _windowRam = ram[_windowStart..end];
             }
         }
 
@@ -294,7 +293,6 @@ public sealed class LoadedCodeMismatchDiagnostics
                 ["ramSha256"] = _lastRamSha256,
                 ["windowStartPc"] = Rejections == 0 ? null : Hex(Pc + (uint)_windowStart * 4u),
                 ["windowAot"] = new JsonArray(_windowAot.Select(static w => (JsonNode)Hex(w)).ToArray()),
-                ["windowRam"] = new JsonArray(_windowRam.Select(static w => (JsonNode)Hex(w)).ToArray()),
                 ["origins"] = OriginsJson(),
             };
         }

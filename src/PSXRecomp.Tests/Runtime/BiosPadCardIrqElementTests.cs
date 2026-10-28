@@ -212,6 +212,36 @@ public sealed class BiosPadCardIrqElementTests : IDisposable
         _ram.Read32(ButtonDest).Should().Be(0xFFFFFFFFu, "the pad stage runs either way");
     }
 
+    // PR #839 re-review item 4: the B0:5B value is read from guest RAM. Synthetic value 0x5A5A (23130); the diagnostic must not carry it.
+    [Fact]
+    public void Withheld_Auto_Ack_Value_Is_Absent_From_The_Diagnostic_Message()
+    {
+        PersonaStart();
+        ChangeClearPad(0x5A5Au);
+        Pending(VblankBit, DeviceScheduler.VblankIrq);
+
+        var result = Run();
+
+        result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
+        result.Detail.Should().Contain("outside 0 and 1");
+        result.Detail.Should().NotContain("5A5A").And.NotContain("23130");
+    }
+
+    // PR #839 re-review item 4: button_dest (BiosPadCardIrqHandler.cs:137). The destination address is the B0:15 value; it must not be printed.
+    [Fact]
+    public void Withheld_ButtonDest_Address_Is_Absent_From_The_Diagnostic_Message()
+    {
+        PersonaStart();
+        Pending(VblankBit, DeviceScheduler.VblankIrq);
+        var context = new BiosExceptionChainContext(Reader, new RefusingWriter(Writer, ButtonDest), _interrupts, Context.Exception);
+
+        var result = BiosPadCardIrqHandler.Run(context);
+
+        result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
+        result.Detail.Should().Contain("button_dest is not writable");
+        result.Detail.Should().NotContain($"{ButtonDest:X8}").And.NotContain($"0x{ButtonDest:X8}");
+    }
+
     [Theory]
     [InlineData(2u)]
     [InlineData(0xFFFFFFFFu)]
@@ -225,7 +255,8 @@ public sealed class BiosPadCardIrqElementTests : IDisposable
         var result = Run();
 
         result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-        result.Detail.Should().Contain("PadCardIrq").And.Contain($"0x{value:X}");
+        result.Detail.Should().Contain("PadCardIrq").And.Contain("outside 0 and 1")
+            .And.NotContain($"0x{value:X}", "a RAM-derived value is withheld from the diagnostic");
         _interrupts.Status.Should().Be(VblankBit);
         Snapshot().Should().Equal(before);
         _ram.Read32(ButtonDest).Should().Be(Sentinel);
@@ -373,7 +404,8 @@ public sealed class BiosPadCardIrqElementTests : IDisposable
         var result = BiosPadCardIrqHandler.Run(context);
 
         result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-        result.Detail.Should().Contain("0x800563F0");
+        result.Detail.Should().Contain("button_dest", "the failure still names the field");
+        result.Detail.Should().NotContain("0x800563F0", "button_dest is a GPR-derived value and is not exported");
         _interrupts.Status.Should().Be(VblankBit);
     }
 
