@@ -88,8 +88,9 @@ public static class FirmwareDiagnosticDistribution
     /// <para>
     /// Operator notes: a failed build that cannot remove everything it created reports the staging directory it kept in the exception
     /// message. A process that is killed mid-build leaves its staging directory <c>.&lt;name&gt;.staging-&lt;guid&gt;</c> beside the output
-    /// name, and nothing deletes it automatically. Files the runtime-host publish writes (names not known in advance) are not recorded,
-    /// so a failure after that step leaves them in <c>runtime/</c>. Remove a kept staging directory by hand after checking it.
+    /// name, and nothing deletes it automatically. The runtime-host publish writes into a private directory and each entry is moved into
+    /// <c>runtime/</c> with a refusing move; an entry a failed publish leaves in its private directory is kept, not removed. Remove a kept
+    /// staging directory by hand after checking it. Paths longer than about 247 characters are refused before any write, with the limit named.
     /// The build runs on Windows only; it is refused on other platforms before anything is created.
     /// </para>
     /// </summary>
@@ -151,6 +152,14 @@ public static class FirmwareDiagnosticDistribution
         {
             throw new PlatformNotSupportedException(
                 "The measurement is built on Windows only: its no-replace publish of the output directory is not available elsewhere.");
+        }
+
+        // The CLI passes the host OS, so windows: false is reachable only by a caller that asks for an extensionless artifact on Windows.
+        // The measurement names its artifact with .exe (the manifest and the identity depend on it), so that request is refused.
+        if (!windows)
+        {
+            throw new NotSupportedException(
+                "The measurement names its artifact with the Windows .exe suffix; windows: false (an extensionless artifact) is not supported.");
         }
 
         var area = new StagingArea(outputDir, observe);
@@ -420,14 +429,26 @@ public static class FirmwareDiagnosticDistribution
             return Path.Combine(runtimeDirectory, relativeDiscFile);
         }
 
-        var node = JsonNode.Parse(File.ReadAllText(marker))?.AsObject()
-            ?? throw new InvalidDataException("The diagnostic disc marker is not a JSON object.");
-        if (node["schema"]?.GetValue<string>() != DiscMarkerSchema)
+        // Every malformed shape (invalid JSON, a non-object, a field that is not a string) is refused with the same type as the other checks.
+        string? schema;
+        string? path;
+        try
+        {
+            var node = JsonNode.Parse(File.ReadAllText(marker))?.AsObject()
+                ?? throw new InvalidDataException("The diagnostic disc marker is not a JSON object.");
+            schema = node["schema"]?.GetValue<string>();
+            path = node["path"]?.GetValue<string>();
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or FormatException)
+        {
+            throw new InvalidDataException("The diagnostic disc marker is malformed.", exception);
+        }
+
+        if (schema != DiscMarkerSchema)
         {
             throw new InvalidDataException("The diagnostic disc marker has an unknown schema.");
         }
 
-        var path = node["path"]?.GetValue<string>();
         if (path is null || !Path.IsPathFullyQualified(path) || !File.Exists(path))
         {
             throw new InvalidDataException("The diagnostic disc marker does not name an existing absolute disc path.");
@@ -525,18 +546,30 @@ public static class FirmwareDiagnosticDistribution
         observe?.Invoke("provision", runtimeDir);
         if (request.HostSourceDirectory is null)
         {
-            // The publish writes a set of files whose names are not known in advance; only the host executable is claimed by name.
-            // Those other published files are not claimed, so after a failure they remain in the staging directory.
-            area.Reserve(Path.Combine(runtimeDir, RuntimeHostLayout.HostFileName(windows)));
+            // The publish writes a set of files whose names are not known in advance. It writes into a private directory this build
+            // created, and each published entry is then moved into runtime/. A move refuses an existing name, so a file another
+            // process placed in runtime/ is never overwritten; the publish directory is removed only when it has been emptied.
+            var publishDir = area.CreateDirectory(Path.Combine(area.Root, "publish-" + Guid.NewGuid().ToString("N")));
             try
             {
-                RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, selfContained: false, firmwareDistribution: true);
+                RuntimeHostBuildService.ProvisionRuntimeHost(publishDir, selfContained: false, firmwareDistribution: true);
             }
             catch (RuntimeHostBuildService.RuntimeHostProvisionFailed exception)
             {
                 throw new InvalidOperationException(exception.Message, exception);
             }
 
+            foreach (var file in Directory.EnumerateFiles(publishDir))
+            {
+                area.MoveNew(file, Path.Combine(runtimeDir, Path.GetFileName(file)));
+            }
+
+            foreach (var directory in Directory.EnumerateDirectories(publishDir))
+            {
+                area.MoveNewDirectory(directory, Path.Combine(runtimeDir, Path.GetFileName(directory)));
+            }
+
+            area.ReleaseEmptyDirectory(publishDir);
             return "provisioned";
         }
 
@@ -773,7 +806,7 @@ public static class FirmwareDiagnosticDistribution
         /// Creates <paramref name="path"/> inside the staging directory. Each missing directory on the way is created exclusively and
         /// recorded only after the create succeeded. A directory that exists is never adopted: the exclusive create refuses it.
         /// </summary>
-        public void CreateDirectory(string path)
+        public string CreateDirectory(string path)
         {
             RequireRealChain(path);
             var missing = new List<string>();
@@ -790,6 +823,8 @@ public static class FirmwareDiagnosticDistribution
                 ExclusiveCreateDirectory(directory);
                 _owned.Add(directory);
             }
+
+            return path;
         }
 
         /// <summary>Creates a new file with <paramref name="destination"/>'s name and copies the bytes of <paramref name="source"/> into it.</summary>
@@ -835,17 +870,73 @@ public static class FirmwareDiagnosticDistribution
             _owned.Add(path);
         }
 
-        /// <summary>Moves a file this build created to a name this build chooses. Refuses an existing destination.</summary>
+        /// <summary>
+        /// Moves a file this build created to a name this build chooses. The move refuses an existing destination (File.Move does not
+        /// replace), so a file another process placed at that name is never overwritten.
+        /// </summary>
         public string MoveNew(string source, string destination)
         {
             RequireRealChain(destination);
+            RequireWithinPathLimit(destination);
+            RefuseExisting(destination);
             File.Move(source, destination);
             _owned.Add(destination);
             return destination;
         }
 
+        /// <summary>Moves a directory this build created to a name this build chooses. Directory.Move refuses an existing destination on Windows.</summary>
+        public void MoveNewDirectory(string source, string destination)
+        {
+            RequireRealChain(destination);
+            RequireWithinPathLimit(destination);
+            RefuseExisting(destination);
+            Directory.Move(source, destination);
+            _owned.Add(destination);
+        }
+
+        /// <summary>
+        /// Removes a directory this build created once it has been emptied by moves. Fails if anything is left in it, since that entry
+        /// was not moved and the directory is not removed with its content.
+        /// </summary>
+        public void ReleaseEmptyDirectory(string path)
+        {
+            if (Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                throw new IOException($"The published directory still holds entries that were not moved into the measurement: {path}");
+            }
+
+            Directory.Delete(path);
+            _owned.Remove(path);
+        }
+
+        private static void RefuseExisting(string path)
+        {
+            if (Path.Exists(path) || IsReparsePoint(path))
+            {
+                throw new IOException($"A file, directory or link already exists at {path}; this build did not create it and does not use it.");
+            }
+        }
+
+        /// <summary>
+        /// Refuses a path longer than the classic Windows limit for these calls. CreateDirectoryW and the file calls used here do not use
+        /// the long-path prefix, and they fail with a raw Win32 code above about 247 characters. The staging name adds about 42 characters
+        /// to the output path, so the output path is the one to shorten.
+        /// </summary>
+        private static void RequireWithinPathLimit(string path)
+        {
+            if (path.Length > MaxPathCharacters)
+            {
+                throw new IOException(
+                    $"The path is {path.Length} characters long, over the {MaxPathCharacters}-character limit this build uses without long-path support: {path}. " +
+                    "The staging name adds about 42 characters to the output path; choose an output path under about 205 characters.");
+            }
+        }
+
+        private const int MaxPathCharacters = 247;
+
         private FileStream CreateNewFile(string path)
         {
+            RequireWithinPathLimit(path);
             var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             _owned.Add(path); // recorded only after the exclusive create succeeded
             return stream;
@@ -854,6 +945,7 @@ public static class FirmwareDiagnosticDistribution
         /// <summary>Creates one directory with the Win32 call that fails when the name exists (Directory.CreateDirectory would adopt it).</summary>
         private static void ExclusiveCreateDirectory(string path)
         {
+            RequireWithinPathLimit(path);
             if (!WindowsDirectoryInterop.CreateDirectoryW(path, IntPtr.Zero))
             {
                 var error = Marshal.GetLastPInvokeError();

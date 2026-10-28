@@ -141,7 +141,8 @@ internal static class FirmwareDiagnosticCommand
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException
                                        or InvalidOperationException or FormatException or NotSupportedException or PlatformNotSupportedException
-                                       or TimeoutException or FileNotFoundException)
+                                       or TimeoutException or FileNotFoundException
+                                       or System.ComponentModel.Win32Exception or JsonException)
         {
             error.WriteLine($"psxrecomp firmware-diagnostic: {ex.Message}");
             return 1;

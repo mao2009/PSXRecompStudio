@@ -10,7 +10,6 @@ using Xunit;
 
 namespace PSXRecomp.Tests.Infrastructure;
 
-#pragma warning disable AARC003 // The test asserts on local files it stages itself, as TempDirectory does.
 
 /// <summary>
 /// Issue #846: the developer-only measurement distribution references the local ROM, disc and AOT inputs in place. These
@@ -21,7 +20,9 @@ public sealed class FirmwareDiagnosticDistributionTests
 {
     private static readonly string NoSha = new('0', 64);
 
-    [Fact]
+    private const string WindowsOnlyReason = "NOT RUN on this OS: the test drives the Windows-only measurement (hard links, junctions, CreateDirectoryW).";
+
+    [SkippableFact]
     public void Build_RomDigestMismatch_RefusesBeforeAnyOutputIsCreated()
     {
         using var dir = new TempDirectory();
@@ -32,10 +33,10 @@ public sealed class FirmwareDiagnosticDistributionTests
             Request(dir, romPath: rom, romSha256: NoSha, outputDirectory: output), windows: true);
 
         act.Should().Throw<InvalidDataException>().WithMessage("*does not match*");
-        Directory.Exists(output).Should().BeFalse("a refused input must leave no output behind");
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse("a refused input must leave no output behind");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_ExistingOutputDirectory_IsRefusedAndLeftAsIs()
     {
         using var dir = new TempDirectory();
@@ -47,38 +48,32 @@ public sealed class FirmwareDiagnosticDistributionTests
             Request(dir, romPath: rom, romSha256: NoSha, outputDirectory: output), windows: true);
 
         act.Should().Throw<IOException>().WithMessage("*already exists*");
-        File.ReadAllText(Path.Combine(output, "keep.txt")).Should().Be("previous evidence");
+        DiagnosticFiles.ReadAllText(Path.Combine(output, "keep.txt")).Should().Be("previous evidence");
     }
 
-    [Fact]
+    [SkippableFact]
     public void LinkDiscInPlace_ProducesAHardLinkNotACopy_AndLeavesTheOriginalUnchanged()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var original = dir.WriteFile("disc/game.chd", new byte[4096]);
         var before = OpenBiosRomInput.Sha256HexOfFile(original);
         var linked = dir.Combine("runtime", "disc", "game.chd");
-        Directory.CreateDirectory(Path.GetDirectoryName(linked)!);
+        DiagnosticFiles.CreateDirectory(Path.GetDirectoryName(linked)!);
 
         FirmwareDiagnosticDistribution.LinkDiscInPlace(original, linked);
 
-        File.Exists(linked).Should().BeTrue();
-        new FileInfo(linked).LinkTarget.Should().BeNull("a hard link is an entry of the same file, not a symbolic link");
+        DiagnosticFiles.FileExists(linked).Should().BeTrue();
+        DiagnosticFiles.LinkTarget(linked).Should().BeNull("a hard link is an entry of the same file, not a symbolic link");
         FirmwareDiagnosticDistribution.HardLinkCount(linked).Should().Be(2, "the link shares the original's file (no copy)");
         OpenBiosRomInput.Sha256HexOfFile(original).Should().Be(before);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Measure_HostPastTheBound_IsStoppedAndTheStopIsRecorded()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // A copy of cmd.exe stands in for the host: with its stdin pipe open it waits, so it is still running at the bound.
         using var dir = new TempDirectory();
@@ -88,10 +83,10 @@ public sealed class FirmwareDiagnosticDistributionTests
         dir.WriteFile("aot/images.txt", Array.Empty<byte>());
         var aot = dir.Combine("aot");
         var outDir = dir.Combine("out", "measure");
-        Directory.CreateDirectory(outDir);
-        var runtime = Directory.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
+        DiagnosticFiles.CreateDirectory(outDir);
+        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
         var host = Path.Combine(runtime, "PSXRecomp.RuntimeHost.exe");
-        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), host);
+        DiagnosticFiles.CopyFile(DiagnosticFiles.SystemFile("cmd.exe"), host);
         var digests = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["rom"] = OpenBiosRomInput.Sha256HexOfFile(rom),
@@ -113,51 +108,48 @@ public sealed class FirmwareDiagnosticDistributionTests
         stop["residuals"]!.AsArray().Should().BeEmpty("cmd.exe starts no descendant, so no residual is left");
         var pid = stop["processId"]!.GetValue<int>();
         pid.Should().BeGreaterThan(0);
-        var gone = () => Process.GetProcessById(pid);
+        var gone = () => DiagnosticFiles.ProcessById(pid);
         gone.Should().Throw<ArgumentException>("the stopped host must no longer be running");
     }
 
-    [Fact]
+    [SkippableFact]
     public void ResolveRuntimeDiscPath_WithoutTheMarker_IsTheProductPath()
     {
         // Default off: no marker means the product's runtime/disc path, unchanged.
         using var dir = new TempDirectory();
-        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime")).FullName;
 
         FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd")
             .Should().Be(Path.Combine(runtime, "disc/game.chd"));
     }
 
-    [Fact]
+    [SkippableFact]
     public void ResolveRuntimeDiscPath_WithTheMarker_NamesTheOriginalDiscAndNothingIsCreatedInRuntime()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var original = dir.WriteFile("source/game.chd", new byte[4096]);
-        var runtime = Directory.CreateDirectory(dir.Combine("runtime", "disc")).FullName;
+        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime", "disc")).FullName;
         var before = OpenBiosRomInput.Sha256HexOfFile(original);
-        File.WriteAllText(Path.Combine(dir.Combine("runtime"), "diagnostic-disc.json"),
+        DiagnosticFiles.WriteAllText(Path.Combine(dir.Combine("runtime"), "diagnostic-disc.json"),
             "{\"schema\":\"psxrecomp.diagnostic-disc.v1\",\"path\":\"" + original.Replace("\\", "\\\\") + "\",\"sha256\":\"" + before + "\",\"access\":\"read-only\"}");
 
         var resolved = FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(dir.Combine("runtime"), "disc/game.chd");
 
         resolved.Should().Be(Path.GetFullPath(original));
-        Directory.EnumerateFileSystemEntries(runtime).Should().BeEmpty("the disc is referenced, never linked or copied into runtime/");
+        DiagnosticFiles.Entries(runtime).Should().BeEmpty("the disc is referenced, never linked or copied into runtime/");
         OpenBiosRomInput.Sha256HexOfFile(original).Should().Be(before);
-        new FileInfo(original).LinkTarget.Should().BeNull();
+        DiagnosticFiles.LinkTarget(original).Should().BeNull();
     }
 
-    [Fact]
+    [SkippableFact]
     public void ResolveRuntimeDiscPath_MarkerWithAnUnknownSchema_IsRefused()
     {
         using var dir = new TempDirectory();
-        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime")).FullName;
         var disc = dir.WriteFile("source/game.chd", new byte[16]);
-        File.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"),
+        DiagnosticFiles.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"),
             "{\"schema\":\"other\",\"path\":\"" + disc.Replace("\\", "\\\\") + "\"}");
 
         var act = () => FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd");
@@ -165,18 +157,15 @@ public sealed class FirmwareDiagnosticDistributionTests
         act.Should().Throw<InvalidDataException>().WithMessage("*unknown schema*");
     }
 
-    [Fact]
+    [SkippableFact]
     public void DiscOpener_ReadOnlyFile_OpensWithoutWriteAccessAndLeavesTheBytesUnchanged()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var disc = dir.WriteFile("source/game.bin", new byte[2352 * 2]);
         var before = OpenBiosRomInput.Sha256HexOfFile(disc);
-        File.SetAttributes(disc, FileAttributes.ReadOnly);
+        DiagnosticFiles.SetAttributes(disc, FileAttributes.ReadOnly);
         try
         {
             using (var opened = DiscSectorSourceOpener.Open(disc))
@@ -188,11 +177,11 @@ public sealed class FirmwareDiagnosticDistributionTests
         }
         finally
         {
-            File.SetAttributes(disc, FileAttributes.Normal);
+            DiagnosticFiles.SetAttributes(disc, FileAttributes.Normal);
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void RequireInputsUnchanged_AnyDigestChange_InvalidatesTheMeasurement()
     {
         var before = new Dictionary<string, string> { ["rom"] = "aa", ["disc"] = "bb" };
@@ -204,13 +193,10 @@ public sealed class FirmwareDiagnosticDistributionTests
         act.Should().Throw<InvalidDataException>().WithMessage("*disc*changed*");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_OutputDirectoryCreatedBeforeTheBuildWrites_IsLeftUntouched()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return; // the staged build is Windows-only; the refusal on other platforms is Build_OnNonWindows_IsRefused...
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // The race: another process creates the output directory between the existence check and the build's own creation.
         using var dir = new TempDirectory();
@@ -222,24 +208,21 @@ public sealed class FirmwareDiagnosticDistributionTests
         {
             if (phase == "claim")
             {
-                Directory.CreateDirectory(path);
-                File.WriteAllText(Path.Combine(path, "foreign.txt"), foreign);
+                DiagnosticFiles.CreateDirectory(path);
+                DiagnosticFiles.WriteAllText(Path.Combine(path, "foreign.txt"), foreign);
             }
         });
 
         act.Should().Throw<Exception>("the roots file is invalid, so the build fails after it has started");
-        File.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be(foreign, "a directory this build did not create is never deleted");
-        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+        DiagnosticFiles.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be(foreign, "a directory this build did not create is never deleted");
+        DiagnosticFiles.Entries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
             "the build writes nothing into a directory it did not create");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_FailureWithAForeignFileInStaging_DeletesOnlyItsOwnOutput()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return; // the staging hook is reached only on Windows; see Build_OnNonWindows_IsRefusedBeforeAnyOutputIsCreated
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -251,25 +234,22 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "staged")
             {
                 staged = path;
-                File.WriteAllText(Path.Combine(path, "foreign.txt"), "someone else's file");
+                DiagnosticFiles.WriteAllText(Path.Combine(path, "foreign.txt"), "someone else's file");
             }
         });
 
         act.Should().Throw<Exception>();
         staged.Should().NotBeNull("the build stages its output in a sibling directory before it fails");
-        File.ReadAllText(Path.Combine(staged!, "foreign.txt")).Should().Be("someone else's file",
+        DiagnosticFiles.ReadAllText(Path.Combine(staged!, "foreign.txt")).Should().Be("someone else's file",
             "content another process placed in the staging area is not deleted");
-        Directory.Exists(Path.Combine(staged!, "runtime")).Should().BeFalse("the build's own runtime directory is removed");
-        Directory.Exists(output).Should().BeFalse();
+        DiagnosticFiles.DirectoryExists(Path.Combine(staged!, "runtime")).Should().BeFalse("the build's own runtime directory is removed");
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_FailureMidBuild_RemovesOnlyItsOwnTemporaryOutput()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return; // the staged build is Windows-only; see Build_OnNonWindows_IsRefusedBeforeAnyOutputIsCreated
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -277,63 +257,54 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<Exception>();
 
-        Directory.Exists(output).Should().BeFalse();
-        Directory.GetDirectories(dir.FullPath, "." + Path.GetFileName(output) + ".staging-*").Should().BeEmpty(
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
+        DiagnosticFiles.Directories(dir.FullPath, "." + Path.GetFileName(output) + ".staging-*").Should().BeEmpty(
             "the staging directory the build created is removed");
-        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(
+        DiagnosticFiles.Entries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(
             ["openbios.bin", "game.bin", "aot"], "only the inputs the caller named remain");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_OutputPathThatIsAnExistingJunction_IsRefusedAndTheTargetIsNeverWritten()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var target = dir.CreateSubdirectory("elsewhere");
-        File.WriteAllText(Path.Combine(target, "keep.txt"), "x");
+        DiagnosticFiles.WriteAllText(Path.Combine(target, "keep.txt"), "x");
         var output = dir.Combine("measure");
         MakeJunction(output, target);
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>();
 
-        Directory.GetFileSystemEntries(target).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+        DiagnosticFiles.Entries(target).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
             "a junction at the output path is never followed");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_DanglingJunctionAtTheOutputPath_IsNotFollowed()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var target = dir.CreateSubdirectory("gone");
         var output = dir.Combine("measure");
         MakeJunction(output, target);
-        Directory.Delete(target);
+        DiagnosticFiles.DeleteDirectory(target);
         var request = ValidRequest(dir, output, roots: "nope\n");
 
         // The refusal of a link at the output name is the guard that must fire, not a later failure.
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>()
             .WithMessage("*already exists*");
 
-        Directory.Exists(target).Should().BeFalse("the build never creates the directory a dangling junction names");
+        DiagnosticFiles.DirectoryExists(target).Should().BeFalse("the build never creates the directory a dangling junction names");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_ForeignFileWrittenDuringAStep_SurvivesTheFailureCleanup()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // The foreign file is written inside the host step, after the step has started and before its first write of its own.
         using var dir = new TempDirectory();
@@ -349,59 +320,53 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "provision")
             {
                 runtime = path;
-                File.WriteAllText(Path.Combine(path, "foreign.txt"), "written by another process during the step");
+                DiagnosticFiles.WriteAllText(Path.Combine(path, "foreign.txt"), "written by another process during the step");
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*kept at*does not hold*",
             "the failure is reported with the kept staging directory and the host directory's refusal");
         runtime.Should().NotBeNull("the host step ran");
-        File.ReadAllText(Path.Combine(runtime!, "foreign.txt")).Should().Be("written by another process during the step",
+        DiagnosticFiles.ReadAllText(Path.Combine(runtime!, "foreign.txt")).Should().Be("written by another process during the step",
             "content another process writes during a step is never deleted by the failure cleanup");
-        Directory.GetFileSystemEntries(runtime!).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+        DiagnosticFiles.Entries(runtime!).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
             "the build's own entries under runtime/ are removed");
-        Directory.GetFileSystemEntries(Path.GetDirectoryName(runtime!)!).Select(Path.GetFileName).Should().BeEquivalentTo(["runtime"],
+        DiagnosticFiles.Entries(Path.GetDirectoryName(runtime!)!).Select(Path.GetFileName).Should().BeEquivalentTo(["runtime"],
             "the claimed artifact copy is removed; the staging directory stays because it still holds foreign content");
-        Directory.Exists(output).Should().BeFalse();
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_StagingDirectoryReplacedByAJunction_IsNeitherWrittenNorDeleted()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
         var elsewhere = dir.CreateSubdirectory("elsewhere");
-        File.WriteAllText(Path.Combine(elsewhere, "keep.txt"), "x");
+        DiagnosticFiles.WriteAllText(Path.Combine(elsewhere, "keep.txt"), "x");
 
         var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
         {
             if (phase == "staged")
             {
                 // A same-user process swaps the empty staging directory for a junction to a directory it controls.
-                Directory.Delete(path);
+                DiagnosticFiles.DeleteDirectory(path);
                 MakeJunction(path, elsewhere);
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*no longer a real directory*");
-        Directory.GetFileSystemEntries(elsewhere).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+        DiagnosticFiles.Entries(elsewhere).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
             "nothing is written through the junction, and the cleanup does not delete through it");
-        Directory.Exists(output).Should().BeFalse();
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_OnNonWindows_IsRefusedBeforeAnyOutputIsCreated()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return; // the refusal is the non-Windows behaviour; the Windows path is covered by the other tests
-        }
+        Skip.If(OperatingSystem.IsWindows(), "the refusal is checked on non-Windows hosts; on Windows the Windows tests run instead");
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -409,18 +374,15 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: false)))
             .Should().Throw<PlatformNotSupportedException>();
-        Directory.Exists(output).Should().BeFalse();
-        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
+        DiagnosticFiles.Entries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
             "the refused build leaves nothing behind, not even a staging directory");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_ForeignFileAppearingAtACopyTarget_IsRefusedAndNeverDeleted()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // The foreign file appears between the claim check and the copy: the copy must refuse it, and the cleanup must keep it.
         using var dir = new TempDirectory();
@@ -434,22 +396,19 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "file" && Path.GetFileName(path) == "rom.roots")
             {
                 target = path;
-                File.WriteAllText(path, foreign);
+                DiagnosticFiles.WriteAllText(path, foreign);
             }
         });
 
         act.Should().Throw<Exception>();
         target.Should().NotBeNull("the copy of rom.roots was reached");
-        File.ReadAllText(target!).Should().Be(foreign, "a file another process created at a name the build writes is never deleted");
+        DiagnosticFiles.ReadAllText(target!).Should().Be(foreign, "a file another process created at a name the build writes is never deleted");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_ForeignFileAppearingAtTheBootManifest_IsNeverOverwritten()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -466,22 +425,19 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "file" && Path.GetFileName(path) == FirmwareBootManifest.FileName)
             {
                 target = path;
-                File.WriteAllText(path, foreign); // another process creates the name between the claim and the write
+                DiagnosticFiles.WriteAllText(path, foreign); // another process creates the name between the claim and the write
             }
         });
 
         act.Should().Throw<Exception>("the boot manifest's name is taken by another process");
         target.Should().NotBeNull("the boot manifest was reached");
-        File.ReadAllText(target!).Should().Be(foreign, "a file another process created is never overwritten");
+        DiagnosticFiles.ReadAllText(target!).Should().Be(foreign, "a file another process created is never overwritten");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_DirectoryInjectedIntoTheAdoptionWindow_IsNotRemoved()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // Another process creates the runtime/firmware directory after the build has decided to create it and before the creation.
         using var dir = new TempDirectory();
@@ -494,30 +450,27 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "directory" && Path.GetFileName(path) == FirmwareBootManifest.FirmwareDirectory)
             {
                 injected = path;
-                Directory.CreateDirectory(path);
+                DiagnosticFiles.CreateDirectory(path);
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*already exists at*" + FirmwareBootManifest.FirmwareDirectory + "*",
             "the exclusive create refuses the directory another process created, and the refusal is the failure reported");
         injected.Should().NotBeNull("the directory creation was reached");
-        Directory.Exists(injected!).Should().BeTrue("a directory this build did not create is never removed");
+        DiagnosticFiles.DirectoryExists(injected!).Should().BeTrue("a directory this build did not create is never removed");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_JunctionSwappedUnderRuntimeFirmware_IsNeverWrittenThrough()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // The firmware directory is replaced by a junction after it was created and before its first file is written.
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
         var request = ValidRequest(dir, output, roots: "nope\n");
         var foreign = dir.CreateSubdirectory("foreign");
-        File.WriteAllText(Path.Combine(foreign, "keep.txt"), "x");
+        DiagnosticFiles.WriteAllText(Path.Combine(foreign, "keep.txt"), "x");
         var swapped = false;
 
         var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
@@ -527,24 +480,21 @@ public sealed class FirmwareDiagnosticDistributionTests
             {
                 swapped = true;
                 var firmware = Path.GetDirectoryName(path)!;
-                Directory.Move(firmware, firmware + "-aside");
+                DiagnosticFiles.MoveDirectory(firmware, firmware + "-aside");
                 MakeJunction(firmware, foreign);
             }
         });
 
         act.Should().Throw<Exception>();
         swapped.Should().BeTrue("the swap happened before the first file write");
-        Directory.GetFileSystemEntries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+        DiagnosticFiles.Entries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
             "nothing is written through the junction");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_AncestorDirectoryInjectedIntoTheOpenWindow_IsRefusedAndNotRemoved()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // The output's parent ("missing") does not exist, so Open creates it. Another process creates it in the window.
         using var dir = new TempDirectory();
@@ -557,23 +507,20 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "directory" && Path.GetFileName(path) == "missing")
             {
                 injected = path;
-                Directory.CreateDirectory(path);
+                DiagnosticFiles.CreateDirectory(path);
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*already exists at*missing*",
             "Open refuses the ancestor another process created rather than adopting it");
         injected.Should().NotBeNull("the ancestor creation was reached");
-        Directory.Exists(injected!).Should().BeTrue("an ancestor this build did not create is never removed");
+        DiagnosticFiles.DirectoryExists(injected!).Should().BeTrue("an ancestor this build did not create is never removed");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_GeneratedArtifactPath_WithAStubToolchain_PublishesTheLinkedArtifact()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // No roots-and-artifact shortcut: the artifact is generated and the stub toolchain stands in for gcc. The stub writes its
         // "-o" output, so the compile and link steps succeed without a C compiler; the generated path's claims, reservations and
@@ -593,10 +540,7 @@ public sealed class FirmwareDiagnosticDistributionTests
     [SkippableFact]
     public void Build_GeneratedArtifactPath_WithGcc_PublishesTheCompiledArtifact()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         // NOT RUN where gcc is absent: RequireGcc skips with its reason rather than passing.
         RuntimeHostPublishE2E.RequireGcc();
@@ -616,25 +560,25 @@ public sealed class FirmwareDiagnosticDistributionTests
         TempDirectory dir, string output, FirmwareDiagnosticBuild build, string? expectedArtifactContent)
     {
         build.ArtifactPath.Should().Be(Path.Combine(output, "measure.exe"));
-        File.Exists(build.ArtifactPath).Should().BeTrue();
+        DiagnosticFiles.FileExists(build.ArtifactPath).Should().BeTrue();
         if (expectedArtifactContent is not null)
         {
-            File.ReadAllText(build.ArtifactPath).Should().Be(expectedArtifactContent,
+            DiagnosticFiles.ReadAllText(build.ArtifactPath).Should().Be(expectedArtifactContent,
                 "the artifact is the binary the link step wrote, moved under the measurement's name");
         }
 
-        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(
+        DiagnosticFiles.Entries(output).Select(Path.GetFileName).Should().BeEquivalentTo(
             ["diagnostic-identity.json", "measure.exe", "measure.exe.c", "runtime"],
             "the toolchain's random-named outputs are moved to the measurement's names or removed; the object file is removed");
 
-        var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(build.ManifestPath));
+        var manifest = RuntimeHostManifestJson.Parse(DiagnosticFiles.ReadAllText(build.ManifestPath));
         Path.GetFullPath(Path.Combine(Path.GetDirectoryName(build.ManifestPath)!, manifest.Artifact))
             .Should().Be(Path.GetFullPath(build.ArtifactPath), "the manifest names the artifact that was published");
 
-        var identity = JsonNode.Parse(File.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+        var identity = JsonNode.Parse(DiagnosticFiles.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
         identity["artifact"]!["file"]!.GetValue<string>().Should().Be("measure.exe");
         identity["artifact"]!["sha256"]!.GetValue<string>().Should().Be(OpenBiosRomInput.Sha256HexOfFile(build.ArtifactPath));
-        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+        DiagnosticFiles.Directories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
     }
 
     /// <summary>
@@ -644,9 +588,9 @@ public sealed class FirmwareDiagnosticDistributionTests
     private static string BuildStubToolchain(TempDirectory dir)
     {
         var project = dir.Combine("stub-toolchain");
-        Directory.CreateDirectory(project);
+        DiagnosticFiles.CreateDirectory(project);
         var projectFile = Path.Combine(project, "stub-toolchain.csproj");
-        File.WriteAllText(projectFile, """
+        DiagnosticFiles.WriteAllText(projectFile, """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <OutputType>Exe</OutputType>
@@ -656,7 +600,7 @@ public sealed class FirmwareDiagnosticDistributionTests
               </PropertyGroup>
             </Project>
             """);
-        File.WriteAllText(Path.Combine(project, "Program.cs"), """
+        DiagnosticFiles.WriteAllText(Path.Combine(project, "Program.cs"), """
             public static class Program
             {
                 public static int Main(string[] args)
@@ -675,24 +619,67 @@ public sealed class FirmwareDiagnosticDistributionTests
             """);
 
         var outDir = dir.Combine("stub-toolchain-out");
-        using var build = Process.Start(new ProcessStartInfo("dotnet",
+        using var build = DiagnosticFiles.StartProcess(new ProcessStartInfo("dotnet",
             $"build \"{projectFile}\" -c Release -o \"{outDir}\" -nologo")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
         }) ?? throw new InvalidOperationException("dotnet did not start.");
-        build.WaitForExit(180000).Should().BeTrue("the stub toolchain must finish building");
-        build.ExitCode.Should().Be(0, "the stub toolchain must build");
+        DiagnosticFiles.WaitForExit(build, 180000).Should().BeTrue("the stub toolchain must finish building");
+        DiagnosticFiles.ExitCodeOf(build).Should().Be(0, "the stub toolchain must build");
         return Path.Combine(outDir, "stub-toolchain.exe");
     }
 
-    [Fact]
+    [SkippableFact]
+    public void Build_WindowsFalse_IsRefusedWithADiagnostic()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: false)))
+            .Should().Throw<NotSupportedException>().WithMessage("*windows: false*");
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse("a refused build creates nothing");
+    }
+
+    [SkippableFact]
+    public void Build_OutputPathOverTheStagingLimit_IsRefusedWithTheLimitNamed()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The staging name adds about 42 characters to the output path; this output path is over the limit with the staging name.
+        using var dir = new TempDirectory();
+        var output = dir.Combine(new string('m', 210));
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
+            .Should().Throw<IOException>().WithMessage("*247-character limit*", "the refusal names the limit and what to do");
+        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
+        DiagnosticFiles.Entries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+            "nothing is created before the limit is checked");
+    }
+
+    [Theory]
+    [InlineData("{ not json")]
+    [InlineData("[1, 2]")]
+    [InlineData("{\"schema\": 7, \"path\": \"x\"}")]
+    public void ResolveRuntimeDiscPath_MalformedMarker_IsRefusedAsInvalidData(string markerText)
+    {
+        using var dir = new TempDirectory();
+        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime")).FullName;
+        DiagnosticFiles.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"), markerText);
+
+        var act = () => FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd");
+
+        act.Should().Throw<InvalidDataException>("a malformed marker is refused with the same type as the other marker checks");
+    }
+
+    [SkippableFact]
     public void Build_Success_ManifestAndExecutableReferencesAreConsistent()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -707,27 +694,24 @@ public sealed class FirmwareDiagnosticDistributionTests
         build.ArtifactPath.Should().Be(Path.Combine(output, "measure.exe"));
         build.HostPath.Should().Be(Path.Combine(output, "runtime", "PSXRecomp.RuntimeHost.exe"));
         build.ManifestPath.Should().Be(Path.Combine(output, "runtime", RuntimeHostLayout.ManifestFileName));
-        File.Exists(build.HostPath).Should().BeTrue();
+        DiagnosticFiles.FileExists(build.HostPath).Should().BeTrue();
 
-        var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(build.ManifestPath));
+        var manifest = RuntimeHostManifestJson.Parse(DiagnosticFiles.ReadAllText(build.ManifestPath));
         var referenced = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(build.ManifestPath)!, manifest.Artifact));
         referenced.Should().Be(Path.GetFullPath(build.ArtifactPath), "the manifest names the artifact that was published");
-        File.ReadAllText(referenced).Should().Be("artifact bytes");
+        DiagnosticFiles.ReadAllText(referenced).Should().Be("artifact bytes");
 
-        var identity = JsonNode.Parse(File.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+        var identity = JsonNode.Parse(DiagnosticFiles.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
         identity["artifact"]!["file"]!.GetValue<string>().Should().Be("measure.exe");
         identity["artifact"]!["sha256"]!.GetValue<string>().Should().Be(OpenBiosRomInput.Sha256HexOfFile(build.ArtifactPath));
         identity["host"]!["file"]!.GetValue<string>().Should().Be("PSXRecomp.RuntimeHost.exe");
-        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+        DiagnosticFiles.Directories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Build_OutputCreatedBeforeTheCommit_IsNotReplaced()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
         var output = dir.Combine("measure");
@@ -742,16 +726,16 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "staged")
             {
                 staged = path;
-                Directory.CreateDirectory(output);
-                File.WriteAllText(Path.Combine(output, "foreign.txt"), "someone else's directory");
+                DiagnosticFiles.CreateDirectory(output);
+                DiagnosticFiles.WriteAllText(Path.Combine(output, "foreign.txt"), "someone else's directory");
             }
         });
 
         act.Should().Throw<IOException>("the output name is taken when the build commits");
         staged.Should().NotBeNull("the build staged its output before the commit");
-        File.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be("someone else's directory");
-        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"]);
-        Directory.Exists(staged!).Should().BeFalse("the staging directory the build created is removed");
+        DiagnosticFiles.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be("someone else's directory");
+        DiagnosticFiles.Entries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"]);
+        DiagnosticFiles.DirectoryExists(staged!).Should().BeFalse("the staging directory the build created is removed");
     }
 
     /// <summary>Valid inputs up to the AOT plan. The roots decide whether the build fails there or completes.</summary>
@@ -778,13 +762,13 @@ public sealed class FirmwareDiagnosticDistributionTests
 
     private static void MakeJunction(string link, string target)
     {
-        using var process = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+        using var process = DiagnosticFiles.StartProcess(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
         }) ?? throw new InvalidOperationException("mklink did not start.");
-        process.WaitForExit();
-        process.ExitCode.Should().Be(0, "the junction is needed for the redirection test");
+        DiagnosticFiles.WaitForExit(process);
+        DiagnosticFiles.ExitCodeOf(process).Should().Be(0, "the junction is needed for the redirection test");
     }
 
     private static FirmwareDiagnosticRequest Request(TempDirectory dir, string romPath, string romSha256, string outputDirectory) =>
@@ -800,4 +784,46 @@ public sealed class FirmwareDiagnosticDistributionTests
             RunTimeoutMs: 1000);
 }
 
+#pragma warning disable AARC003 // Justified: the tests stage and inspect the local files they create, as TempDirectory does. This helper is the only place this file performs external I/O or starts a process.
+/// <summary>The file-system and process calls the measurement tests make, in one place so that the analyzer exemption covers only them.</summary>
+[Test]
+internal static class DiagnosticFiles
+{
+    internal static int ExitCodeOf(Process process) => process.ExitCode;
+
+    internal static void WaitForExit(Process process) => process.WaitForExit();
+
+    internal static bool WaitForExit(Process process, int milliseconds) => process.WaitForExit(milliseconds);
+
+    internal static string SystemFile(string name) => Path.Combine(Environment.SystemDirectory, name);
+
+    internal static DirectoryInfo CreateDirectory(string path) => Directory.CreateDirectory(path);
+
+    internal static void DeleteDirectory(string path) => Directory.Delete(path);
+
+    internal static string[] Entries(string path) => Directory.GetFileSystemEntries(path);
+
+    internal static string[] Directories(string path, string pattern) => Directory.GetDirectories(path, pattern);
+
+    internal static bool DirectoryExists(string path) => Directory.Exists(path);
+
+    internal static void MoveDirectory(string source, string destination) => Directory.Move(source, destination);
+
+    internal static void CopyFile(string source, string destination) => File.Copy(source, destination);
+
+    internal static bool FileExists(string path) => File.Exists(path);
+
+    internal static string ReadAllText(string path) => File.ReadAllText(path);
+
+    internal static void WriteAllText(string path, string text) => File.WriteAllText(path, text);
+
+    internal static void SetAttributes(string path, FileAttributes attributes) => File.SetAttributes(path, attributes);
+
+    internal static string? LinkTarget(string path) => new FileInfo(path).LinkTarget;
+
+    internal static Process ProcessById(int id) => Process.GetProcessById(id);
+
+    internal static Process? StartProcess(ProcessStartInfo info) => Process.Start(info);
+}
 #pragma warning restore AARC003
+
