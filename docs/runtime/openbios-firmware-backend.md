@@ -314,7 +314,9 @@ transfer is partial and is refused, and an export without `outcome` is malformed
 published (the ruling on #839). An export that contains `ramWord` is malformed and refused. The RAM word of each target is supplied only by
 the explicit local evidence (`openbios-probe --local-ram-evidence <file.json>`, format `fallback-ram-evidence/v1`), which records the word
 observed at each fallback PC in RAM, and it is bound to one export by that export file's SHA-256. The evidence is written and read only at a
-path outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. `fallback-roots`
+real location outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. The check
+resolves every symbolic link and junction on the path first (a link named outside a repository that points into it is refused), and a path
+whose real location cannot be determined is refused. The file is created exclusively, so an existing file is never replaced. `fallback-roots`
 takes it with `--local-ram-evidence <file.json>`. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
 could not be read, or when two fetches at the same PC read different words; such a target has no word. The planner reads a target as a
 candidate root only when its RAM word equals the word the EXE file places at that PC; any target without a word, or with another word, is

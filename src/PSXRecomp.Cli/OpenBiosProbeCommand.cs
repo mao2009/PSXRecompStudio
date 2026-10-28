@@ -677,7 +677,12 @@ internal static class OpenBiosProbeCommand
                 {
                     // The local evidence (RAM words, never published) is bound to this export's exact bytes, and is written only outside any Git work tree.
                     var exportSha = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(exportJson))).ToLowerInvariant();
-                    WriteAtomically(probe.LocalRamEvidencePath, BuildRamEvidenceDocument(exportSha, evidence!.Targets.Select(static t => t.Target), ramWords.Get));
+                    // Checked again at the write: the path is resolved to its real location, and a link swapped in since the start is refused.
+                    if (LocalRamEvidence.WriteNew(probe.LocalRamEvidencePath, BuildRamEvidenceDocument(exportSha, evidence!.Targets.Select(static t => t.Target), ramWords.Get)) is { } writeRefusal)
+                    {
+                        error.WriteLine($"openbios-probe: --local-ram-evidence: {writeRefusal}");
+                        return 1;
+                    }
                 }
             }
 

@@ -119,14 +119,14 @@ internal static class FallbackRootsCommand
             var targets = export.Targets;
             if (localEvidencePath is not null)
             {
-                if (LocalRamEvidence.RefusalFor(localEvidencePath, mustBeNew: false) is { } evidenceRefusal)
+                if (LocalRamEvidence.ReadText(localEvidencePath, out var evidenceText) is { } evidenceRefusal)
                 {
                     error.WriteLine($"fallback-roots: --local-ram-evidence: {evidenceRefusal}");
                     return 1;
                 }
 
                 var targetsSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(targetsPath))).ToLowerInvariant();
-                targets = ObservedRootPlanner.ApplyRamEvidence(targets, ObservedRootPlanner.ReadRamEvidence(File.ReadAllText(localEvidencePath), targetsSha256));
+                targets = ObservedRootPlanner.ApplyRamEvidence(targets, ObservedRootPlanner.ReadRamEvidence(evidenceText!, targetsSha256));
             }
 
             var plan = ObservedRootPlanner.Plan(manifest.Images, targets);
