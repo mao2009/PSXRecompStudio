@@ -937,7 +937,7 @@ public static class FirmwareDiagnosticDistribution
     /// handle held on each directory without delete sharing, which this class does not take. The check narrows the window; it does not close it.
     /// </para>
     /// </summary>
-    private sealed class StagingArea
+    internal sealed class StagingArea
     {
         private static readonly UTF8Encoding Utf8WithoutBom = new(encoderShouldEmitUTF8Identifier: false);
 
@@ -1169,11 +1169,41 @@ public static class FirmwareDiagnosticDistribution
             RequireRealChain(destination);
             RequireWithinPathLimit(destination);
             RefuseExisting(destination);
+            var before = RequireUnchangedBeforeMove(source);
             File.Move(source, destination);
+            RequireMovedAsChecked(before, destination);
             _owned.Remove(source);
             _reserved.Remove(source);
             Own(destination);
             return destination;
+        }
+
+        /// <summary>
+        /// Reads the source's identity before a move. A link is refused, and so is an entry whose identity cannot be read: the move does not
+        /// happen. The identity is compared again after the move (<see cref="RequireMovedAsChecked"/>).
+        /// </summary>
+        private EntryIdentity RequireUnchangedBeforeMove(string source)
+        {
+            if (IsReparsePoint(source))
+            {
+                throw new IOException($"A link was found where a publish entry should be; it is not moved into the measurement: {source}");
+            }
+
+            return IdentityOfPath(source) ?? throw new IOException(
+                $"The identity of a publish entry cannot be read, so it is not moved into the measurement: {source}");
+        }
+
+        /// <summary>
+        /// Fails closed when the entry at the destination is not the entry whose identity was read before the move (it was replaced between
+        /// the check and the move). The entry stays where it is and is recorded as a residual, since cleanup cannot prove it is this build's.
+        /// </summary>
+        private void RequireMovedAsChecked(EntryIdentity before, string destination)
+        {
+            if (IdentityOfPath(destination) != before)
+            {
+                Residual(destination, "it is not the entry that was checked before the move (it was replaced in between), so it is not treated as this build's");
+                throw new IOException($"A publish entry changed between its check and its move, so the measurement is not written: {destination}");
+            }
         }
 
         /// <summary>Moves a directory this build created to a name this build chooses. Directory.Move refuses an existing destination on Windows.</summary>
@@ -1183,7 +1213,10 @@ public static class FirmwareDiagnosticDistribution
             RequireWithinPathLimit(destination);
             RequireTreeWithinPathLimit(source, destination);
             RefuseExisting(destination);
+            var before = RequireUnchangedBeforeMove(source);
+            RequireNoLinksBelowPublish(source);
             Directory.Move(source, destination);
+            RequireMovedAsChecked(before, destination);
             // The entries this build created under the directory moved with it: their records follow them to the new path, with the
             // identities they already had (a rename keeps the file index).
             var prefix = source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -1215,8 +1248,39 @@ public static class FirmwareDiagnosticDistribution
                 throw new IOException($"The published directory still holds entries that were not moved into the measurement: {path}");
             }
 
+            // The identity read when this build created the directory must still match, immediately before the delete. Otherwise the directory
+            // is not this build's (it was replaced, or its identity cannot be read): it is not deleted, and it is recorded as a residual.
+            if (!_owned.TryGetValue(path, out var recorded) || recorded is null)
+            {
+                Residual(path, "its identity was not recorded when it was created, so it is not deleted");
+                throw new IOException($"The published directory cannot be shown to be this build's, so it is not deleted: {path}");
+            }
+
+            if (IdentityOfPath(path) != recorded)
+            {
+                Residual(path, "it is not the directory this build created (it was replaced, or it cannot be identified now), so it is not deleted");
+                throw new IOException($"The published directory was replaced, so it is not deleted: {path}");
+            }
+
             Directory.Delete(path);
             _owned.Remove(path);
+        }
+
+        /// <summary>Refuses a link anywhere below a publish directory before it is moved, so a link is never moved into the measurement.</summary>
+        private static void RequireNoLinksBelowPublish(string directory)
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                if (IsReparsePoint(entry))
+                {
+                    throw new IOException($"A link was found inside a publish directory; it is not moved into the measurement: {entry}");
+                }
+
+                if (Directory.Exists(entry))
+                {
+                    RequireNoLinksBelowPublish(entry);
+                }
+            }
         }
 
         /// <summary>Checks the destination path of every entry nested under a directory that is about to be moved, before the move.</summary>

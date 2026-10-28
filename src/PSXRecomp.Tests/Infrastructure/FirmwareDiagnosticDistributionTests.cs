@@ -1157,7 +1157,9 @@ public sealed class FirmwareDiagnosticDistributionTests
         dir.WriteFile("対象 (作業) & !x/keep.txt", "through the link"u8.ToArray());
         var link = dir.Combine("リンク (作業) & !y");
 
-        using var fixture = JunctionFixture.TryCreate(dir, link, target, out var reason);
+        var launches = 0;
+        using var fixture = JunctionFixture.TryCreate(dir, link, target, out var reason, launching: () => launches++);
+        launches.Should().Be(1, "a valid path reaches the launch exactly once, so the seam is wired to the real launch");
         // A refusal of a valid path fails the test. A machine that cannot create a junction at all skips the test with its reason.
         (fixture is null && reason is not null && reason.Contains("so no launch is made")).Should().BeFalse(
             $"a valid path with these characters is accepted: {reason}");
@@ -1181,13 +1183,36 @@ public sealed class FirmwareDiagnosticDistributionTests
         using var dir = new TempDirectory();
         var target = dir.CreateSubdirectory("target");
 
-        var fixture = JunctionFixture.TryCreate(dir, dir.Combine(name), target, out var reason);
+        var launches = 0;
+        var fixture = JunctionFixture.TryCreate(dir, dir.Combine(name), target, out var reason, launching: () => launches++);
 
         fixture.Should().BeNull("a name that cmd.exe would read as syntax is refused");
         reason.Should().Contain("so no launch is made", "the refusal is made before any process is started, not by the command that would have run");
+        launches.Should().Be(0, "the launch seam counts zero process launches for a refused name");
 #pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show the refused command wrote no marker file.
         File.Exists(dir.Combine("marker")).Should().BeFalse("no command ran, so no marker file was written");
 #pragma warning restore AARC003
+    }
+
+    [SkippableTheory]
+    [InlineData("link\\", "target")]
+    [InlineData("link", "target\\")]
+    [InlineData("link/", "target")]
+    public void Junction_PathEndingInASeparator_IsRefusedBeforeAnyLaunch(string linkName, string targetName)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A trailing backslash before the closing quote changes how the argument is read (the quote is escaped). The path is refused with a
+        // reason and the launch seam counts no launch.
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory("target");
+        var launches = 0;
+
+        var fixture = JunctionFixture.TryCreate(dir, dir.Combine(linkName), dir.Combine(targetName), out var reason, launching: () => launches++);
+
+        fixture.Should().BeNull("a path that ends in a separator is refused");
+        reason.Should().Contain("so no launch is made");
+        launches.Should().Be(0, "no process is started for a refused path");
     }
 
     [SkippableFact]
@@ -1350,11 +1375,82 @@ public sealed class FirmwareDiagnosticDistributionTests
         thrown.Message.Should().Contain("sub: it is not the entry this build created",
             "the replaced subdirectory is reported, not removed");
         replaced.Should().BeTrue("the seam ran");
-#pragma warning disable AARC003 // Justified: these lines call File.ReadAllText and Directory.Exists (fixture reads of the entries the seam placed in this test's temporary directory).
         File.ReadAllText(Path.Combine(runtime!, "a.bin")).Should().Be("foreign a", "another process's file is never removed by cleanup");
+#pragma warning disable AARC003 // Justified: these lines call File.ReadAllText and Directory.Exists (fixture reads of the entries the seam placed in this test's temporary directory).
         File.ReadAllText(Path.Combine(runtime!, "sub", "foreign.txt")).Should().Be("foreign sub",
             "another process's directory is never removed by cleanup");
         Directory.Exists(output).Should().BeFalse("the failed build publishes nothing");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void ReleaseEmptyDirectory_SwappedBeforeTheDelete_IsNotDeletedAndIsReported()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The publish directory is empty when cleanup reaches it. Another process swaps it for an empty directory of its own. The identity check
+        // runs immediately before the delete: the foreign directory is not this build's, so it is kept and reported.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        Directory.Delete(publish);
+        Directory.CreateDirectory(publish);
+
+        var act = () => area.ReleaseEmptyDirectory(publish);
+
+        act.Should().Throw<IOException>("a directory this build did not create is not deleted");
+        area.Residuals.Should().ContainSingle(residual => residual.Contains("it is not the directory this build created"),
+            "the kept directory is reported as a residual");
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (fixture check); it reads the test's own temporary directory, to show the foreign directory survived.
+        Directory.Exists(publish).Should().BeTrue("the foreign directory is not removed");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void MoveNewDirectory_SourceIsALink_IsRefusedAndNothingIsMoved()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A publish directory entry that is a junction is refused before the move: a link is never moved into the measurement.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        using var bystander = new TempDirectory();
+        var source = Path.Combine(publish, "child");
+        using var link = JunctionFixture.Create(dir, source, bystander.FullPath);
+        var destination = Path.Combine(area.Root, "runtime-child");
+
+        var act = () => area.MoveNewDirectory(source, destination);
+
+        act.Should().Throw<IOException>().WithMessage("*A link was found*", "the link is refused before the move");
+#pragma warning disable AARC003 // Justified: these lines call Directory.Exists (fixture check); they read the test's own temporary directory to show the link stayed at its source and nothing was moved.
+        Directory.Exists(destination).Should().BeFalse("nothing is moved to the destination");
+        Directory.Exists(source).Should().BeTrue("the link is still at its source");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void MoveNew_SourceIsALink_IsRefusedBeforeTheMove()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The file move takes the same check: a link at the source is refused and nothing is moved.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        using var bystander = new TempDirectory();
+        var source = Path.Combine(publish, "linked-entry");
+        using var link = JunctionFixture.Create(dir, source, bystander.FullPath);
+        var destination = Path.Combine(area.Root, "runtime-entry");
+
+        var act = () => area.MoveNew(source, destination);
+
+        act.Should().Throw<IOException>().WithMessage("*A link was found*", "the link is refused before the move");
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (fixture check); it reads the test's own temporary directory to show nothing was moved.
+        Directory.Exists(destination).Should().BeFalse("nothing is moved to the destination");
 #pragma warning restore AARC003
     }
 
@@ -1603,7 +1699,7 @@ internal sealed class JunctionFixture : IDisposable
     /// Creates a junction at <paramref name="link"/> to <paramref name="target"/>. Returns null, with <paramref name="reason"/>, for every
     /// creation failure; it does not throw for one. Throws only when the link is outside the caller's owned directory (a test bug).
     /// </summary>
-    public static JunctionFixture? TryCreate(TempDirectory owner, string link, string target, out string reason)
+    public static JunctionFixture? TryCreate(TempDirectory owner, string link, string target, out string reason, Action? launching = null)
     {
         // A name that cannot be used is refused first, with a reason. It is checked before any path API that could throw on it.
         var nameRefusal = NameRefusal(link, target);
@@ -1623,6 +1719,7 @@ internal sealed class JunctionFixture : IDisposable
         }
 
         // Each path is wrapped in double quotes. RefusalFor has already refused any path that contains a double quote.
+        launching?.Invoke(); // the seam counts launches: a refused name never reaches this line
         return Launch($"/d /v:off /c mklink /J \"{link}\" \"{target}\"", link, out reason);
     }
 
@@ -1745,6 +1842,8 @@ internal sealed class JunctionFixture : IDisposable
         return null;
     }
 
+    private static bool EndsWithSeparator(string path) => path.EndsWith('\\') || path.EndsWith('/');
+
     /// <summary>The reason a name cannot be used, or null. It never throws: a name Windows cannot hold is a refusal, not an exception.</summary>
     private static string? NameRefusal(string link, string target)
     {
@@ -1756,6 +1855,12 @@ internal sealed class JunctionFixture : IDisposable
         if (link.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || target.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
         {
             return "a path has a character that a Windows path cannot hold (for example a pipe), so no launch is made";
+        }
+
+        // A trailing separator would sit before the closing quote; the Windows argument parser reads a backslash before a quote as an escaped quote.
+        if (EndsWithSeparator(link) || EndsWithSeparator(target))
+        {
+            return "a path ends with a backslash or a slash, which would change how the closing quote is read, so no launch is made";
         }
 
         try
