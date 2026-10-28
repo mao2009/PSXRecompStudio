@@ -5,6 +5,7 @@ using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Infrastructure.Standalone;
+using System.Text.RegularExpressions;
 using PSXRecomp.Tests.E2E;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
@@ -97,7 +98,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         var runtime = Directory.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
 #pragma warning restore AARC003
         var host = Path.Combine(runtime, "PSXRecomp.RuntimeHost.exe");
-#pragma warning disable AARC003 // Justified: this line calls File.Copy (temp file) and Environment.SystemDirectory (system path read); it copies the system cmd.exe into this test's own temporary directory as a stand-in host process, which is a process fixture, not a compiler launch.
+#pragma warning disable AARC003 // Justified: this line calls File.Copy (temp file) and Environment.SystemDirectory (system path read); it creates, checks, moves or removes an entry in this test's own temporary directory.
         File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), host);
 #pragma warning restore AARC003
         var digests = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -304,12 +305,13 @@ public sealed class FirmwareDiagnosticDistributionTests
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
         using var dir = new TempDirectory();
-        var target = dir.CreateSubdirectory("elsewhere");
+        using var bystander = new TempDirectory();
+        var target = bystander.FullPath;
 #pragma warning disable AARC003 // Justified: this line calls File.WriteAllText (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
         File.WriteAllText(Path.Combine(target, "keep.txt"), "x");
 #pragma warning restore AARC003
         var output = dir.Combine("measure");
-        MakeJunction(output, target);
+        using var junction = JunctionFixture.Create(dir, output, target);
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>();
@@ -328,7 +330,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         using var dir = new TempDirectory();
         var target = dir.CreateSubdirectory("gone");
         var output = dir.Combine("measure");
-        MakeJunction(output, target);
+        using var junction = JunctionFixture.Create(dir, output, target);
         Directory.Delete(target);
         var request = ValidRequest(dir, output, roots: "nope\n");
 
@@ -393,13 +395,15 @@ public sealed class FirmwareDiagnosticDistributionTests
         File.WriteAllText(Path.Combine(elsewhere, "keep.txt"), "x");
 #pragma warning restore AARC003
 
+        JunctionFixture.SkipUnlessAvailable(dir);
+        using var links = new JunctionFixtureSet();
         var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
         {
             if (phase == "staged")
             {
                 // A same-user process swaps the empty staging directory for a junction to a directory it controls.
                 Directory.Delete(path);
-                MakeJunction(path, elsewhere);
+                links.Add(JunctionFixture.Create(dir, path, elsewhere));
             }
         });
 
@@ -530,6 +534,8 @@ public sealed class FirmwareDiagnosticDistributionTests
         File.WriteAllText(Path.Combine(foreign, "keep.txt"), "x");
 #pragma warning restore AARC003
         var swapped = false;
+        JunctionFixture.SkipUnlessAvailable(dir);
+        using var links = new JunctionFixtureSet();
 
         var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
         {
@@ -539,7 +545,7 @@ public sealed class FirmwareDiagnosticDistributionTests
                 swapped = true;
                 var firmware = Path.GetDirectoryName(path)!;
                 Directory.Move(firmware, firmware + "-aside");
-                MakeJunction(firmware, foreign);
+                links.Add(JunctionFixture.Create(dir, firmware, foreign));
             }
         });
 
@@ -878,7 +884,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         dir.CreateSubdirectory("host/locale");
         var outside = dir.CreateSubdirectory("outside");
         dir.WriteFile("outside/secret.txt", "outside content"u8.ToArray());
-        MakeJunction(dir.Combine("host", "locale", "nested"), outside);
+        using var junction = JunctionFixture.Create(dir, dir.Combine("host", "locale", "nested"), outside);
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
             artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
 
@@ -905,7 +911,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         var realHost = dir.CreateSubdirectory("host-real");
         dir.WriteFile("host-real/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
         var linkedHost = dir.Combine("host-link");
-        MakeJunction(linkedHost, realHost);
+        using var junction = JunctionFixture.Create(dir, linkedHost, realHost);
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
             artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: linkedHost);
 
@@ -929,7 +935,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         var hostDir = dir.CreateSubdirectory("host");
         dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
         var outside = dir.CreateSubdirectory("outside");
-        MakeJunction(dir.Combine("host", "nested"), outside);
+        using var junction = JunctionFixture.Create(dir, dir.Combine("host", "nested"), outside);
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
             artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
         var phases = new List<string>();
@@ -1052,6 +1058,74 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [SkippableFact]
+    public void Junction_DisposeRemovesOnlyTheLink()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("target");
+        dir.WriteFile("target/keep.txt", "target content"u8.ToArray());
+        var link = dir.Combine("link");
+        var fixture = JunctionFixture.Create(dir, link, target);
+
+        fixture.Dispose();
+
+        Path.Exists(link).Should().BeFalse("the link is removed");
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a fixture or a file the build wrote in this test's temporary directory, to assert its contents.
+        File.ReadAllText(Path.Combine(target, "keep.txt")).Should().Be("target content", "the link's target is never removed with it");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Junction_DisposeOfTheTestDirectoryWithALeftLink_DoesNotDeleteThroughTheLink()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A junction into a directory outside the test-owned one is left in place, and the owned directory is then disposed.
+        using var bystander = new TempDirectory();
+        bystander.WriteFile("keep.txt", "outside the owned directory"u8.ToArray());
+        var dir = new TempDirectory();
+        JunctionFixture.SkipUnlessAvailable(dir);
+        using var leftLink = JunctionFixture.Create(dir, dir.Combine("link"), bystander.FullPath);
+
+        dir.Dispose();
+
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a fixture or a file the build wrote in this test's temporary directory, to assert its contents.
+        File.ReadAllText(bystander.Combine("keep.txt")).Should().Be("outside the owned directory",
+#pragma warning restore AARC003
+            "disposing the owned directory never recursively deletes through a junction into another directory");
+    }
+
+    [SkippableFact]
+    public void Junction_UnsafePath_IsRefusedBeforeAnyLaunch()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("target");
+        var unsafeLink = dir.Combine("a&b");
+
+        ((Action)(() => JunctionFixture.TryCreate(dir, unsafeLink, target, out _)))
+            .Should().Throw<InvalidOperationException>().WithMessage("*no launch is made*");
+        Path.Exists(unsafeLink).Should().BeFalse("nothing was created");
+    }
+
+    [SkippableFact]
+    public void Junction_LinkOutsideTheOwnedDirectory_IsRefused()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        using var bystander = new TempDirectory();
+        var target = dir.CreateSubdirectory("target");
+        var outsideLink = bystander.Combine("link");
+
+        ((Action)(() => JunctionFixture.TryCreate(dir, outsideLink, target, out _)))
+            .Should().Throw<InvalidOperationException>().WithMessage("*inside the test-owned directory*");
+        Path.Exists(outsideLink).Should().BeFalse("no link is created outside the test-owned directory");
+    }
+
+    [SkippableFact]
     public void Build_Success_ManifestAndExecutableReferencesAreConsistent()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
@@ -1143,19 +1217,6 @@ public sealed class FirmwareDiagnosticDistributionTests
             ArtifactSourcePath: artifactSource);
     }
 
-    private static void MakeJunction(string link, string target)
-    {
-        using var process = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        }) ?? throw new InvalidOperationException("mklink did not start.");
-        process.WaitForExit();
-#pragma warning disable AARC003 // Justified: this line calls Process.ExitCode (instance) (process launch); it starts a process this test launches to create a fixture (cmd.exe mklink /J, a junction), which is not a compiler launch and not a temporary-file call.
-        process.ExitCode.Should().Be(0, "the junction is needed for the redirection test");
-#pragma warning restore AARC003
-    }
-
     private static FirmwareDiagnosticRequest Request(TempDirectory dir, string romPath, string romSha256, string outputDirectory) =>
         new(
             RomPath: romPath,
@@ -1167,5 +1228,178 @@ public sealed class FirmwareDiagnosticDistributionTests
             CodeBytes: 64,
             InstructionBudget: uint.MaxValue,
             RunTimeoutMs: 1000);
+}
+
+/// <summary>
+/// A junction fixture for the junction-refusal regression tests. Its one process launch (cmd.exe running mklink /J) is the test-only
+/// exception that the architecture matrix's rule 6 grants for a junction fixture (PR #846 owner ruling). No production code path uses it.
+/// The guarantees it keeps:
+/// the link is created only inside the caller's test-owned temporary directory; every path is validated, so no path can inject a command;
+/// the only process it waits for or kills is the Process object that this fixture started, never a process found by PID; a launch that
+/// outlives its bound is killed and awaited; and disposal removes only the link, never the link's target.
+/// </summary>
+[Test]
+internal sealed class JunctionFixture : IDisposable
+{
+    private static readonly TimeSpan LaunchBound = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan KillBound = TimeSpan.FromSeconds(10);
+
+    // Letters, digits, spaces and the characters of a Windows path: nothing that cmd.exe reads as syntax or as a quote.
+    private static readonly Regex SafePath = new(@"^[A-Za-z0-9 _\-.\\:]+$", RegexOptions.CultureInvariant);
+
+    private JunctionFixture(string link)
+    {
+        Link = link;
+    }
+
+    /// <summary>The junction's path.</summary>
+    public string Link { get; }
+
+    /// <summary>Creates the junction, or skips the calling test (NOT_RUN, with the reason) when this environment cannot create and verify one.</summary>
+    public static JunctionFixture Create(TempDirectory owner, string link, string target)
+    {
+        var fixture = TryCreate(owner, link, target, out var reason);
+        Skip.If(fixture is null, $"NOT_RUN: no junction fixture can be created in this environment ({reason}).");
+        return fixture!;
+    }
+
+    /// <summary>Skips the calling test unless a junction can be created and verified here. The probe junction is removed again.</summary>
+    public static void SkipUnlessAvailable(TempDirectory owner)
+    {
+        var probeTarget = owner.CreateSubdirectory("junction-probe-target");
+        using var probe = TryCreate(owner, owner.Combine("junction-probe-link"), probeTarget, out var reason);
+        Skip.If(probe is null, $"NOT_RUN: no junction fixture can be created in this environment ({reason}).");
+    }
+
+    /// <summary>
+    /// Creates a junction at <paramref name="link"/> to <paramref name="target"/>. Returns null, with the reason, when cmd.exe exits with an
+    /// error or the result is not a junction that resolves to a directory. Throws before any launch when a path is not allowed.
+    /// </summary>
+    public static JunctionFixture? TryCreate(TempDirectory owner, string link, string target, out string reason)
+    {
+        RequireInsideOwner(owner, link);
+        RequireSafePath(link);
+        RequireSafePath(target);
+        if (!Directory.Exists(target))
+        {
+            throw new InvalidOperationException($"The junction target does not exist: {target}");
+        }
+
+        if (Path.Exists(link) || IsReparsePoint(link))
+        {
+            throw new InvalidOperationException($"The junction link already exists: {link}");
+        }
+
+        // Built only from the validated paths above. They contain no quotes, no cmd.exe syntax and no line breaks.
+        var arguments = $"/d /c mklink /J \"{link}\" \"{target}\"";
+        using var process = StartMklink(arguments);
+        try
+        {
+            if (!WaitOwned(process, LaunchBound))
+            {
+                throw new TimeoutException(
+                    $"mklink did not finish within {LaunchBound.TotalSeconds} seconds; the cmd.exe process this test started was killed.");
+            }
+
+            var exitCode = ExitCodeOf(process);
+            if (exitCode != 0)
+            {
+                reason = $"mklink exited with code {exitCode}";
+                return null;
+            }
+
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
+            if (!IsReparsePoint(link) || !Directory.Exists(link))
+#pragma warning restore AARC003
+            {
+                reason = "mklink exited with code 0, but the link is not a junction that resolves to a directory";
+                return null;
+            }
+
+            reason = string.Empty;
+            return new JunctionFixture(link);
+        }
+        finally
+        {
+            // Abnormal-exit cleanup: a process still running here is the one this fixture started. It is killed and awaited.
+            if (!WaitOwned(process, TimeSpan.Zero))
+            {
+                KillOwnedTree(process);
+                WaitOwned(process, KillBound);
+            }
+        }
+    }
+
+    /// <summary>Removes the link only. A junction is removed without entering its target.</summary>
+    public void Dispose()
+    {
+        if (IsReparsePoint(Link))
+        {
+#pragma warning disable AARC003 // Justified: this line calls Directory.Delete (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
+            Directory.Delete(Link);
+#pragma warning restore AARC003
+        }
+    }
+
+    private static void RequireInsideOwner(TempDirectory owner, string path)
+    {
+        var root = Path.GetFullPath(owner.FullPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"A junction fixture must be created inside the test-owned directory: {path}");
+        }
+    }
+
+    private static void RequireSafePath(string path)
+    {
+        if (!Path.IsPathFullyQualified(path) || !SafePath.IsMatch(path))
+        {
+            throw new InvalidOperationException(
+                $"The path contains characters that the cmd.exe fixture launch does not accept, so no launch is made: {path}");
+        }
+    }
+
+    private static bool IsReparsePoint(string path)
+    {
+        var attributes = (int)new DirectoryInfo(path).Attributes;
+        return attributes != -1 && (attributes & (int)FileAttributes.ReparsePoint) != 0;
+    }
+
+    private static Process StartMklink(string arguments) =>
+#pragma warning disable AARC003 // Justified: this line calls Process.Start (process launch); it is the one test-only process launch of the matrix rule 6 junction-fixture exception (PR #846): cmd.exe runs mklink /J inside a test-owned temporary directory, the Process object is the one this fixture started, and it is waited for, or killed, only through that object.
+        Process.Start(new ProcessStartInfo("cmd.exe", arguments) { UseShellExecute = false, CreateNoWindow = true })
+#pragma warning restore AARC003
+            ?? throw new InvalidOperationException("cmd.exe did not start.");
+
+#pragma warning disable AARC003 // Justified: this line calls Process.WaitForExit (instance) (process launch); it is the one test-only process launch of the matrix rule 6 junction-fixture exception (PR #846): cmd.exe runs mklink /J inside a test-owned temporary directory, the Process object is the one this fixture started, and it is waited for, or killed, only through that object.
+    private static bool WaitOwned(Process process, TimeSpan bound) => process.WaitForExit((int)bound.TotalMilliseconds);
+#pragma warning restore AARC003
+
+#pragma warning disable AARC003 // Justified: this line calls Process.Kill (instance) (process launch); it is the one test-only process launch of the matrix rule 6 junction-fixture exception (PR #846): cmd.exe runs mklink /J inside a test-owned temporary directory, the Process object is the one this fixture started, and it is waited for, or killed, only through that object.
+    private static void KillOwnedTree(Process process) => process.Kill(entireProcessTree: true);
+#pragma warning restore AARC003
+
+#pragma warning disable AARC003 // Justified: this line calls Process.ExitCode (instance) (process launch); it is the one test-only process launch of the matrix rule 6 junction-fixture exception (PR #846): cmd.exe runs mklink /J inside a test-owned temporary directory, the Process object is the one this fixture started, and it is waited for, or killed, only through that object.
+    private static int ExitCodeOf(Process process) => process.ExitCode;
+#pragma warning restore AARC003
+}
+
+/// <summary>Junction fixtures created during one test, removed in reverse order when the set is disposed.</summary>
+[Test]
+internal sealed class JunctionFixtureSet : IDisposable
+{
+    private readonly List<JunctionFixture> _links = [];
+
+    /// <summary>Adds a fixture to the set.</summary>
+    public void Add(JunctionFixture fixture) => _links.Add(fixture);
+
+    /// <summary>Removes every fixture's link, last created first.</summary>
+    public void Dispose()
+    {
+        for (var index = _links.Count - 1; index >= 0; index--)
+        {
+            _links[index].Dispose();
+        }
+    }
 }
 
