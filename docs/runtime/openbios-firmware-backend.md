@@ -963,8 +963,9 @@ packaging-time declaration (`--bios-provenance`) is recorded for comparison only
   (its own run of `InterpreterTitleExecutionEngine`) ends with `guestPc` = 2147685912 = `0x80031618`, `KernelRunningFromRam`,
   `VectorsInstalled` and `ShellEntered` all true. The record is `scratchpad/probe-2m.json`. The BIOS leaves the reset vector.
 
-**Why the `guestPc` field of the bounded run is `0xBFC00000`.** It is the artifact process's own snapshot, parsed from its stdout
-(`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`). The interpreter's fallback runs in the host, and its final state is
+**Why the `guestPc` field of the bounded run is `0xBFC00000`.** It is the artifact process's own snapshot, parsed from its stderr
+(`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`): the snapshot is written to stderr, and only for a run the parent manages
+(the `--host-snapshot` flag, PR #839 ruling). Stdout carries the guest's text and the bridge protocol only. The interpreter's fallback runs in the host, and its final state is
 not written back into that snapshot, so the field is the segment's entry state. The run's stop message above is the value to
 read. Mixed-fallback progress is therefore verified by the stop message and by the probe, not by `guestPc`.
 
