@@ -304,9 +304,78 @@ public sealed class FirmwareDiagnosticDistributionTests
         Directory.Delete(target);
         var request = ValidRequest(dir, output, roots: "nope\n");
 
-        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<Exception>();
+        // The refusal of a link at the output name is the guard that must fire, not a later failure.
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>()
+            .WithMessage("*already exists*");
 
         Directory.Exists(target).Should().BeFalse("the build never creates the directory a dangling junction names");
+    }
+
+    [Fact]
+    public void Build_ForeignFileWrittenDuringAStep_SurvivesTheFailureCleanup()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // The foreign file is written inside the host step, after the step has started and before its first write of its own.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host"); // holds no runtime host, so the step fails after the hook
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+        string? runtime = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "provision")
+            {
+                runtime = path;
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), "written by another process during the step");
+            }
+        });
+
+        act.Should().Throw<InvalidDataException>("the host directory holds no runtime host");
+        runtime.Should().NotBeNull("the host step ran");
+        File.ReadAllText(Path.Combine(runtime!, "foreign.txt")).Should().Be("written by another process during the step",
+            "content another process writes during a step is never deleted by the failure cleanup");
+        Directory.GetFileSystemEntries(runtime!).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+            "the build's own entries under runtime/ are removed");
+        Directory.GetFileSystemEntries(Path.GetDirectoryName(runtime!)!).Select(Path.GetFileName).Should().BeEquivalentTo(["runtime"],
+            "the claimed artifact copy is removed; the staging directory stays because it still holds foreign content");
+        Directory.Exists(output).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Build_StagingDirectoryReplacedByAJunction_IsNeitherWrittenNorDeleted()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
+        var elsewhere = dir.CreateSubdirectory("elsewhere");
+        File.WriteAllText(Path.Combine(elsewhere, "keep.txt"), "x");
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "staged")
+            {
+                // A same-user process swaps the empty staging directory for a junction to a directory it controls.
+                Directory.Delete(path);
+                MakeJunction(path, elsewhere);
+            }
+        });
+
+        act.Should().Throw<IOException>().WithMessage("*no longer a real directory*");
+        Directory.GetFileSystemEntries(elsewhere).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+            "nothing is written through the junction, and the cleanup does not delete through it");
+        Directory.Exists(output).Should().BeFalse();
     }
 
     [Fact]

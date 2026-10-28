@@ -77,7 +77,15 @@ public static class FirmwareDiagnosticDistribution
     /// <summary>
     /// Writes the measurement layout under <see cref="FirmwareDiagnosticRequest.OutputDirectory"/> (which must not exist yet). The
     /// inputs are verified before anything is created. The layout is written into a private staging directory and renamed into place
-    /// only when complete; a failure removes the entries this call created and never a directory it did not create.
+    /// only when complete; a failure removes the entries this call named before writing them, and never a directory it did not create
+    /// or content another process placed in the staging area.
+    /// <para>
+    /// Operator notes: a process that is killed mid-build leaves its staging directory <c>.&lt;name&gt;.staging-&lt;guid&gt;</c> beside
+    /// the output name, and nothing deletes it automatically. Files the runtime-host publish writes (names not known in advance) are
+    /// not claimed, so a failure after that step leaves them in <c>runtime/</c>; remove the staging directory by hand after checking it.
+    /// The publish is a Windows-only no-replace rename, and the build is refused on other platforms.
+    /// </para>
+    ///
     /// </summary>
     public static FirmwareDiagnosticBuild Build(FirmwareDiagnosticRequest request, bool windows)
         => Build(request, windows, observe: null);
@@ -126,6 +134,14 @@ public static class FirmwareDiagnosticDistribution
 
         // Everything is written into a private sibling staging directory. The output name is claimed only by the final rename,
         // which refuses an existing name, so a directory another process creates meanwhile is never entered, replaced or deleted.
+        // The no-replace commit is a Windows rename (MoveFileEx without replace). On POSIX, rename(2) silently replaces an empty
+        // directory that appears between the check and the rename, so the measurement is refused there instead of relying on it.
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException(
+                "The measurement is built on Windows only: its no-replace publish of the output directory is not available elsewhere.");
+        }
+
         var area = new StagingArea(outputDir);
         try
         {
@@ -135,30 +151,32 @@ public static class FirmwareDiagnosticDistribution
 
             var runtimeDir = Path.Combine(staging, RuntimeHostLayout.RuntimeDirectoryName);
             var firmwareDir = Path.Combine(runtimeDir, FirmwareBootManifest.FirmwareDirectory);
-            area.Track(() =>
+            area.CreateDirectory(firmwareDir);
+            foreach (var (relative, source) in aotFiles)
             {
-                Directory.CreateDirectory(firmwareDir);
-                FirmwareAotBundle.CopyInto(aotFiles, firmwareDir);
-            });
+                var destination = Path.Combine(firmwareDir, relative.Replace('/', Path.DirectorySeparatorChar));
+                area.CreateDirectory(Path.GetDirectoryName(destination)
+                    ?? throw new InvalidDataException($"The AOT input '{relative}' has no file name."));
+                File.Copy(source, area.Claim(destination), overwrite: false);
+            }
+
             var (stagedAotInputs, _) = FirmwareAotBundle.Collect(firmwareDir);
 
             // The disc is linked into the runtime directory (a second name for the same file), never copied. The plan reads
             // the original path directly, so the disc the plan and the host read is the one the user named.
             var discLeaf = Path.GetExtension(discPath).Equals(".chd", StringComparison.OrdinalIgnoreCase) ? "disc.chd" : "disc.bin";
             var discDir = Path.Combine(runtimeDir, FirmwareBootManifest.DiscDirectory);
-            area.Track(() =>
+            area.CreateDirectory(discDir);
+            if (request.DirectDiscReference)
             {
-                Directory.CreateDirectory(discDir);
-                if (request.DirectDiscReference)
-                {
-                    // Nothing is linked or copied: the marker names the original, which the host opens read-only.
-                    WriteDiscMarker(runtimeDir, discPath, request.DiscSha256);
-                }
-                else
-                {
-                    LinkDiscInPlace(discPath, Path.Combine(discDir, discLeaf));
-                }
-            });
+                // Nothing is linked or copied: the marker names the original, which the host opens read-only.
+                area.Claim(Path.Combine(runtimeDir, DiscMarkerFileName));
+                WriteDiscMarker(runtimeDir, discPath, request.DiscSha256);
+            }
+            else
+            {
+                LinkDiscInPlace(discPath, area.Claim(Path.Combine(discDir, discLeaf)));
+            }
 
             FirmwareAotPlan plan;
             using (var disc = DiscSectorSourceOpener.Open(discPath))
@@ -176,7 +194,7 @@ public static class FirmwareDiagnosticDistribution
             string artifactSource;
             if (request.ArtifactSourcePath is null)
             {
-                artifactPath = area.Produce(() => GenerateArtifact(plan, request, staging, artifactName, artifactFile, windows));
+                artifactPath = GenerateArtifact(area, plan, request, artifactName, artifactFile, windows);
                 artifactSource = "generated";
             }
             else
@@ -187,7 +205,7 @@ public static class FirmwareDiagnosticDistribution
                 artifactSource = "reused:" + Path.GetFileName(request.ArtifactSourcePath);
             }
 
-            var hostSource = area.Produce(() => ProvisionOrCopyHost(runtimeDir, request, windows));
+            var hostSource = ProvisionOrCopyHost(area, runtimeDir, request, windows, observe);
 
             var bootPath = area.Claim(Path.Combine(runtimeDir, FirmwareBootManifest.FileName));
             var boot = new FirmwareBootManifest(
@@ -445,8 +463,9 @@ public static class FirmwareDiagnosticDistribution
     }
 
     private static string GenerateArtifact(
-        FirmwareAotPlan plan, FirmwareDiagnosticRequest request, string outputDir, string artifactName, string artifactFile, bool windows)
+        StagingArea area, FirmwareAotPlan plan, FirmwareDiagnosticRequest request, string artifactName, string artifactFile, bool windows)
     {
+        var outputDir = area.Root;
         var dispatch = RecompilerHostCodeGen.Generate(
             plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled, allowEmptyProgram: true);
         if (!dispatch.Success)
@@ -465,6 +484,10 @@ public static class FirmwareDiagnosticDistribution
         }
 
         BiosGuardWiring.Run(BiosGuardWiring.Source, () => BiosAddressGuard.RequireNoBiosSource(source.Source!));
+        // The toolchain writes exactly these three names into the staging directory; each is claimed before it can be written.
+        area.Claim(Path.Combine(outputDir, artifactFile + ".c"));
+        area.Claim(Path.Combine(outputDir, artifactFile + ".o"));
+        area.Claim(Path.Combine(outputDir, artifactFile));
         var build = new GeneratedHostBuildService(request.BuildTimeout ?? FirmwareDistributionBuilder.DefaultBuildTimeout).Build(
             new GeneratedHostBuildRequest(source.Source!, outputDir, artifactFile, FirmwareDistribution: true));
         if (build.Status != GeneratedHostBuildStatus.Succeeded)
@@ -475,10 +498,15 @@ public static class FirmwareDiagnosticDistribution
         return Path.Combine(outputDir, Path.GetFileName(build.Artifact!.BinaryPath));
     }
 
-    private static string ProvisionOrCopyHost(string runtimeDir, FirmwareDiagnosticRequest request, bool windows)
+    private static string ProvisionOrCopyHost(
+        StagingArea area, string runtimeDir, FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe)
     {
+        observe?.Invoke("provision", runtimeDir);
         if (request.HostSourceDirectory is null)
         {
+            // The publish writes a set of files whose names are not known in advance; only the host executable is claimed by name.
+            // Those other published files are not claimed, so after a failure they remain in the staging directory.
+            area.Claim(Path.Combine(runtimeDir, RuntimeHostLayout.HostFileName(windows)));
             try
             {
                 RuntimeHostBuildService.ProvisionRuntimeHost(runtimeDir, selfContained: false, firmwareDistribution: true);
@@ -500,7 +528,7 @@ public static class FirmwareDiagnosticDistribution
 
         foreach (var file in Directory.EnumerateFiles(source))
         {
-            File.Copy(file, Path.Combine(runtimeDir, Path.GetFileName(file)), overwrite: false);
+            File.Copy(file, area.Claim(Path.Combine(runtimeDir, Path.GetFileName(file))), overwrite: false);
         }
 
         return "copied:" + Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -650,7 +678,10 @@ public static class FirmwareDiagnosticDistribution
         };
     }
 
-    /// <summary>True when <paramref name="path"/> is a symbolic link or junction (or a dangling one). A missing path is not a link.</summary>
+    /// <summary>
+    /// True when <paramref name="path"/> is a symbolic link or junction, including a dangling one: on Windows the link itself reports the
+    /// reparse attribute (Build_DanglingJunctionAtTheOutputPath_IsNotFollowed checks it). Only a path that does not exist at all gives false.
+    /// </summary>
     private static bool IsReparsePoint(string path)
     {
         try
@@ -664,10 +695,15 @@ public static class FirmwareDiagnosticDistribution
     }
 
     /// <summary>
-    /// The private staging directory one measurement is written into, and the entries that build itself created in it. The output name
-    /// is claimed only by <see cref="Commit"/> (a rename that refuses an existing name). Cleanup removes only what this build created:
-    /// a directory is removed only when it is empty, so content another process placed in the staging area is never deleted, and
-    /// links are removed by name without following them.
+    /// The private staging directory one measurement is written into, and the entries that build claimed by name before writing them.
+    /// The output name is claimed only by <see cref="Commit"/> (a rename that refuses an existing name).
+    /// <para>
+    /// Ownership is by name, never by a directory snapshot: a file another process writes into the staging area is not claimed, so the
+    /// cleanup never deletes it, even when it appears during a step. A claim refuses a path that already exists. Directories are removed
+    /// only when empty. Every write first checks that the staging directory and the chain below it are not links, and cleanup does not
+    /// delete through a link. The one gap is the runtime-host publish, whose output names are not known in advance: those files are not
+    /// claimed, so they remain after a failure (see the operator notes on the Build method).
+    /// </para>
     /// </summary>
     private sealed class StagingArea
     {
@@ -696,46 +732,74 @@ public static class FirmwareDiagnosticDistribution
             Directory.CreateDirectory(_root);
         }
 
-        /// <summary>Records one path this build writes. Recorded before the write, so a partial write is cleaned up too.</summary>
+        /// <summary>
+        /// Claims one path this build is about to write, by name. It is recorded before the write, so a partial write is cleaned up too.
+        /// A path that already exists is refused rather than claimed: an entry this build did not create is never adopted.
+        /// </summary>
         public string Claim(string path)
         {
+            RequireRealChain(path);
+            if (Path.Exists(path) || IsReparsePoint(path))
+            {
+                throw new IOException($"The staging area already holds an entry the measurement did not create: {path}");
+            }
+
             _owned.Add(path);
             return path;
         }
 
-        /// <summary>Runs a step that produces files this build does not name one by one; whatever it adds to the staging area is owned.</summary>
-        public void Track(Action step) => Produce(() => { step(); return 0; });
-
-        /// <summary>As <see cref="Track"/>, returning the step's result.</summary>
-        public T Produce<T>(Func<T> step)
+        /// <summary>
+        /// Creates <paramref name="path"/> inside the staging directory, claiming each directory it creates. A directory that already
+        /// exists (and was not created here) is never claimed.
+        /// </summary>
+        public void CreateDirectory(string path)
         {
-            var before = Snapshot(Root);
-            try
+            RequireRealChain(path);
+            var missing = new List<string>();
+            for (var current = path; current is not null && !SamePath(current, Root) && !Path.Exists(current); current = Path.GetDirectoryName(current))
             {
-                return step();
+                missing.Add(current); // deepest first
             }
-            finally
+
+            foreach (var directory in missing)
             {
-                _owned.AddRange(Snapshot(Root).Where(path => !before.Contains(path)));
+                Claim(directory);
             }
+
+            Directory.CreateDirectory(path);
         }
 
         /// <summary>The path <paramref name="path"/> has inside the published output.</summary>
         public string Rebase(string path) => Path.Combine(_outputDir, Path.GetRelativePath(Root, path));
 
         /// <summary>Renames the finished staging directory to the output name. Directory.Move refuses a name that is taken.</summary>
-        public void Commit() => Directory.Move(Root, _outputDir);
+        public void Commit()
+        {
+            RequireRealDirectory();
+            Directory.Move(Root, _outputDir);
+        }
 
-        /// <summary>Removes what this build created: the owned entries deepest first, then the staging and parent directories if they are empty.</summary>
+        /// <summary>
+        /// Removes what this build claimed: the claimed entries deepest first, then the staging and parent directories if they are empty.
+        /// Nothing is removed through a link: if the staging directory or any claimed path's chain below it is a link, that part is kept.
+        /// </summary>
         public void Discard()
         {
-            foreach (var path in _owned.Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(p => p.Length))
+            if (_root is null)
             {
-                RemoveOwnEntry(path);
+                return;
             }
 
-            if (_root is not null)
+            if (IsRealDirectory(_root))
             {
+                foreach (var path in _owned.Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(p => p.Length))
+                {
+                    if (!LinkBelowRoot(path))
+                    {
+                        RemoveOwnEntry(path);
+                    }
+                }
+
                 RemoveIfEmpty(_root);
             }
 
@@ -745,26 +809,46 @@ public static class FirmwareDiagnosticDistribution
             }
         }
 
-        /// <summary>Every entry under <paramref name="root"/>, not following links into their targets.</summary>
-        private static HashSet<string> Snapshot(string root)
+        /// <summary>Fails closed unless the staging directory is still a real directory (not a link) and no directory on the way to <paramref name="path"/> is one.</summary>
+        private void RequireRealChain(string path)
         {
-            var entries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var pending = new Stack<string>();
-            pending.Push(root);
-            while (pending.Count > 0)
+            RequireRealDirectory();
+            for (var current = path; current is not null && !SamePath(current, Root); current = Path.GetDirectoryName(current))
             {
-                foreach (var entry in Directory.EnumerateFileSystemEntries(pending.Pop()))
+                if (IsReparsePoint(current))
                 {
-                    entries.Add(entry);
-                    if (Directory.Exists(entry) && !IsReparsePoint(entry))
-                    {
-                        pending.Push(entry);
-                    }
+                    throw new IOException($"A link was found inside the staging area; the measurement is not written: {current}");
+                }
+            }
+        }
+
+        private void RequireRealDirectory()
+        {
+            if (!IsRealDirectory(Root))
+            {
+                throw new IOException(
+                    $"The staging directory is no longer a real directory (it was replaced or removed); the measurement is not written or published: {Root}");
+            }
+        }
+
+        private bool LinkBelowRoot(string path)
+        {
+            for (var current = path; current is not null && !SamePath(current, Root); current = Path.GetDirectoryName(current))
+            {
+                if (IsReparsePoint(current))
+                {
+                    return true;
                 }
             }
 
-            return entries;
+            return false;
         }
+
+        private static bool IsRealDirectory(string path) => Directory.Exists(path) && !IsReparsePoint(path);
+
+        private static bool SamePath(string a, string b) =>
+            string.Equals(a.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                b.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
 
         private static void RemoveOwnEntry(string path)
         {
