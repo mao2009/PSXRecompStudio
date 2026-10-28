@@ -430,11 +430,21 @@ public static class FirmwareDiagnosticDistribution
         }
 
         // Every malformed shape (invalid JSON, a non-object, a field that is not a string) is refused with the same type as the other checks.
+        string markerText;
+        try
+        {
+            markerText = File.ReadAllText(marker);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidDataException("The diagnostic disc marker could not be read (it may be locked or unreadable).", exception);
+        }
+
         string? schema;
         string? path;
         try
         {
-            var node = JsonNode.Parse(File.ReadAllText(marker))?.AsObject()
+            var node = JsonNode.Parse(markerText)?.AsObject()
                 ?? throw new InvalidDataException("The diagnostic disc marker is not a JSON object.");
             schema = node["schema"]?.GetValue<string>();
             path = node["path"]?.GetValue<string>();
@@ -580,10 +590,7 @@ public static class FirmwareDiagnosticDistribution
             throw new InvalidDataException($"The host directory does not hold {RuntimeHostLayout.HostFileName(windows)}: {source}");
         }
 
-        foreach (var file in Directory.EnumerateFiles(source))
-        {
-            area.CopyNewFile(file, Path.Combine(runtimeDir, Path.GetFileName(file)));
-        }
+        area.CopyTree(source, runtimeDir);
 
         return "copied:" + Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
     }
@@ -708,7 +715,22 @@ public static class FirmwareDiagnosticDistribution
         /// <summary>Waits at most <paramref name="drain"/> for the end of the stream, then takes what was read so far.</summary>
         public CapturedOutput Finish(TimeSpan drain)
         {
-            var finished = _pump.Wait(drain);
+            bool finished;
+            try
+            {
+                finished = _pump.Wait(drain);
+            }
+            catch (AggregateException exception)
+            {
+                // The pump faulted with an exception it does not handle; it is reported as a read error, not thrown to the caller.
+                lock (_gate)
+                {
+                    _readError = exception.Flatten().InnerException?.Message ?? exception.Message;
+                }
+
+                finished = true;
+            }
+
             lock (_gate)
             {
                 var status = _readError is not null ? "read-error"
@@ -784,6 +806,11 @@ public static class FirmwareDiagnosticDistribution
         {
             var parent = Path.GetDirectoryName(_outputDir)
                 ?? throw new InvalidDataException($"The output directory has no parent directory: {_outputDir}");
+            // The staging root is the longest path this build creates, and it is checked before any ancestor is created, so a refused
+            // output path creates nothing at all.
+            _root = Path.Combine(parent, $".{artifactName}.staging-{Guid.NewGuid():N}");
+            RequireWithinPathLimit(_root);
+
             var missing = new List<string>();
             for (var path = parent; path is not null && !Path.Exists(path); path = Path.GetDirectoryName(path))
             {
@@ -798,7 +825,6 @@ public static class FirmwareDiagnosticDistribution
                 _ancestors.Add(path);
             }
 
-            _root = Path.Combine(parent, $".{artifactName}.staging-{Guid.NewGuid():N}");
             ExclusiveCreateDirectory(_root);
         }
 
@@ -847,11 +873,39 @@ public static class FirmwareDiagnosticDistribution
             writer.Write(text);
         }
 
+        /// <summary>
+        /// Copies a directory tree into <paramref name="destination"/>: every file is created exclusively and every subdirectory is created
+        /// exclusively. A link anywhere in the source tree is refused by name, because a copy would follow it outside the source.
+        /// </summary>
+        public void CopyTree(string source, string destination)
+        {
+            foreach (var file in Directory.EnumerateFiles(source))
+            {
+                if (IsReparsePoint(file))
+                {
+                    throw new InvalidDataException($"The host directory holds a link, which the copy refuses: {file}");
+                }
+
+                CopyNewFile(file, Path.Combine(destination, Path.GetFileName(file)));
+            }
+
+            foreach (var directory in Directory.EnumerateDirectories(source))
+            {
+                if (IsReparsePoint(directory))
+                {
+                    throw new InvalidDataException($"The host directory holds a link, which the copy refuses: {directory}");
+                }
+
+                CopyTree(directory, CreateDirectory(Path.Combine(destination, Path.GetFileName(directory))));
+            }
+        }
+
         /// <summary>Creates a hard link at <paramref name="link"/> to <paramref name="original"/> (CreateHardLink refuses an existing name).</summary>
         public void LinkNew(string original, string link)
         {
             _observe?.Invoke("file", link); // SEAM: another process acts here, before the check made immediately before the write
             RequireRealChain(link);
+            RequireWithinPathLimit(link);
             LinkDiscInPlace(original, link);
             _owned.Add(link);
         }
@@ -862,6 +916,7 @@ public static class FirmwareDiagnosticDistribution
         public void Reserve(string path)
         {
             RequireRealChain(path);
+            RequireWithinPathLimit(path);
             if (Path.Exists(path) || IsReparsePoint(path))
             {
                 throw new IOException($"The staging area already holds an entry the measurement did not create: {path}");
@@ -918,9 +973,12 @@ public static class FirmwareDiagnosticDistribution
         }
 
         /// <summary>
-        /// Refuses a path longer than the classic Windows limit for these calls. CreateDirectoryW and the file calls used here do not use
-        /// the long-path prefix, and they fail with a raw Win32 code above about 247 characters. The staging name adds about 42 characters
-        /// to the output path, so the output path is the one to shorten.
+        /// Refuses a path longer than <see cref="MaxPathCharacters"/> before a write, so the refusal names the limit rather than a raw Win32 code.
+        /// The limit is the one this build applies to every write; it is conservative per call type. Directory creation (CreateDirectoryW, no
+        /// long-path prefix) fails above the classic MAX_PATH limit: a 265-character directory was refused and a 204-character one accepted in
+        /// a probe on the development machine. File creation (FileStream CreateNew) succeeded at 300 characters in a probe on the same machine,
+        /// so the check for files is stricter than the platform needs; it is kept for one rule across all writes, and the staging name adds about
+        /// 42 characters to the output path. None of these limits is verified on other machines or configurations.
         /// </summary>
         private static void RequireWithinPathLimit(string path)
         {

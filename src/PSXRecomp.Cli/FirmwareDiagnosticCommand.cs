@@ -139,13 +139,19 @@ internal static class FirmwareDiagnosticCommand
             output.WriteLine(measurement["summary"]!.ToJsonString());
             return 0;
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException
-                                       or InvalidOperationException or FormatException or NotSupportedException or PlatformNotSupportedException
-                                       or TimeoutException or FileNotFoundException
-                                       or System.ComponentModel.Win32Exception or JsonException)
+        catch (Exception caught) when (IsMappedFailure(Unwrap(caught)))
         {
-            error.WriteLine($"psxrecomp firmware-diagnostic: {ex.Message}");
+            // A faulted task surfaces as AggregateException; the failure it carries is what the operator needs, so it is mapped the same way.
+            error.WriteLine($"psxrecomp firmware-diagnostic: {Unwrap(caught).Message}");
             return 1;
         }
     }
+
+    private static Exception Unwrap(Exception exception) =>
+        exception is AggregateException aggregate ? aggregate.Flatten().InnerException ?? aggregate : exception;
+
+    private static bool IsMappedFailure(Exception exception) =>
+        exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidDataException
+            or InvalidOperationException or FormatException or NotSupportedException or PlatformNotSupportedException
+            or TimeoutException or FileNotFoundException or System.ComponentModel.Win32Exception or JsonException;
 }

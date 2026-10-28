@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using FluentAssertions;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.E2E;
 using PSXRecomp.Tests.RealRomAnalysis;
@@ -33,7 +34,9 @@ public sealed class FirmwareDiagnosticDistributionTests
             Request(dir, romPath: rom, romSha256: NoSha, outputDirectory: output), windows: true);
 
         act.Should().Throw<InvalidDataException>().WithMessage("*does not match*");
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse("a refused input must leave no output behind");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(output).Should().BeFalse("a refused input must leave no output behind");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -48,7 +51,9 @@ public sealed class FirmwareDiagnosticDistributionTests
             Request(dir, romPath: rom, romSha256: NoSha, outputDirectory: output), windows: true);
 
         act.Should().Throw<IOException>().WithMessage("*already exists*");
-        DiagnosticFiles.ReadAllText(Path.Combine(output, "keep.txt")).Should().Be("previous evidence");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(Path.Combine(output, "keep.txt")).Should().Be("previous evidence");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -60,12 +65,16 @@ public sealed class FirmwareDiagnosticDistributionTests
         var original = dir.WriteFile("disc/game.chd", new byte[4096]);
         var before = OpenBiosRomInput.Sha256HexOfFile(original);
         var linked = dir.Combine("runtime", "disc", "game.chd");
-        DiagnosticFiles.CreateDirectory(Path.GetDirectoryName(linked)!);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.CreateDirectory(Path.GetDirectoryName(linked)!);
+#pragma warning restore AARC003
 
         FirmwareDiagnosticDistribution.LinkDiscInPlace(original, linked);
 
-        DiagnosticFiles.FileExists(linked).Should().BeTrue();
-        DiagnosticFiles.LinkTarget(linked).Should().BeNull("a hard link is an entry of the same file, not a symbolic link");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.Exists(linked).Should().BeTrue();
+#pragma warning restore AARC003
+        new FileInfo(linked).LinkTarget.Should().BeNull("a hard link is an entry of the same file, not a symbolic link");
         FirmwareDiagnosticDistribution.HardLinkCount(linked).Should().Be(2, "the link shares the original's file (no copy)");
         OpenBiosRomInput.Sha256HexOfFile(original).Should().Be(before);
     }
@@ -83,10 +92,14 @@ public sealed class FirmwareDiagnosticDistributionTests
         dir.WriteFile("aot/images.txt", Array.Empty<byte>());
         var aot = dir.Combine("aot");
         var outDir = dir.Combine("out", "measure");
-        DiagnosticFiles.CreateDirectory(outDir);
-        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
+        Directory.CreateDirectory(outDir);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var runtime = Directory.CreateDirectory(dir.Combine("out", "measure", "runtime")).FullName;
+#pragma warning restore AARC003
         var host = Path.Combine(runtime, "PSXRecomp.RuntimeHost.exe");
-        DiagnosticFiles.CopyFile(DiagnosticFiles.SystemFile("cmd.exe"), host);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), host);
+#pragma warning restore AARC003
         var digests = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["rom"] = OpenBiosRomInput.Sha256HexOfFile(rom),
@@ -108,7 +121,9 @@ public sealed class FirmwareDiagnosticDistributionTests
         stop["residuals"]!.AsArray().Should().BeEmpty("cmd.exe starts no descendant, so no residual is left");
         var pid = stop["processId"]!.GetValue<int>();
         pid.Should().BeGreaterThan(0);
-        var gone = () => DiagnosticFiles.ProcessById(pid);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var gone = () => Process.GetProcessById(pid);
+#pragma warning restore AARC003
         gone.Should().Throw<ArgumentException>("the stopped host must no longer be running");
     }
 
@@ -117,7 +132,9 @@ public sealed class FirmwareDiagnosticDistributionTests
     {
         // Default off: no marker means the product's runtime/disc path, unchanged.
         using var dir = new TempDirectory();
-        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime")).FullName;
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+#pragma warning restore AARC003
 
         FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd")
             .Should().Be(Path.Combine(runtime, "disc/game.chd"));
@@ -130,26 +147,34 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         using var dir = new TempDirectory();
         var original = dir.WriteFile("source/game.chd", new byte[4096]);
-        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime", "disc")).FullName;
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime", "disc")).FullName;
         var before = OpenBiosRomInput.Sha256HexOfFile(original);
-        DiagnosticFiles.WriteAllText(Path.Combine(dir.Combine("runtime"), "diagnostic-disc.json"),
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(Path.Combine(dir.Combine("runtime"), "diagnostic-disc.json"),
+#pragma warning restore AARC003
             "{\"schema\":\"psxrecomp.diagnostic-disc.v1\",\"path\":\"" + original.Replace("\\", "\\\\") + "\",\"sha256\":\"" + before + "\",\"access\":\"read-only\"}");
 
         var resolved = FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(dir.Combine("runtime"), "disc/game.chd");
 
         resolved.Should().Be(Path.GetFullPath(original));
-        DiagnosticFiles.Entries(runtime).Should().BeEmpty("the disc is referenced, never linked or copied into runtime/");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetFileSystemEntries(runtime).Should().BeEmpty("the disc is referenced, never linked or copied into runtime/");
+#pragma warning restore AARC003
         OpenBiosRomInput.Sha256HexOfFile(original).Should().Be(before);
-        DiagnosticFiles.LinkTarget(original).Should().BeNull();
+        new FileInfo(original).LinkTarget.Should().BeNull();
     }
 
     [SkippableFact]
     public void ResolveRuntimeDiscPath_MarkerWithAnUnknownSchema_IsRefused()
     {
         using var dir = new TempDirectory();
-        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime")).FullName;
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+#pragma warning restore AARC003
         var disc = dir.WriteFile("source/game.chd", new byte[16]);
-        DiagnosticFiles.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"),
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"),
+#pragma warning restore AARC003
             "{\"schema\":\"other\",\"path\":\"" + disc.Replace("\\", "\\\\") + "\"}");
 
         var act = () => FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd");
@@ -165,7 +190,7 @@ public sealed class FirmwareDiagnosticDistributionTests
         using var dir = new TempDirectory();
         var disc = dir.WriteFile("source/game.bin", new byte[2352 * 2]);
         var before = OpenBiosRomInput.Sha256HexOfFile(disc);
-        DiagnosticFiles.SetAttributes(disc, FileAttributes.ReadOnly);
+        File.SetAttributes(disc, FileAttributes.ReadOnly);
         try
         {
             using (var opened = DiscSectorSourceOpener.Open(disc))
@@ -177,7 +202,9 @@ public sealed class FirmwareDiagnosticDistributionTests
         }
         finally
         {
-            DiagnosticFiles.SetAttributes(disc, FileAttributes.Normal);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+            File.SetAttributes(disc, FileAttributes.Normal);
+#pragma warning restore AARC003
         }
     }
 
@@ -208,14 +235,16 @@ public sealed class FirmwareDiagnosticDistributionTests
         {
             if (phase == "claim")
             {
-                DiagnosticFiles.CreateDirectory(path);
-                DiagnosticFiles.WriteAllText(Path.Combine(path, "foreign.txt"), foreign);
+                Directory.CreateDirectory(path);
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), foreign);
             }
         });
 
         act.Should().Throw<Exception>("the roots file is invalid, so the build fails after it has started");
-        DiagnosticFiles.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be(foreign, "a directory this build did not create is never deleted");
-        DiagnosticFiles.Entries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be(foreign, "a directory this build did not create is never deleted");
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+#pragma warning restore AARC003
             "the build writes nothing into a directory it did not create");
     }
 
@@ -234,16 +263,20 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "staged")
             {
                 staged = path;
-                DiagnosticFiles.WriteAllText(Path.Combine(path, "foreign.txt"), "someone else's file");
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), "someone else's file");
             }
         });
 
         act.Should().Throw<Exception>();
         staged.Should().NotBeNull("the build stages its output in a sibling directory before it fails");
-        DiagnosticFiles.ReadAllText(Path.Combine(staged!, "foreign.txt")).Should().Be("someone else's file",
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(Path.Combine(staged!, "foreign.txt")).Should().Be("someone else's file",
+#pragma warning restore AARC003
             "content another process placed in the staging area is not deleted");
-        DiagnosticFiles.DirectoryExists(Path.Combine(staged!, "runtime")).Should().BeFalse("the build's own runtime directory is removed");
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
+        Directory.Exists(Path.Combine(staged!, "runtime")).Should().BeFalse("the build's own runtime directory is removed");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(output).Should().BeFalse();
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -257,10 +290,12 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<Exception>();
 
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
-        DiagnosticFiles.Directories(dir.FullPath, "." + Path.GetFileName(output) + ".staging-*").Should().BeEmpty(
+        Directory.Exists(output).Should().BeFalse();
+        Directory.GetDirectories(dir.FullPath, "." + Path.GetFileName(output) + ".staging-*").Should().BeEmpty(
             "the staging directory the build created is removed");
-        DiagnosticFiles.Entries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(
+#pragma warning restore AARC003
             ["openbios.bin", "game.bin", "aot"], "only the inputs the caller named remain");
     }
 
@@ -271,14 +306,18 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         using var dir = new TempDirectory();
         var target = dir.CreateSubdirectory("elsewhere");
-        DiagnosticFiles.WriteAllText(Path.Combine(target, "keep.txt"), "x");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(Path.Combine(target, "keep.txt"), "x");
+#pragma warning restore AARC003
         var output = dir.Combine("measure");
         MakeJunction(output, target);
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>();
 
-        DiagnosticFiles.Entries(target).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetFileSystemEntries(target).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+#pragma warning restore AARC003
             "a junction at the output path is never followed");
     }
 
@@ -291,14 +330,16 @@ public sealed class FirmwareDiagnosticDistributionTests
         var target = dir.CreateSubdirectory("gone");
         var output = dir.Combine("measure");
         MakeJunction(output, target);
-        DiagnosticFiles.DeleteDirectory(target);
+        Directory.Delete(target);
         var request = ValidRequest(dir, output, roots: "nope\n");
 
         // The refusal of a link at the output name is the guard that must fire, not a later failure.
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>()
             .WithMessage("*already exists*");
 
-        DiagnosticFiles.DirectoryExists(target).Should().BeFalse("the build never creates the directory a dangling junction names");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(target).Should().BeFalse("the build never creates the directory a dangling junction names");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -320,20 +361,24 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "provision")
             {
                 runtime = path;
-                DiagnosticFiles.WriteAllText(Path.Combine(path, "foreign.txt"), "written by another process during the step");
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), "written by another process during the step");
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*kept at*does not hold*",
             "the failure is reported with the kept staging directory and the host directory's refusal");
         runtime.Should().NotBeNull("the host step ran");
-        DiagnosticFiles.ReadAllText(Path.Combine(runtime!, "foreign.txt")).Should().Be("written by another process during the step",
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(Path.Combine(runtime!, "foreign.txt")).Should().Be("written by another process during the step",
+#pragma warning restore AARC003
             "content another process writes during a step is never deleted by the failure cleanup");
-        DiagnosticFiles.Entries(runtime!).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+        Directory.GetFileSystemEntries(runtime!).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
             "the build's own entries under runtime/ are removed");
-        DiagnosticFiles.Entries(Path.GetDirectoryName(runtime!)!).Select(Path.GetFileName).Should().BeEquivalentTo(["runtime"],
+        Directory.GetFileSystemEntries(Path.GetDirectoryName(runtime!)!).Select(Path.GetFileName).Should().BeEquivalentTo(["runtime"],
             "the claimed artifact copy is removed; the staging directory stays because it still holds foreign content");
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(output).Should().BeFalse();
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -345,22 +390,26 @@ public sealed class FirmwareDiagnosticDistributionTests
         var output = dir.Combine("measure");
         var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
         var elsewhere = dir.CreateSubdirectory("elsewhere");
-        DiagnosticFiles.WriteAllText(Path.Combine(elsewhere, "keep.txt"), "x");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(Path.Combine(elsewhere, "keep.txt"), "x");
+#pragma warning restore AARC003
 
         var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
         {
             if (phase == "staged")
             {
                 // A same-user process swaps the empty staging directory for a junction to a directory it controls.
-                DiagnosticFiles.DeleteDirectory(path);
+                Directory.Delete(path);
                 MakeJunction(path, elsewhere);
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*no longer a real directory*");
-        DiagnosticFiles.Entries(elsewhere).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+        Directory.GetFileSystemEntries(elsewhere).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
             "nothing is written through the junction, and the cleanup does not delete through it");
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(output).Should().BeFalse();
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -374,8 +423,10 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: false)))
             .Should().Throw<PlatformNotSupportedException>();
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
-        DiagnosticFiles.Entries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+        Directory.Exists(output).Should().BeFalse();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+#pragma warning restore AARC003
             "the refused build leaves nothing behind, not even a staging directory");
     }
 
@@ -396,13 +447,15 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "file" && Path.GetFileName(path) == "rom.roots")
             {
                 target = path;
-                DiagnosticFiles.WriteAllText(path, foreign);
+                File.WriteAllText(path, foreign);
             }
         });
 
         act.Should().Throw<Exception>();
         target.Should().NotBeNull("the copy of rom.roots was reached");
-        DiagnosticFiles.ReadAllText(target!).Should().Be(foreign, "a file another process created at a name the build writes is never deleted");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(target!).Should().Be(foreign, "a file another process created at a name the build writes is never deleted");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -425,13 +478,15 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "file" && Path.GetFileName(path) == FirmwareBootManifest.FileName)
             {
                 target = path;
-                DiagnosticFiles.WriteAllText(path, foreign); // another process creates the name between the claim and the write
+                File.WriteAllText(path, foreign); // another process creates the name between the claim and the write
             }
         });
 
         act.Should().Throw<Exception>("the boot manifest's name is taken by another process");
         target.Should().NotBeNull("the boot manifest was reached");
-        DiagnosticFiles.ReadAllText(target!).Should().Be(foreign, "a file another process created is never overwritten");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(target!).Should().Be(foreign, "a file another process created is never overwritten");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -450,14 +505,16 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "directory" && Path.GetFileName(path) == FirmwareBootManifest.FirmwareDirectory)
             {
                 injected = path;
-                DiagnosticFiles.CreateDirectory(path);
+                Directory.CreateDirectory(path);
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*already exists at*" + FirmwareBootManifest.FirmwareDirectory + "*",
             "the exclusive create refuses the directory another process created, and the refusal is the failure reported");
         injected.Should().NotBeNull("the directory creation was reached");
-        DiagnosticFiles.DirectoryExists(injected!).Should().BeTrue("a directory this build did not create is never removed");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(injected!).Should().BeTrue("a directory this build did not create is never removed");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -470,7 +527,9 @@ public sealed class FirmwareDiagnosticDistributionTests
         var output = dir.Combine("measure");
         var request = ValidRequest(dir, output, roots: "nope\n");
         var foreign = dir.CreateSubdirectory("foreign");
-        DiagnosticFiles.WriteAllText(Path.Combine(foreign, "keep.txt"), "x");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(Path.Combine(foreign, "keep.txt"), "x");
+#pragma warning restore AARC003
         var swapped = false;
 
         var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
@@ -480,14 +539,16 @@ public sealed class FirmwareDiagnosticDistributionTests
             {
                 swapped = true;
                 var firmware = Path.GetDirectoryName(path)!;
-                DiagnosticFiles.MoveDirectory(firmware, firmware + "-aside");
+                Directory.Move(firmware, firmware + "-aside");
                 MakeJunction(firmware, foreign);
             }
         });
 
         act.Should().Throw<Exception>();
         swapped.Should().BeTrue("the swap happened before the first file write");
-        DiagnosticFiles.Entries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetFileSystemEntries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+#pragma warning restore AARC003
             "nothing is written through the junction");
     }
 
@@ -507,14 +568,16 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "directory" && Path.GetFileName(path) == "missing")
             {
                 injected = path;
-                DiagnosticFiles.CreateDirectory(path);
+                Directory.CreateDirectory(path);
             }
         });
 
         act.Should().Throw<IOException>().WithMessage("*already exists at*missing*",
             "Open refuses the ancestor another process created rather than adopting it");
         injected.Should().NotBeNull("the ancestor creation was reached");
-        DiagnosticFiles.DirectoryExists(injected!).Should().BeTrue("an ancestor this build did not create is never removed");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(injected!).Should().BeTrue("an ancestor this build did not create is never removed");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -560,25 +623,29 @@ public sealed class FirmwareDiagnosticDistributionTests
         TempDirectory dir, string output, FirmwareDiagnosticBuild build, string? expectedArtifactContent)
     {
         build.ArtifactPath.Should().Be(Path.Combine(output, "measure.exe"));
-        DiagnosticFiles.FileExists(build.ArtifactPath).Should().BeTrue();
+        File.Exists(build.ArtifactPath).Should().BeTrue();
         if (expectedArtifactContent is not null)
         {
-            DiagnosticFiles.ReadAllText(build.ArtifactPath).Should().Be(expectedArtifactContent,
+            File.ReadAllText(build.ArtifactPath).Should().Be(expectedArtifactContent,
                 "the artifact is the binary the link step wrote, moved under the measurement's name");
         }
 
-        DiagnosticFiles.Entries(output).Select(Path.GetFileName).Should().BeEquivalentTo(
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(
             ["diagnostic-identity.json", "measure.exe", "measure.exe.c", "runtime"],
             "the toolchain's random-named outputs are moved to the measurement's names or removed; the object file is removed");
 
-        var manifest = RuntimeHostManifestJson.Parse(DiagnosticFiles.ReadAllText(build.ManifestPath));
+        var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(build.ManifestPath));
         Path.GetFullPath(Path.Combine(Path.GetDirectoryName(build.ManifestPath)!, manifest.Artifact))
             .Should().Be(Path.GetFullPath(build.ArtifactPath), "the manifest names the artifact that was published");
 
-        var identity = JsonNode.Parse(DiagnosticFiles.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var identity = JsonNode.Parse(File.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+#pragma warning restore AARC003
         identity["artifact"]!["file"]!.GetValue<string>().Should().Be("measure.exe");
         identity["artifact"]!["sha256"]!.GetValue<string>().Should().Be(OpenBiosRomInput.Sha256HexOfFile(build.ArtifactPath));
-        DiagnosticFiles.Directories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+#pragma warning restore AARC003
     }
 
     /// <summary>
@@ -588,9 +655,11 @@ public sealed class FirmwareDiagnosticDistributionTests
     private static string BuildStubToolchain(TempDirectory dir)
     {
         var project = dir.Combine("stub-toolchain");
-        DiagnosticFiles.CreateDirectory(project);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.CreateDirectory(project);
+#pragma warning restore AARC003
         var projectFile = Path.Combine(project, "stub-toolchain.csproj");
-        DiagnosticFiles.WriteAllText(projectFile, """
+        File.WriteAllText(projectFile, """
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <OutputType>Exe</OutputType>
@@ -600,7 +669,8 @@ public sealed class FirmwareDiagnosticDistributionTests
               </PropertyGroup>
             </Project>
             """);
-        DiagnosticFiles.WriteAllText(Path.Combine(project, "Program.cs"), """
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(Path.Combine(project, "Program.cs"), """
             public static class Program
             {
                 public static int Main(string[] args)
@@ -617,16 +687,19 @@ public sealed class FirmwareDiagnosticDistributionTests
                 }
             }
             """);
+#pragma warning restore AARC003
 
         var outDir = dir.Combine("stub-toolchain-out");
-        using var build = DiagnosticFiles.StartProcess(new ProcessStartInfo("dotnet",
+        using var build = Process.Start(new ProcessStartInfo("dotnet",
             $"build \"{projectFile}\" -c Release -o \"{outDir}\" -nologo")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
         }) ?? throw new InvalidOperationException("dotnet did not start.");
-        DiagnosticFiles.WaitForExit(build, 180000).Should().BeTrue("the stub toolchain must finish building");
-        DiagnosticFiles.ExitCodeOf(build).Should().Be(0, "the stub toolchain must build");
+        build.WaitForExit(180000).Should().BeTrue("the stub toolchain must finish building");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        build.ExitCode.Should().Be(0, "the stub toolchain must build");
+#pragma warning restore AARC003
         return Path.Combine(outDir, "stub-toolchain.exe");
     }
 
@@ -641,7 +714,9 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: false)))
             .Should().Throw<NotSupportedException>().WithMessage("*windows: false*");
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse("a refused build creates nothing");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(output).Should().BeFalse("a refused build creates nothing");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -656,8 +731,10 @@ public sealed class FirmwareDiagnosticDistributionTests
 
         ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
             .Should().Throw<IOException>().WithMessage("*247-character limit*", "the refusal names the limit and what to do");
-        DiagnosticFiles.DirectoryExists(output).Should().BeFalse();
-        DiagnosticFiles.Entries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+        Directory.Exists(output).Should().BeFalse();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "game.bin", "aot"],
+#pragma warning restore AARC003
             "nothing is created before the limit is checked");
     }
 
@@ -665,15 +742,114 @@ public sealed class FirmwareDiagnosticDistributionTests
     [InlineData("{ not json")]
     [InlineData("[1, 2]")]
     [InlineData("{\"schema\": 7, \"path\": \"x\"}")]
+    [InlineData("null")]
+    [InlineData("{\"schema\": \"psxrecomp.diagnostic-disc.v1\", \"path\": 5}")]
     public void ResolveRuntimeDiscPath_MalformedMarker_IsRefusedAsInvalidData(string markerText)
     {
         using var dir = new TempDirectory();
-        var runtime = DiagnosticFiles.CreateDirectory(dir.Combine("runtime")).FullName;
-        DiagnosticFiles.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"), markerText);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+        File.WriteAllText(Path.Combine(runtime, "diagnostic-disc.json"), markerText);
+#pragma warning restore AARC003
 
         var act = () => FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd");
 
         act.Should().Throw<InvalidDataException>("a malformed marker is refused with the same type as the other marker checks");
+    }
+
+    [SkippableFact]
+    public void Build_ToolchainNamesOverTheLimit_AreRefusedBeforeTheToolchainRuns()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The staging root is 210 characters: the writes before the toolchain are under the limit, but the toolchain's reserved name
+        // (root plus 44 characters) is not. The refusal names the limit and comes before any toolchain process starts.
+        using var dir = new TempDirectory();
+        var output = dir.Combine(new string('m', 210 - dir.FullPath.Length - 43));
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
+            .Should().Throw<IOException>().WithMessage("*247-character limit*host-*", "the refusal names the limit and the reserved name");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(output).Should().BeFalse();
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_RefusedOutputPath_CreatesNoAncestorDirectory()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var parent = dir.Combine("missing-parent");
+        var output = Path.Combine(parent, new string('m', 260));
+        var request = ValidRequest(dir, output, roots: "nope\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true)))
+            .Should().Throw<IOException>().WithMessage("*247-character limit*");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(parent).Should().BeFalse("the limit is checked before any ancestor directory is created");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_HostDirectoryWithSubdirectories_CopiesTheWholeTree()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        dir.WriteFile("host/locale/strings.txt", "subdirectory content"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true);
+
+        File.ReadAllText(Path.Combine(output, "runtime", "locale", "strings.txt")).Should().Be("subdirectory content",
+            "a subdirectory of the published host is copied, not silently left out");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.Exists(build.HostPath).Should().BeTrue();
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void ResolveRuntimeDiscPath_LockedMarker_IsRefusedAsInvalidData()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var runtime = Directory.CreateDirectory(dir.Combine("runtime")).FullName;
+#pragma warning restore AARC003
+        var marker = Path.Combine(runtime, "diagnostic-disc.json");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.WriteAllText(marker, "{}");
+#pragma warning restore AARC003
+        using var locked = new FileStream(marker, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var act = () => FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtime, "disc/game.chd");
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*could not be read*");
+    }
+
+    [Fact]
+    public void Run_UnreadableRom_ReturnsExitCodeOneWithADiagnostic()
+    {
+        // The CLI maps a refused or failed build to the same diagnostic and exit code 1 on every platform.
+        using var dir = new TempDirectory();
+        var disc = dir.WriteFile("game.bin", new byte[2352]);
+        var error = new StringWriter();
+
+        var exit = FirmwareDiagnosticCommand.Run(
+            ["--rom", dir.Combine("missing-openbios.bin"), "--rom-sha256", NoSha, "--disc", disc, "--disc-sha256", NoSha,
+             "--aot-dir", dir.Combine("aot"), "--out", dir.Combine("out")],
+            TextWriter.Null, error);
+
+        exit.Should().Be(1);
+        error.ToString().Should().Contain("psxrecomp firmware-diagnostic:");
     }
 
     [SkippableFact]
@@ -694,18 +870,22 @@ public sealed class FirmwareDiagnosticDistributionTests
         build.ArtifactPath.Should().Be(Path.Combine(output, "measure.exe"));
         build.HostPath.Should().Be(Path.Combine(output, "runtime", "PSXRecomp.RuntimeHost.exe"));
         build.ManifestPath.Should().Be(Path.Combine(output, "runtime", RuntimeHostLayout.ManifestFileName));
-        DiagnosticFiles.FileExists(build.HostPath).Should().BeTrue();
+        File.Exists(build.HostPath).Should().BeTrue();
 
-        var manifest = RuntimeHostManifestJson.Parse(DiagnosticFiles.ReadAllText(build.ManifestPath));
+        var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(build.ManifestPath));
         var referenced = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(build.ManifestPath)!, manifest.Artifact));
         referenced.Should().Be(Path.GetFullPath(build.ArtifactPath), "the manifest names the artifact that was published");
-        DiagnosticFiles.ReadAllText(referenced).Should().Be("artifact bytes");
+        File.ReadAllText(referenced).Should().Be("artifact bytes");
 
-        var identity = JsonNode.Parse(DiagnosticFiles.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        var identity = JsonNode.Parse(File.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+#pragma warning restore AARC003
         identity["artifact"]!["file"]!.GetValue<string>().Should().Be("measure.exe");
         identity["artifact"]!["sha256"]!.GetValue<string>().Should().Be(OpenBiosRomInput.Sha256HexOfFile(build.ArtifactPath));
         identity["host"]!["file"]!.GetValue<string>().Should().Be("PSXRecomp.RuntimeHost.exe");
-        DiagnosticFiles.Directories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+#pragma warning restore AARC003
     }
 
     [SkippableFact]
@@ -726,16 +906,20 @@ public sealed class FirmwareDiagnosticDistributionTests
             if (phase == "staged")
             {
                 staged = path;
-                DiagnosticFiles.CreateDirectory(output);
-                DiagnosticFiles.WriteAllText(Path.Combine(output, "foreign.txt"), "someone else's directory");
+                Directory.CreateDirectory(output);
+                File.WriteAllText(Path.Combine(output, "foreign.txt"), "someone else's directory");
             }
         });
 
         act.Should().Throw<IOException>("the output name is taken when the build commits");
         staged.Should().NotBeNull("the build staged its output before the commit");
-        DiagnosticFiles.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be("someone else's directory");
-        DiagnosticFiles.Entries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"]);
-        DiagnosticFiles.DirectoryExists(staged!).Should().BeFalse("the staging directory the build created is removed");
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        File.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be("someone else's directory");
+#pragma warning restore AARC003
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"]);
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        Directory.Exists(staged!).Should().BeFalse("the staging directory the build created is removed");
+#pragma warning restore AARC003
     }
 
     /// <summary>Valid inputs up to the AOT plan. The roots decide whether the build fails there or completes.</summary>
@@ -762,13 +946,15 @@ public sealed class FirmwareDiagnosticDistributionTests
 
     private static void MakeJunction(string link, string target)
     {
-        using var process = DiagnosticFiles.StartProcess(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+        using var process = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
         {
             UseShellExecute = false,
             CreateNoWindow = true,
         }) ?? throw new InvalidOperationException("mklink did not start.");
-        DiagnosticFiles.WaitForExit(process);
-        DiagnosticFiles.ExitCodeOf(process).Should().Be(0, "the junction is needed for the redirection test");
+        process.WaitForExit();
+#pragma warning disable AARC003 // Justified: this test stages and inspects the local files it creates, as TempDirectory does.
+        process.ExitCode.Should().Be(0, "the junction is needed for the redirection test");
+#pragma warning restore AARC003
     }
 
     private static FirmwareDiagnosticRequest Request(TempDirectory dir, string romPath, string romSha256, string outputDirectory) =>
@@ -783,47 +969,4 @@ public sealed class FirmwareDiagnosticDistributionTests
             InstructionBudget: uint.MaxValue,
             RunTimeoutMs: 1000);
 }
-
-#pragma warning disable AARC003 // Justified: the tests stage and inspect the local files they create, as TempDirectory does. This helper is the only place this file performs external I/O or starts a process.
-/// <summary>The file-system and process calls the measurement tests make, in one place so that the analyzer exemption covers only them.</summary>
-[Test]
-internal static class DiagnosticFiles
-{
-    internal static int ExitCodeOf(Process process) => process.ExitCode;
-
-    internal static void WaitForExit(Process process) => process.WaitForExit();
-
-    internal static bool WaitForExit(Process process, int milliseconds) => process.WaitForExit(milliseconds);
-
-    internal static string SystemFile(string name) => Path.Combine(Environment.SystemDirectory, name);
-
-    internal static DirectoryInfo CreateDirectory(string path) => Directory.CreateDirectory(path);
-
-    internal static void DeleteDirectory(string path) => Directory.Delete(path);
-
-    internal static string[] Entries(string path) => Directory.GetFileSystemEntries(path);
-
-    internal static string[] Directories(string path, string pattern) => Directory.GetDirectories(path, pattern);
-
-    internal static bool DirectoryExists(string path) => Directory.Exists(path);
-
-    internal static void MoveDirectory(string source, string destination) => Directory.Move(source, destination);
-
-    internal static void CopyFile(string source, string destination) => File.Copy(source, destination);
-
-    internal static bool FileExists(string path) => File.Exists(path);
-
-    internal static string ReadAllText(string path) => File.ReadAllText(path);
-
-    internal static void WriteAllText(string path, string text) => File.WriteAllText(path, text);
-
-    internal static void SetAttributes(string path, FileAttributes attributes) => File.SetAttributes(path, attributes);
-
-    internal static string? LinkTarget(string path) => new FileInfo(path).LinkTarget;
-
-    internal static Process ProcessById(int id) => Process.GetProcessById(id);
-
-    internal static Process? StartProcess(ProcessStartInfo info) => Process.Start(info);
-}
-#pragma warning restore AARC003
 
