@@ -58,9 +58,7 @@ public sealed class TempDirectory : IDisposable
             // The root itself is checked first. If it is a link, it is removed by its own name and nothing is enumerated through it.
             if (IsReparsePoint(FullPath))
             {
-#pragma warning disable AARC003 // Justified: this line calls Directory.Delete (temp file); it removes this test's own temporary link by its own name, without entering it.
                 Directory.Delete(FullPath);
-#pragma warning restore AARC003
                 return;
             }
 

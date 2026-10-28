@@ -295,14 +295,16 @@ public static class FirmwareDiagnosticDistribution
         catch (Exception exception)
         {
             var kept = area.Discard();
-            if (kept is null)
+            if (kept is null && area.Residuals.Count == 0)
             {
                 throw;
             }
 
-            throw new IOException(
-                $"The measurement failed and its staging directory was kept at {kept} (remove it by hand after checking it): {exception.Message}",
-                exception);
+            var keptText = kept is null ? string.Empty : $" Its staging directory was kept at {kept} (remove it by hand after checking it).";
+            var residualText = area.Residuals.Count == 0
+                ? string.Empty
+                : " Cleanup left these entries in place, because this build could not show they are its own: " + string.Join("; ", area.Residuals) + ".";
+            throw new IOException($"The measurement failed.{keptText}{residualText} {exception.Message}", exception);
         }
     }
 
@@ -319,12 +321,12 @@ public static class FirmwareDiagnosticDistribution
 
     /// <summary>
     /// The measurement with observation points for tests. <paramref name="afterLaunch"/> receives the launched host's Process object, inside
-    /// the guarded wait, so a test can make the wait fail. <paramref name="beforeRelease"/> receives the same object after the launched host has
-    /// been killed in the finally block and before the Process object is released, so a test can see whether the host is still running.
+    /// the guarded wait, so a test can make the wait fail. <paramref name="beforeRelease"/> receives whether the launched host is still running,
+    /// read after the finally block has killed it and before the Process object is released; the test never touches the process itself.
     /// </summary>
     internal static JsonObject Measure(
         FirmwareDiagnosticBuild build, FirmwareDiagnosticRequest request, TimeSpan? exitGrace, Action<Process>? afterLaunch,
-        Action<Process>? beforeRelease)
+        Action<bool>? beforeRelease = null)
     {
         ArgumentNullException.ThrowIfNull(build);
         ArgumentNullException.ThrowIfNull(request);
@@ -383,7 +385,7 @@ public static class FirmwareDiagnosticDistribution
             // killed through its own Process object and awaited here. A kill that fails is reported after the wait, and it never replaces the
             // exception already in flight, because nothing is thrown from this block.
             killFailure = KillLaunchedTreeIfRunning(process);
-            beforeRelease?.Invoke(process);
+            beforeRelease?.Invoke(!process.HasExited);
         }
 
         if (killFailure is not null)
@@ -941,9 +943,47 @@ public static class FirmwareDiagnosticDistribution
 
         private readonly string _outputDir;
         private readonly Action<string, string>? _observe;
-        private readonly List<string> _ancestors = [];   // created by Open, shallowest first
-        private readonly List<string> _owned = [];       // created by this build, recorded after each successful create
+        private readonly List<(string Path, EntryIdentity? Identity)> _ancestors = []; // created by Open, shallowest first
+        // Created by this build: each entry with the identity (volume and file index) read right after its create or move. A null identity
+        // means it could not be read; such an entry is never removed. Reserved names are the ones a toolchain writes later; they have no identity.
+        private readonly Dictionary<string, EntryIdentity?> _owned = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _reserved = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _residuals = [];   // entries cleanup found and left in place, each with its reason
+        private EntryIdentity? _rootIdentity;
         private string? _root;
+
+        /// <summary>
+        /// The identity of a file or directory: its volume serial number, its file index (the same for every name of one file) and its creation
+        /// time. NTFS can reuse a file index after a delete, so the creation time is compared too. Equal values for all three are taken as the
+        /// same entry; that is a residual, since a reuse of all three cannot be excluded from these values alone.
+        /// </summary>
+        private readonly record struct EntryIdentity(uint Volume, uint IndexHigh, uint IndexLow, long CreationTime);
+
+        /// <summary>
+        /// Reads the identity of the entry at <paramref name="path"/>, opened as itself (a link is not followed). Null when the entry is missing
+        /// or its identity cannot be read.
+        /// </summary>
+        private static EntryIdentity? IdentityOfPath(string path)
+        {
+            using var handle = WindowsHardLinkInterop.OpenForIdentity(path);
+            if (handle.IsInvalid)
+            {
+                return null;
+            }
+
+            if (!WindowsHardLinkInterop.GetFileInformationByHandle(handle.DangerousGetHandle(), out var information))
+            {
+                return null;
+            }
+
+            return new EntryIdentity(information.VolumeSerialNumber, information.FileIndexHigh, information.FileIndexLow, information.CreationTime);
+        }
+
+        /// <summary>Records an entry this build has just created or moved, with the identity read right after it.</summary>
+        private void Own(string path) => _owned[path] = IdentityOfPath(path);
+
+        /// <summary>Entries cleanup found and left in place, each with its path and the reason. Empty when cleanup removed everything it owned.</summary>
+        public IReadOnlyList<string> Residuals => _residuals;
 
         public StagingArea(string outputDir, Action<string, string>? observe)
         {
@@ -978,10 +1018,11 @@ public static class FirmwareDiagnosticDistribution
             {
                 _observe?.Invoke("directory", path); // SEAM: another process acts here, between the existence check and the create
                 ExclusiveCreateDirectory(path);
-                _ancestors.Add(path);
+                _ancestors.Add((path, IdentityOfPath(path)));
             }
 
             ExclusiveCreateDirectory(_root);
+            _rootIdentity = IdentityOfPath(_root);
         }
 
         /// <summary>
@@ -1003,7 +1044,7 @@ public static class FirmwareDiagnosticDistribution
                 _observe?.Invoke("directory", directory); // SEAM: another process acts here, between the existence check and the create
                 RequireRealChain(directory);
                 ExclusiveCreateDirectory(directory);
-                _owned.Add(directory);
+                Own(directory);
             }
 
             return path;
@@ -1097,7 +1138,7 @@ public static class FirmwareDiagnosticDistribution
             RequireRealChain(link);
             RequireWithinPathLimit(link);
             LinkDiscInPlace(original, link);
-            _owned.Add(link);
+            Own(link);
         }
 
         /// <summary>
@@ -1112,7 +1153,11 @@ public static class FirmwareDiagnosticDistribution
                 throw new IOException($"The staging area already holds an entry the measurement did not create: {path}");
             }
 
-            _owned.Add(path);
+            // The toolchain creates this name after the reserve, so no identity is read here. Cleanup removes a reserved name by name
+            // only, and only while it is a file that is not a link (see RemoveOwned). The window in which another process could replace it
+            // before cleanup is a residual of the same-user threat model.
+            _owned[path] = null;
+            _reserved.Add(path);
         }
 
         /// <summary>
@@ -1125,7 +1170,9 @@ public static class FirmwareDiagnosticDistribution
             RequireWithinPathLimit(destination);
             RefuseExisting(destination);
             File.Move(source, destination);
-            _owned.Add(destination);
+            _owned.Remove(source);
+            _reserved.Remove(source);
+            Own(destination);
             return destination;
         }
 
@@ -1137,7 +1184,24 @@ public static class FirmwareDiagnosticDistribution
             RequireTreeWithinPathLimit(source, destination);
             RefuseExisting(destination);
             Directory.Move(source, destination);
-            _owned.Add(destination);
+            // The entries this build created under the directory moved with it: their records follow them to the new path, with the
+            // identities they already had (a rename keeps the file index).
+            var prefix = source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            foreach (var nested in _owned.Keys.Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                var identity = _owned[nested];
+                var reserved = _reserved.Remove(nested);
+                _owned.Remove(nested);
+                var moved = destination + nested.Substring(prefix.Length - 1); // the separator and the rest of the path
+                _owned[moved] = identity;
+                if (reserved)
+                {
+                    _reserved.Add(moved);
+                }
+            }
+
+            _owned.Remove(source);
+            Own(destination);
         }
 
         /// <summary>
@@ -1203,7 +1267,7 @@ public static class FirmwareDiagnosticDistribution
         {
             RequireWithinPathLimit(path);
             var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            _owned.Add(path); // recorded only after the exclusive create succeeded
+            Own(path); // recorded only after the exclusive create succeeded
             return stream;
         }
 
@@ -1242,26 +1306,87 @@ public static class FirmwareDiagnosticDistribution
         /// </summary>
         public string? Discard()
         {
-            if (_root is not null && IsRealDirectory(_root))
+            if (_root is not null)
             {
-                foreach (var path in _owned.Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(p => p.Length))
+                if (IsRealDirectory(_root))
                 {
-                    if (!LinkBelowRoot(path))
+                    foreach (var path in _owned.Keys.OrderByDescending(p => p.Length).ToList())
                     {
-                        RemoveOwnEntry(path);
+                        if (LinkBelowRoot(path))
+                        {
+                            Residual(path, "a link is on its way to it, so it is not followed and not removed");
+                        }
+                        else
+                        {
+                            RemoveOwned(path, _owned[path], _reserved.Contains(path));
+                        }
                     }
-                }
 
-                RemoveIfEmpty(_root);
+                    RemoveOwned(_root, _rootIdentity, reserved: false);
+                }
+                else if (Path.Exists(_root) || IsReparsePoint(_root))
+                {
+                    Residual(_root, "it is no longer a real directory, so nothing under it is removed");
+                }
             }
 
             for (var index = _ancestors.Count - 1; index >= 0; index--)
             {
-                RemoveIfEmpty(_ancestors[index]);
+                RemoveOwned(_ancestors[index].Path, _ancestors[index].Identity, reserved: false);
             }
 
             return _root is not null && Directory.Exists(_root) ? _root : null;
         }
+
+        /// <summary>
+        /// Removes one entry this build created, and only while it is still that entry: its identity must match the one read when it was
+        /// created. A reserved name has no identity, so it is removed only while it is a file that is not a link. Anything else is left in
+        /// place and recorded as a residual. Nothing is removed through a link, and a directory is removed only when it is empty.
+        /// </summary>
+        private void RemoveOwned(string path, EntryIdentity? recorded, bool reserved)
+        {
+            if (!Path.Exists(path) && !IsReparsePoint(path))
+            {
+                return; // already gone
+            }
+
+            if (reserved)
+            {
+                if (IsReparsePoint(path) || Directory.Exists(path))
+                {
+                    Residual(path, "a reserved name is removed only while it is a file that is not a link");
+                    return;
+                }
+            }
+            else if (recorded is null)
+            {
+                Residual(path, "its identity was not read when it was created, so it is not removed");
+                return;
+            }
+            else if (IdentityOfPath(path) != recorded)
+            {
+                Residual(path, "it is not the entry this build created (it was replaced, or it cannot be identified now), so it is not removed");
+                return;
+            }
+
+            try
+            {
+                if (Directory.Exists(path) && !IsReparsePoint(path))
+                {
+                    Directory.Delete(path); // not recursive: a non-empty directory (someone else's content) is kept
+                }
+                else
+                {
+                    File.Delete(path); // a hard link is removed by name only; the other name keeps the bytes
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Residual(path, $"it could not be removed ({exception.Message})");
+            }
+        }
+
+        private void Residual(string path, string reason) => _residuals.Add($"{path}: {reason}");
 
         /// <summary>Fails closed unless the staging directory is still a real directory (not a link) and no directory on the way to <paramref name="path"/> is one.</summary>
         private void RequireRealChain(string path)
@@ -1304,38 +1429,5 @@ public static class FirmwareDiagnosticDistribution
             string.Equals(a.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
                 b.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
 
-        private static void RemoveOwnEntry(string path)
-        {
-            try
-            {
-                if (Directory.Exists(path))
-                {
-                    Directory.Delete(path); // not recursive: a non-empty directory (someone else's content) is kept
-                }
-                else if (File.Exists(path) || IsReparsePoint(path))
-                {
-                    File.Delete(path); // a hard link is removed by name only; the other name keeps the bytes
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                // Best-effort: the original failure is what the caller sees; an entry that cannot be removed is left in place.
-            }
-        }
-
-        private static void RemoveIfEmpty(string directory)
-        {
-            try
-            {
-                if (Directory.Exists(directory))
-                {
-                    Directory.Delete(directory);
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                // Not empty (or not removable): it stays.
-            }
-        }
     }
 }

@@ -1146,6 +1146,51 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [SkippableFact]
+    public void Junction_PathWithAmpersandBangParenthesesAndJapanese_CreatesAJunction()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The characters & ( ) ! are passed literally inside the double quotes of the mklink command line, and delayed expansion is off (/v:off),
+        // so none of them is read as syntax. The path is valid and must create a junction that resolves to its target.
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("対象 (作業) & !x");
+        dir.WriteFile("対象 (作業) & !x/keep.txt", "through the link"u8.ToArray());
+        var link = dir.Combine("リンク (作業) & !y");
+
+        using var fixture = JunctionFixture.TryCreate(dir, link, target, out var reason);
+        // A refusal of a valid path fails the test. A machine that cannot create a junction at all skips the test with its reason.
+        (fixture is null && reason is not null && reason.Contains("so no launch is made")).Should().BeFalse(
+            $"a valid path with these characters is accepted: {reason}");
+        Skip.If(fixture is null, reason ?? "the junction could not be created");
+
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a file this test wrote in its own temporary directory, through the junction it created.
+        File.ReadAllText(Path.Combine(fixture!.Link, "keep.txt")).Should().Be("through the link", "the junction resolves to its target");
+#pragma warning restore AARC003
+    }
+
+    [SkippableTheory]
+    [InlineData("inj%COMSPEC%")]
+    [InlineData("inj^echo pwned")]
+    [InlineData("inj\" & echo pwned > marker & \"")]
+    public void Junction_CommandInjectionThroughTheName_IsRefusedWithAReasonAndNothingIsLaunched(string name)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Each name would end the quoted argument or expand a variable if it reached cmd.exe. The fixture refuses it before any launch, so
+        // no process runs and no marker file appears in the test's own directory.
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("target");
+
+        var fixture = JunctionFixture.TryCreate(dir, dir.Combine(name), target, out var reason);
+
+        fixture.Should().BeNull("a name that cmd.exe would read as syntax is refused");
+        reason.Should().Contain("so no launch is made", "the refusal is made before any process is started, not by the command that would have run");
+#pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show the refused command wrote no marker file.
+        File.Exists(dir.Combine("marker")).Should().BeFalse("no command ran, so no marker file was written");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
     public void Junction_CreationFailures_ReturnAReasonAndNeverThrow()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
@@ -1261,6 +1306,59 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [SkippableFact]
+    public void Build_OwnedEntriesReplacedBeforeCleanup_AreLeftInPlaceAsResiduals()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Cleanup removes an entry this build created only while it is still that entry (its identity is compared with the one read at
+        // creation). The seam, placed where the copy of a subdirectory's file begins, replaces the build's own file and its own subdirectory
+        // with other content, as another process could, and then fails the step. Cleanup leaves each replacement and reports it.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        dir.WriteFile("host/a.bin", "host content a"u8.ToArray());
+        dir.WriteFile("host/sub/inner.bin", "host content inner"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n",
+            artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+        string? runtime = null;
+        var replaced = false;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase != "file" || replaced || Path.GetFileName(path) != "inner.bin")
+            {
+                return;
+            }
+
+            replaced = true;
+            var subDirectory = Path.GetDirectoryName(path)!; // runtime/sub: created by this build, still empty here
+            runtime = Path.GetDirectoryName(subDirectory)!;
+            var ownFile = Path.Combine(runtime, "a.bin");
+            File.Delete(ownFile);
+            File.WriteAllText(ownFile, "foreign a");
+            Directory.Delete(subDirectory);
+            Directory.CreateDirectory(subDirectory);
+            File.WriteAllText(Path.Combine(subDirectory, "foreign.txt"), "foreign sub");
+            throw new InvalidOperationException("the step fails after the replacement");
+        });
+
+        var thrown = act.Should().Throw<IOException>().Which;
+        thrown.Message.Should().Contain("a.bin: it is not the entry this build created",
+            "the replaced file is reported, not removed");
+        thrown.Message.Should().Contain("sub: it is not the entry this build created",
+            "the replaced subdirectory is reported, not removed");
+        replaced.Should().BeTrue("the seam ran");
+#pragma warning disable AARC003 // Justified: these lines call File.ReadAllText and Directory.Exists (fixture reads of the entries the seam placed in this test's temporary directory).
+        File.ReadAllText(Path.Combine(runtime!, "a.bin")).Should().Be("foreign a", "another process's file is never removed by cleanup");
+        File.ReadAllText(Path.Combine(runtime!, "sub", "foreign.txt")).Should().Be("foreign sub",
+            "another process's directory is never removed by cleanup");
+        Directory.Exists(output).Should().BeFalse("the failed build publishes nothing");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
     public void Measure_WaitLoopThrows_TheLaunchedHostIsKilled()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
@@ -1289,20 +1387,12 @@ public sealed class FirmwareDiagnosticDistributionTests
             OutputDirectory: outDir, CodeBytes: 64, InstructionBudget: uint.MaxValue, RunTimeoutMs: 100);
         var build = new FirmwareDiagnosticBuild(outDir, Path.Combine(outDir, "artifact.exe"), host,
             Path.Combine(runtime, RuntimeHostLayout.ManifestFileName), digests);
-        var stillRunningBeforeRelease = (bool?)null;
+        bool? stillRunningBeforeRelease = null;
 
+        // The measurement reports, after its finally block and before it releases the host's Process object, whether the host still runs.
         var act = () => FirmwareDiagnosticDistribution.Measure(build, request, TimeSpan.FromMilliseconds(500),
             afterLaunch: _ => throw new InvalidOperationException("the guarded wait failed"),
-            beforeRelease: launchedHost =>
-            {
-#pragma warning disable AARC003 // Justified: these lines call Process.HasExited and Process.Kill (test observation of the stand-in host this test launched, before its Process object is released); the kill only cleans up a host that the production kill did not end, so the test leaves nothing running.
-                stillRunningBeforeRelease = !launchedHost.HasExited;
-                if (stillRunningBeforeRelease == true)
-                {
-                    launchedHost.Kill(true);
-                }
-#pragma warning restore AARC003
-            });
+            beforeRelease: running => stillRunningBeforeRelease = running);
 
         act.Should().Throw<InvalidOperationException>().WithMessage("the guarded wait failed");
         stillRunningBeforeRelease.Should().NotBeNull("the release point was reached after the wait failed");
