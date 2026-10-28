@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.IO;
+using System.Text;
 using System.Text.Json;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
@@ -106,7 +108,9 @@ internal static class FallbackRootsCommand
             var firmware = OpenBiosFirmware.FromBytes(romBytes);
             using var disc = discPath is null ? null : OpenBiosProbeCommand.OpenDisc(discPath);
             var manifest = LoadImageManifest.Read(manifestFull, firmware, disc?.Source);
-            var export = ObservedRootPlanner.ReadExport(File.ReadAllText(targetsPath));
+            // One read: the bytes are hashed for the evidence binding and decoded (as File.ReadAllText does) for the parser.
+            var targetsBytes = File.ReadAllBytes(targetsPath);
+            var export = ObservedRootPlanner.ReadExport(new StreamReader(new MemoryStream(targetsBytes), Encoding.UTF8, detectEncodingFromByteOrderMarks: true).ReadToEnd());
             // The export must come from a run over these exact inputs (ROM, disc, manifest and probe options), or its PCs are not evidence about this build.
             var roots = rootsPath is null ? Array.Empty<uint>() : OpenBiosProbeCommand.ReadRoots(rootsPath);
             ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(
@@ -125,7 +129,7 @@ internal static class FallbackRootsCommand
                     return 1;
                 }
 
-                var targetsSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(targetsPath))).ToLowerInvariant();
+                var targetsSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(targetsBytes)).ToLowerInvariant();
                 targets = ObservedRootPlanner.ApplyRamEvidence(targets, ObservedRootPlanner.ReadRamEvidence(evidenceText!, targetsSha256));
             }
 

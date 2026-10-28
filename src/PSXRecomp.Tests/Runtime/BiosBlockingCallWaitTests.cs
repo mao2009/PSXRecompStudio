@@ -406,6 +406,20 @@ public sealed class BiosBlockingCallWaitTests
     }
 
     // Decision A (PR #839, arbitration): the RA register is a GPR value, so a diagnostic names the nested call without it.
+    // PR #839 re-review item 4: the RA register is a GPR value. Synthetic RA 0x80037B9C; the nested-call diagnostic must not carry it.
+    [Fact]
+    public void Withheld_Return_Address_Is_Absent_From_The_Nested_Call_Diagnostic_Message()
+    {
+        var wait = new BiosBlockingCallWait();
+        wait.Poll(new BiosCallIdentity(BiosCallFamily.B0, 0x0A), 0x8001_0A0Cu);
+
+        var refused = wait.Poll(new BiosCallIdentity(BiosCallFamily.A0, 0x3F), 0x8003_7B9Cu);
+
+        refused.Should().NotBeNull();
+        refused!.Value.Message.Should().Contain("nested blocking calls are not modelled");
+        refused.Value.Message.Should().NotContain("80037B9C").And.NotContain("37B9C").And.NotContain("7B9C");
+    }
+
     [Fact]
     public void Poll_NestedCall_DiagnosticWithholdsTheReturnAddressRegister()
     {
