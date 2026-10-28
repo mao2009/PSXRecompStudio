@@ -233,10 +233,10 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Artifact exit code: a fallback command was malformed (Issue #693).</summary>
     public const int FallbackProtocolExitCode = 101;
 
-    /// <summary>Marks the start of the stable state snapshot on stdout.</summary>
+    /// <summary>Marks the start of the stable state snapshot on stderr (written only when the parent passes <see cref="HostSnapshotFlag"/>).</summary>
     public const string SnapshotBeginMarker = "RSNAPSHOT_BEGIN";
 
-    /// <summary>Marks the end of the stable state snapshot on stdout.</summary>
+    /// <summary>Marks the end of the stable state snapshot on stderr.</summary>
     public const string SnapshotEndMarker = "RSNAPSHOT_END";
 
     /// <summary>The maximum init-memory entries the driver's input format accepts.

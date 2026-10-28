@@ -3,8 +3,10 @@ using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
 using PSXRecomp.Infrastructure;
+using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
 
+#pragma warning disable AARC003 // test fixtures create a file and set its mode; the rule guards production code
 namespace PSXRecomp.Tests.Infrastructure;
 
 /// <summary>
@@ -134,6 +136,26 @@ public sealed class ArtifactSnapshotChannelTests
         result.Status.Should().Be(RecompilerExecutionStatus.MalformedResult);
     }
 
+    // PR #839 MAJOR (re-review of 78bcf03): a bridged run whose child exited 0 after a complete snapshot on stderr, while a grandchild still holds
+    // the stderr pipe past the output budget. The text read so far is the whole snapshot, so the run is Completed. Non-Windows: it runs a shell.
+    [SkippableFact]
+    public void BridgedRun_WithAGrandchildHoldingStderr_ClassifiesTheCompleteSnapshotFromThePartialText()
+    {
+        // A POSIX shell runs the child: /bin/sh on Linux and macOS, Git for Windows' sh on Windows. Without a shell it is NOT RUN.
+        var shell = OperatingSystem.IsWindows() ? @"C:\Program Files\Git\usr\bin\sh.exe" : "/bin/sh";
+        Skip.IfNot(File.Exists(shell), $"NOT RUN: no POSIX shell at {shell}");
+        using var dir = new TempDirectory();
+        // The snapshot is written into the script as a here-document to stderr, so no path is passed to the shell.
+        var scriptPath = dir.WriteFile("child.sh", System.Text.Encoding.UTF8.GetBytes(
+            "/usr/bin/cat >&2 <<'SNAPSHOT'\n" + Snapshot(IdentifiableGpr) + "SNAPSHOT\n/usr/bin/sleep 60 &\nexit 0\n")).Replace('\\', '/');
+
+        var result = RecompiledHostExecutionEngine.RunBridgedChildForTest(shell, [scriptPath], timeoutMs: 60_000, outputBudgetMs: 3_000);
+
+        result.Status.Should().Be(RecompilerExecutionStatus.Completed,
+            "the child ended on its own, and its complete snapshot is in the stderr text read so far");
+        result.Snapshot!.Gpr.ToArray()[9].Should().Be(IdentifiableGpr);
+    }
+
     [Fact]
     public void AnAbnormalExit_WithACompleteStderrSnapshot_IsNotCompleted()
     {
@@ -170,3 +192,5 @@ public sealed class ArtifactSnapshotChannelTests
         outcome.Json.Should().NotContain(IdentifiableGpr.ToString());
     }
 }
+
+#pragma warning restore AARC003

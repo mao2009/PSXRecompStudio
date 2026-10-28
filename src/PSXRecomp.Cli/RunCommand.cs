@@ -79,8 +79,9 @@ public static class RunCommand
                 standalone: arguments.Standalone);
 
             var artifactPath = ResolveArtifactPath(outputDirectory);
-            // Decision A (PR #839, arbitration): the V0 marker is a GPR value; no output (JSON or text) carries it.
-            var publicResult = outcome.Result with { ResultValue = null };
+            // Decision A (PR #839, arbitration): the V0 marker is a GPR value. The CLI's JSON is built from the public type, which has no field
+            // for it; the internal result is used for internal purposes only.
+            var publicResult = outcome.Result.ToPublic();
             var frameEvidence = arguments.FrameEvidence
                 ? ProductionFrameEvidenceCollector.Collect(input)
                 : null;

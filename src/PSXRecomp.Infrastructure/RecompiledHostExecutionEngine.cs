@@ -163,7 +163,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
     /// <summary>
     /// Console output captured from a prebuilt runtime-host run (the guest's C
-    /// stdout up to the engine's RSNAPSHOT diagnostic block). The runtime host
+    /// stdout; the engine's RSNAPSHOT diagnostic block is on stderr). The runtime host
     /// forwards this to its own stdout so boot/TTY messages are visible.
     /// </summary>
     public string? ConsoleOutput => _consoleOutput;
@@ -885,8 +885,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         var (exit, stdout, stderr, hostProtocolFaulted, pumpEnded) = run;
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
-        // guest's console output (the boot/TTY text before the engine's
-        // RSNAPSHOT diagnostic block). Bridge runs surface TTY through the bridge's
+        // guest's console output (the boot/TTY text; the engine's RSNAPSHOT diagnostic
+        // block is on stderr, not here). Bridge runs surface TTY through the bridge's
         // runtime sink instead and must not be double-buffered here.
         if (_prebuilt && _launchMode == PrebuiltArtifactLaunchMode.RuntimeHost)
         {
@@ -1160,6 +1160,28 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
+    /// Runs a child through the bridged path (a minimal bridge with no devices) and classifies it as a bridged run does. Internal for the channel
+    /// tests: it reaches the bridged stderr read and the same classification as a segment.
+    /// </summary>
+    internal static RecompilerExecutionResult RunBridgedChildForTest(string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs)
+    {
+        using var bridge = new HostTransferBridge(null, new HashSet<uint>(), null, null, null, Array.Empty<uint>(), 0u, null, false, null, null, null,
+            new LoadedCodeTable([]), null);
+        var stopRecord = new StopRecord();
+        try
+        {
+            var (exit, stdout, stderr, hostProtocolFaulted, _) = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs, out var timedOut,
+                out var drainTimedOut, out var drainCutWhileAlive, bridge, CancellationToken.None, stopRecord);
+            var classified = ClassifyArtifactRun(exit, stdout, stderr, hostProtocolFaulted, timedOut, bridge);
+            return ResolveOutcome(classified, stopRecord, drainTimedOut, drainCutWhileAlive, outputBudgetMs);
+        }
+        finally
+        {
+            stopRecord.Seal();
+        }
+    }
+
+    /// <summary>
     /// The classification of a run with no bridge, from its exit, stdout and stderr (the snapshot is read from stderr). Internal for the
     /// channel tests: a snapshot on stdout is not accepted, and a snapshot on stderr is.
     /// </summary>
@@ -1427,8 +1449,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var drainStart = Stopwatch.GetTimestamp();
             WaitForDrain(stdoutTask, outputBudgetMs, stopRecord, drainStart, out drainTimedOut);
             var stdout = stdoutSink.Text;
-            // stderr carries the state snapshot, so it gets its own budget from when it is read: a held stdout pipe must not use it up first.
-            WaitForDrain(stderrPump, outputBudgetMs, stopRecord, drainStart, out _);
+            // stderr carries the state snapshot. It is waited for within the same drain budget, measured from drainStart as stdout is; the sink
+            // keeps the text read so far, so a stderr pipe still held by a grandchild does not lose a complete snapshot already written.
             var stderr = stderrSink.Text;
             RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
             return (process.ExitCode, stdout, stderr, false, true);
@@ -1480,7 +1502,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryReleaseStdout(process);
             var drainedPumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
             timedOut = false;
-            return (process.ExitCode, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, drainedPumpEnded);
+            return (process.ExitCode, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), false, drainedPumpEnded);
         }
 
         if (!pumpCompleted)
@@ -1515,7 +1537,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         timedOut = false;
-        var bridgeStderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp(), out _);
+        // The bridged run's stderr carries the snapshot: read it as the no-bridge run does, so a pipe a grandchild still holds keeps the text read so far.
+        var bridgeStderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp());
         RecordPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
@@ -1710,6 +1733,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// cleanup budget, measured from the stop, so a stop never waits for the full budget (Issue #827). <paramref name="timedOut"/> reports
     /// that the budget ran out before the stream ended; the result is then empty, and the caller reports it.
     /// </summary>
+    /// <summary>
+    /// The text a sink has read when the budget ends. A stream still held open keeps the text read so far, so a complete snapshot already on the
+    /// pipe is not lost. <see cref="DrainUntil"/> returns nothing for a drain that did not complete.
+    /// </summary>
+    private static string SinkText(Task pump, OutputSink sink, int budgetMs, StopRecord stop, long drainStart)
+    {
+        WaitForDrain(pump, budgetMs, stop, drainStart, out _);
+        return sink.Text;
+    }
+
     private static string DrainUntil(Task<string> readTask, int budgetMs, StopRecord stop, long drainStart, out bool timedOut)
     {
         var completed = WaitForDrain(readTask, budgetMs, stop, drainStart, out timedOut);

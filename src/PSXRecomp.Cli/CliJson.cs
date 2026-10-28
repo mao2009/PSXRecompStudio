@@ -9,7 +9,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 /// with the repository's canonical JSON encoder (<see cref="ArtifactJson"/>):
 /// camelCase, LF, two-space indentation, explicit nulls, and no timestamps or
 /// environment data. The run envelope nests the production
-/// <see cref="RecompiledArtifactResult"/> — <em>the</em> #459 termination
+/// <see cref="PublicRecompiledArtifactResult"/> — <em>the</em> #459 termination
 /// representation — rather than defining a CLI-specific termination model; the
 /// ordinary run envelope keeps the pre-report field set unchanged; the
 /// report-aware variant adds only the caller-visible diagnostic bundle path.
@@ -46,7 +46,7 @@ internal static class CliJson
         bool Success,
         string? Artifact,
         IReadOnlyList<byte> Output,
-        RecompiledArtifactResult Result);
+        PublicRecompiledArtifactResult Result);
 
     /// <summary>
     /// Extended run envelope used only when <c>--report</c> is requested.
@@ -59,7 +59,7 @@ internal static class CliJson
         bool Success,
         string? Artifact,
         IReadOnlyList<byte> Output,
-        RecompiledArtifactResult Result,
+        PublicRecompiledArtifactResult Result,
         string DiagnosticBundle);
 
     [Infrastructure]
@@ -68,7 +68,7 @@ internal static class CliJson
         bool Success,
         string? Artifact,
         IReadOnlyList<byte> Output,
-        RecompiledArtifactResult Result,
+        PublicRecompiledArtifactResult Result,
         ProductionFrameEvidenceCollector.FrameEvidence FrameEvidence);
 
     [Infrastructure]
@@ -77,7 +77,7 @@ internal static class CliJson
         bool Success,
         string? Artifact,
         IReadOnlyList<byte> Output,
-        RecompiledArtifactResult Result,
+        PublicRecompiledArtifactResult Result,
         string DiagnosticBundle,
         ProductionFrameEvidenceCollector.FrameEvidence FrameEvidence);
 

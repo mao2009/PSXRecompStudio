@@ -318,7 +318,9 @@ public sealed class CliRunTests
         // production termination result as the identical EXE input.
         var chdResult = chdRoot.GetProperty("result");
         var exeResult = JsonDocument.Parse(exeOutput).RootElement.GetProperty("result");
-        foreach (var field in new[] { "outcome", "exitCode", "state", "guestPc", "resultValue", "engineName", "diagnosticCode", "diagnosticMessage" })
+        chdResult.TryGetProperty("resultValue", out _).Should().BeFalse("the CLI's public JSON has no register-value field");
+        exeResult.TryGetProperty("resultValue", out _).Should().BeFalse("the CLI's public JSON has no register-value field");
+        foreach (var field in new[] { "outcome", "exitCode", "state", "guestPc", "engineName", "diagnosticCode", "diagnosticMessage" })
         {
             chdResult.GetProperty(field).GetRawText().Should().Be(exeResult.GetProperty(field).GetRawText(), $"result field '{field}' must match the EXE path");
         }
@@ -780,9 +782,9 @@ public sealed class CliRunTests
         using var json = JsonDocument.Parse(output);
         var result = json.RootElement.GetProperty("result");
         result.EnumerateObject().Select(static p => p.Name).Should().BeEquivalentTo(
-            "outcome", "exitCode", "state", "guestPc", "resultValue", "engineName", "diagnosticCode", "diagnosticMessage");
-        // Decision A (PR #839, arbitration): the marker register is a GPR value and is never exported.
-        result.GetProperty("resultValue").ValueKind.Should().Be(JsonValueKind.Null);
+            "outcome", "exitCode", "state", "guestPc", "engineName", "diagnosticCode", "diagnosticMessage");
+        // Decision A (PR #839, arbitration): the public shape has no register-value field at all (not even null).
+        result.TryGetProperty("resultValue", out _).Should().BeFalse("the marker register is a GPR value and has no field in the public shape");
     }
 
     [Fact]
@@ -812,7 +814,7 @@ public sealed class CliRunTests
 
         exit.Should().Be(RecompiledArtifactExitCode.Success);
         using var json = JsonDocument.Parse(output);
-        json.RootElement.GetProperty("result").GetProperty("resultValue").ValueKind.Should().Be(JsonValueKind.Null);
+        json.RootElement.GetProperty("result").TryGetProperty("resultValue", out _).Should().BeFalse("the CLI JSON has no register-value field");
         output.ToUpperInvariant().Should().NotContain($"{ResultValue:X8}", "the document carries no hexadecimal form of the V0 value");
         output.Should().NotContain(ResultValue.ToString(), "the document carries no decimal form of the V0 value");
     }
