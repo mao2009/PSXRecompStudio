@@ -94,13 +94,18 @@ public static class FirmwareDiagnosticDistribution
     /// </para>
     /// </summary>
     public static FirmwareDiagnosticBuild Build(FirmwareDiagnosticRequest request, bool windows)
-        => Build(request, windows, observe: null);
+        => Build(request, windows, observe: null, compiler: null);
 
     /// <summary>
     /// The build with an observation seam for tests: <paramref name="observe"/> is called with a phase name and a path at each point
     /// where another process could take the output name. Production callers use the overload without it.
     /// </summary>
     internal static FirmwareDiagnosticBuild Build(FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe)
+        => Build(request, windows, observe, compiler: null);
+
+    /// <param name="compiler">The toolchain executable for the generated artifact; null uses the default compiler. Tests pass a stub.</param>
+    internal static FirmwareDiagnosticBuild Build(
+        FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe, string? compiler)
     {
         ArgumentNullException.ThrowIfNull(request);
         RequireSha256(request.RomSha256, nameof(request.RomSha256));
@@ -199,7 +204,7 @@ public static class FirmwareDiagnosticDistribution
             string artifactSource;
             if (request.ArtifactSourcePath is null)
             {
-                artifactPath = GenerateArtifact(area, plan, request, artifactName, artifactFile, windows);
+                artifactPath = GenerateArtifact(area, plan, request, artifactName, artifactFile, windows, compiler);
                 artifactSource = "generated";
             }
             else
@@ -474,7 +479,8 @@ public static class FirmwareDiagnosticDistribution
     }
 
     private static string GenerateArtifact(
-        StagingArea area, FirmwareAotPlan plan, FirmwareDiagnosticRequest request, string artifactName, string artifactFile, bool windows)
+        StagingArea area, FirmwareAotPlan plan, FirmwareDiagnosticRequest request, string artifactName, string artifactFile, bool windows,
+        string? compiler)
     {
         var dispatch = RecompilerHostCodeGen.Generate(
             plan.Program, plan.LoadedCode, guardStats: GuardStatsScope.Enabled, allowEmptyProgram: true);
@@ -503,7 +509,7 @@ public static class FirmwareDiagnosticDistribution
         area.Reserve(Path.Combine(staging, toolName + ".o"));
         area.Reserve(Path.Combine(staging, toolName));
         var build = new GeneratedHostBuildService(request.BuildTimeout ?? FirmwareDistributionBuilder.DefaultBuildTimeout).Build(
-            new GeneratedHostBuildRequest(source.Source!, staging, toolName, FirmwareDistribution: true));
+            new GeneratedHostBuildRequest(source.Source!, staging, toolName, FirmwareDistribution: true, CompilerExecutable: compiler));
         if (build.Status != GeneratedHostBuildStatus.Succeeded)
         {
             throw new InvalidOperationException($"Artifact build failed ({build.Status}). {build.DiagnosticMessage}");
@@ -754,6 +760,7 @@ public static class FirmwareDiagnosticDistribution
             missing.Reverse(); // shallowest first
             foreach (var path in missing)
             {
+                _observe?.Invoke("directory", path); // SEAM: another process acts here, between the existence check and the create
                 ExclusiveCreateDirectory(path);
                 _ancestors.Add(path);
             }
@@ -851,7 +858,7 @@ public static class FirmwareDiagnosticDistribution
             {
                 var error = Marshal.GetLastPInvokeError();
                 throw new IOException(error == WindowsDirectoryInterop.ErrorAlreadyExists
-                    ? $"A directory already exists at {path}; this build did not create it and does not use it."
+                    ? $"A file, directory or link already exists at {path}; this build did not create it and does not use it."
                     : $"Could not create the directory {path} (Win32 error {error}).");
             }
         }

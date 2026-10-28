@@ -4,6 +4,7 @@ using FluentAssertions;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Infrastructure.Standalone;
+using PSXRecomp.Tests.E2E;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
 
@@ -204,7 +205,7 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [Fact]
-    public void Build_DirectoryCreatedAfterTheExistenceCheck_IsPreservedAndNeverBuiltInto()
+    public void Build_OutputDirectoryCreatedBeforeTheBuildWrites_IsLeftUntouched()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -497,7 +498,8 @@ public sealed class FirmwareDiagnosticDistributionTests
             }
         });
 
-        act.Should().Throw<Exception>("the build cannot create a directory that another process has already created");
+        act.Should().Throw<IOException>().WithMessage("*already exists at*" + FirmwareBootManifest.FirmwareDirectory + "*",
+            "the exclusive create refuses the directory another process created, and the refusal is the failure reported");
         injected.Should().NotBeNull("the directory creation was reached");
         Directory.Exists(injected!).Should().BeTrue("a directory this build did not create is never removed");
     }
@@ -534,6 +536,154 @@ public sealed class FirmwareDiagnosticDistributionTests
         swapped.Should().BeTrue("the swap happened before the first file write");
         Directory.GetFileSystemEntries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
             "nothing is written through the junction");
+    }
+
+    [Fact]
+    public void Build_AncestorDirectoryInjectedIntoTheOpenWindow_IsRefusedAndNotRemoved()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // The output's parent ("missing") does not exist, so Open creates it. Another process creates it in the window.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("missing", "measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+        string? injected = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "directory" && Path.GetFileName(path) == "missing")
+            {
+                injected = path;
+                Directory.CreateDirectory(path);
+            }
+        });
+
+        act.Should().Throw<IOException>().WithMessage("*already exists at*missing*",
+            "Open refuses the ancestor another process created rather than adopting it");
+        injected.Should().NotBeNull("the ancestor creation was reached");
+        Directory.Exists(injected!).Should().BeTrue("an ancestor this build did not create is never removed");
+    }
+
+    [Fact]
+    public void Build_GeneratedArtifactPath_WithAStubToolchain_PublishesTheLinkedArtifact()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // No roots-and-artifact shortcut: the artifact is generated and the stub toolchain stands in for gcc. The stub writes its
+        // "-o" output, so the compile and link steps succeed without a C compiler; the generated path's claims, reservations and
+        // moves are all exercised.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var stub = BuildStubToolchain(dir);
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n", hostSource: hostDir);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: stub);
+
+        AssertGeneratedMeasurementIsConsistent(dir, output, build, expectedArtifactContent: "stub linked output");
+    }
+
+    [SkippableFact]
+    public void Build_GeneratedArtifactPath_WithGcc_PublishesTheCompiledArtifact()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // NOT RUN where gcc is absent: RequireGcc skips with its reason rather than passing.
+        RuntimeHostPublishE2E.RequireGcc();
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n", hostSource: hostDir);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true);
+
+        AssertGeneratedMeasurementIsConsistent(dir, output, build, expectedArtifactContent: null);
+    }
+
+    private static void AssertGeneratedMeasurementIsConsistent(
+        TempDirectory dir, string output, FirmwareDiagnosticBuild build, string? expectedArtifactContent)
+    {
+        build.ArtifactPath.Should().Be(Path.Combine(output, "measure.exe"));
+        File.Exists(build.ArtifactPath).Should().BeTrue();
+        if (expectedArtifactContent is not null)
+        {
+            File.ReadAllText(build.ArtifactPath).Should().Be(expectedArtifactContent,
+                "the artifact is the binary the link step wrote, moved under the measurement's name");
+        }
+
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(
+            ["diagnostic-identity.json", "measure.exe", "measure.exe.c", "runtime"],
+            "the toolchain's random-named outputs are moved to the measurement's names or removed; the object file is removed");
+
+        var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(build.ManifestPath));
+        Path.GetFullPath(Path.Combine(Path.GetDirectoryName(build.ManifestPath)!, manifest.Artifact))
+            .Should().Be(Path.GetFullPath(build.ArtifactPath), "the manifest names the artifact that was published");
+
+        var identity = JsonNode.Parse(File.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+        identity["artifact"]!["file"]!.GetValue<string>().Should().Be("measure.exe");
+        identity["artifact"]!["sha256"]!.GetValue<string>().Should().Be(OpenBiosRomInput.Sha256HexOfFile(build.ArtifactPath));
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+    }
+
+    /// <summary>
+    /// Builds a tiny console program that stands in for the C toolchain: with "-o &lt;path&gt;" it writes that file and exits 0, and it
+    /// records whether the call was a compile ("-c") or a link. Built with the SDK at test time, so no C compiler is needed.
+    /// </summary>
+    private static string BuildStubToolchain(TempDirectory dir)
+    {
+        var project = dir.Combine("stub-toolchain");
+        Directory.CreateDirectory(project);
+        var projectFile = Path.Combine(project, "stub-toolchain.csproj");
+        File.WriteAllText(projectFile, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <OutputType>Exe</OutputType>
+                <TargetFramework>net10.0</TargetFramework>
+                <ImplicitUsings>disable</ImplicitUsings>
+                <Nullable>disable</Nullable>
+              </PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(project, "Program.cs"), """
+            public static class Program
+            {
+                public static int Main(string[] args)
+                {
+                    var output = System.Array.IndexOf(args, "-o");
+                    if (output < 0 || output + 1 >= args.Length)
+                    {
+                        return 2;
+                    }
+
+                    var kind = System.Array.IndexOf(args, "-c") >= 0 ? "object" : "linked";
+                    System.IO.File.WriteAllText(args[output + 1], "stub " + kind + " output");
+                    return 0;
+                }
+            }
+            """);
+
+        var outDir = dir.Combine("stub-toolchain-out");
+        using var build = Process.Start(new ProcessStartInfo("dotnet",
+            $"build \"{projectFile}\" -c Release -o \"{outDir}\" -nologo")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        }) ?? throw new InvalidOperationException("dotnet did not start.");
+        build.WaitForExit(180000).Should().BeTrue("the stub toolchain must finish building");
+        build.ExitCode.Should().Be(0, "the stub toolchain must build");
+        return Path.Combine(outDir, "stub-toolchain.exe");
     }
 
     [Fact]
