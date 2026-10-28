@@ -162,6 +162,13 @@ public static class FirmwareDiagnosticDistribution
                 "The measurement names its artifact with the Windows .exe suffix; windows: false (an extensionless artifact) is not supported.");
         }
 
+        // A host directory is checked for links in full before anything is written, so a link refuses the build before the AOT copy,
+        // the disc link or the artifact copy can run. The copy itself checks each entry again.
+        if (request.HostSourceDirectory is not null)
+        {
+            RequireNoLinksInHostDirectory(Path.GetFullPath(request.HostSourceDirectory));
+        }
+
         var area = new StagingArea(outputDir, observe);
         try
         {
@@ -559,7 +566,9 @@ public static class FirmwareDiagnosticDistribution
             // The publish writes a set of files whose names are not known in advance. It writes into a private directory this build
             // created, and each published entry is then moved into runtime/. A move refuses an existing name, so a file another
             // process placed in runtime/ is never overwritten; the publish directory is removed only when it has been emptied.
-            var publishDir = area.CreateDirectory(Path.Combine(area.Root, "publish-" + Guid.NewGuid().ToString("N")));
+            // The directory is named "publish", the same length as "runtime", so a published entry's path inside it is exactly as long as its
+            // destination under runtime/. The staging root is unique per build, so the fixed name cannot collide.
+            var publishDir = area.CreateDirectory(Path.Combine(area.Root, "publish"));
             try
             {
                 RuntimeHostBuildService.ProvisionRuntimeHost(publishDir, selfContained: false, firmwareDistribution: true);
@@ -599,6 +608,33 @@ public static class FirmwareDiagnosticDistribution
         area.CopyTree(source, runtimeDir);
 
         return "copied:" + Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+    }
+
+    /// <summary>Refuses a host directory that is a link, or that holds a link anywhere below it, by name. Nothing is written when it refuses.</summary>
+    private static void RequireNoLinksInHostDirectory(string source)
+    {
+        if (IsReparsePoint(source))
+        {
+            throw new InvalidDataException($"The host directory is a link, which the copy refuses: {source}");
+        }
+
+        RequireNoLinksBelow(source);
+    }
+
+    private static void RequireNoLinksBelow(string directory)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        {
+            if (IsReparsePoint(entry))
+            {
+                throw new InvalidDataException($"The host directory holds a link, which the copy refuses: {entry}");
+            }
+
+            if (Directory.Exists(entry))
+            {
+                RequireNoLinksBelow(entry);
+            }
+        }
     }
 
     private static Dictionary<string, string> CurrentDigests(FirmwareDiagnosticRequest request)
@@ -995,7 +1031,9 @@ public static class FirmwareDiagnosticDistribution
                     $"The output path is {_outputDir.Length} characters and its file name is {_fileName.Length} characters. " +
                     "A generated artifact needs the output path at most 161 characters (its reserved toolchain name is the output path plus 86 characters), " +
                     "and the output path plus the file-name length at most 198 characters (the artifact's .c name is that sum plus 49). " +
-                    "These limits are sufficient for the files this build names itself; a published host with longer file names needs a shorter output path too.");
+                    "Checked before each write: the paths this build names itself, and each copied host or artifact file name. " +
+                    "Not checked before dotnet publish writes them: the names the runtime-host publish chooses. Each of those is checked when it is " +
+                    "moved into runtime/, and its path in the publish directory has the same length as that destination.");
             }
         }
 
