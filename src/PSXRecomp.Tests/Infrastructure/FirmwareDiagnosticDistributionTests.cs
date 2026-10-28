@@ -203,6 +203,213 @@ public sealed class FirmwareDiagnosticDistributionTests
         act.Should().Throw<InvalidDataException>().WithMessage("*disc*changed*");
     }
 
+    [Fact]
+    public void Build_DirectoryCreatedAfterTheExistenceCheck_IsPreservedAndNeverBuiltInto()
+    {
+        // The race: another process creates the output directory between the existence check and the build's own creation.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+        const string foreign = "someone else's evidence";
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "claim")
+            {
+                Directory.CreateDirectory(path);
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), foreign);
+            }
+        });
+
+        act.Should().Throw<Exception>("the roots file is invalid, so the build fails after it has started");
+        File.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be(foreign, "a directory this build did not create is never deleted");
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+            "the build writes nothing into a directory it did not create");
+    }
+
+    [Fact]
+    public void Build_FailureWithAForeignFileInStaging_DeletesOnlyItsOwnOutput()
+    {
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+        string? staged = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "staged")
+            {
+                staged = path;
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), "someone else's file");
+            }
+        });
+
+        act.Should().Throw<Exception>();
+        staged.Should().NotBeNull("the build stages its output in a sibling directory before it fails");
+        File.ReadAllText(Path.Combine(staged!, "foreign.txt")).Should().Be("someone else's file",
+            "content another process placed in the staging area is not deleted");
+        Directory.Exists(Path.Combine(staged!, "runtime")).Should().BeFalse("the build's own runtime directory is removed");
+        Directory.Exists(output).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Build_FailureMidBuild_RemovesOnlyItsOwnTemporaryOutput()
+    {
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = ValidRequest(dir, output, roots: "nope\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<Exception>();
+
+        Directory.Exists(output).Should().BeFalse();
+        Directory.GetDirectories(dir.FullPath, "." + Path.GetFileName(output) + ".staging-*").Should().BeEmpty(
+            "the staging directory the build created is removed");
+        Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(
+            ["openbios.bin", "game.bin", "aot"], "only the inputs the caller named remain");
+    }
+
+    [Fact]
+    public void Build_OutputPathThatIsAnExistingJunction_IsRefusedAndTheTargetIsNeverWritten()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("elsewhere");
+        File.WriteAllText(Path.Combine(target, "keep.txt"), "x");
+        var output = dir.Combine("measure");
+        MakeJunction(output, target);
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<IOException>();
+
+        Directory.GetFileSystemEntries(target).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
+            "a junction at the output path is never followed");
+    }
+
+    [Fact]
+    public void Build_DanglingJunctionAtTheOutputPath_IsNotFollowed()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var target = dir.CreateSubdirectory("gone");
+        var output = dir.Combine("measure");
+        MakeJunction(output, target);
+        Directory.Delete(target);
+        var request = ValidRequest(dir, output, roots: "nope\n");
+
+        ((Action)(() => FirmwareDiagnosticDistribution.Build(request, windows: true))).Should().Throw<Exception>();
+
+        Directory.Exists(target).Should().BeFalse("the build never creates the directory a dangling junction names");
+    }
+
+    [Fact]
+    public void Build_Success_ManifestAndExecutableReferencesAreConsistent()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var artifact = dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n", artifactSource: artifact, hostSource: hostDir);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true);
+
+        build.Root.Should().Be(output);
+        build.ArtifactPath.Should().Be(Path.Combine(output, "measure.exe"));
+        build.HostPath.Should().Be(Path.Combine(output, "runtime", "PSXRecomp.RuntimeHost.exe"));
+        build.ManifestPath.Should().Be(Path.Combine(output, "runtime", RuntimeHostLayout.ManifestFileName));
+        File.Exists(build.HostPath).Should().BeTrue();
+
+        var manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(build.ManifestPath));
+        var referenced = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(build.ManifestPath)!, manifest.Artifact));
+        referenced.Should().Be(Path.GetFullPath(build.ArtifactPath), "the manifest names the artifact that was published");
+        File.ReadAllText(referenced).Should().Be("artifact bytes");
+
+        var identity = JsonNode.Parse(File.ReadAllText(Path.Combine(output, FirmwareDiagnosticDistribution.IdentityFileName)))!.AsObject();
+        identity["artifact"]!["file"]!.GetValue<string>().Should().Be("measure.exe");
+        identity["artifact"]!["sha256"]!.GetValue<string>().Should().Be(OpenBiosRomInput.Sha256HexOfFile(build.ArtifactPath));
+        identity["host"]!["file"]!.GetValue<string>().Should().Be("PSXRecomp.RuntimeHost.exe");
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("a committed build leaves no staging directory");
+    }
+
+    [Fact]
+    public void Build_OutputCreatedBeforeTheCommit_IsNotReplaced()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        var hostDir = dir.CreateSubdirectory("host");
+        dir.WriteFile("host/PSXRecomp.RuntimeHost.exe", "host bytes"u8.ToArray());
+        var request = ValidRequest(dir, output, roots: "0xBFC00000\n", artifactSource: dir.Combine("prebuilt", "measure.exe"), hostSource: hostDir);
+        string? staged = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, (phase, path) =>
+        {
+            if (phase == "staged")
+            {
+                staged = path;
+                Directory.CreateDirectory(output);
+                File.WriteAllText(Path.Combine(output, "foreign.txt"), "someone else's directory");
+            }
+        });
+
+        act.Should().Throw<IOException>("the output name is taken when the build commits");
+        staged.Should().NotBeNull("the build staged its output before the commit");
+        File.ReadAllText(Path.Combine(output, "foreign.txt")).Should().Be("someone else's directory");
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"]);
+        Directory.Exists(staged!).Should().BeFalse("the staging directory the build created is removed");
+    }
+
+    /// <summary>Valid inputs up to the AOT plan. The roots decide whether the build fails there or completes.</summary>
+    private static FirmwareDiagnosticRequest ValidRequest(
+        TempDirectory dir, string outputDirectory, string roots, string? artifactSource = null, string? hostSource = null)
+    {
+        var rom = dir.WriteFile("openbios.bin", new byte[OpenBiosFirmware.ImageSize]);
+        var disc = dir.WriteFile("game.bin", new byte[2352]);
+        dir.WriteFile("aot/rom.roots", System.Text.Encoding.ASCII.GetBytes(roots));
+        dir.WriteFile("aot/images.txt", System.Text.Encoding.ASCII.GetBytes("# none\n"));
+        return new FirmwareDiagnosticRequest(
+            RomPath: rom,
+            RomSha256: OpenBiosRomInput.Sha256HexOfFile(rom),
+            DiscPath: disc,
+            DiscSha256: OpenBiosRomInput.Sha256HexOfFile(disc),
+            AotDirectory: dir.Combine("aot"),
+            OutputDirectory: outputDirectory,
+            CodeBytes: 64,
+            InstructionBudget: uint.MaxValue,
+            RunTimeoutMs: 1000,
+            HostSourceDirectory: hostSource,
+            ArtifactSourcePath: artifactSource);
+    }
+
+    private static void MakeJunction(string link, string target)
+    {
+        using var process = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        }) ?? throw new InvalidOperationException("mklink did not start.");
+        process.WaitForExit();
+        process.ExitCode.Should().Be(0, "the junction is needed for the redirection test");
+    }
+
     private static FirmwareDiagnosticRequest Request(TempDirectory dir, string romPath, string romSha256, string outputDirectory) =>
         new(
             RomPath: romPath,
