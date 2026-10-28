@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Recompiler;
@@ -174,10 +175,23 @@ public sealed class ObservedRootPlannerTests
 
         var targets = ObservedRootPlanner.ReadTargets(json);
 
-        targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, ObservedRootsFixtures.Text[2]));
+        // The public export carries no RAM word (the ruling on #839): the target has none until the local evidence supplies it.
+        targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, RamWord: null));
     }
 
-    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1,"ramWord":"0x00000000"}""";
+    // The public export carries no RAM word (the ruling on #839): an export that names one is malformed and refused.
+    [Fact]
+    public void ReadExport_RefusesAnExportThatCarriesARamWord()
+    {
+        var json = ObservedRootsFixtures.TargetsJson(A, "unknown-code", 100).Replace("\"lastReturnPc\"", "\"ramWord\":\"0x00000000\",\"lastReturnPc\"", StringComparison.Ordinal);
+        json.Should().Contain("\"ramWord\"", "the fixture must carry the word for this test to mean anything");
+
+        var act = () => ObservedRootPlanner.ReadExport(json);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*ramWord*");
+    }
+
+    private const string Dup = """{"pc":"0x80010008","cause":"unknown-code","entries":1,"instructions":1}""";
 
     public static TheoryData<string> Malformed => new()
     {
@@ -299,7 +313,7 @@ public sealed class ObservedRootPlannerTests
     [Fact]
     public void PartialRunExport_IsRefusedOnlyByItsOutcome_TheSameTargetsAndIdentityParseWhenTheRunFinished()
     {
-        var target = ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100, WordAt(A));
+        var target = ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100);
         var partial = ObservedRootsFixtures.TargetsJsonInState("BudgetExhausted", null, target);
         var finished = ObservedRootsFixtures.TargetsJsonInState("Completed", null, target);
 
@@ -308,7 +322,8 @@ public sealed class ObservedRootPlannerTests
 
         var parsed = ObservedRootPlanner.ReadExport(finished);
         parsed.Run.Should().Be(ObservedRootsFixtures.PlaceholderRun);
-        parsed.Targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, WordAt(A)));
+        // The public export carries no RAM word (#839): the parsed target has none until the local evidence is applied.
+        parsed.Targets.Should().ContainSingle().Which.Should().Be(new ObservedFallbackTarget(A, "unknown-code", 1, 100, RamWord: null));
     }
 
     [Fact]
@@ -427,15 +442,20 @@ public sealed class ObservedRootPlannerTests
         act.Should().Throw<InvalidDataException>().WithMessage("*--stop-at*");
     }
 
-    // The diagnostic path plans with the same gates: a partial target whose RAM word differs from the file is not a root.
+    // The diagnostic path plans with the same gates. Its RAM words come only from the local evidence bound to this export, and a
+    // partial target whose evidence word differs from the file is not a root.
     [Fact]
-    public void ReadPartialExport_PlansOnlyTargetsWhoseRamWordMatchesTheFile()
+    public void ReadPartialExport_PlansOnlyTargetsWhoseLocalRamWordMatchesTheFile()
     {
         var json = ObservedRootsFixtures.TargetsJsonWithCause("BudgetExhausted", null, null,
-            ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100, ramWord: WordAt(A)),
-            ObservedRootsFixtures.TargetObject(B, "unknown-code", 1, 50, ramWord: 0xDEADBEEFu));
+            ObservedRootsFixtures.TargetObject(A, "unknown-code", 1, 100),
+            ObservedRootsFixtures.TargetObject(B, "unknown-code", 1, 50));
+        var exportSha = ObservedRootsFixtures.Sha256Hex(Encoding.UTF8.GetBytes(json));
+        var words = ObservedRootPlanner.ReadRamEvidence(
+            ObservedRootsFixtures.LocalRamEvidenceJson(exportSha, [(A, WordAt(A)), (B, 0xDEADBEEFu)]), exportSha);
 
-        var plan = ObservedRootPlanner.Plan([Image()], ObservedRootPlanner.ReadPartialExport(json).Export.Targets, Open);
+        var targets = ObservedRootPlanner.ApplyRamEvidence(ObservedRootPlanner.ReadPartialExport(json).Export.Targets, words);
+        var plan = ObservedRootPlanner.Plan([Image()], targets, Open);
 
         plan.Images.Single().Roots.Select(static r => r.Pc).Should().Equal(A);
         plan.Counts.Rejected.Should().ContainKey("ram-word-mismatch").WhoseValue.Should().Be(1);

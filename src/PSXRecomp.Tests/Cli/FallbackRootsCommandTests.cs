@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using PSXRecomp.Core.Cpu;
 using PSXRecomp.Core.Execution;
@@ -20,9 +21,12 @@ public sealed class FallbackRootsCommandTests
     private const uint Callee = ObservedRootsFixtures.Callee;
     private const uint Entry = 0x80001000u;
 
-    private sealed record Fixture(TempDirectory Dir, string Rom, string Manifest, string Targets);
+    /// <summary>The fixture's files. <see cref="Evidence"/> is the local RAM evidence bound to <see cref="Targets"/> (outside the repository).</summary>
+    private sealed record Fixture(TempDirectory Dir, string Rom, string Manifest, string Targets, string Evidence);
 
-    private static Fixture Create(TempDirectory dir, Func<ObservedRunIdentity, string> targetsJson, string manifestText = "exe test test.exe\n", uint[]? text = null)
+    /// <param name="ramWordOverrides">RAM words that differ from what a faithful run would observe; they go into the local evidence only.</param>
+    private static Fixture Create(TempDirectory dir, Func<ObservedRunIdentity, string> targetsJson, string manifestText = "exe test test.exe\n", uint[]? text = null,
+        IReadOnlyDictionary<uint, uint>? ramWordOverrides = null)
     {
         var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
         var rom = dir.WriteFile("openbios.bin", firmwareBytes);
@@ -30,18 +34,32 @@ public sealed class FallbackRootsCommandTests
         var manifest = dir.WriteFile("images.txt", Encoding.ASCII.GetBytes(manifestText));
         // The run the export claims: what the probe would record for exactly these inputs.
         var run = ObservedRootPlanner.DescribeRun(ObservedRootsFixtures.Sha256Hex(firmwareBytes), LoadImageManifest.Read(manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null), discSha256: null, ObservedRootPlanner.ProbeOptionsSha256(0, []));
-        var targets = dir.WriteFile("targets.json", Encoding.UTF8.GetBytes(targetsJson(run)));
-        return new Fixture(dir, rom, manifest, targets);
+        var targetsBytes = Encoding.UTF8.GetBytes(targetsJson(run));
+        var targets = dir.WriteFile("targets.json", targetsBytes);
+        // The evidence names every target PC with the word a faithful run fetches there, bound to the export's exact bytes.
+        var pcs = JsonNode.Parse(targetsBytes)!["targets"] is JsonArray targetArray
+            ? targetArray.Select(static t => Convert.ToUInt32(t!["pc"]!.GetValue<string>()[2..], 16)).ToArray()
+            : Array.Empty<uint>();
+        var image = text ?? ObservedRootsFixtures.Text;
+        var words = pcs.Select(pc => (pc, ramWordOverrides is not null && ramWordOverrides.TryGetValue(pc, out var word)
+            ? word
+            : pc >= ObservedRootsFixtures.Dest && (pc - ObservedRootsFixtures.Dest) / 4 < image.Length ? image[(pc - ObservedRootsFixtures.Dest) / 4] : 0u));
+        var evidence = dir.WriteFile("ram-evidence.json", Encoding.UTF8.GetBytes(
+            ObservedRootsFixtures.LocalRamEvidenceJson(ObservedRootsFixtures.Sha256Hex(targetsBytes), words)));
+        return new Fixture(dir, rom, manifest, targets, evidence);
     }
 
-    private static int Run(Fixture fixture, string output, out string stdout, out string stderr)
+    private static int Run(Fixture fixture, string output, out string stdout, out string stderr, bool withEvidence = true, string? evidencePath = null)
     {
         var outWriter = new StringWriter();
         var errWriter = new StringWriter();
-        var code = FallbackRootsCommand.Run(
-            [fixture.Rom, "--load-images", fixture.Manifest, "--fallback-targets", fixture.Targets, "--out", output],
-            outWriter,
-            errWriter);
+        var args = new List<string> { fixture.Rom, "--load-images", fixture.Manifest, "--fallback-targets", fixture.Targets, "--out", output };
+        if ((evidencePath ?? (withEvidence ? fixture.Evidence : null)) is { } evidence)
+        {
+            args.AddRange(["--local-ram-evidence", evidence]);
+        }
+
+        var code = FallbackRootsCommand.Run(args.ToArray(), outWriter, errWriter);
         stdout = outWriter.ToString();
         stderr = errWriter.ToString();
         return code;
@@ -69,7 +87,8 @@ public sealed class FallbackRootsCommandTests
     public void ATargetWhoseRamWordDiffersFromTheFile_IsNotAccepted_AndWritesNoRoot()
     {
         using var dir = new TempDirectory();
-        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(run, ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40, ramWord: 0xDEADBEEFu)));
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(run, ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)),
+            ramWordOverrides: new Dictionary<uint, uint> { [Callee] = 0xDEADBEEFu });
         var output = dir.Combine("images-observed.txt");
 
         var code = Run(fixture, output, out var stdout, out var stderr);
@@ -79,6 +98,54 @@ public sealed class FallbackRootsCommandTests
         stdout.Should().Contain("\"ram-word-mismatch\": 1");
         var planned = LoadImageManifest.Read(output, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
         planned.Images.Single().Roots.Should().Equal(Dest);
+    }
+
+    // The ruling on #839: the public export carries no RAM word. Without the local evidence no word is known, so the planner refuses the
+    // target as ram-word-mismatch (fail closed): nothing is adopted, and the check is not skipped.
+    [Fact]
+    public void PublicExportAlone_AdoptsNoRoot_FailClosed()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        var output = dir.Combine("images-observed.txt");
+
+        var code = Run(fixture, output, out var stdout, out var stderr, withEvidence: false);
+
+        code.Should().Be(0, stderr);
+        stdout.Should().Contain("\"accepted\": 0");
+        stdout.Should().Contain("\"ram-word-mismatch\": 1");
+        var planned = LoadImageManifest.Read(output, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
+        planned.Images.Single().Roots.Should().Equal(Dest);
+    }
+
+    // The local evidence is bound to one export's exact bytes: evidence of another run is refused, not applied.
+    [Fact]
+    public void LocalEvidenceForAnotherExport_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        var foreign = dir.WriteFile("foreign-evidence.json", Encoding.UTF8.GetBytes(
+            ObservedRootsFixtures.LocalRamEvidenceJson(new string('0', 64), [(Callee, ObservedRootsFixtures.DefaultRamWord(Callee))])));
+
+        var code = Run(fixture, dir.Combine("images-observed.txt"), out _, out var stderr, evidencePath: foreign);
+
+        code.Should().Be(1);
+        stderr.Should().Contain("different export");
+    }
+
+    // The local evidence carries RAM words, so it may not sit inside a Git work tree, where it could be committed or sent with a PR.
+    [Fact]
+    public void LocalEvidenceInsideAGitWorkTree_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJson(Callee, "unknown-code", 40, run));
+        var repo = dir.CreateSubdirectory("repo");
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+
+        var code = Run(fixture, dir.Combine("images-observed.txt"), out _, out var stderr, evidencePath: Path.Combine(repo, "ram-evidence.json"));
+
+        code.Should().Be(1);
+        stderr.Should().Contain("outside any Git work tree");
     }
 
     // Issue #773 (review): every fallback fetch at a PC is observed. A later fetch that reads a different word leaves the PC
@@ -129,17 +196,17 @@ public sealed class FallbackRootsCommandTests
     [Fact]
     public void TheInstalledFetchObserver_ExportsNoRamWord_WhenTheSamePcReadsDifferentWords()
     {
-        var export = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.JumpRegister(31) });
+        var (export, words) = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.JumpRegister(31) });
 
-        export.Targets.Should().ContainSingle().Which.RamWord.Should().BeNull();
+        ObservedRootPlanner.ApplyRamEvidence(export.Targets, words).Should().ContainSingle().Which.RamWord.Should().BeNull();
     }
 
     [Fact]
     public void TheInstalledFetchObserver_ExportsTheRamWord_WhenEveryFetchReadsTheSameWord()
     {
-        var export = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.Nop });
+        var (export, words) = ProbeExportAt(Entry, new[] { MipsEncoding.Nop }, new[] { MipsEncoding.Nop });
 
-        export.Targets.Should().ContainSingle().Which.RamWord.Should().Be(MipsEncoding.Nop);
+        ObservedRootPlanner.ApplyRamEvidence(export.Targets, words).Should().ContainSingle().Which.RamWord.Should().Be(MipsEncoding.Nop);
     }
 
     [Fact]
@@ -160,7 +227,7 @@ public sealed class FallbackRootsCommandTests
 
     // Drives the observer the probe installs for two fallback fetches at Pc (the RAM word at Pc changes between them), then builds
     // the export the probe would write and reads it back through the planner's parser.
-    private static ObservedFallbackExport ProbeExportAt(uint pc, uint[] firstRam, uint[] secondRam)
+    private static (ObservedFallbackExport Export, IReadOnlyDictionary<uint, uint> Words) ProbeExportAt(uint pc, uint[] firstRam, uint[] secondRam)
     {
         using var dir = new TempDirectory();
         var fixture = Create(dir, _ => "{}");
@@ -178,9 +245,12 @@ public sealed class FallbackRootsCommandTests
         using (var second = InterpreterTitleExecutionEngine.Attach(secondRam, pc, graph, scheduler)) observer(second, pc);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(pc, Entries: 2, Instructions: 2, LastReturnPc: Dest)]);
 
-        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, log.Get);
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null);
 
-        return ObservedRootPlanner.ReadExport(json!);
+        var jsonSha = ObservedRootsFixtures.Sha256Hex(Encoding.UTF8.GetBytes(json!));
+        // The export carries no word; the word the fetches observed is in the local evidence, read back through the planner's parser.
+        var words = ObservedRootPlanner.ReadRamEvidence(OpenBiosProbeCommand.BuildRamEvidenceDocument(jsonSha, [pc], log.Get), jsonSha);
+        return (ObservedRootPlanner.ReadExport(json!), words);
     }
 
     // Issue #773 (review): the probe's observer also drives the boot monitor and the fallback accounting. The tests run the
@@ -279,7 +349,7 @@ public sealed class FallbackRootsCommandTests
 #pragma warning disable AARC003 // the tests inspect what the command left on disk
     private static string[] Leftovers(TempDirectory dir) =>
         Directory.GetFileSystemEntries(dir.FullPath).Select(Path.GetFileName).Cast<string>()
-            .Except(["openbios.bin", "test.exe", "images.txt", "targets.json"]).Order().ToArray();
+            .Except(["openbios.bin", "test.exe", "images.txt", "targets.json", "ram-evidence.json"]).Order().ToArray();
 
     [Fact]
     public void AnOutputThatIsADirectory_IsRefused_AndLeavesNothingBehind()
@@ -568,7 +638,7 @@ public sealed class FallbackRootsCommandTests
 
     // A target whose RAM word is the word of IntegratedRootSourcesTests.Text at the PC (the image these tests plan over).
     private static string Target(uint pc, ulong instructions) =>
-        ObservedRootsFixtures.TargetObject(pc, "unknown-code", 1, instructions, IntegratedRootSourcesTests.Text[(pc - Dest) / 4]);
+        ObservedRootsFixtures.TargetObject(pc, "unknown-code", 1, instructions);
 
     [Fact]
     public void AnUnfinishedProbeRun_WritesNoExport()
@@ -578,7 +648,7 @@ public sealed class FallbackRootsCommandTests
         var fixture = Create(dir, _ => "{}");
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(new byte[OpenBiosFirmware.ImageSize]), disc: null);
 
-        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, _ => null)
+        OpenBiosProbeCommand.BuildFallbackTargetsDocument(null, ObservedRootsFixtures.Sha256Hex(new byte[OpenBiosFirmware.ImageSize]), manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null)
             .Should().BeNull();
     }
 
@@ -592,12 +662,41 @@ public sealed class FallbackRootsCommandTests
         var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
 
-        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null, _ => ObservedRootsFixtures.Text[4]);
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null);
 
         json.Should().NotBeNull();
         var export = ObservedRootPlanner.ReadExport(json!);
         export.Targets.Select(t => t.Pc).Should().Equal(Callee);
         ObservedRootPlanner.Verify(export.Run, ObservedRootPlanner.DescribeRun(hash, manifest, null, ObservedRootPlanner.ProbeOptionsSha256(0, [])));
+    }
+
+    // PR #839 review (MAJOR): a fallback target in the BIOS ROM range carries no ramWord, so the BIOS word is never written
+    // into the export. The synthetic word below stands in for a BIOS word; the RAM target keeps its own word.
+    [Fact]
+    public void BiosRange_OpenBiosProbeFallbackTarget_InTheRomRange_ExportsNoRamWord()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, _ => "{}");
+        var firmwareBytes = new byte[OpenBiosFirmware.ImageSize];
+        var hash = ObservedRootsFixtures.Sha256Hex(firmwareBytes);
+        var manifest = LoadImageManifest.Read(fixture.Manifest, OpenBiosFirmware.FromBytes(firmwareBytes), disc: null);
+        const uint biosWord = 0x24020BADu;
+        var romPc = OpenBiosFirmware.ResetVector;
+        var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [
+            new MixedFallbackTarget(romPc, Entries: 1, Instructions: 1, LastReturnPc: Dest),
+            new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
+
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null);
+
+        json.Should().NotBeNull();
+        json!.ToLowerInvariant().Should().NotContain("24020bad", "the BIOS word must not appear in the public export");
+        ObservedRootPlanner.ReadExport(json).Targets.Should().OnlyContain(t => t.RamWord == null);
+        // The local evidence names the RAM target only: the ROM-range PC has no RAM word to record, so the planner refuses it.
+        var jsonSha = ObservedRootsFixtures.Sha256Hex(Encoding.UTF8.GetBytes(json));
+        var words = ObservedRootPlanner.ReadRamEvidence(
+            OpenBiosProbeCommand.BuildRamEvidenceDocument(jsonSha, [romPc, Callee], pc => pc == Callee ? ObservedRootsFixtures.Text[4] : biosWord), jsonSha);
+        words.Should().NotContainKey(romPc);
+        words[Callee].Should().Be(ObservedRootsFixtures.Text[4]);
     }
 
     // An engine whose outer budget is spent before its first segment: the orchestrator ends the run as BudgetExhausted,
@@ -624,7 +723,7 @@ public sealed class FallbackRootsCommandTests
         result.State.Should().Be(TitleExecutionState.BudgetExhausted);
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
         var partial = fixture with { Targets = dir.WriteFile("partial.json", Encoding.UTF8.GetBytes(
-            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State, null, 0, [], null, _ => ObservedRootsFixtures.Text[4])!)) };
+            OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", result.State, null, 0, [], null)!)) };
         var output = dir.Combine("images-observed.txt");
 
         var code = Run(partial, output, out _, out var stderr);
@@ -714,7 +813,7 @@ public sealed class FallbackRootsCommandTests
         var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJsonWithCause("RuntimeFailure", "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED", run,
             ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)));
 
-        var code = RunDiagnostic(fixture, out var stdout, out var stderr);
+        var code = RunDiagnostic(fixture, out var stdout, out var stderr, "--local-ram-evidence", fixture.Evidence);
 
         code.Should().Be(0, stderr);
         stdout.Should().Contain("\"trust\": \"PARTIAL_UNTRUSTED\"");
@@ -722,8 +821,25 @@ public sealed class FallbackRootsCommandTests
         stdout.Should().Contain("\"accepted\": 1");
         stdout.Should().Contain("0x80010010");
 #pragma warning disable AARC003 // the assertion reads the directory listing the test created; no file is written by the run
-        Directory.GetFiles(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "test.exe", "images.txt", "targets.json"]);
+        Directory.GetFiles(dir.FullPath).Select(Path.GetFileName).Should().BeEquivalentTo(["openbios.bin", "test.exe", "images.txt", "targets.json", "ram-evidence.json"]);
 #pragma warning restore AARC003
+    }
+
+    // Without the local RAM evidence no target has a word, so the diagnosis adopts nothing, and it says why.
+    [Fact]
+    public void DiagnosticMode_WithoutLocalRamEvidence_ReportsTheMissingEvidence_AndAdoptsNothing()
+    {
+        using var dir = new TempDirectory();
+        var fixture = Create(dir, run => ObservedRootsFixtures.TargetsJsonWithCause("RuntimeFailure", "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED", run,
+            ObservedRootsFixtures.TargetObject(Callee, "unknown-code", 1, 40)));
+
+        var code = RunDiagnostic(fixture, out var stdout, out var stderr);
+
+        code.Should().Be(0, stderr);
+        stderr.Should().Contain("no --local-ram-evidence given");
+        stdout.Should().Contain("\"supplied\": false");
+        stdout.Should().Contain("\"targetsWithoutRamWord\": 1");
+        stdout.Should().Contain("\"accepted\": 0");
     }
 
     [Fact]
@@ -782,7 +898,7 @@ public sealed class FallbackRootsCommandTests
         var evidence = new MixedFallbackEvidence(0, 0, 0, 0, 0, [new MixedFallbackTarget(Callee, Entries: 1, Instructions: 40, LastReturnPc: Dest)]);
 
         var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(evidence, hash, manifest, _ => "unknown-code", TitleExecutionState.RuntimeFailure, null, 0, [], null,
-            _ => ObservedRootsFixtures.Text[4], diagnosticCode: MixedFallbackDiagnostics.SegmentBudgetExhausted)!;
+            diagnosticCode: MixedFallbackDiagnostics.SegmentBudgetExhausted)!;
 
         ObservedRootPlanner.ReadPartialExport(json).DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SegmentBudgetExhausted);
     }

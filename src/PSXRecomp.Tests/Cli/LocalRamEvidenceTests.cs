@@ -1,0 +1,226 @@
+using System.Diagnostics;
+using System.Text;
+using FluentAssertions;
+using PSXRecomp.Core.Execution;
+using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Infrastructure.Cli;
+using PSXRecomp.Tests.RealRomAnalysis;
+using PSXRecomp.Tests.Recompiler;
+using Xunit;
+
+#pragma warning disable AARC003 // the test fixtures create real files, links and processes; the rule guards production code
+namespace PSXRecomp.Tests.Cli;
+
+/// <summary>
+/// The ruling on #839: a RAM word is never in a public output. The public fallback-targets export carries no word; the word goes only to
+/// the explicit local evidence, which covers RAM PCs and is bound to one export.
+/// </summary>
+[Test]
+public sealed class LocalRamEvidenceTests
+{
+    private const uint RamPc = ObservedRootsFixtures.Callee; // 0x80010010: a RAM PC
+    private const uint RomPc = 0xBFC00000u;                  // the BIOS ROM range: never a RAM word
+    private const string ExportSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string WorkTreeRefusal = "outside any Git work tree";
+
+    [Fact]
+    public void PublicExport_CarriesNoRamWord()
+    {
+        using var dir = new TempDirectory();
+        var romBytes = new byte[OpenBiosFirmware.ImageSize];
+        var rom = dir.WriteFile("openbios.bin", romBytes);
+        dir.WriteFile("test.exe", ObservedRootsFixtures.Exe(ObservedRootsFixtures.Text));
+        var manifestPath = dir.WriteFile("images.txt", Encoding.ASCII.GetBytes("exe test test.exe\n"));
+        var manifest = LoadImageManifest.Read(manifestPath, OpenBiosFirmware.FromBytes(romBytes), disc: null);
+        var evidence = new MixedFallbackEvidence(1, 0, 40, 0, 0, [new MixedFallbackTarget(RamPc, 1, 40, ObservedRootsFixtures.Dest)]);
+
+        var json = OpenBiosProbeCommand.BuildFallbackTargetsDocument(
+            evidence, ObservedRootsFixtures.Sha256Hex(romBytes), manifest, _ => "unknown-code", TitleExecutionState.Completed, null, 0, [], null);
+
+        json.Should().NotBeNull();
+        json!.Should().NotContain("ramWord", "the public export never carries a RAM word");
+        ObservedRootPlanner.ReadExport(json).Targets.Single().RamWord.Should().BeNull();
+    }
+
+    [Fact]
+    public void LocalEvidence_CarriesTheWordsOfRamPcsOnly_AndReadsBackBoundToItsExport()
+    {
+        var json = OpenBiosProbeCommand.BuildRamEvidenceDocument(ExportSha, [RamPc, RomPc], _ => 0x24020BADu);
+
+        json.Should().NotContain("BFC00000", "a PC outside RAM has no RAM word to record");
+        var words = ObservedRootPlanner.ReadRamEvidence(json, ExportSha);
+        words.Should().ContainKey(RamPc).WhoseValue.Should().Be(0x24020BADu);
+        words.Should().NotContainKey(RomPc);
+    }
+
+    [Fact]
+    public void RefusalFor_RefusesAPathInsideAGitWorkTree()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var inside = Path.Combine(dir.FullPath, "repo", "ram-evidence.json");
+
+        LocalRamEvidence.RefusalFor(inside, mustBeNew: true).Should().Contain(WorkTreeRefusal);
+        LocalRamEvidence.RefusalFor(inside, mustBeNew: false).Should().Contain(WorkTreeRefusal);
+    }
+
+    [Fact]
+    public void RefusalFor_RefusesAPathInsideAWorkTree_ThatIsASubdirectoryOfTheRepository()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var inside = Path.Combine(dir.FullPath, "repo", "reports", "ram.json");
+
+        LocalRamEvidence.RefusalFor(inside, mustBeNew: true).Should().Contain(WorkTreeRefusal);
+    }
+
+    [Fact]
+    public void WriteNew_InsideAWorkTree_IsRefused_AndCreatesNothing()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var inside = Path.Combine(dir.FullPath, "repo", "reports", "ram.json");
+
+        LocalRamEvidence.WriteNew(inside, "{}").Should().Contain(WorkTreeRefusal);
+        File.Exists(inside).Should().BeFalse("a refused write creates nothing");
+    }
+
+    [Fact]
+    public void RefusalFor_RefusesAPathInsideALinkedWorktree_WhoseGitIsAFile()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory("linked");
+        dir.WriteFile(Path.Combine("linked", ".git"), Encoding.ASCII.GetBytes("gitdir: C:/somewhere/.git/worktrees/linked\n"));
+        dir.CreateSubdirectory(Path.Combine("linked", "reports"));
+
+        LocalRamEvidence.RefusalFor(Path.Combine(dir.FullPath, "linked", "reports", "ram.json"), mustBeNew: true).Should().Contain(WorkTreeRefusal);
+        LocalRamEvidence.RefusalFor(Path.Combine(dir.FullPath, "linked", "deeper", "ram.json"), mustBeNew: true).Should().Contain(WorkTreeRefusal);
+    }
+
+    [SkippableFact]
+    public void Junction_IntoAWorkTree_IsRefused_ForWriteAndRead()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "NOT RUN: junctions are a Windows reparse point; this test is Windows-only");
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var existing = dir.WriteFile(Path.Combine("repo", "reports", "existing.json"), Encoding.UTF8.GetBytes("{}"));
+        var junction = Path.Combine(dir.FullPath, "outside-looking");
+        Skip.IfNot(TryCreateJunction(junction, Path.Combine(dir.FullPath, "repo", "reports"), out var error),
+            $"NOT RUN: mklink /J failed in this environment: {error}");
+
+        LocalRamEvidence.RefusalFor(Path.Combine(junction, "ram.json"), mustBeNew: true).Should().Contain(WorkTreeRefusal);
+        LocalRamEvidence.WriteNew(Path.Combine(junction, "ram.json"), "{}").Should().Contain(WorkTreeRefusal);
+        File.Exists(Path.Combine(dir.FullPath, "repo", "reports", "ram.json")).Should().BeFalse("no RAM word may be written into the worktree");
+        LocalRamEvidence.ReadText(Path.Combine(junction, "existing.json"), out var text).Should().Contain(WorkTreeRefusal);
+        text.Should().BeNull();
+    }
+
+    [SkippableFact]
+    public void Symlink_ToASubdirectoryOfAWorkTree_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var link = Path.Combine(dir.FullPath, "linked-subdir");
+        Skip.IfNot(TryCreateDirectorySymlink(link, Path.Combine(dir.FullPath, "repo", "reports"), out var error),
+            $"NOT RUN: symbolic link creation needs Developer Mode or elevation in this environment: {error}");
+
+        LocalRamEvidence.RefusalFor(Path.Combine(link, "ram.json"), mustBeNew: true).Should().Contain(WorkTreeRefusal);
+        LocalRamEvidence.WriteNew(Path.Combine(link, "ram.json"), "{}").Should().Contain(WorkTreeRefusal);
+        File.Exists(Path.Combine(dir.FullPath, "repo", "reports", "ram.json")).Should().BeFalse();
+    }
+
+    // Symbolic-link resolution without the privilege: the real target of an existing outside-looking directory is supplied by the test.
+    // It exercises the decision on a resolved target, including the fail-closed case where the target cannot be resolved.
+    [Fact]
+    public void ResolvedTargetInsideAWorkTree_IsRefused_AndAnUnresolvableTargetFailsClosed()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var repoReports = dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var outsideLooking = dir.CreateSubdirectory("outside");
+        var probe = Path.Combine(outsideLooking, "ram.json");
+
+        LocalRamEvidence.RefusalFor(probe, mustBeNew: true, resolveExisting: _ => repoReports).Should().Contain(WorkTreeRefusal);
+        LocalRamEvidence.RefusalFor(probe, mustBeNew: false, resolveExisting: _ => repoReports).Should().Contain(WorkTreeRefusal);
+        LocalRamEvidence.RefusalFor(probe, mustBeNew: true, resolveExisting: _ => null).Should().NotBeNull("an unresolved target is refused");
+    }
+
+    [Fact]
+    public void CanonicalPathOutsideTheRepository_IsAllowed_AndWritesOnceAndReadsBack()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var outside = Path.Combine(dir.FullPath, "fresh.json");
+
+        LocalRamEvidence.RefusalFor(outside, mustBeNew: true).Should().BeNull();
+        LocalRamEvidence.WriteNew(outside, "{\"format\":\"fallback-ram-evidence/v1\"}").Should().BeNull();
+        LocalRamEvidence.ReadText(outside, out var text).Should().BeNull();
+        text.Should().Be("{\"format\":\"fallback-ram-evidence/v1\"}");
+    }
+
+    [Fact]
+    public void OverwritingAnExistingFile_IsRefused_AndLeavesItUnchanged()
+    {
+        using var dir = new TempDirectory();
+        var existing = dir.WriteFile("existing.json", Encoding.UTF8.GetBytes("{}"));
+
+        LocalRamEvidence.WriteNew(existing, "{\"replaced\":true}").Should().Contain("already exists");
+        File.ReadAllText(existing).Should().Be("{}");
+    }
+
+    [Fact]
+    public void RefusalFor_RefusesReplacingAnExistingFile_WhenItIsToBeWritten()
+    {
+        using var dir = new TempDirectory();
+        var existing = dir.WriteFile("existing.json", Encoding.UTF8.GetBytes("{}"));
+
+        LocalRamEvidence.RefusalFor(existing, mustBeNew: true).Should().Contain("already exists");
+        LocalRamEvidence.RefusalFor(existing, mustBeNew: false).Should().BeNull("reading an existing file is allowed");
+    }
+
+    [Fact]
+    public void RefusalFor_AcceptsANewPathOutsideAGitWorkTree()
+    {
+        using var dir = new TempDirectory();
+        LocalRamEvidence.RefusalFor(Path.Combine(dir.FullPath, "fresh.json"), mustBeNew: true).Should().BeNull();
+    }
+
+    private static bool TryCreateJunction(string link, string target, out string error) =>
+        TryRun("cmd.exe", ["/c", "mklink", "/J", link, target], out error);
+
+    private static bool TryCreateDirectorySymlink(string link, string target, out string error)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static bool TryRun(string program, string[] arguments, out string error)
+    {
+        var info = new ProcessStartInfo(program) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var argument in arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(info)!;
+        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        error = output.Trim();
+        return process.ExitCode == 0;
+    }
+}
+
+#pragma warning restore AARC003

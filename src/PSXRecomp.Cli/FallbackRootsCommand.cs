@@ -16,7 +16,7 @@ namespace PSXRecomp.Infrastructure.Cli;
 internal static class FallbackRootsCommand
 {
     internal const string Usage =
-        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> (--out <manifest> | --diagnose-partial) [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>]";
+        "usage: psxrecomp fallback-roots <openbios.bin> --load-images <manifest> --fallback-targets <file.json> (--out <manifest> | --diagnose-partial) [--disc <image.chd|image.bin>] [--roots <file>] [--code-bytes <n>] [--segments <n>] [--segment-budget <n>] [--local-ram-evidence <file.json>]";
 
     private const string ReportFormat = "psxrecomp.fallback-roots-report/v1";
     private const string DiagnosticFormat = "psxrecomp.fallback-roots-diagnostic/v1";
@@ -33,7 +33,7 @@ internal static class FallbackRootsCommand
             }
 
             var romPath = args[0];
-            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null, segmentsText = null, segmentBudgetText = null;
+            string? manifestPath = null, targetsPath = null, outPath = null, discPath = null, rootsPath = null, codeBytesText = null, segmentsText = null, segmentBudgetText = null, localEvidencePath = null;
             var diagnose = false;
             for (var i = 1; i < args.Count; i++)
             {
@@ -44,7 +44,7 @@ internal static class FallbackRootsCommand
                     continue;
                 }
 
-                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes" or "--segments" or "--segment-budget"))
+                if (option is not ("--load-images" or "--fallback-targets" or "--out" or "--disc" or "--roots" or "--code-bytes" or "--segments" or "--segment-budget" or "--local-ram-evidence"))
                 {
                     error.WriteLine($"fallback-roots: unknown option {option}");
                     error.WriteLine(Usage);
@@ -59,6 +59,7 @@ internal static class FallbackRootsCommand
 
                 if (option == "--load-images") manifestPath = args[i];
                 else if (option == "--fallback-targets") targetsPath = args[i];
+                else if (option == "--local-ram-evidence") localEvidencePath = args[i];
                 else if (option == "--out") outPath = args[i];
                 else if (option == "--disc") discPath = args[i];
                 else if (option == "--roots") rootsPath = args[i];
@@ -134,7 +135,27 @@ internal static class FallbackRootsCommand
                 manifest,
                 discPath is null ? null : OpenBiosProbeCommand.FileSha256(discPath),
                 ObservedRootPlanner.ProbeOptionsSha256(codeBytes, roots, segments, segmentBudget)));
-            var plan = ObservedRootPlanner.Plan(manifest.Images, export.Targets);
+            // The RAM words come only from the explicit local evidence, bound to this export (never public). Without it, or for a PC it does
+            // not name, no word is known and the planner refuses the target (ram-word-mismatch): nothing is adopted without the check.
+            var targets = export.Targets;
+            if (localEvidencePath is not null)
+            {
+                if (LocalRamEvidence.ReadText(localEvidencePath, out var evidenceText) is { } evidenceRefusal)
+                {
+                    error.WriteLine($"fallback-roots: --local-ram-evidence: {evidenceRefusal}");
+                    return 1;
+                }
+
+                var targetsSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(targetsPath))).ToLowerInvariant();
+                targets = ObservedRootPlanner.ApplyRamEvidence(targets, ObservedRootPlanner.ReadRamEvidence(evidenceText!, targetsSha256));
+            }
+            else
+            {
+                error.WriteLine("fallback-roots: no --local-ram-evidence given; no target carries a RAM word, so no target can be adopted.");
+            }
+
+            var targetsWithoutRamWord = targets.Count(static t => t.RamWord is null);
+            var plan = ObservedRootPlanner.Plan(manifest.Images, targets);
 
             if (partial is not null)
             {
@@ -146,6 +167,11 @@ internal static class FallbackRootsCommand
                     trust = "PARTIAL_UNTRUSTED",
                     outcome = new { state = partial.State.ToString(), diagnosticCode = partial.DiagnosticCode },
                     manifestWritten = false,
+                    ramEvidence = new
+                    {
+                        supplied = localEvidencePath is not null,
+                        targetsWithoutRamWord,
+                    },
                     candidates = plan.Counts.Candidates,
                     accepted = plan.Counts.Accepted,
                     rejected = plan.Counts.Rejected,

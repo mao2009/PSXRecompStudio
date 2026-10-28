@@ -309,6 +309,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         return new ExternalStopScope(_frameReads);
     }
 
+    /// <summary>
+    /// The refusal for an unimplemented GTE command. The low 25 bits of the COP2 instruction are part of a guest word, so the
+    /// message names only the fact; the bits are withheld from every public artifact (PR #839, decision A).
+    /// </summary>
+    internal static string GteRefusalMessage(uint commandBits) => "GTE command is not implemented.";
+
     /// <summary>Ends an attachment: the gate stops watching the run's external token.</summary>
     private sealed class ExternalStopScope(FrameReadGate gate) : IDisposable
     {
@@ -1131,8 +1137,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         var snapshot = ArtifactSnapshotParser.Parse(stdout);
         if (snapshot is null)
         {
-            var message = stdout.Length <= 2000 ? stdout : stdout[..2000] + "...";
-            return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", message);
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", MalformedSnapshotMessage(stdout));
         }
 
         if (bridge is { ExceptionVectorReached: true })
@@ -1146,6 +1152,24 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         return new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, snapshot, bridge?.DiagnosticCode, bridge?.DiagnosticMessage);
+    }
+
+    /// <summary>
+    /// The diagnostic for a snapshot the parser rejects. It names only the shape (complete or not, and the count of body lines),
+    /// never the raw protocol text: the snapshot carries GPR values, and no line of it may reach a public diagnostic.
+    /// </summary>
+    internal static string MalformedSnapshotMessage(string stdout)
+    {
+        var begin = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal);
+        var end = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotEndMarker, StringComparison.Ordinal);
+        if (begin < 0 || end < begin)
+        {
+            return "The runnable artifact's state snapshot is incomplete.";
+        }
+
+        var lines = stdout[(begin + RecompiledArtifactCodeGen.SnapshotBeginMarker.Length)..end]
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+        return $"The runnable artifact's state snapshot is malformed ({lines} body lines).";
     }
 
     public void Dispose()
@@ -2319,7 +2343,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 : [];
             if (fields.Length != 6)
             {
-                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}' reply, received '{reply}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.ReplyMismatch(RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix, reply));
             }
 
             // intEntry is a boolean on the wire: exactly "0" or "1"; anything else fails closed, never reads as false.
@@ -2327,7 +2351,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             {
                 "0" => false,
                 "1" => true,
-                _ => throw new ProtocolFaultException($"Malformed intEntry in '{reply}'."),
+                _ => throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("intEntry", reply)),
             };
 
             return new Cop0Query(
@@ -2463,7 +2487,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || (isWrite && !uint.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out value))
                 || (width < 4 && value >> (8 * width) != 0))
             {
-                throw new InvalidOperationException($"Malformed MMIO request '{fields}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("MMIO request", fields));
             }
 
             LastMmioAccess = new HostMmioAccess(physical, width, isWrite);
@@ -2505,7 +2529,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || !uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var a)
                 || (parts[0] is "R" or "W" && a >= 64))
             {
-                throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("GTE request", fields));
             }
 
             var gte = _devices.Gte;
@@ -2522,14 +2546,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 case "C":
                     if (!gte.ExecuteCommand(a))
                     {
-                        Refuse("GTE_COMMAND_UNSUPPORTED", string.Create(CultureInfo.InvariantCulture,
-                            $"GTE command 0x{a & 0x3F:X2} (word 0x{a:X7}) is not implemented."));
+                        Refuse("GTE_COMMAND_UNSUPPORTED", GteRefusalMessage(a));
                         return;
                     }
 
                     break;
                 default:
-                    throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+                    throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("GTE request", fields));
             }
 
             Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
@@ -2565,7 +2588,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // Validated whole before any effect: a malformed line must not advance the devices and then fail.
             if (!FusedRetiredRequest.TryParse(fields, out var retired, out var isWrite, out var access))
             {
-                throw new ProtocolFaultException($"Malformed fused guest-time report '{fields}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("fused guest-time report", fields));
             }
 
             // A refused report ends the request without the access, exactly as a refused stand-alone report did.
@@ -2581,7 +2604,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || retired == 0
                 || retired > MaxRetiredPerReport)
             {
-                throw new ProtocolFaultException($"Malformed guest-time report '{fields}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("guest-time report", fields));
             }
 
             // Overflow is a refusal, never a wrapped (shorter) elapsed time.
@@ -2713,7 +2736,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var reply = ReadReply();
             if (!reply.StartsWith(RecompiledArtifactCodeGen.ProtocolDataPrefix, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolDataPrefix}' reply, received '{reply}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.ReplyMismatch(RecompiledArtifactCodeGen.ProtocolDataPrefix, reply));
             }
 
             return (byte)ParseUInt(reply[RecompiledArtifactCodeGen.ProtocolDataPrefix.Length..].Trim());
@@ -2728,7 +2751,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var reply = ReadReply();
             if (!string.Equals(reply, RecompiledArtifactCodeGen.ProtocolWriteAck, StringComparison.Ordinal))
             {
-                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolWriteAck}' reply to a RAM write, received '{reply}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.WriteNotAcknowledged(RecompiledArtifactCodeGen.ProtocolWriteAck, reply));
             }
         }
 

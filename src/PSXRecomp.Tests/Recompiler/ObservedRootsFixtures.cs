@@ -41,14 +41,22 @@ internal static class ObservedRootsFixtures
     internal static ObservedRunIdentity PlaceholderRun { get; } = new(new string('0', 64), [], [], null, new string('0', 64));
 
     /// <summary>
-    /// One export target. Its <c>ramWord</c> is the word <see cref="Text"/> holds at the PC (what a run over these fixtures fetches),
-    /// unless <paramref name="ramWord"/> says otherwise.
+    /// One public export target. It carries no RAM word (the ruling on #839); the word is in the local RAM evidence (<see cref="LocalRamEvidenceJson"/>).
     /// </summary>
-    internal static string TargetObject(uint pc, string cause, ulong entries, ulong instructions, uint? ramWord = null)
-    {
-        var word = ramWord ?? (pc >= Dest && (pc - Dest) / 4 < Text.Length ? Text[(pc - Dest) / 4] : 0u);
-        return $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":{{entries}},"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}","ramWord":"0x{{word:X8}}"}""";
-    }
+    internal static string TargetObject(uint pc, string cause, ulong entries, ulong instructions) =>
+        $$"""{"pc":"0x{{pc:X8}}","cause":"{{cause}}","entries":{{entries}},"instructions":{{instructions}},"lastReturnPc":"0x{{Dest:X8}}"}""";
+
+    /// <summary>The RAM word <see cref="Text"/> holds at a PC: what a run over these fixtures fetches there (zero outside the text).</summary>
+    internal static uint DefaultRamWord(uint pc) => pc >= Dest && (pc - Dest) / 4 < Text.Length ? Text[(pc - Dest) / 4] : 0u;
+
+    /// <summary>The local RAM evidence (<c>fallback-ram-evidence/v1</c>) for one export, bound to its file's SHA-256.</summary>
+    internal static string LocalRamEvidenceJson(string exportSha256, IEnumerable<(uint Pc, uint Word)> words) =>
+        JsonSerializer.Serialize(new
+        {
+            format = ObservedRootPlanner.RamEvidenceFormat,
+            exportSha256,
+            words = words.Select(w => new { pc = $"0x{w.Pc:X8}", word = $"0x{w.Word:X8}" }).ToArray(),
+        }, new JsonSerializerOptions { WriteIndented = true });
 
     internal static string TargetsJson(uint pc, string cause, ulong instructions, ObservedRunIdentity? run = null) =>
         TargetsJson(run, TargetObject(pc, cause, 1, instructions));

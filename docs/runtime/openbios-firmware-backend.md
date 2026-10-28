@@ -264,8 +264,10 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     `region:function`; a PC maps to the nearest text symbol at or below it in
     the same region, by physical address).
   - `unsupportedOpcodes[]`: the first RI (10) / CpU (11) exception per
-    (ExcCode, major opcode) seen at the vector: faulting PC (EPC, +4 in a
-    delay slot), word, fallback fetch index.
+    (ExcCode, PC) seen at the vector: faulting PC (EPC, +4 in a delay slot),
+    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. An entry carries no
+    `opcode` field: it was a field of the withheld word, so it is no longer exported (a schema change from the earlier export, which
+    always had it `null`).
 - `timings` (wall clock, not deterministic): `buildMs` (image analysis),
   `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
   `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −
@@ -294,7 +296,7 @@ Besides the fields above (`execution` keeps the session's raw evidence):
 `boot-exe` or `disc-exes`), and the load is refused unless the image's source-file SHA-256, load address and code-word
 SHA-256 all match, and every root is a unique, aligned, in-image, structurally safe PC that is not already a root. The
 roots file is read strictly (a duplicate is an error), and one image takes at most one `roots` directive (the per-image limit is checked per file). `psxrecomp fallback-roots <openbios.bin> --load-images <manifest>
---fallback-targets <file.json> --out <manifest> [--disc <image>]` plans those roots from a probe run's full fallback
+--fallback-targets <file.json> (--out <manifest> | --diagnose-partial) [--disc <image>] [--local-ram-evidence <file.json>]` plans those roots from a probe run's full fallback
 export (`openbios-probe --engine generated-host --fallback-targets <file.json>`, which writes every distinct fallback target
 and leaves the top-12 summary unchanged). Only `unknown-code` and `aot-coverage-gap:loaded-image` targets inside one identified EXE image are candidates. The
 plan is ordered by observed instructions and bounded by `ObservedRootBudget.Default` (64 roots per image, 256 in total, and
@@ -308,14 +310,20 @@ execution that a different export would show. A v1 export carries no identity an
 `outcome` (its terminal `TitleExecutionState` and `complete`). Only a run that reached a classified end (`Completed`,
 `Returned`, `RuntimeHandoff`) is planned from; an export of a run that exhausted its budget, failed, or hit an unsupported
 transfer is partial and is refused, and an export without `outcome` is malformed. The probe still writes such an export
-(with its outcome) and reports it on stderr. The outcome also records the run's classified cause (`diagnosticCode`, for example `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`); a v2 export written before this field has it `null`. Diagnostic mode (Issue #773, owner-approved): `psxrecomp fallback-roots ... --diagnose-partial` (in place of `--out`) reads a budget-exhausted partial export (`BudgetExhausted`, or `RuntimeFailure` with a budget `diagnosticCode`) through the same identity check and planner gates, and prints the candidates with `"trust": "PARTIAL_UNTRUSTED"` and `"manifestWritten": false`. It writes no manifest and no roots file, and a production manifest is never changed from its output. Crashes, protocol failures, other failures, complete runs and `--stop-at` exports are refused in this mode too. Default `fallback-roots` (with `--out`) still refuses every partial export. Each target also carries `ramWord`: the instruction word the interpreter read from guest
-RAM or ROM at that PC, observed at every fallback fetch there. It is `null` when the PC is outside RAM and ROM (the probe reads no
-word there, so a zero is never recorded for it), when a fetch could not be read, or when two fetches at the same PC read different
-words. The planner rejects a `null` `ramWord` as `ram-word-mismatch`. The planner reads a target as a candidate root only when its `ramWord`
-equals the word the EXE file places at that PC; any other target is rejected with the reason `ram-word-mismatch` and is not reported
-as a native route. This check compares what the run fetched with the file, so it can refuse a root whose native block would not run,
-but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that at run time. A `v2` export
-without `ramWord` is malformed and refused. This note records what this repository does not show. Earlier commit
+(with its outcome) and reports it on stderr. The outcome also records the run's classified cause (`diagnosticCode`, for example `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`); a v2 export written before this field has it `null`. Diagnostic mode (Issue #773, owner-approved): `psxrecomp fallback-roots ... --diagnose-partial` (in place of `--out`) reads a budget-exhausted partial export (`BudgetExhausted`, or `RuntimeFailure` with a budget `diagnosticCode`) through the same identity check and planner gates, and prints the candidates with `"trust": "PARTIAL_UNTRUSTED"` and `"manifestWritten": false`. It writes no manifest and no roots file, and a production manifest is never changed from its output. Crashes, protocol failures, other failures, complete runs and `--stop-at` exports are refused in this mode too. Default `fallback-roots` (with `--out`) still refuses every partial export. Its RAM words come only from the same `--local-ram-evidence` file as the production mode; without it no candidate is named, and the output reports `ramEvidence` (`supplied`, `targetsWithoutRamWord`) and a stderr line says the evidence is missing. The public export carries no RAM word: no instruction word read from guest RAM or ROM is
+published (the ruling on #839). An export that contains `ramWord` is malformed and refused. The RAM word of each target is supplied only by
+the explicit local evidence (`openbios-probe --local-ram-evidence <file.json>`, format `fallback-ram-evidence/v1`), which records the word
+observed at each fallback PC in RAM, and it is bound to one export by that export file's SHA-256. The evidence is written and read only at a
+real location outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. The check
+resolves every symbolic link and junction on the path first (a link named outside a repository that points into it is refused), and a path
+whose real location cannot be determined is refused. The file is created exclusively, so an existing file is never replaced. `fallback-roots`
+takes it with `--local-ram-evidence <file.json>`. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
+could not be read, or when two fetches at the same PC read different words; such a target has no word. The planner reads a target as a
+candidate root only when its RAM word equals the word the EXE file places at that PC; any target without a word, or with another word, is
+rejected with the reason `ram-word-mismatch` and is not reported as a native route. Without the local evidence no target has a word, so
+no root is adopted (fail closed). The check is never skipped. This check compares what the run fetched with the file, so it can refuse a root
+whose native block would not run, but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that
+at run time. This note records what this repository does not show. Earlier commit
 messages on the observed-roots branch (d164590 and 366b0c1) cite an observation from a Persona real run and loaded-code counts from
 the same work. Neither is recorded in this repository (no run log, export, or measurement is committed), so both are unverified and
 are not evidence for any result here. The `ramWord` check is a code path; its effect on any real run has not been measured. Output safety: the
