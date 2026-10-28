@@ -661,6 +661,8 @@ public static class FirmwareDiagnosticDistribution
                 throw new InvalidOperationException(exception.Message, exception);
             }
 
+            // What the publish wrote is recorded as this build's own before anything is moved; each entry is checked again before its move.
+            area.AdoptPublished(publishDir);
             foreach (var file in Directory.EnumerateFiles(publishDir))
             {
                 area.MoveNew(file, Path.Combine(runtimeDir, Path.GetFileName(file)));
@@ -1169,28 +1171,59 @@ public static class FirmwareDiagnosticDistribution
             RequireRealChain(destination);
             RequireWithinPathLimit(destination);
             RefuseExisting(destination);
-            var before = RequireUnchangedBeforeMove(source);
+            var recorded = RequireMovableSource(source);
             File.Move(source, destination);
-            RequireMovedAsChecked(before, destination);
+            if (recorded is { } expected)
+            {
+                RequireMovedAsChecked(expected, destination);
+            }
+
+            // The destination is adopted only because the source was owned: its record moves with the entry.
             _owned.Remove(source);
             _reserved.Remove(source);
-            Own(destination);
+            _owned[destination] = recorded ?? IdentityOfPath(destination);
             return destination;
         }
 
         /// <summary>
-        /// Reads the source's identity before a move. A link is refused, and so is an entry whose identity cannot be read: the move does not
-        /// happen. The identity is compared again after the move (<see cref="RequireMovedAsChecked"/>).
+        /// Checks a source before it is moved. Its parent chain must be real directories up to the staging root (a link anywhere on the
+        /// way fails closed). It must be an entry this build created or adopted (a source that is not owned is never moved and then
+        /// adopted). Its identity must still match the one recorded for it. A reserved name has no recorded identity; it is moved only
+        /// while it is not a link. Returns the recorded identity, or null for a reserved name. A refusal is recorded as a residual.
         /// </summary>
-        private EntryIdentity RequireUnchangedBeforeMove(string source)
+        private EntryIdentity? RequireMovableSource(string source)
         {
-            if (IsReparsePoint(source))
+            RequireRealChain(source);
+            if (!_owned.TryGetValue(source, out var recorded))
             {
-                throw new IOException($"A link was found where a publish entry should be; it is not moved into the measurement: {source}");
+                Residual(source, "it was not created or adopted by this build, so it is not moved into the measurement");
+                throw new IOException($"A publish entry that this build did not create is not moved into the measurement: {source}");
             }
 
-            return IdentityOfPath(source) ?? throw new IOException(
-                $"The identity of a publish entry cannot be read, so it is not moved into the measurement: {source}");
+            if (_reserved.Contains(source))
+            {
+                if (IsReparsePoint(source))
+                {
+                    Residual(source, "a link was found where a reserved name should be, so it is not moved");
+                    throw new IOException($"A link was found where a reserved name should be; it is not moved into the measurement: {source}");
+                }
+
+                return null;
+            }
+
+            if (recorded is null)
+            {
+                Residual(source, "its identity was not recorded when it was created or adopted, so it is not moved");
+                throw new IOException($"The identity of a publish entry cannot be shown, so it is not moved into the measurement: {source}");
+            }
+
+            if (IdentityOfPath(source) != recorded)
+            {
+                Residual(source, "it is not the entry recorded for it (it was replaced), so it is not moved");
+                throw new IOException($"A publish entry was replaced, so it is not moved into the measurement: {source}");
+            }
+
+            return recorded;
         }
 
         /// <summary>
@@ -1213,12 +1246,12 @@ public static class FirmwareDiagnosticDistribution
             RequireWithinPathLimit(destination);
             RequireTreeWithinPathLimit(source, destination);
             RefuseExisting(destination);
-            var before = RequireUnchangedBeforeMove(source);
-            RequireNoLinksBelowPublish(source);
+            var recorded = RequireMovableSource(source);
+            RequireNoLinksBelowPublish(source); // a link already in the tree is refused before anything is moved
             Directory.Move(source, destination);
-            RequireMovedAsChecked(before, destination);
-            // The entries this build created under the directory moved with it: their records follow them to the new path, with the
-            // identities they already had (a rename keeps the file index).
+
+            // The entries this build owns under the directory move with it, with the identities they already had (a rename keeps the file
+            // index). This runs before any check below, so the moved tree's records stay with it and cleanup still owns them if a check fails.
             var prefix = source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             foreach (var nested in _owned.Keys.Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
             {
@@ -1234,7 +1267,14 @@ public static class FirmwareDiagnosticDistribution
             }
 
             _owned.Remove(source);
-            Own(destination);
+            if (recorded is { } expected)
+            {
+                RequireMovedAsChecked(expected, destination);
+            }
+
+            // A link created in the window before the move is moved with the tree; the scan after the move finds it and fails the build.
+            RequireNoLinksBelowPublish(destination);
+            _owned[destination] = recorded ?? IdentityOfPath(destination);
         }
 
         /// <summary>
@@ -1266,14 +1306,40 @@ public static class FirmwareDiagnosticDistribution
             _owned.Remove(path);
         }
 
-        /// <summary>Refuses a link anywhere below a publish directory before it is moved, so a link is never moved into the measurement.</summary>
-        private static void RequireNoLinksBelowPublish(string directory)
+        /// <summary>
+        /// Records every entry the publish step wrote under <paramref name="directory"/> as this build's own, with the identity read now, so
+        /// that <see cref="RequireMovableSource"/> can check each one before it is moved. A link found during the walk fails the step.
+        /// </summary>
+        public void AdoptPublished(string directory)
+        {
+            RequireRealChain(directory);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                if (IsReparsePoint(entry))
+                {
+                    throw new IOException($"A link was found in the published output; the measurement is not written: {entry}");
+                }
+
+                Own(entry);
+                if (Directory.Exists(entry))
+                {
+                    AdoptPublished(entry);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Refuses a link anywhere below a publish directory. It is called before a directory move and again after it, so a link is found
+        /// whether it existed before the move or was created in the window before the move. A link found is recorded as a residual.
+        /// </summary>
+        private void RequireNoLinksBelowPublish(string directory)
         {
             foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
             {
                 if (IsReparsePoint(entry))
                 {
-                    throw new IOException($"A link was found inside a publish directory; it is not moved into the measurement: {entry}");
+                    Residual(entry, "a link is inside a publish directory, so it is not treated as this build's");
+                    throw new IOException($"A link was found inside a publish directory; the measurement is not written: {entry}");
                 }
 
                 if (Directory.Exists(entry))

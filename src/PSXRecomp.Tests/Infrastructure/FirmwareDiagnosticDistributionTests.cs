@@ -550,7 +550,8 @@ public sealed class FirmwareDiagnosticDistributionTests
             }
         });
 
-        act.Should().Throw<Exception>();
+        act.Should().Throw<IOException>().WithMessage("*A link was found*",
+            "the write is refused because the firmware directory is now a link (the chain check), not for another reason");
         swapped.Should().BeTrue("the swap happened before the first file write");
 #pragma warning disable AARC003 // Justified: this line calls Directory.GetFileSystemEntries (temp file); it creates, checks, moves or removes an entry in this test's own temporary directory.
         Directory.GetFileSystemEntries(foreign).Select(Path.GetFileName).Should().BeEquivalentTo(["keep.txt"],
@@ -1451,6 +1452,147 @@ public sealed class FirmwareDiagnosticDistributionTests
         act.Should().Throw<IOException>().WithMessage("*A link was found*", "the link is refused before the move");
 #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (fixture check); it reads the test's own temporary directory to show nothing was moved.
         Directory.Exists(destination).Should().BeFalse("nothing is moved to the destination");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void MoveNew_PublishReplacedByAJunctionToAThirdPartyDirectory_MovesNothingAndTheThirdPartyFileSurvives()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Reviewer scenario: the publish directory is renamed aside and replaced by a junction to a third-party directory. The move must not
+        // move the third-party file into the staging area and adopt it, and cleanup must not delete it.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        File.WriteAllText(Path.Combine(publish, "keep.txt"), "published");
+        area.AdoptPublished(publish);
+        var victim = dir.CreateSubdirectory("victim");
+        File.WriteAllText(Path.Combine(victim, "keep.txt"), "third party");
+#pragma warning disable AARC003 // Justified: this line calls Directory.Move (temp file); it renames the test's own publish directory inside its temporary directory, to simulate a replacement.
+        Directory.Move(publish, publish + "-aside");
+#pragma warning restore AARC003
+        using var junction = JunctionFixture.Create(dir, publish, victim);
+        var destination = Path.Combine(area.Root, "keep.txt");
+
+        var act = () => area.MoveNew(Path.Combine(publish, "keep.txt"), destination);
+
+        act.Should().Throw<IOException>("the source's parent chain holds a link, so nothing is moved");
+        File.Exists(destination).Should().BeFalse("the third-party file is not moved into the staging area");
+        File.ReadAllText(Path.Combine(victim, "keep.txt")).Should().Be("third party");
+        area.Discard();
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a file the test wrote in its own temporary directory, to show cleanup left it.
+        File.ReadAllText(Path.Combine(victim, "keep.txt")).Should().Be("third party", "cleanup does not delete a third-party file");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void MoveNew_ThirdPartyNameBoundToTheSameFile_IsRefusedByTheChainCheck()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The identity check alone would accept this case: the third-party name is a hard link to the recorded file, so its identity matches.
+        // Only the parent-chain check refuses it, because the parent is a junction.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        File.WriteAllText(Path.Combine(publish, "keep.txt"), "published");
+        area.AdoptPublished(publish);
+        var aside = publish + "-aside";
+#pragma warning disable AARC003 // Justified: this line calls Directory.Move (temp file); it renames the test's own publish directory inside its temporary directory, to simulate a replacement.
+        Directory.Move(publish, aside);
+#pragma warning restore AARC003
+        var victim = dir.CreateSubdirectory("victim");
+        FirmwareDiagnosticDistribution.LinkDiscInPlace(Path.Combine(aside, "keep.txt"), Path.Combine(victim, "keep.txt"));
+        using var junction = JunctionFixture.Create(dir, publish, victim);
+        var destination = Path.Combine(area.Root, "keep.txt");
+
+        var act = () => area.MoveNew(Path.Combine(publish, "keep.txt"), destination);
+
+        act.Should().Throw<IOException>("the parent chain is a link, so the recorded file is not moved through it");
+        File.Exists(destination).Should().BeFalse("nothing is moved into the staging area");
+#pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show the third-party name was left in place.
+        File.Exists(Path.Combine(victim, "keep.txt")).Should().BeTrue("the third-party name is left where it was");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void MoveNew_AdoptedPublishedFile_MovesAndIsOwnedByCleanup()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A file the publish step wrote is adopted before the move; the move succeeds, and the moved file is owned, so cleanup removes it.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        File.WriteAllText(Path.Combine(publish, "keep.txt"), "published");
+        area.AdoptPublished(publish);
+        var destination = Path.Combine(area.Root, "keep.txt");
+
+        area.MoveNew(Path.Combine(publish, "keep.txt"), destination);
+
+        File.ReadAllText(destination).Should().Be("published");
+        area.Discard();
+#pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show cleanup removed the owned file.
+        File.Exists(destination).Should().BeFalse("the adopted file is owned, so cleanup removes it");
+#pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void MoveNew_SourceNotOwned_IsRefusedAndNeverAdopted()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A file in the publish directory that this build did not create or adopt is never moved, and the destination is never adopted.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        var source = Path.Combine(publish, "stranger.txt");
+        File.WriteAllText(source, "not ours");
+        var destination = Path.Combine(area.Root, "stranger.txt");
+
+        var act = () => area.MoveNew(source, destination);
+
+        act.Should().Throw<IOException>().WithMessage("*did not create*", "a source that is not owned is refused");
+        File.Exists(source).Should().BeTrue("the source is not moved");
+#pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show the destination was not created.
+        File.Exists(destination).Should().BeFalse();
+#pragma warning restore AARC003
+        area.Residuals.Should().ContainSingle(residual => residual.Contains("not created or adopted"), "the refusal is reported as a residual");
+    }
+
+    [SkippableFact]
+    public void MoveNewDirectory_PublishReplacedByAJunctionToAThirdPartyDirectory_MovesNothing()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The same chain check on the directory move: the adopted subdirectory's parent is a junction to a third-party directory.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        var sub = area.CreateDirectory(Path.Combine(publish, "sub"));
+        File.WriteAllText(Path.Combine(sub, "keep.txt"), "published");
+        area.AdoptPublished(publish);
+        var victim = dir.CreateSubdirectory("victim");
+        dir.CreateSubdirectory(Path.Combine("victim", "sub"));
+        File.WriteAllText(Path.Combine(victim, "sub", "keep.txt"), "third party");
+        Directory.Move(publish, publish + "-aside");
+        using var junction = JunctionFixture.Create(dir, publish, victim);
+        var destination = Path.Combine(area.Root, "sub");
+
+        var act = () => area.MoveNewDirectory(Path.Combine(publish, "sub"), destination);
+
+        act.Should().Throw<IOException>("the parent chain holds a link, so nothing is moved");
+#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (fixture check); it reads the test's own temporary directory to show nothing was moved.
+        Directory.Exists(destination).Should().BeFalse();
+#pragma warning restore AARC003
+#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a file the test wrote in its own temporary directory, to show the third-party file is unchanged.
+        File.ReadAllText(Path.Combine(victim, "sub", "keep.txt")).Should().Be("third party");
 #pragma warning restore AARC003
     }
 
