@@ -445,6 +445,13 @@ public sealed class FirmwareGeneratedHostTests(ITestOutputHelper output)
     // ----- Owner ruling on PR #850: a game-execution VBlank callback's exception propagates to the caller, unchanged. -----
 
     /// <summary>
+    /// The run timeout of the callback tests. It is set far beyond any load, so no test depends on wall-clock time: each run ends by the
+    /// callback's own exception (VBlank 1 is reached within the instruction budget) or by a stop, and the waits in these tests are on conditions.
+    /// </summary>
+    private static readonly TimeSpan HostRunTimeout = TimeSpan.FromMinutes(10);
+
+
+    /// <summary>
     /// A generated-host run whose game callback throws at VBlank 1. The ROM spins natively, so the time reports reach VBlank 1
     /// within the budget. <paramref name="onVBlank"/> runs in that VBlank and must end by throwing.
     /// </summary>
@@ -457,7 +464,7 @@ public sealed class FirmwareGeneratedHostTests(ITestOutputHelper output)
         RecompiledHostExecutionEngine? self = null;
         var engine = new RecompiledHostExecutionEngine(
             image.Program, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
-            mixedFallback: new MixedFallbackOptions(), guestFirmware: true)
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true, runTimeout: HostRunTimeout)
         {
             OnSchedulerCreated = s =>
             {
@@ -523,5 +530,13 @@ public sealed class FirmwareGeneratedHostTests(ITestOutputHelper output)
 
         act.Should().Throw<KeyNotFoundException>().Which.Should().BeSameAs(thrown, "a game exception during a stop is not a run exception");
         recorded().Should().BeSameAs(thrown);
+
+        // The requested stop is recorded: the run is never reported as NotStopped, even though its result is the game exception.
+        engine.ShutdownStatus.Should().NotBe(ShutdownOutcome.NotStopped);
+
+        // The child is confirmed gone, not only sent a kill: its exit is awaited by process id, bounded, and is not a fixed sleep.
+        var childId = engine.LastStopDiagnostics!.ProcessId;
+        childId.Should().BeGreaterThan(0, "the stop record names the child it stopped");
+        StopRecord.ProcessGoneWithin(childId, TimeSpan.FromSeconds(60)).Should().BeTrue("the stopped artifact process must have exited");
     }
 }

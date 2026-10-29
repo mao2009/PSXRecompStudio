@@ -194,7 +194,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
     /// <summary>
     /// Registers the VBlank subscribers of a host scheduler, on the pump thread: the live frame publish (Issue #818) as a
-    /// game-execution callback, whose exception propagates, and the boundary observer (Issue #774) as a diagnostic observer,
+    /// game-execution callback (LiveFramePublisher catches its own failures and never throws, so nothing propagates from it in
+    /// practice; the propagation contract still applies to any game-execution callback), and the boundary observer (Issue #774) as a diagnostic observer,
     /// whose exception is contained by the scheduler. <paramref name="onObserverFailure"/> is told of each observer exception
     /// before it is contained, so the engine can report the run as observer-failed. Both null leaves the scheduler unchanged.
     /// </summary>
@@ -904,8 +905,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord);
         }
-        // A game-execution VBlank callback's exception (owner ruling, PR #850) is not converted, even during a stop: it propagates to the caller
-        // unchanged, after the child was stopped (RunProcess kills it before rethrowing).
+        // A game-execution VBlank callback's exception that ends a requested stop (owner ruling, PR #850) propagates unchanged. Before it does,
+        // the stop is decided and its outcome recorded, so the run is never reported as NotStopped (Issue #827, invariant). Seal waits for a stop
+        // still deciding, and makes the outcome final; the kill RunProcess made before rethrowing is part of that outcome.
+        catch (Exception exception) when (stopToken.IsCancellationRequested && ReferenceEquals(exception, bridge?.GameCallbackFailure))
+        {
+            stopRecord.Seal();
+            LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested: true);
+            throw;
+        }
         catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop
             && !ReferenceEquals(exception, bridge?.GameCallbackFailure))
         {
@@ -1467,7 +1475,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             pumpCompleted = WaitPumpWithinOutputBudget(pump, process, timeoutMs, outputBudgetMs, stopRecord, out drainTimedOut);
         }
-        catch (AggregateException aggregate) when (bridge?.GameCallbackFailure is { } gameFailure && aggregate.Flatten().InnerExceptions.Any(inner => ReferenceEquals(inner, gameFailure)))
+        catch (AggregateException aggregate) when (IsGameCallbackFailure(aggregate, bridge))
         {
             // A game-execution VBlank callback's exception (owner ruling, PR #850) is not a protocol fault. The pump task wraps it, so the
             // child is stopped and the original instance is rethrown: the run fails with that exception, not as a clean non-boot.
@@ -1475,7 +1483,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             ExceptionDispatchInfo.Capture(bridge!.GameCallbackFailure!).Throw();
             throw;
         }
-        catch (Exception exception) when (!ReferenceEquals(exception, bridge?.GameCallbackFailure))
+        catch (Exception exception) when (!IsGameCallbackFailure(exception, bridge))
         {
             // The host-transfer pump faulted. Kill and drain the child, keep the
             // exception out of the result contract (log it locally for
@@ -1824,6 +1832,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Kills the child's tree on a timeout or a stop path. An exited child is left alone. A kill the OS refuses is never a raw exception
     /// out of the run: during a stop it is recorded as a refusal with its reason (Issue #827 review, MEDIUM 1).
     /// </summary>
+    /// <summary>
+    /// True when <paramref name="exception"/> is the run's recorded game-callback exception, either as itself or inside an aggregate (at any
+    /// depth). Identity, not type: a scheduler fault of the same type is not the game's (owner ruling, PR #850).
+    /// </summary>
+    private static bool IsGameCallbackFailure(Exception exception, HostTransferBridge? bridge)
+    {
+        var game = bridge?.GameCallbackFailure;
+        if (game is null) return false;
+        if (ReferenceEquals(exception, game)) return true;
+        return exception is AggregateException aggregate && aggregate.Flatten().InnerExceptions.Any(inner => ReferenceEquals(inner, game));
+    }
+
     private static void TryKillTree(Process process, StopRecord stopRecord, CancellationToken stopToken)
     {
         try
