@@ -40,7 +40,7 @@ Title identity:
 - `Region` enum with `Unknown = 0`, `Japan`, `NorthAmerica`, `Europe`, `Asia`, `Korea`, `Australia`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Region.cs:10-32`]
 - `Revision` is `(Level, BuildYear, BuildMonth)` with `CanonicalKey` `Level.YYYY.MM`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Revision.cs:10-37`]
 - A SHA-256 hex helper exists for artifacts. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:72-75`]
-- Disc image SHA-256 is recorded in artifact fixture identity. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`, `:39`] A `discHash` diagnostics key is declared, with no writer found in `src` at `2e3ecad`. Its value and algorithm are UNVERIFIED. [CONFIRMED for the declaration: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`]
+- Disc image SHA-256 is recorded in artifact fixture identity. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`, `:39`] A `discHash` diagnostics key is declared, with no writer of that key found in `src` at `2e3ecad`. Its value and algorithm are UNVERIFIED. [CONFIRMED for the declaration: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`] A disc SHA-256 is persisted under a different name in the firmware boot manifest: `FirmwareDistribution.cs` computes it with `OpenBiosRomInput.Sha256HexOfFile(stagedDisc)` at line 391 and writes it as `discHash` into `FirmwareBootManifest` at line 451. The manifest field is `DiscSha256` (`src/PSXRecomp.Infrastructure/Standalone/FirmwareBootManifest.cs:21`, `:35`) and is verified before each run at `FirmwareDistribution.cs:672`. This is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. [CONFIRMED]
 
 Evidence and confidence (Analysis contracts):
 
@@ -65,7 +65,7 @@ Environment:
 - `ExecutionEnvironmentReport` records `OsPlatform`, `OsVersion`, `OsArchitecture`, process architecture, .NET version, runtime identifier, compiler version, and target architecture. Schema string `psxrecomp.execution-environment.v1`. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:11` (record), `:14` (`CurrentSchema`), `:16` (private constructor), `:38-40` (OS properties)]
 - No GPU field exists in `src/PSXRecomp.Core/Diagnostics`. A search for `gpu`/`GPU` in that folder returned no environment field. [CONFIRMED: grep over `src/PSXRecomp.Core/Diagnostics`]
 - No `RecompBuildId` or `RuntimeVersion` identifier was found in `src/PSXRecomp.Core`. The only `BuildIdentity` hits are the analysis artifact builder's fixture identity, not a recomp build id. [CONFIRMED: grep for `BuildId|RuntimeVersion|DiscHash|GameId|ReleaseId` in `src/PSXRecomp.Core` returned `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/DeterministicArtifactBuilder.cs:86,162,165`, `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`, `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`]
-- A `discHash` diagnostics key is declared (`DiagnosticContextKeys.DiscHash = "discHash"`) and listed in `ExecutionDiagnosticLog`. No writer was found in `src` at `2e3ecad`, and the value and algorithm are UNVERIFIED. This is a diagnostics key, not a title-registry field. [CONFIRMED for the declaration and listing: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
+- A `discHash` diagnostics key is declared (`DiagnosticContextKeys.DiscHash = "discHash"`) and listed in `ExecutionDiagnosticLog`. No writer of this key was found in `src` at `2e3ecad`, and the value and algorithm are UNVERIFIED. The disc SHA-256 that does exist is written to the firmware boot manifest (`FirmwareDistribution.cs:391`, `:451`; see §2.1 above), which is a staging artifact. This is a diagnostics key, not a title-registry field. [CONFIRMED for the declaration and listing: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
 
 Persistence precedent:
 
@@ -123,7 +123,7 @@ Five facets, each evaluated on its own ladder:
 | Facet | Question it answers | Notes |
 |---|---|---|
 | Boot | Does the title reach its first stable screen through the Runtime path? | Maps to the Persona-style gate in `capabilities.md:87`. |
-| Gameplay | Can a scripted input path reach and play a defined level or state? | Requires an input-evidence source (see Q10). |
+| Gameplay | Can a scripted input path reach and play a defined level or state? | Requires an input-evidence source (see Q14). |
 | Save | Can the title write and read its save through the memory-card model? | Storage format is `Verified` (`capabilities.md:80`); title-level save is separate. |
 | Audio | Is audio produced and does playback stay in sync? | SPU audio output is `Not claimed` (`capabilities.md:78`), so this facet is `Unverified` by default. |
 | Graphics | Does frame output match a defined reference for a scenario? | GPU is `Partial` (`capabilities.md:77`). |
@@ -351,7 +351,7 @@ Per title: one row per binding in use, five facet columns, each cell showing the
 
 - **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
 - **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
-- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`DiagnosticContextEntry.cs:47`), but no writer was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A decision is needed before v1.1.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is persisted in the firmware boot manifest (`FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision. A decision is needed before v1.1.
 - **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
 - **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
 - **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
@@ -362,6 +362,7 @@ Per title: one row per binding in use, five facet columns, each cell showing the
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
 - **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
+- **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 
 ## 11. Verification of this document
 
