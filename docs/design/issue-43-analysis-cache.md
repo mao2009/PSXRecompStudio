@@ -1,9 +1,10 @@
 # Issue #43: Incremental Analysis and Cache (design, r10)
 
-- Status: **Design. No stage is cacheable.** Until the U2 gate passes for a stage, that stage is
-  uncacheable in every mode. An uncacheable stage is recomputed on every run, and no entry is written
-  for it, in Verify mode as well (section 6.5). The hit path is not executed by any production run
-  until U2 passes, and no test may claim a production stage is cacheable (7.1, 7.3).
+- Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
+  cacheable only when its U2 verdict, V-ID, and T-IDENT all hold. Until Rule C holds for a stage, that
+  stage is uncacheable in every mode. An uncacheable stage is recomputed on every run, and no entry is
+  written for it, in Verify mode as well (section 6.5). The hit path is not executed by any production run
+  until Rule C holds, and no test may claim a production stage is cacheable (7.1, 7.3).
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
 - Revision: r10. Addresses the final review of `c0f916e` (r9): 2 medium, 2 low. The direction of r9 is
@@ -21,7 +22,7 @@ The r2 to r5 static file partition is withdrawn (owner ruling). Checked at base 
 - **CONFIRMED** `src/PSXRecomp.Core/DiscImage/ChdCdSectorSource.cs` implements `ICdSectorSource` (`:15`)
   and uses `CdDiscToc` (`:30`, `:33`). Both are declared in `src/PSXRecomp.Core/Runtime/CdRom/ICdSectorSource.cs`:
   `CdDiscToc` at `:11`, `ICdSectorSource` at `:56`.
-- **CONFIRMED** `ArtifactJson` is called from C-side files: `src/PSXRecomp.Core/Recompiler/RecompilerContract.cs:1126`,
+- **CONFIRMED** `ArtifactJson` is called from Core source files: `src/PSXRecomp.Core/Recompiler/RecompilerContract.cs:1126`,
   `:1132`, and `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/RealRomCoverageDocument.cs:245`.
 - **CONFIRMED** `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:147` writes
   `AnalysisArtifactSchema.CoverageArtifactKind`.
@@ -63,7 +64,7 @@ stage uncacheable (3.4).
   (rule Y1).
 - **CONFIRMED** Schema constants: `ManifestSchemaVersion = 2`, `ReportSchemaVersion = 2`,
   `InstructionsSchemaVersion = 1`, `CfgSchemaVersion = 1`, `CoverageSchemaVersion = 1`,
-  `FunctionProvenanceSchemaVersion = 1` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisArtifactSchema.cs:27-49`).
+  `FunctionProvenanceSchemaVersion = 1` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisArtifactSchema.cs:27-49`; `FunctionProvenanceSchemaVersion` is declared at `:49`).
   `CoverageArtifactKind` at `:64`.
 - **CONFIRMED** `ProjectFormatVersion = 1` (`src/PSXRecomp.Core/Project/ProjectSchema.cs:19`). Which
   project fields reach analysis is UNVERIFIED (U3).
@@ -76,9 +77,9 @@ The pipeline has three public entry points. Every caller found in the tree is li
 
 | Entry point | Definition | Callers (CONFIRMED) | Stages covered | Supplied identity |
 |---|---|---|---|---|
-| `RunFromChd(byte[] discImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:42-62`; `ValidateInput` at `:57` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:29` (inside `DiscImageAnalyzer.Analyze(byte[] chdBytes, string chdSha256, ...)`, `:26-29`). Test callers are not enumerated (UNVERIFIED, U7). | N1 to N15 (CHD path: N2 runs) | non-empty check only (`:194-198`) |
-| `RunFromChd(Stream chdStream, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:78-104` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:44` (inside `DiscImageAnalyzer.Analyze(Stream chdStream, string chdSha256, ...)`, `:41-44`). CLI: `src/PSXRecomp.Cli/CliInput.cs:115`. GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:117`. Tests: `src/PSXRecompStudio.Tests/RealRomProductionExecutionTests.cs:75`. Test driver: `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:122`. | N1 to N15 (N2 runs) | non-empty check only (`:93-98`) |
-| `RunFromIsoImage(byte[] isoImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:142-164` | GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97` | N1, N3 to N15 (N2 is skipped: `RomAnalysisPipeline.cs:163`) | non-empty check only (`:194-198`, via `ValidateInput`) |
+| `RunFromChd(byte[] discImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:42-62`; `ValidateInput` at `:57` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:29` (inside `DiscImageAnalyzer.Analyze(byte[] chdBytes, string chdSha256, ...)`, `:26-29`). Test callers are not enumerated (UNVERIFIED, U7). | N1 to N15 except N13 (CHD path: N2 runs) | non-empty check only (`:194-198`) |
+| `RunFromChd(Stream chdStream, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:78-104` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:44` (inside `DiscImageAnalyzer.Analyze(Stream chdStream, string chdSha256, ...)`, `:41-44`). CLI: `src/PSXRecomp.Cli/CliInput.cs:115`. GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:117`. Tests: `src/PSXRecompStudio.Tests/RealRomProductionExecutionTests.cs:75`. Test driver: `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:122`. | N1 to N15 except N13 (N2 runs) | non-empty check only (`:93-98`) |
+| `RunFromIsoImage(byte[] isoImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:142-164` | GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97` | N1, N3 to N15 except N13 (N2 is skipped: `RomAnalysisPipeline.cs:163`) | non-empty check only (`:194-198`, via `ValidateInput`) |
 
 Notes:
 
@@ -92,7 +93,7 @@ Notes:
 ### 2.2 Stage table
 
 "Candidate" means the stage is a cache candidate, not cacheable. Every candidate is uncacheable until
-U2 passes for it (9). The record column names the values the stage's input record holds (3.5).
+Rule C (4.3) holds for it. The record column names the values the stage's input record holds (3.5).
 
 | Stage | Status | Input record (values, 3.5) | Evidence (reads, from the code) |
 |---|---|---|---|
@@ -111,6 +112,18 @@ U2 passes for it (9). The record column names the values the stage's input recor
 | N12d differential | not cached | `validations`, supplied on that run | `RealRomCoverageAnalyzer.cs:85-88`, assignment `:185`, `BuildDifferential` `:377-382` |
 | N14 artifact documents | not cached | runs each run | `DeterministicArtifactBuilder.cs:74`, `:96-99`, `:115-121`, `:124`; `ArtifactJson.cs:32` |
 | N15 persistence | not cached | runs each run | `src/PSXRecomp.Tests/RealRomAnalysis/RealRomArtifactWriter.cs:44-50` (LOW-1: the writer lives in the test project; moving it is U3) |
+
+**N13 is not a stage.** The numbering has no N13. The first revision (`6d038a0`) listed N13 as the coverage
+probe, which calls `MipsToIrLowerer.LowerProgram` (call at `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:251`,
+in `ProbeLowerable`, `:234-261`). That probe is part of the N12a classification row above. The number is not reused.
+Every "N1 to N15" range in this document means the stages in this table, without N13.
+
+**Replaced design (`analyzerFingerprint`).** The identifier `analyzerFingerprint` does not exist in the repository
+(`git grep` at `f95bbae` finds none). It appears in revision `c8299d4` (12 occurrences) and is absent from `684b573`
+onward. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
+replaced design. The N7 to N15 closure replaces the fingerprint: the whole Core MVID (3.3) gives the code identity,
+and the reachability closure of each stage (3.4, 9) decides whether that stage may use the cache at all. No
+code-fingerprint identifier is used in the current design.
 
 **N12a and N12d.** `Analyze(report, fixture, validations = null)` (`RealRomCoverageAnalyzer.cs:88`) returns
 `Differential = BuildDifferential(validations)` (`:185`). N12a is a function of `(report, fixture)` only.
@@ -221,7 +234,8 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
 10. **Time.** `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.Now`, `Stopwatch` used in a value, time zone
     lookups. *Generic guard; acceptance criterion 1 of 9.*
 11. **File system.** `System.IO` reads or directory enumeration. A file read is an input and must be in the
-    record as a value, not read implicitly.
+    record as a value, not read implicitly. Core performs no file reads. The build-tree files of 3.8 are read by the
+    host before any stage runs, and they enter the key only as values (3.8).
 12. **Randomness.** `Random`, `RandomNumberGenerator`, `Guid.NewGuid`, and hash codes of reference types.
     *Generic guard; acceptance criterion 1 of 9.*
 13. **Unresolved symbols or an assembly outside the allow-list.** The allow-list is the BCL and `PSXRecomp.Core`.
@@ -323,8 +337,10 @@ are not Core source.
   - `loach.ArchitectureAnalyzer` 0.1.0, `PrivateAssets="all"`, a build-time analyzer whose `AdditionalFiles` input
     is `src/architecture.contract.json`, in the `EnableArchitectureAnalyzer` item group
     (`Directory.Build.props:44-47`, package at `:45`).
-  - The resolved versions are read from `obj/project.assets.json`. This is an explicit exception: the only `obj/`
-    file read, read by exact name. The csproj pins direct packages only, and there is no lock file (CONFIRMED by listing).
+  - The resolved versions are read from `obj/project.assets.json`. The read is by exact name and is done by the host,
+    once per run, before any stage runs: the production `IStageCodeIdentity` implementation (File access belongs to
+    Infrastructure, 8.1). Core and stage bodies do not read it, so it is not an implicit input of 3.4 item 11. The
+    value enters the key as `dependencyIdentity`. The csproj pins direct packages only, and there is no lock file (CONFIRMED by listing).
 - **SDK version and runtime version.**
   - At build time, a target reads the MSBuild property `$(NETCoreSdkVersion)` (name UNVERIFIED, U5) and writes it into a
     generated source file in `obj/`. The generated file is compiled into Core, so its value is inside the MVID of 3.3.
@@ -336,8 +352,10 @@ are not Core source.
   separate assembly. `Directory.Build.props:22-24` links it into every project whose `CompileArchitectureAttributes` is
   `true`, and `PSXRecomp.Core.csproj:7` sets it. Its `internal` attribute types are compiled into Core, so the MVID of
   3.3 covers them.
-- **Failure rule.** If any of these cannot be read, the stage is uncacheable and reports
-  `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5). No constant is substituted.
+- **Failure rule.** If any of these cannot be read by the host, the stage is uncacheable and reports
+  `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5). No constant is substituted. An installed CLI or GUI has no source tree, so `obj/project.assets.json`,
+  `Directory.Build.props`, and the generated SDK file are absent there. In that build every run is uncacheable, and
+  each run reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
 
 ### 3.9 Decision: line endings
 
@@ -384,8 +402,11 @@ not depend on the checkout's line endings, because it is computed from the compi
   (`RomAnalysisPipeline.cs:93-98`, `:194-198`). The CLI hashes the file in a separate pass (`CliInput.cs:106-109`,
   then `:115` on a second open). The test driver hashes separately (`RealRomAnalyzer.cs:102-104`). Nothing checks
   that the supplied value matches the bytes that run.
-- **Gate.** V-ID, with U2 and T-IDENT, gates Normal mode (7.1). V-ID also gates writes, because an entry keyed on an
-  unverified identity would be unsound.
+- **Rule C (cacheability; the only cacheability rule).** A stage is cacheable only when all three hold: (a) its U2
+  verdict is `cacheable` for the running Core MVID (9.3); (b) V-ID is implemented; (c) T-IDENT passes (7.3). The rule
+  applies to writes, Verify-mode comparison, and Normal-mode hits alike, because an entry keyed on an unverified
+  identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). This is the current
+  proposal. Other sections restate it or refer to it.
 - **Migration.** `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:24` defines `Sha` as a literal that is
   not the hash of the bytes passed at `:347`. About 50 call sites exist in the test projects (9 in that file, 2 in
   `SyntheticChdReaderTests.cs`, 2 in `RealRomAnalyzer.cs`, 36 in `RomAnalysisPipelineTests.cs`, 1 in
@@ -477,7 +498,8 @@ differs from what the stage now computes would be used in Normal mode. That is t
 
 ### 6.5 Uncacheable stages in every mode
 
-- **Default status.** Until the U2 gate passes for a stage (9.3), that stage is **uncacheable**. This is the default
+- **Default status.** Until Rule C (4.3) holds for a stage (its U2 verdict for the running MVID, V-ID, and T-IDENT),
+  that stage is **uncacheable**. This is the default
   for every stage.
 - **Consequence.** An uncacheable stage writes **no entry in any mode**, including Verify mode. Verify mode for an
   uncacheable stage recomputes and compares with nothing, because nothing was written. This closes the path in which
@@ -491,8 +513,8 @@ differs from what the stage now computes would be used in Normal mode. That is t
 - **Default mode is Verify.** In Verify mode, a cacheable stage is recomputed cold. If an entry exists, its payload
   is compared with the cold payload byte for byte. A difference is `ANALYSIS_CACHE_VERIFY_MISMATCH` and a hard failure.
   The cold result is returned, never the entry.
-- **Normal mode** returns a valid entry as a hit. It is enabled for a stage only when **all** of the following hold:
-  the U2 gate passes for that stage with a matching MVID (9.3), V-ID is implemented (4.3), and T-IDENT passes.
+- **Normal mode** returns a valid entry as a hit. It is used for a stage only when Rule C (4.3) holds for that stage, the same condition as for Verify mode:
+  the U2 verdict is cacheable for the running MVID (9.3), V-ID is implemented, and T-IDENT passes.
 - The default is set in `AnalysisCacheOptions` and is not optional.
 - **Production cannot reach the test seams.** A test that needs a cacheable verdict, or a fake code identity, injects it
   through the Core port `IStageCodeIdentity`. The fake implementation lives in the test project. Production code may not
@@ -532,33 +554,35 @@ Two fixture sets are used, and they must not overlap:
 - **Fixture set B** drives T-DEP-DEAD and T-DEP-INPUT. Set B uses other synthetic configurations (different counts,
   text layouts, and disc identities), so a field read only in set-B configurations is not missed.
 
-**Gating.** Four tests need a stage that can actually be stored and reused. They are gated on U2 for the stage under
-test, and they are **not run in production** before then: T-DEP-INPUT, T-IDENT2, T-STALE, and the baseline step of
-T-DEP-DEAD (b). Before U2 passes, a test-only verdict may exercise the mechanism. Such a run proves the mechanism only. It
-does not count toward any gate, and it does not make a production stage cacheable.
+**Gating.** The tests below need a stored entry or a cacheable verdict. Their precondition is Rule C (4.3) for the
+stage under test. They are **not run in production** before that precondition holds: T-COLD-WARM (hit assertions),
+T-DEP-INPUT, T-IDENT2, T-STALE (Normal-mode part), T-DEP-DEAD (step b), T-CORRUPT, T-QUAR-FAIL, T-W6, T-MISSING,
+T-PARTIAL, T-DIFF-RUN (warm half), and T-GOLDEN. Before Rule C holds, a test-only verdict may exercise the mechanism.
+Such a run proves the mechanism only. It does not count toward any gate, and it does not make a production stage
+cacheable.
 
 | ID | Test | Asserts | Scope and gate |
 |---|---|---|---|
-| T-COLD-WARM | Cold and warm equality, and entry count | For each set-A fixture: run cold, store, run warm. **While a stage is uncacheable (the default), the test asserts that the number of entries written for it is 0 and the number of hits is 0**, and that the warm output equals the cold output byte for byte. Once U2 passes for a stage, the test also asserts hits equal the number of cacheable units, and the warm payload equals the cold payload per stage. | Runs now (entry count 0). Hit assertions run after U2 |
-| T-DEP-INPUT | Changed record value is not reused | For each stage and each record field, on set-B fixtures, change that one value. The key differs, the entry is not reused, and the recomputed payload is stored under the new key. | **After U2 passes for the stage.** Before that, not run in production |
+| T-COLD-WARM | Cold and warm equality, and entry count | For each set-A fixture: run cold, store, run warm. **While a stage is uncacheable (the default), the test asserts that the number of entries written for it is 0 and the number of hits is 0**, and that the warm output equals the cold output byte for byte. Once Rule C holds for a stage, the test also asserts hits equal the number of cacheable units, and the warm payload equals the cold payload per stage. | Runs now (entry count 0). Hit assertions run after Rule C holds |
+| T-DEP-INPUT | Changed record value is not reused | For each stage and each record field, on set-B fixtures, change that one value. The key differs, the entry is not reused, and the recomputed payload is stored under the new key. | **After Rule C holds for the stage.** Before that, not run in production |
 | T-DEP-CODE | Changed code identity is not reused | Substitute a changed `codeIdentity` in `IStageCodeIdentity` (test fake). The entry is not reused. | Test-only verdict; proves the mechanism, not any production cacheability |
-| T-DEP-DEAD (MAJOR-2 of r8, LOW-3 of r8) | Field removal is checked by value and by static verdict | For each field whose set-A reads are zero, and only for those: (a) the U2 static verdict must say "unread"; (b) on set-B fixtures, the baseline run with the **unchanged** record has key **K0** and stores payload **P0** under K0. The changed record's key is **K1**, and its cold result is **C1**. The field is accepted only if **C1 equals P0** byte for byte. A field that fails (a) or (b) stays in the record. | Step (b) reads a stored entry, so it runs **after U2 passes for the stage**. (a) runs with U2 |
-| T-IDENT2 (C1 of r7) | Same executable, different disc identity | Two fixtures with the same boot executable bytes and different disc hashes (and, in a second case, a different boot path). The N11 and N12a keys differ, the second run does not reuse the first run's entry, and each payload contains its own disc hash and boot path. | **After U2 passes for N11 and N12a** (it observes reuse). The key difference alone can be checked before |
+| T-DEP-DEAD (MAJOR-2 of r8, LOW-3 of r8) | Field removal is checked by value and by static verdict | For each field whose set-A reads are zero, and only for those: (a) the U2 static verdict must say "unread"; (b) on set-B fixtures, the baseline run with the **unchanged** record has key **K0** and stores payload **P0** under K0. The changed record's key is **K1**, and its cold result is **C1**. The field is accepted only if **C1 equals P0** byte for byte. A field that fails (a) or (b) stays in the record. | Step (b) reads a stored entry, so it runs **after Rule C holds for the stage**. (a) runs with U2 |
+| T-IDENT2 (C1 of r7) | Same executable, different disc identity | Two fixtures with the same boot executable bytes and different disc hashes (and, in a second case, a different boot path). The N11 and N12a keys differ, the second run does not reuse the first run's entry, and each payload contains its own disc hash and boot path. | **After Rule C holds for N11 and N12a** (it observes reuse). The key difference alone can be checked before |
 | T-DIFF (MAJOR-1 of r7) | N12a is independent of validations | For a fixed `(report, fixture)`, vary `validations` (none, one run, two runs, different order). The N12a payload is byte-identical in every case. The document from N14 differs only in the `Differential` section. | Runs after U1 (N12a exists as a function) |
 | T-UNCACHE | Uncacheable stage writes nothing | For the default status, and with an injected uncacheable verdict, each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Runs now |
 | T-KEY-UNAVAIL (M8 of r8, MINOR-7 of r7) | Unreadable key input | Make the package file, `Directory.Build.props`, the generated SDK file, the runtime version, or the MVID unreadable in a fake, one at a time. The stage is uncacheable and reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`. No constant key is produced. | Runs now (fake inputs) |
 | T-READ | Record matches reads | Run each stage under the recorder on set-A fixtures. Every record field's read count is recorded. A zero-read field is listed as a flag for review (V6). It is not removed by this test. | Runs after U1 (records exist) |
 | T-STATIC (M2 of r8, MAJOR-1 of r7) | Static check of the record and the split | Each stage signature has one parameter. Its reached body reads nothing outside the record. The N12a closure does not reach `BuildDifferential`, `validations`, or `Differential`. | Static, U2 (9) |
 | T-CLOSURE-RT | Executed paths against the analysed closure | Run each candidate stage under an instrumented build that records executed methods and the environment, time, file, culture, and random APIs. Every executed Core method must be in the analysed closure, and no implicit-input API may execute. | Exercised paths only, current revision; instrumentation UNVERIFIED (9, criterion 5) |
-| T-CORRUPT | Corrupt entries fail safe | For each corruption (zero-length file, truncated payload, flipped byte, wrong key in header, unsupported `keyFormat`, malformed header, schema mismatch), the run recomputes, the output equals the cold output byte for byte, and `ANALYSIS_CACHE_QUARANTINED` is reported once per corrupt entry. | Needs an entry; runs after U2 for a stage. A test-only verdict may exercise it earlier |
+| T-CORRUPT | Corrupt entries fail safe | For each corruption (zero-length file, truncated payload, flipped byte, wrong key in header, unsupported `keyFormat`, malformed header, schema mismatch), the run recomputes, the output equals the cold output byte for byte, and `ANALYSIS_CACHE_QUARANTINED` is reported once per corrupt entry. | Needs an entry; runs after Rule C holds for a stage. A test-only verdict may exercise it earlier |
 | T-QUAR-FAIL (m6 of r8) | Failed quarantine is terminal | Make the rename fail for a corrupt entry. The run recomputes, reports `quarantineFailed = true`, writes nothing to that key, and writes successfully for a different key in the same run. | Needs an entry; same as T-CORRUPT |
 | T-W6 (m5 of r8) | Existing target | A write whose target exists with a matching `payloadSha256` but a different key or a missing `COMPLETE` is treated as corrupt, not accepted. | Needs an entry; same as T-CORRUPT |
 | T-MISSING | Missing entries are silent | Delete an entry. The run recomputes, the output equals the cold output, and no diagnostic is reported. | Needs an entry; same as T-CORRUPT |
-| T-PARTIAL | Partial failure writes nothing below | A failure injected at N8 writes no entry for N8 or later. The N7 entry is the only one written. | Needs an entry; after U2 for N7 |
-| T-STALE | Stale-but-consistent entry (residual risk) | An entry whose header and `COMPLETE` marker match the current key, with a payload that differs from the cold result. In **Verify** mode (default) the run reports `ANALYSIS_CACHE_VERIFY_MISMATCH` and returns the cold result. In **Normal** mode the entry is returned. | **Normal mode is available only after the gate of 7.1.** Verify-mode part may run with a test-only verdict |
+| T-PARTIAL | Partial failure writes nothing below | A failure injected at N8 writes no entry for N8 or later. The N7 entry is the only one written. | Needs an entry; after Rule C holds for N7 |
+| T-STALE | Stale-but-consistent entry (residual risk) | An entry whose header and `COMPLETE` marker match the current key, with a payload that differs from the cold result. In **Verify** mode (default) the run reports `ANALYSIS_CACHE_VERIFY_MISMATCH` and returns the cold result. In **Normal** mode the entry is returned. | **Normal mode is available only after Rule C (4.3) holds.** Verify-mode part may run with a test-only verdict |
 | T-SHORT (5.2) | Short text segment | An executable whose text segment is shorter than its declared size passes `MIPS_DECODE` with exactly one failure at the first address past the segment, and no exception escapes. | Runs now |
 | T-PREFIX (5.1) | Prefix slice | N7 output sliced to `M` before N8 equals today's count-limited decode at `M`, including failures filtered by `A < entry + 4*M`. | Runs after R-0 (U1) |
-| T-DIFF-RUN | Differential on and off, end to end | Cold and warm runs with validations supplied and without, both byte for byte. N12d is never read from the cache. | Runs now (warm payloads exist only after U2) |
+| T-DIFF-RUN | Differential on and off, end to end | Cold and warm runs with validations supplied and without, both byte for byte. N12d is never read from the cache. | Cold half runs now. Warm half runs after Rule C holds |
 | T-IDENT (4.3) | Identity verification | A supplied hash that differs from the computed hash fails the Input stage with a dedicated failure kind and no cache write. The CLI, the GUI, and the test driver, given the same bytes, compute the same verified hash. **Required for the Normal-mode gate.** | Runs after V-ID is implemented (not yet) |
 | T-CODEC | Key encoder and payload codec | The key text of a fixed sample equals the committed text, and its SHA-256 equals the committed value. Member order is UTF-8 byte order. Floats are rejected. The codec round-trips each record and stage type, and is injective on the fixtures. | Runs now |
 | T-LF | Verbatim string lint (DEC-LF1) | Fails if a file on a dependency input path contains a multi-line verbatim string literal. | Static, runs now |
@@ -654,7 +678,7 @@ acceptance criterion.
 
 **Binding to the MVID.** The gate is read by the **host** (composition root or CLI), not by Core. Core does not read files
 (3.4 item 11). The host compares the file's `mvid` with the MVID of the running Core assembly, which Core exposes as a
-value. If they are equal and the stage's verdict is `cacheable`, the host passes the verdict into
+value. If they are equal, the stage's verdict is `cacheable`, and Rule C (4.3) holds for the stage, the host passes the verdict into
 `AnalysisCacheOptions` as a value. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
 uncacheable and reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5).
 
@@ -679,7 +703,7 @@ keeps stages uncacheable. It is not a build failure, because an uncacheable stag
    check, not a proof. Criterion 4 is the proof.
 6. **Recording.** The output is produced for the commit under review and recorded with its MVID, in the file of 9.3.
 
-Until criteria 4 and 5 pass for a stage, that stage stays uncacheable (6.5).
+Until criteria 4 and 5 pass for a stage, that stage stays uncacheable (6.5). Rule C (4.3) also requires V-ID and T-IDENT.
 
 ## 10. Open items (UNVERIFIED unless stated)
 
@@ -697,13 +721,13 @@ Until criteria 4 and 5 pass for a stage, that stage stays uncacheable (6.5).
 - **U8.** Read `PathRedactor.cs` and the synthetic builder APIs before the tests are implemented.
 - **U9. Closed.** `ICdSectorSource.cs:11` (`CdDiscToc`) and `:56` (`ICdSectorSource`).
 - **U10.** Confirm which declared stage outputs embed `ArtifactJson` content (`RealRomCoverageDocument.cs:245`, `RecompilerContract.cs:1126`).
-- **V-ID.** Implement the identity verification of 4.3. A gate for Normal mode, with U2 and T-IDENT.
+- **V-ID.** Implement the identity verification of 4.3. One of the three conditions of Rule C (4.3), with U2 and T-IDENT.
 
 ## 11. Non-goals
 
 - No change to the decoder, the formatter, the YAML, the analyzer, or the artifact schemas.
 - No cache implementation. This is the design only.
-- No stage is declared cacheable in this document. Every stage is uncacheable until the U2 gate and V-ID pass for it.
+- No stage is declared cacheable in this document. Every stage is uncacheable until Rule C (4.3) holds for it.
 - No AI result producer.
 - No change to the project file format.
 - No ADR is created here.
@@ -752,5 +776,5 @@ The review of `29e1488` (r7) and the review of `cdd1634` (r8) are summarized her
 - **r8 MAJOR-1 to MAJOR-3 (the review of `cdd1634`)**: resolved in r9, see 12.1 (MAJOR-A to MAJOR-C).
 - **r8 MEDIUM-D and MEDIUM-E, LOW-1 to LOW-3**: resolved in r9, see 12.1 (MEDIUM-D completed in r10, MEDIUM-E corrected in r10).
 
-The blocker is **U2** (section 9). It is the only item that gates a stage. Until the U2 gate and V-ID pass for a stage,
+The blockers are **U2** (section 9) and **V-ID** (4.3), with T-IDENT. Rule C (4.3) is the only cacheability rule. Until it holds for a stage,
 that stage is uncacheable in every mode, and this document claims no stage is safe.
