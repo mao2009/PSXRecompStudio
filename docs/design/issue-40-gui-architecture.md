@@ -45,6 +45,7 @@ Summary: **CONFIRMED** the Domain layer already owns most pipeline logic (analys
 | `PSXRecomp.Tests`, `PSXRecompStudio.Tests` | Test | **CONFIRMED** `src/architecture.contract.json:6`; `src/PSXRecompStudio.slnx:8-9` |
 | `src/Architecture` (`PSXRecomp.Architecture` marker attributes) | attribute source, not a layer | **CONFIRMED** `src/Architecture/PSXRecompArchitectureAttributes.cs` exists; `docs/architecture-matrix.md` Architecture Attribute Contract section |
 | `PSXRecomp.Native` | outside managed layers | **CONFIRMED** `docs/architecture-matrix.md` (paragraph after the Layer Definitions table) |
+| `Generated` (reserved; no project) | Generated | **CONFIRMED** namespace root `PSXRecomp.Generated` (`src/architecture.contract.json:7`); the matrix lists it as planned (`docs/architecture-matrix.md`, Layer Definitions, Generated row); the contract forbids `System.Diagnostics.Process` for this layer (**CONFIRMED** `src/architecture.contract.json:49`); **OBSERVED** no such project in `src/PSXRecompStudio.slnx`. It does not change the conclusions: no Application-to-Infrastructure edge involves it. |
 
 Edges that matter here:
 
@@ -181,7 +182,7 @@ Options for D2:
 Notes:
 
 - `Launch` builds and then runs as one operation. **CONFIRMED** `src/PSXRecomp.Cli/RunCommand.cs:20-22` (single-shot; rebuilds from input). Exposing build and run as separate GUI steps requires a launcher port (D5).
-- Analysis results are the input the GUI must show for review (issue #40, "Analysis Result Viewer"). The result type carries stage status and `FailureKind`. **CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:16`, `:30-33`.
+- Analysis results are the input the GUI must show for review (**READ** issue #40 body via GitHub API, "Analysis Result Viewer"). The result type carries stage status and `FailureKind`. **CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:16`, `:30-33`.
 
 ### 3.5 Async, progress and cancellation
 
@@ -191,7 +192,7 @@ Notes:
 
 **Progress.** Use-case progress is a small Domain-owned value (stage name, step index, step total, optional message) delivered through `IProgress<T>` (BCL). The Studio would marshal it to the UI thread with the Avalonia dispatcher, as the GameWindow does (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:79`; **OBSERVED** the Studio has no progress path today, and `src` contains no `IProgress` use outside tests). Granularity:
 
-- Analysis: per stage. Today stage results arrive only after completion (**CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:69`). Live per-stage delivery is a Domain change (PREDICTED).
+- Analysis: per stage. The outcome carrying stage results is built by `RomAnalysisOutcome.From` (**CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:68`, `Stages = recorder.Results` at `:83`), and the pipeline calls it at its return points (**CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:54`, `:59`, `:90`, `:97`). So a caller sees stage results when the pipeline returns. Live per-stage delivery would need a new hook (PREDICTED).
 - Run: per segment, via the orchestrator callback (**CONFIRMED** `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:65`).
 - Build: toolchain steps (compile, link) are not reported (**OBSERVED**: `src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs` has no progress hook). Infrastructure change (PREDICTED).
 
@@ -259,7 +260,8 @@ Incremental, each phase separately reviewable.
 | 0 | This design; owner decisions D1-D11 recorded in ADR revisions (ADR-015 sketch point 2; ADR-017 wording only if D2 allows more than one site) and the matrix revisions in 3.2 | None | Owner sign-off |
 | 1 | Replace duplicate guest-end handoffs (F4) with `ProgramEndHandoff` | None expected | Existing tests |
 | 2 | Add the shared result type, tokens, and `IProgress` plumbing to Core use cases (Option A); add stop support to `InterpreterTitleExecutionEngine` (`ICancellableExecutionEngine`, `AttachCancellation`, `RequestCancel`, modeled on `RecompiledHostExecutionEngine.cs:291-306` (**CONFIRMED** `:291` `RequestCancel`, `:306` `AttachCancellation`)); move the CLI's recompile orchestration into use cases | None for CLI output; the Studio gains mid-segment stop only if D4 Option A is chosen | CLI JSON and exit-code tests unchanged; new interpreter stop tests |
-| 3 | Studio: disc load through a Domain port with an Infrastructure reader (F7); Cancel and progress UI; shared error panel | New UI | GUI tests drive real controls |
+| 2b | Token wiring: pass a `CancellationToken` from the Studio's two execution entry points into `ExecutionOrchestrator.Execute` (**CONFIRMED** the current calls pass no token at `src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93` and `:126-129`; the parameter is at `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61-67`). Precondition for Phase 3's Cancel UI. | No change until a token is cancelled (default-token semantics, **UNVERIFIED** in this session) | Test: a cancelled token ends the run as `Cancelled` (`ExecutionOrchestrator.cs:73-75`) |
+| 3 | Studio: disc load through a Domain port with an Infrastructure reader (F7); Cancel and progress UI (precondition: Phase 2b); shared error panel | New UI | GUI tests drive real controls |
 | 4 | Move `FileMemoryCardStorage` to Infrastructure (F6); Studio keeps only the port | None | Existing memory-card tests |
 | 5 | Engine selection (D3): the ADR-015 sketch point 2 selector (3.2 row C), gated by D2 as in 3.3 (required under D2 Option B with a **UNVERIFIED** registration path; optional under D2 Option A; placed in the Host layer under D2 Option C, classification **UNVERIFIED**); generated-host run as an explicit, labelled second action | New UI and composition | ADR amendment |
 | 6 | MCP adapter over the same use cases | New surface | Separate issue |
@@ -281,7 +283,7 @@ Consequences for this design:
 
 - The Studio IDE stays on Avalonia (**READ** issue #851 body: IDE migration is out of scope). The egui comparison does not affect the use-case boundary in section 3, the Studio's disc and analysis flow, or the Studio's error model.
 - The egui PoC is in Rust (**READ** issue #851 body, GitHub public API: Rust + egui + wgpu). **UNVERIFIED** that no direct call path exists; this design assumes the C# Domain use cases cannot be called directly and need IPC or FFI, as #851 items 1-2 describe (same-process FFI or local IPC with frame transport). That is a runtime-boundary decision, not a use-case decision.
-- The GameWindow path that #851 would replace uses `PackagedArtifactLiveRunner` (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`; cancel at `:109`) and the run, stop and timeout contracts (**UNVERIFIED** as described: issue #851 cites issues #827 and #829 for them, and those contracts were not read in this session). Any PoC must keep those contracts, which the Domain stop semantics in section 3.5 also depend on.
+- The GameWindow path that #851 would replace uses `PackagedArtifactLiveRunner` (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`; cancel at `:109`) and the run, stop and timeout contracts (**UNVERIFIED** as described: **READ** issue #851 body cites issues #827 and #829 for them, and those contracts were not read in this session). Any PoC must keep those contracts, which the Domain stop semantics in section 3.5 also depend on.
 - The use-case boundary in section 3 is toolkit-neutral: no Avalonia type in Core use cases. This is what keeps a future non-Avalonia host possible without rework.
 - Owner decision D9 covers the GameWindow's future; it is the only place #851 bears on this design.
 
