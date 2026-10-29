@@ -28,7 +28,7 @@ Short answers:
 
 - The host does not load the boot EXE into RAM in the OpenBIOS engine. `OpenBiosBootBackend.CreateEngine` builds an `InterpreterTitleExecutionEngine` over the ROM words at `0xBFC00000` and does not pass `guestFirmware` (`src/PSXRecomp.Core/Execution/OpenBiosFirmware.cs:68-80`). The host-side RAM writes in `InterpreterTitleExecutionEngine` are not reached in this path: the `guestFirmware` writes (`src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:186-193`) are gated by a flag the OpenBIOS `CreateEngine` does not pass (CONFIRMED via `OpenBiosFirmware.cs:73-80`), and the title-path writes (`:371-377`) sit inside `Load()`, gated by `_ownsDevices`. No `Load` call on the OpenBIOS path was found (partial trace; UNVERIFIED that none exists elsewhere).
 - OpenBIOS itself loads the EXE: its CD driver reads the disc through `CdRomDevice`, and DMA3 writes the data into RAM. `exec` then jumps to the entry. CONFIRMED as a design statement (`docs/runtime/openbios-firmware-backend.md:133-137`: "loads the boot EXE named by `SYSTEM.CNF` through CD reads and DMA3, and `gameMainThunk` → `exec` enters the executable's entry `0x80010000`"; the ADR says the same at `docs/adr/026-aot-ram-placed-code.md:10`). The measurement in that paragraph is OBSERVED: about 192M instructions to reach the entry with the synthetic disc (`openbios-firmware-backend.md:136`); it is not a measurement of the Persona disc.
-- The host models the DMA3 transfer in `CdRomDmaTransfer.TryTransfer` (`src/PSXRecomp.Core/Dma/CdRomDmaTransfer.cs:80-137`). The word count is `BCR & 0xFFFF`, and a count of 0 means 0x10000 words (`CdRomDmaTransfer.cs:101-103`). It writes that many 32-bit words starting at `MADR & AddressMask` through `IMemoryBus.Write`, one word per iteration (loop at `:118-126`), with no PC in the record. CONFIRMED.
+- The host models the DMA3 transfer in `CdRomDmaTransfer.TryTransfer` (`src/PSXRecomp.Core/Dma/CdRomDmaTransfer.cs:80-138`). The word count is `BCR & 0xFFFF`, and a count of 0 means 0x10000 words (`CdRomDmaTransfer.cs:101-103`). It writes that many 32-bit words starting at `MADR & AddressMask` through `IMemoryBus.Write`, one word per iteration (loop at `:118-128`), with no PC in the record. CONFIRMED.
 - The memory bus routes RAM writes to the native core RAM (`src/PSXRecomp.Core/Dma/MemoryBus.cs:139-152`, `WriteRam` at `:184-190`). CONFIRMED.
 
 ### 1.2 The header fields that define the range
@@ -53,7 +53,7 @@ The repository checks the text region in two places: `PsxExeTitleInput.Build` re
 - Text start: PREDICTED to be `0x80010000` (the usual PS-X layout, and the entry is at the text start for this disc). UNVERIFIED for the Persona EXE.
 - Text size: UNVERIFIED. The repository states that the original deterministic fixture declares only 20 text bytes (`openbios-firmware-backend.md:379`) and that the pinned OpenBIOS `dev_cd_read` rejects reads not aligned to 2048 bytes, while `loadExe` ignores the failure (`:379-381`). That is a fixture, not Persona.
 - **Threshold.** With text start `0x80010000`, the text reaches the shell only if `TextSize >= 0x20C45` (134,213 bytes). Any larger declared size or any bss/data extent above `0x80010000 + 0x20C44` overlaps `0x80030C44`. CONFIRMED arithmetic.
-- **Sector rounding.** PREDICTED: if the loader reads whole 2048-byte sectors (the fixture note at `:379-381` says the pinned reads are 2048-byte aligned), the number of bytes DMA3 writes is rounded up past the declared `TextSize`. A text size just below the threshold would then still write `0x80030C44`. UNVERIFIED for the pinned OpenBIOS.
+- **Sector rounding.** PREDICTED: if the loader reads whole 2048-byte sectors (the fixture note at `:379-381` says the pinned `dev_cd_read` rejects unaligned reads, which implies whole-sector reads but does not state it), the number of bytes DMA3 writes is rounded up past the declared `TextSize`. A text size just below the threshold would then still write `0x80030C44`. UNVERIFIED for the pinned OpenBIOS.
 
 ## 2. RAM ownership between OpenBIOS and the game
 
@@ -71,14 +71,14 @@ Consequences:
 - The title detector only counts a PC as a started title when it lies in `0x80010000..0x8002FFFF` or `ShellImageEnd..0x80200000` after the shell is entered (`OpenBiosBootMonitor.cs:86`). A title, or an EXE load, over the shell's own range is **not detected** (the report's own note at `OpenBiosBootMonitor.cs:24`). CONFIRMED.
 - The shell is copied into RAM by OpenBIOS code, not by the host (`OpenBiosBootMonitor.cs:49` says "Where OpenBIOS (like the retail BIOS) copies its shell and calls it"; ADR-026 `:10`). CONFIRMED as a design statement; the copy routine is UNVERIFIED (4.1).
 - The game image is `0x80010000` to its text end, plus any data and bss, and it is expected to be disjoint from the shell. PREDICTED for normal discs; the threshold in 1.3 is the test.
-- **Fallback at this PC.** OBSERVED (`openbios-firmware-backend.md:401`): one fallback segment of 163,124,226 instructions started at `0x80030C44` in the shell region. The accounting said shell = 35 % of fallback fetches. The same document says the segment was the interpreter running shell code, not AOT (`:401`, `:498`: the shell "runs interpreted from the BIOS image"). CONFIRMED that the shell runs interpreted; the segment's loop is UNVERIFIED.
-- `0x80030C44` appears in tests only as synthetic input (`src/PSXRecomp.Tests/Recompiler/LoadedCodeMismatchDiagnosticsTests.cs:11`, `src/PSXRecomp.Tests/Infrastructure/RuntimeHostDiagnosticTests.cs:290-291`, `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:34`). These fixtures are not evidence about the disc.
+- **Fallback at this PC.** OBSERVED (`openbios-firmware-backend.md:401`): one fallback segment of about 163M instructions started at `0x80030C44` in the shell region (the exact count is not in the document; the value 163,124,226 appears only in a test fixture, see below). The accounting said shell = 35 % of fallback fetches. The same document says the segment was the interpreter running shell code, not AOT (`:401`, `:498`: the shell "runs interpreted from the BIOS image"). CONFIRMED that the shell runs interpreted; the segment's loop is UNVERIFIED.
+- `0x80030C44` appears in `src/` only as synthetic test input (repo-wide grep, excluding `bin`/`obj`): `src/PSXRecomp.Tests/Recompiler/LoadedCodeMismatchDiagnosticsTests.cs:11,28,33,91`, `src/PSXRecomp.Tests/Infrastructure/RuntimeHostDiagnosticTests.cs:290-291,310` (the count `163_124_226UL` is at `:291`), and `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:34`. These fixtures are not evidence about the disc.
 
 ## 3. What "overwritten" can and cannot mean in this code
 
 - **Mismatch versus absence.** The loaded-code table keys versions by entry PC and exact words (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs:5-11`; the table keyed by `EntryPc` is in ADR-026 `:27-28`). A PC with no version is `ram-no-code-image` (`OpenBiosProbeAccounting.cs:55-64`). So the handoff report at `0x80030C44` cannot distinguish "RAM changed under a registered version" from "no version was ever registered here". CONFIRMED by code.
 - **The expected value.** The issue speaks of an expected value. No artifact in the repository records the expected word at `0x80030C44` for this disc. The shell's words are ROM bytes (not reproduced here) copied by the kernel. UNVERIFIED which source the expectation came from (ROM copy, a manifest `roots`/`images` entry, or an earlier run).
-- **Refusal behaviour (must not change).** A version whose words do not match RAM is refused and falls back; `LoadedCodeTable` selection and the guard compare the words (`docs/runtime/loaded-code-identity.md` section 2, rows 4 and 6). The issue body (read from the public GitHub API, not from the repository) says not to adopt roots over a mismatch; UNVERIFIED as a repository fact. This analysis does not touch that guard or the root planner (`src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:179`). Its ownership by PR #849 and #773 is UNVERIFIED: `gh` is not authenticated, so the PRs were not checked.
+- **Refusal behaviour (must not change).** A version whose words do not match RAM is refused and falls back; The production compare is the generated C guard, which compares the span's words when the page-generation sum changed (`src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs:1169-1176`). `LoadedCodeTable.Match` (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs:89-104`) implements the same word comparison but is not called in production (`docs/runtime/loaded-code-identity.md` section 2, row 4). The issue body (read from the public GitHub API, not from the repository) says not to adopt roots over a mismatch; UNVERIFIED as a repository fact. This analysis does not touch that guard or the root planner (`src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:179`). Its ownership by PR #849 and #773 is UNVERIFIED: `gh` is not authenticated, so the PRs were not checked.
 
 ## 4. Candidate writers
 
@@ -94,7 +94,7 @@ Each candidate lists the writer, the PC that would be reported, the time window,
 
 ### 4.2 Boot EXE CD load by DMA3 (CdRomDmaTransfer)
 
-- Mechanism: the EXE text (and possibly more) is read from the CD FIFO and written to RAM by `CdRomDmaTransfer.TryTransfer` (`CdRomDmaTransfer.cs:80-137`), starting at `MADR`.
+- Mechanism: the EXE text (and possibly more) is read from the CD FIFO and written to RAM by `CdRomDmaTransfer.TryTransfer` (`CdRomDmaTransfer.cs:80-138`), starting at `MADR`.
 - PC: the DMA has no PC. The reported PC would be the last CPU fetch before the DMA's completion (the instruction that started it is inside the loader), which is the attribution rule to use (section 5.2).
 - Time: during `loadExe`, before the first fetch of `0x80010000` (`openbios-firmware-backend.md:136`).
 - Condition: the declared text end, or the sector-rounded transfer end, reaches `0x80030C44`. See 1.3. Without that condition this candidate is excluded.
@@ -136,7 +136,7 @@ Each candidate lists the writer, the PC that would be reported, the time window,
 
 ### 4.8 Startup writers (ruled out for mid-run writes)
 
-- `memset(artifact_ram, 0, ...)` at startup in the generated `main` (`docs/runtime/loaded-code-identity.md` section 2, row 5, citing `RecompiledArtifactCodeGen.cs:1023`, `:1836`) is before any dispatch and cannot change `0x80030C44` after the boot starts. CONFIRMED by the cited design doc; the artifact-path initial load of an embedded image (`RecompiledArtifactCodeGen.cs:1031-1045`) is the standalone file image path, not the OpenBIOS path. CONFIRMED that it is excluded from the OpenBIOS path.
+- `memset(artifact_ram, 0, ...)` at startup in the generated `main` (`docs/runtime/loaded-code-identity.md` section 2, row 5, citing `RecompiledArtifactCodeGen.cs:1023`, `:1836`) is before any dispatch and cannot change `0x80030C44` after the boot starts. CONFIRMED by the cited design doc; the artifact-path initial load of an embedded image (`RecompiledArtifactCodeGen.cs:1031-1045`) is the standalone file image path, not the OpenBIOS path. PREDICTED that it is not on the OpenBIOS path: `OpenBiosBootBackend.CreateEngine` builds an interpreter engine over the ROM (`src/PSXRecomp.Core/Execution/OpenBiosFirmware.cs:73-80`), and the code does not show it using this codegen.
 
 ## 5. Identifying the writing PC and time (design only)
 
@@ -175,7 +175,7 @@ For each change of the watched word at `0x80030C44` (physical `0x00030C44`): fet
 2. Whether the pinned OpenBIOS `loadExe`/`exec` writes beyond the declared text size (sector rounding, 1.3) and whether it clears bss (4.3). Needs the pinned ELF symbols and a disassembly kept out of git.
 3. The shell copy routine and its length (4.1).
 4. The expected word at `0x80030C44` and its source (3). Not in the repository.
-5. Whether the 163M-instruction shell segment at `0x80030C44` (OBSERVED, `openbios-firmware-backend.md:401`) is a loop that writes the word, or an idle loop that only reads it.
+5. Whether the roughly 163M-instruction shell segment at `0x80030C44` (OBSERVED, `openbios-firmware-backend.md:401`) is a loop that writes the word, or an idle loop that only reads it.
 6. Whether the host-side resynchronisation (4.6) can write this page in the generated-host probe. Needs the comparison in 4.6.
 7. The native core's store path for option 5.2 (location and hook point).
 
