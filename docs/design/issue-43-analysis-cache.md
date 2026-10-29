@@ -1,4 +1,4 @@
-# Issue #43: Incremental Analysis and Cache (design, r11)
+# Issue #43: Incremental Analysis and Cache (design, r12)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, and T-IDENT all hold. Until Rule C holds for a stage, that
@@ -7,8 +7,8 @@
   until Rule C holds, and no test may claim a production stage is cacheable (7.1, 7.3).
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r11. Addresses the review of `f77183e` (r10): six findings, mapped in 12.3. The direction of
-  r9 and r10 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
+- Revision: r12. Addresses the review of `34845dd` (r11): five findings, mapped in 12.4. The findings of
+  `f77183e` (r10) stay mapped in 12.3. The direction of r9 to r11 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
 
 ## 0. Why there is no static file partition
@@ -119,8 +119,8 @@ in `ProbeLowerable`, `:234-261`). That probe is part of the N12a classification 
 Every "N1 to N15" range in this document means the stages in this table, without N13.
 
 **Replaced design (`analyzerFingerprint`).** The identifier `analyzerFingerprint` is absent from the code tree at
-`f95bbae` and at `684b573` (zero matches tree-wide in each). It appears in revision `c8299d4` (12 matches tree-wide).
-In the current document it occurs only in this paragraph. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
+`f95bbae` and at `684b573` (zero matches tree-wide in each). It appears in revision `c8299d4` (12 matches tree-wide, all in `docs/design/issue-43-analysis-cache.md`; none in code).
+In the current document it occurs in this paragraph and in the F4 row of 12.3. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
 replaced design. The N7 to N15 closure replaces the fingerprint: the whole Core MVID (3.3) gives the code identity,
 and the reachability closure of each stage (3.4, 9) decides whether that stage may use the cache at all. No
 code-fingerprint identifier is used in the current design.
@@ -205,7 +205,7 @@ non-allow-listed package) is an implicit input and is uncacheable (3.4 items 4 a
 
 ### 3.4 Implicit inputs: uncacheable rules
 
-A stage is **uncacheable** if its reachability (scoped by U2) contains any of the following. An uncacheable
+A stage is **uncacheable** if its static closure (9.3) contains any of the following. An uncacheable
 stage is recomputed on every run, and no entry is written for it in any mode (6.5). Each run reports
 `ANALYSIS_CACHE_UNCACHEABLE` once per stage.
 
@@ -233,19 +233,33 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    *Generic guard; acceptance criterion 1 of 9.*
 10. **Time.** `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.Now`, `Stopwatch` used in a value, time zone
     lookups. *Generic guard; acceptance criterion 1 of 9.*
-11. **File system.** `System.IO` reads or directory enumeration. A file read is an input and must be in the
-    record as a value, not read implicitly. **Core file-reading sites at `f77183e`** (`git grep` for `File.`,
-    `FileStream`, `Directory.`, and `/proc` under `src/PSXRecomp.Core`): `ChdReader.cs:103` (in `ChdReader.Open(string)`,
-    `:101`); `LoadImageManifest.cs:286` (`Directives`, reached by `ReadReferencedPaths` at `:215`), `:341`
-    (`ParseExeImage`), `:512` (`ReadStrictRootsFile`), `:557` (`ReadRootsFile`), `:561` (`ReadRoots`);
-    `ProcessTreeInterop.cs:91` and `:101` (`/proc` reads). `RecompiledArtifactCodeGen.cs:924` is C text inside a
-    generated string, not a Core read. At this SHA a direct-call check finds none of these reached from the three
-    pipeline entry points or the N-stage files: `ChdReader.Open(string)` has no Core caller; the `LoadImageManifest`
-    readers are called only from `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`, and tests; `TryReadParentIds`
-    is called only from `src/PSXRecomp.Infrastructure` and tests. The pipeline uses the stream overload
-    (`RomAnalysisPipeline.cs:117`), which opens no file. **Transitive reachability is UNVERIFIED.** It is checked by
-    U2 (criterion 1 of 9.4 and the implicit-input scan of 9.3) for each cached stage. Until then no stage may be
-    cached on the claim that Core reads no file.
+11. **File system.** `System.IO` reads, directory enumeration, file metadata, and path-based native calls. A file
+    read is an input and must be in the record as a value, not read implicitly. **Core sites at `34845dd` that read
+    file content or metadata.** The search covers `FileInfo`, `DirectoryInfo`, `File.`, `Directory.`, `FileStream`,
+    `SafeFileHandle`, `stat`, `/proc`, `DllImport`, `LibraryImport`, and the native loader.
+    - Content: `ChdReader.cs:103` (`new FileStream`, in `ChdReader.Open(string)` at `:101`); `LoadImageManifest.cs:286`
+      (`Directives`), `:341` (`ParseExeImage`), `:512` (`ReadStrictRootsFile`), `:557` (`ReadRootsFile`), `:561`
+      (`ReadRoots`); `ProcessTreeInterop.cs:101` (`File.ReadAllText` of `/proc/<pid>/stat`) and `:91`
+      (`Directory.EnumerateDirectories("/proc")`, a listing).
+    - Metadata: `LoadImageManifest.cs:62` (`new FileInfo(path).Length`, in `Read` at `:55`);
+      `FileIdentityInterop.cs:21` (`GetFileInformationByHandle` on a `SafeFileHandle`, in `TryGetIdentity` at `:15`);
+      `LinuxFileStatInterop.cs:34` (`stat(path, ...)`, in `Stat` at `:19`); `MacOsFileStatInterop.cs:27` and `:33`
+      (`stat$INODE64` and `stat`, in `Stat` at `:19`).
+    - Native loader: `NativeLibraryResolver.cs` loads the `PSXRecomp.Native` library file from `AppContext.BaseDirectory`
+      (`:60`) for every `NativeInterop` call. The native calls are also item 3.
+    - Not file access, listed under item 9: `LoadImageManifest.cs:67` (`Path.GetFullPath`, which reads the current
+      directory for a relative path).
+    - Not Core file access: the `fopen`, `/proc`, and `readlink` text in `RecompiledArtifactCodeGen.cs` and
+      `RecompilerHostCodeGen.cs` is emitted C inside raw string literals. `LoadImageManifest.cs:101` and `:404` read the
+      disc through an injected `ICdSectorSource`, not by opening a path.
+
+    Direct-call check at this SHA: `ChdReader.Open(string)` has no Core caller. The `LoadImageManifest` readers are
+    called only from `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`, and tests. `TryReadParentIds` is called only
+    from `src/PSXRecomp.Infrastructure` and tests. The identity and stat sites are called only from
+    `src/PSXRecomp.Infrastructure/Standalone/FileSystemIdentityProbe.cs` (`:67`, `:68`, `:142`) and tests. The pipeline
+    uses the stream overload (`RomAnalysisPipeline.cs:117`), which opens no file. **Transitive reachability from a cached
+    stage is UNVERIFIED.** A listed site that a stage reaches makes it uncacheable (9.3, condition (i)). No stage may be
+    cached on the claim that its closure reads no file until U2 checks it.
 12. **Randomness.** `Random`, `RandomNumberGenerator`, `Guid.NewGuid`, and hash codes of reference types.
     *Generic guard; acceptance criterion 1 of 9.*
 13. **Unresolved symbols or an assembly outside the allow-list.** The allow-list is the BCL and `PSXRecomp.Core`.
@@ -349,7 +363,7 @@ are not Core source.
     (`Directory.Build.props:44-47`, package at `:45`).
   - The resolved versions are read from `obj/project.assets.json`. The read is by exact name and is done by the host,
     once per run, before any stage runs: the production `IStageCodeIdentity` implementation (File access belongs to
-    Infrastructure, 8.1). No Core file-reading site in 3.4 item 11 names it (grep at `f77183e`), so it is not a Core read. The
+    Infrastructure, 8.1). No site listed in 3.4 item 11 reads it (checked at `34845dd`), so it is not a Core read. The
     value enters the key as `dependencyIdentity`. The csproj pins direct packages only, and there is no lock file (CONFIRMED by listing).
 - **SDK version and runtime version.**
   - At build time, a target reads the MSBuild property `$(NETCoreSdkVersion)` (name UNVERIFIED, U5) and writes it into a
@@ -363,9 +377,13 @@ are not Core source.
   separate assembly. `Directory.Build.props:22-24` links it into every project whose `CompileArchitectureAttributes` is
   `true`, and `PSXRecomp.Core.csproj:7` sets it. Its `internal` attribute types are compiled into Core, so the MVID of
   3.3 covers them.
-- **Failure rule.** If any of these cannot be read by the host, the stage is uncacheable and reports
-  `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5). No constant is substituted. An installed CLI or GUI has no source tree, so `obj/project.assets.json`,
-  and `Directory.Build.props` are absent there. In that build every run is uncacheable, and
+- **Failure rule.** The host reads four values before any stage runs: the resolved package versions
+  (`obj/project.assets.json`), the build-time analyzer identity (`Directory.Build.props`), the runtime version
+  (`RuntimeInformation`), and the MVID of 3.3 (read from the running Core assembly). If any of them cannot be read, the
+  stage is uncacheable and reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5). The SDK version and the target framework
+  are not host-read. They reach the key only through the MVID (UNVERIFIED for the target framework: that its metadata is
+  compiled into Core). No constant is substituted. An installed CLI or GUI has no source tree, so
+  `obj/project.assets.json` and `Directory.Build.props` are absent there. In that build every run is uncacheable, and
   each run reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
 
 ### 3.9 Decision: line endings
@@ -414,8 +432,8 @@ not depend on the checkout's line endings, because it is computed from the compi
   then `:115` on a second open). The test driver hashes separately (`RealRomAnalyzer.cs:102-104`). Nothing checks
   that the supplied value matches the bytes that run.
 - **Rule C (cacheability; the only cacheability rule).** A stage is cacheable only when all three hold: (a) its U2
-  verdict is `cacheable` for the running Core MVID (9.3), which requires criteria 4 and 5 of 9.4 and the file-read
-  condition of 9.3; (b) V-ID is implemented; (c) T-IDENT passes (7.3). The rule
+  verdict is `cacheable` for the running Core MVID (9.3), which requires every condition (a) to (l) of the verdict rule in 9.3 (3.4 items 1 to 13 not reached, criteria 1 to 6 met);
+  (b) V-ID is implemented; (c) T-IDENT passes (7.3). The rule
   applies to writes, Verify-mode comparison, and Normal-mode hits alike, because an entry keyed on an unverified
   identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). This is the current
   proposal. Other sections restate it or refer to it.
@@ -568,7 +586,7 @@ Two fixture sets are used, and they must not overlap:
 
 **Gating.** The tests below need a stored entry or a cacheable verdict. Their precondition is Rule C (4.3) for the
 stage under test. They are **not run in production** before that precondition holds: T-COLD-WARM (hit assertions),
-T-DEP-INPUT, T-IDENT2, T-STALE (Normal-mode part), T-DEP-DEAD (step b), T-CORRUPT, T-QUAR-FAIL, T-W6, T-MISSING,
+T-DEP-INPUT, T-IDENT (until V-ID exists), T-IDENT2, T-STALE (Normal-mode part), T-DEP-DEAD (step b), T-CORRUPT, T-QUAR-FAIL, T-W6, T-MISSING,
 T-PARTIAL, T-DIFF-RUN (warm half), and T-GOLDEN. Before Rule C holds, a test-only verdict may exercise the mechanism.
 Such a run proves the mechanism only. It does not count toward any gate, and it does not make a production stage
 cacheable.
@@ -688,9 +706,35 @@ not implemented by this design, and no production code changes with it.
 `toolVersion`, the per-stage verdicts, the field verdicts, the scan summary, the runtime summary, and the result of each
 acceptance criterion.
 
-**Verdict rule.** A stage's verdict is `cacheable` only when (i) criteria 4 and 5 of 9.4 pass for that stage, and
-(ii) no site the stage reaches, and that is listed in 3.4 item 11, reads a file outside the stage's input record.
-Otherwise the verdict is `uncacheable`. Condition (ii) depends on the reachability output, which is UNVERIFIED until U2 runs.
+**Verdict rule.** A stage's verdict is `cacheable` only when every condition below holds on the static closure of the
+stage (criterion 4 of 9.4). Executed paths do not establish a condition: T-CLOSURE-RT (criterion 5) runs only the paths
+a fixture executes, and an item reached on an unexecuted path still counts. If any condition cannot be established, the
+verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and the condition (9.3 output).
+
+- (a) 3.4 item 1, reflection, including `ArtifactJson.Serialize<T>` (`ArtifactJson.cs:54`): none reached. Established
+  by a static search of the closure for reflection and reflection-based serialization (criterion 1).
+- (b) 3.4 item 2, dynamic code: none reached. Established by the criterion 1 search.
+- (c) 3.4 item 3, native calls (every `DllImport` and `LibraryImport` in the closure, including `NativeInterop.cs` and
+  the loader of `NativeLibraryResolver.cs`): none reached. Established by a static search of native declarations and
+  the closure's call graph.
+- (d) 3.4 item 4, delegates or function values not declared in the record: none reached. Established by a static scan
+  of delegate and lambda creation sites in the closure, each matched to a record field.
+- (e) 3.4 item 5, interface or virtual dispatch with an implementation outside Core: none. Established by class
+  hierarchy analysis over Core, with every implementation inside Core.
+- (f) 3.4 item 6, generic instantiation with a type argument outside Core: none. Established by a static scan of the
+  constructed generic types and methods in the closure.
+- (g) 3.4 item 7, static initializers and static state: none reads an input of items 8 to 12, and no static field is
+  written after its first stage run. Established by a static scan of the static members in the closure.
+- (h) 3.4 items 8 to 10 and 12, culture, environment, time, and randomness: none reached, or every reached site is
+  classified (criteria 1 and 2) and shown not to affect a value. Environment includes the current-directory read at
+  `LoadImageManifest.cs:67`.
+- (i) 3.4 item 11, file system: no site listed in item 11 is reached. Established by the criterion 1 search over the
+  listed sites, with reachability from the closure.
+- (j) 3.4 item 13, unresolved symbols or assemblies outside the allow-list: none reached, including `SharpCompress` and
+  `loach.PureSharp`. Established by criterion 3.
+- (k) Criteria 1 to 3 are complete for the stage, so that items 8 to 10, 12, and 13 are decided, and the output is
+  recorded with the running MVID (criterion 6).
+- (l) Criteria 4 and 5 of 9.4 pass for the stage.
 
 **Binding to the MVID.** The gate is read by the **host** (composition root or CLI). Core's file reads are listed in
 3.4 item 11, and the gate read is not one of them. The host compares the file's `mvid` with the MVID of the running Core assembly, which Core exposes as a
@@ -800,9 +844,19 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 
 | ID | Finding | Status in r11 | Resolved in |
 |---|---|---|---|
-| F1 (MAJOR) | "Core performs no file reads" stated as fact, and 9.3 relied on it. Core has file-reading sites (ChdReader, LoadImageManifest, ProcessTreeInterop) | Resolved in r11: the sites are listed with line numbers; reachability is marked UNVERIFIED; the verdict rule of 9.3 makes U2 check it | 3.4 item 11, 9.3 (verdict rule and binding), 3.8 |
+| F1 (MAJOR) | "Core performs no file reads" stated as fact, and 9.3 relied on it. Core has file-reading sites (ChdReader, LoadImageManifest, ProcessTreeInterop) | Resolved in r11: the sites were listed, reachability marked UNVERIFIED, and the verdict rule of 9.3 made U2 check it. **Corrected in r12:** the list is widened to content, metadata, and native-loader sites (3.4 item 11, see 12.4 R1), and every listed site is covered by 9.3 condition (i) | 3.4 item 11, 9.3 (verdict rule and binding), 3.8 |
 | F2 (MEDIUM) | T-IDENT row said "Required for the Normal-mode gate", which conflicts with Rule C | Resolved in r11: the row now states that Rule C applies it to writes, Verify, and Normal | 7.3 table (T-IDENT), 4.3 (Rule C) |
 | F3 (MEDIUM) | Criteria 4 and 5 of 9.4 were named as a gate in one place and absent from Rule C | Resolved in r11: criteria 4 and 5 are conditions of the U2 verdict, so they are part of Rule C; one gate | 9.3 (verdict rule), 4.3 (Rule C), 9.4 (end) |
-| F4 (LOW) | analyzerFingerprint wording claimed the repository has no occurrence | Resolved in r11: absent from the code tree at `f95bbae` and `684b573`, present in `c8299d4`, and in this document only in its own prose | 2.2 (paragraph after the table) |
+| F4 (LOW) | analyzerFingerprint wording claimed the repository has no occurrence | Resolved in r11: absent from the code tree at `f95bbae` and `684b573`, present in `c8299d4`. **Corrected in r12:** all 12 matches at `c8299d4` are in `docs/design/issue-43-analysis-cache.md`, none in code; this document mentions it in 2.2 and in this row (see 12.4 R4) | 2.2 (paragraph after the table) |
 | F5 (LOW) | Revision label r10 and no traceability for this round | Resolved in r11: label updated and this table added | header, Revision line, 12.3 |
 | F6 (LOW) | The generated SDK file was both compiled into Core and listed as a host-read input | Resolved in r11: the host does not read it; its value enters through the MVID | 3.8 (SDK bullet, failure rule), F5, T-KEY-UNAVAIL |
+
+### 12.4 Review of `34845dd` (r11)
+
+| ID | Finding | Status in r12 | Resolved in |
+|---|---|---|---|
+| R1 (MAJOR) | The file-read list was incomplete: `FileInfo`, the identity handle query, and the stat interops were not searched | Resolved in r12: the search was widened, and the list covers content, metadata, and the native loader, each with line numbers. Every listed site is covered by 9.3 condition (i) | 3.4 item 11, 9.3 (condition (i)), 12.3 F1 |
+| R2 (MAJOR) | The verdict rule did not include the 3.4 uncacheable items, criteria 1 to 3, or criterion 6, so a path no fixture executes could be cacheable | Resolved in r12: the verdict rule lists conditions (a) to (l), one for each 3.4 item and criteria 1 to 6, with the method that establishes each. Any condition that cannot be established makes the verdict uncacheable. Rule C (a) cites the whole set | 9.3 (verdict rule), 4.3 (Rule C) |
+| R3 (MEDIUM) | T-IDENT was missing from the list of tests not run in production | Resolved in r12: T-IDENT is listed until V-ID exists | 7.3 (gating paragraph) |
+| R4 (LOW) | analyzerFingerprint: the location of the 12 matches was not stated, and "only in this paragraph" was false | Resolved in r12: all 12 matches at `c8299d4` are in the design document, none in code; the document mentions it in 2.2 and in 12.3 F4 | 2.2, 12.3 F4 |
+| R5 (LOW) | The 3.8 failure rule covered bullets the host does not read and omitted the MVID | Resolved in r12: the failure rule lists the four host-read values (package versions, build-time analyzer identity, runtime version, MVID); the SDK version and the target framework are stated as not host-read | 3.8 (failure rule), F5, T-KEY-UNAVAIL |
