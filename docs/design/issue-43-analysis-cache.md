@@ -1,4 +1,4 @@
-# Issue #43: Incremental Analysis and Cache (design, r12)
+# Issue #43: Incremental Analysis and Cache (design, r13)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, and T-IDENT all hold. Until Rule C holds for a stage, that
@@ -7,8 +7,8 @@
   until Rule C holds, and no test may claim a production stage is cacheable (7.1, 7.3).
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r12. Addresses the review of `34845dd` (r11): five findings, mapped in 12.4. The findings of
-  `f77183e` (r10) stay mapped in 12.3. The direction of r9 to r11 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
+- Revision: r13. Addresses the review of `d1c41ac` (r12): seven findings, mapped in 12.5. The findings of
+  `34845dd` (r11) are in 12.4, and those of `f77183e` (r10) are in 12.3. The direction of r9 to r12 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
 
 ## 0. Why there is no static file partition
@@ -120,7 +120,7 @@ Every "N1 to N15" range in this document means the stages in this table, without
 
 **Replaced design (`analyzerFingerprint`).** The identifier `analyzerFingerprint` is absent from the code tree at
 `f95bbae` and at `684b573` (zero matches tree-wide in each). It appears in revision `c8299d4` (12 matches tree-wide, all in `docs/design/issue-43-analysis-cache.md`; none in code).
-In the current document it occurs in this paragraph and in the F4 row of 12.3. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
+In the current document it occurs in this paragraph (2.2) and in the F4 and R4 rows of 12.3. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
 replaced design. The N7 to N15 closure replaces the fingerprint: the whole Core MVID (3.3) gives the code identity,
 and the reachability closure of each stage (3.4, 9) decides whether that stage may use the cache at all. No
 code-fingerprint identifier is used in the current design.
@@ -213,6 +213,18 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    APIs. Also reflection-based serialization: the generic method `ArtifactJson.Serialize<T>` calls
    `JsonSerializer.Serialize(document, CanonicalOptions)` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:54`),
    which reflects over `T` at run time. The cached payload codec must not reflect (3.7).
+   The sites below are a search result at `d1c41ac`, not an exhaustive list. Condition (a) of 9.3 requires this search
+   to be re-run before any verdict. Serialization by `JsonSerializer` over a generic or concrete type: `ArtifactJson.cs:54`,
+   `Diagnostics/DiagnosticJson.cs:32` and `:38` (`Deserialize<T>`), `DiscImage/DiscImageAnalysisReport.cs:55`,
+   `DiscImage/FunctionDiscovery.cs:57`, and `Project/ProjectMetadataSerializer.cs:65`. Attribute-based converters,
+   `[JsonConverter(typeof(...))]`, on the Diagnostic types (for example `Diagnostics/DiagnosticCategory.cs:19`), which
+   the serializer resolves by reflection. Other reflection-based calls: `exception.GetType().Name` at
+   `DiscImage/RomAnalysisStageRecorder.cs:67`, in the exception overload of `Fail` (`:65`). The pipeline calls that
+   overload from its catch blocks (`RomAnalysisPipeline.cs:124`, `:225`, `:247`), so the `GetType` call is statically
+   reached from the stage code. U2 must confirm that path. `Enum.IsDefined(typeof(...))` and `Enum.TryParse` at
+   `Recompiler/ObservedRootPlanner.cs:340`; `Enum.ToObject`, `Type.GetTypeCode`, and `Enum.GetUnderlyingType` at
+   `Runtime/Input/InputBindingMap.cs:135` and `:139`; and `typeof(NativeLibraryResolver).Assembly` at
+   `NativeLibraryResolver.cs:49`. The reach of these last sites is not yet checked.
 2. **Dynamic code.** `dynamic`, expression-tree compilation, or runtime code generation. *Generic guard; the
    search is acceptance criterion 1 of 9.*
 3. **Native calls.** P/Invoke, `LibraryImport`, or any call through `NativeInterop.cs` (root of Core).
@@ -229,8 +241,16 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    The pipeline's formatting is not uniform: some sites use `string.Create(CultureInfo.InvariantCulture, ...)`
    (for example `RomAnalysisPipeline.cs:100-101`), while others interpolate without it (`:286` and `:333`).
    Each reached site is classified by U2.
-9. **Environment.** `Environment.*` (variables, machine name, user, OS version, current directory).
-   *Generic guard; acceptance criterion 1 of 9.*
+9. **Environment.** `Environment.*` (variables, machine name, user, OS version, current directory), and platform
+   identity: `OperatingSystem.Is*`, `RuntimeInformation.ProcessArchitecture`, `RuntimeInformation.IsOSPlatform`, and
+   `BitConverter.IsLittleEndian`. Core sites at `d1c41ac`: `FileIdentityInterop.cs:19`; `LinuxFileStatInterop.cs:21`
+   (`IsLinux`, `IsLittleEndian`) and `:23` (`ProcessArchitecture`); `MacOsFileStatInterop.cs:21`;
+   `NativeLibraryResolver.cs:102` and `:106` (`IsOSPlatform`, in `CurrentOs` at `:100`); `ProcessTreeInterop.cs:18-20`.
+   A direct-call check finds none of these types referenced from `src/PSXRecomp.Core/DiscImage`,
+   `Recompiler/RealRomCoverageAnalyzer.cs`, `Recompiler/MipsToIrLowerer.cs`, or `Recompiler/RecompilerContract.cs`, so no
+   stage body reaches them by a direct call. `ExecutionEnvironmentReport.cs` takes platform values as parameters and
+   reads none. Build-time reads (`PSXRecomp.Core.csproj:19`) are not runtime reads. **Transitive reach from a cached stage
+   is UNVERIFIED,** and U2 checks it (criterion 1 of 9.4). *Generic guard; acceptance criterion 1 of 9.*
 10. **Time.** `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.Now`, `Stopwatch` used in a value, time zone
     lookups. *Generic guard; acceptance criterion 1 of 9.*
 11. **File system.** `System.IO` reads, directory enumeration, file metadata, and path-based native calls. A file
@@ -246,7 +266,9 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
       `LinuxFileStatInterop.cs:34` (`stat(path, ...)`, in `Stat` at `:19`); `MacOsFileStatInterop.cs:27` and `:33`
       (`stat$INODE64` and `stat`, in `Stat` at `:19`).
     - Native loader: `NativeLibraryResolver.cs` loads the `PSXRecomp.Native` library file from `AppContext.BaseDirectory`
-      (`:60`) for every `NativeInterop` call. The native calls are also item 3.
+      (`:60`) when the runtime first binds a P/Invoke into the assembly. The resolver is registered by a `[ModuleInitializer]`
+      (`NativeLibraryResolver.cs:46-50`, `SetDllImportResolver` at `:49`), so it runs at module load, not on each call.
+      The runtime then caches the bound handle (runtime behavior, not tested here). The native calls are also item 3.
     - Not file access, listed under item 9: `LoadImageManifest.cs:67` (`Path.GetFullPath`, which reads the current
       directory for a relative path).
     - Not Core file access: the `fopen`, `/proc`, and `readlink` text in `RecompiledArtifactCodeGen.cs` and
@@ -363,12 +385,18 @@ are not Core source.
     (`Directory.Build.props:44-47`, package at `:45`).
   - The resolved versions are read from `obj/project.assets.json`. The read is by exact name and is done by the host,
     once per run, before any stage runs: the production `IStageCodeIdentity` implementation (File access belongs to
-    Infrastructure, 8.1). No site listed in 3.4 item 11 reads it (checked at `34845dd`), so it is not a Core read. The
+    Infrastructure, 8.1). No site listed in 3.4 item 11 reads it (checked at `d1c41ac`; `src/` is identical to `34845dd`), so it is not a Core read. The
     value enters the key as `dependencyIdentity`. The csproj pins direct packages only, and there is no lock file (CONFIRMED by listing).
 - **SDK version and runtime version.**
-  - At build time, a target reads the MSBuild property `$(NETCoreSdkVersion)` (name UNVERIFIED, U5) and writes it into a
-    generated source file in `obj/`. The generated file is compiled into Core, so its value is inside the MVID of 3.3.
-    The host does not read the generated file. Its value reaches the key only through the MVID.
+  - **PROPOSED, UNVERIFIED (U5).** No build target in this repository reads `$(NETCoreSdkVersion)` or writes a generated
+    source file. At `d1c41ac`, `git grep` finds the name in no `.props`, `.targets`, or `.csproj` file. The only custom
+    targets are `BuildNative` (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:57`) and `IncludeNativeLibraryForTests`
+    (`src/PSXRecomp.Tests/PSXRecomp.Tests.csproj:70`), which handle native artifacts. The mechanism to be built and
+    verified under U5: a target reads `$(NETCoreSdkVersion)` and writes it into a generated source file in `obj/`,
+    compiled into Core, so the value would be inside the MVID of 3.3. The host would not read the generated file.
+  - **Key status.** The SDK-version field of `dependencyIdentity` depends on this mechanism. Until U5 confirms it, that
+    field has no verified value and no verified source in the repository, so the key is **not yet established** for any
+    stage.
   - At run time, the runtime version is read from `RuntimeInformation.FrameworkDescription`. This is an explicit
     exception to item 9 of 3.4: an identity string read as a dependency identity, not an environment value that
     affects a result.
@@ -381,10 +409,13 @@ are not Core source.
   (`obj/project.assets.json`), the build-time analyzer identity (`Directory.Build.props`), the runtime version
   (`RuntimeInformation`), and the MVID of 3.3 (read from the running Core assembly). If any of them cannot be read, the
   stage is uncacheable and reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5). The SDK version and the target framework
-  are not host-read. They reach the key only through the MVID (UNVERIFIED for the target framework: that its metadata is
-  compiled into Core). No constant is substituted. An installed CLI or GUI has no source tree, so
-  `obj/project.assets.json` and `Directory.Build.props` are absent there. In that build every run is uncacheable, and
-  each run reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
+  are not host-read. The SDK version reaches the key only through the MVID, and only if U5 confirms that mechanism (not yet
+  established). The target framework reaches it only through compiled metadata (UNVERIFIED, U5). No constant is
+  substituted. **UNVERIFIED ASSUMPTION** (no installer layout is checked in this repository): an installed CLI or GUI
+  has no source tree, so `obj/project.assets.json` and `Directory.Build.props` are absent there. The citations are
+  `.gitignore:5` (`obj/` is ignored, so it is build output and not committed) and `git ls-files`, which lists
+  `Directory.Build.props` at the repository root. If the assumption holds, every run in that build is uncacheable and
+  reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
 
 ### 3.9 Decision: line endings
 
@@ -400,7 +431,9 @@ not depend on the checkout's line endings, because it is computed from the compi
 - **V1. Changed input value.** A changed record value changes the record digest, so the key changes, and the
   entry is not reused.
 - **V2. Changed code.** A changed `codeIdentity` changes every key.
-- **V3. Changed dependency.** A changed package, SDK, or runtime version changes every key.
+- **V3. Changed dependency.** A changed package or runtime version changes every key. A changed SDK version changes
+  every key only if U5 confirms that the SDK version reaches the key (3.8). Until U5 is resolved, that part of V3 is
+  conditional, and the key is not yet established for the SDK-version field.
 - **V4. Untracked value.** A value read but not in the record is a defect (3.5 static check). Until fixed, the
   stage is uncacheable.
 - **V5. Unknown dependency.** An implicit input, or a call that breaks Rule NC, makes the stage uncacheable.
@@ -707,8 +740,9 @@ not implemented by this design, and no production code changes with it.
 acceptance criterion.
 
 **Verdict rule.** A stage's verdict is `cacheable` only when every condition below holds on the static closure of the
-stage (criterion 4 of 9.4). Executed paths do not establish a condition: T-CLOSURE-RT (criterion 5) runs only the paths
-a fixture executes, and an item reached on an unexecuted path still counts. If any condition cannot be established, the
+stage (criterion 4 of 9.4). Executed paths establish no condition. Criterion 5 (T-CLOSURE-RT) is a gate that must pass. It is not
+an establishment of a condition, because it runs only the paths a fixture executes, and an item reached on an unexecuted
+path still counts. If any condition cannot be established, the
 verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and the condition (9.3 output).
 
 - (a) 3.4 item 1, reflection, including `ArtifactJson.Serialize<T>` (`ArtifactJson.cs:54`): none reached. Established
@@ -734,7 +768,7 @@ verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and 
   `loach.PureSharp`. Established by criterion 3.
 - (k) Criteria 1 to 3 are complete for the stage, so that items 8 to 10, 12, and 13 are decided, and the output is
   recorded with the running MVID (criterion 6).
-- (l) Criteria 4 and 5 of 9.4 pass for the stage.
+- (l) Criteria 4 and 5 of 9.4 pass for the stage. Criterion 5 is a gate: it does not establish any of (a) to (k).
 
 **Binding to the MVID.** The gate is read by the **host** (composition root or CLI). Core's file reads are listed in
 3.4 item 11, and the gate read is not one of them. The host compares the file's `mvid` with the MVID of the running Core assembly, which Core exposes as a
@@ -751,7 +785,7 @@ keeps stages uncacheable. It is not a build failure, because an uncacheable stag
 
 ### 9.4 Acceptance criteria
 
-1. **Guards and searches.** Guards 2, 9, 10, and 12 of 3.4 are searched for in the reached code, and each search and its
+1. **Guards and searches.** Guards 2, 9, 10, and 12 of 3.4, and the platform-identity reads listed in item 9, are searched for in the reached code, and each search and its
    result is recorded. A guard with no occurrence in the reached code is recorded as such. A guard with an occurrence
    becomes a rule for the stage that reaches it.
 2. **Culture.** Each reached culture-sensitive site is classified. In particular `RomAnalysisPipeline.cs:286` and `:333`.
@@ -774,7 +808,7 @@ the stage stays uncacheable (6.5). There is one gate, and it is Rule C.
 - **U3.** Move the artifact writer and the persistence out of the test project, and enumerate the project fields that reach
   analysis (8.1, 1.3). Needs an ADR.
 - **U4.** Measure cold N7 over the full text segment (5.1).
-- **U5.** Confirm `$(NETCoreSdkVersion)` in this repository, the generated-file mechanism of 3.8, and the build determinism
+- **U5.** Confirm `$(NETCoreSdkVersion)` and the generated-file mechanism of 3.8 (neither is present at `d1c41ac`; `git grep` finds no such target), and the build determinism
   that the MVID of 3.3 relies on.
 - **U6.** Read the caller of `AnalyzeAndExecuteFromDisc` (`RealRomTitleExecutionService.cs:110-117`), and decide the store root.
 - **U7.** Count the test call sites that pass a constant SHA (4.3, Migration), and the test callers of `RunFromChd(byte[])`
@@ -860,3 +894,15 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | R3 (MEDIUM) | T-IDENT was missing from the list of tests not run in production | Resolved in r12: T-IDENT is listed until V-ID exists | 7.3 (gating paragraph) |
 | R4 (LOW) | analyzerFingerprint: the location of the 12 matches was not stated, and "only in this paragraph" was false | Resolved in r12: all 12 matches at `c8299d4` are in the design document, none in code; the document mentions it in 2.2 and in 12.3 F4 | 2.2, 12.3 F4 |
 | R5 (LOW) | The 3.8 failure rule covered bullets the host does not read and omitted the MVID | Resolved in r12: the failure rule lists the four host-read values (package versions, build-time analyzer identity, runtime version, MVID); the SDK version and the target framework are stated as not host-read | 3.8 (failure rule), F5, T-KEY-UNAVAIL |
+
+### 12.5 Review of `d1c41ac` (r12)
+
+| ID | Finding | Status in r13 | Resolved in |
+|---|---|---|---|
+| S1 (MEDIUM) | The 3.8 SDK bullet and V3 stated in the present tense that a build target reads `$(NETCoreSdkVersion)` and writes a generated file. No such target exists at `d1c41ac` | Resolved in r13: the mechanism is marked PROPOSED and UNVERIFIED (U5); V3 is conditional on U5; the key is stated as not yet established for the SDK-version field | 3.8 (SDK bullet, key status, failure rule), V3, U5 |
+| S2 (LOW) | The list of places where the identifier `analyzerFingerprint` occurs was incomplete | Resolved in r13: the list names 2.2, the F4 row, and the R4 row | 2.2 |
+| S3 (LOW) | "checked at `34845dd`" cited the previous review SHA, and the installed-build claim had no label or citation | Resolved in r13: the check is stated at `d1c41ac` (`src/` identical to `34845dd`); the installed-build claim is labelled UNVERIFIED ASSUMPTION with citations | 3.8 (installed-build paragraph) |
+| S4 (LOW) | NativeLibraryResolver was said to load on every NativeInterop call | Resolved in r13: the resolver is registered by a `[ModuleInitializer]` and runs on the runtime's first binding | 3.4 item 11 |
+| S5 (LOW) | Item 9 covered only `Environment.*` | Resolved in r13: platform-identity reads are added to item 9 and criterion 1, with a direct-call result and UNVERIFIED transitive reach | 3.4 item 9, 9.4 criterion 1 |
+| S6 (LOW) | The reflection list was not exhaustive | Resolved in r13: the sites found are added; the list is marked as a search result; condition (a) requires a re-run before any verdict. `RomAnalysisStageRecorder.cs:67` (`GetType` on the exception path, statically reached from the pipeline's catch blocks) is recorded | 3.4 item 1, 9.3 condition (a) |
+| S7 (LOW) | Criterion 5 both established a condition and was required | Resolved in r13: criterion 5 is a gate that establishes no condition | 9.3 (verdict rule, condition (l)) |
