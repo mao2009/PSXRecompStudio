@@ -15,6 +15,8 @@ I did not build the project, run `gcc`, or run any test while writing this docum
 
 No BIOS, ROM, disc, or other copyrighted content was read or is recorded here. Paths below are repository paths and the paths of the code that handles those inputs.
 
+Layer rules this design follows: ADR-017 points 1-3 (`docs/adr/017-managed-host-io-port-adapter-boundary.md:29-31`), the managed host I/O rules in `docs/architecture-matrix.md` (rule 3 at `:66`, Forbidden API Matrix at `:92`), and the machine-enforced entries in `src/architecture.contract.json` (`forbiddenDependencies` at `:9`, `forbiddenApis` at `:18`). Where the matrix and the contract differ, the contract governs.
+
 ## 1. Where Issue #46 stands
 
 The issue body marks the first runnable-artifact slice as complete (#458 adapter, #459/#460 CLI and run surface, #461 E2E). Its open items are: artifact identity, build manifest, input/toolchain/output association, build history, clean/rebuild/incremental policy, a shared CLI/GUI workflow, and reproducibility requirements. This document covers the first three, the reproducibility requirements, and the shape of the shared workflow. History and incremental policy are only sketched, because they depend on #42 and #43.
@@ -46,12 +48,14 @@ Callers of the build port, all through `IGeneratedHostBuildService` or a direct 
 ### 2.2 Fixed names and overwrite
 
 - The engine writes to a caller-supplied output directory with a fixed name, `recompiled-artifact` (`RecompiledHostExecutionEngine.cs:563`, `:1281`). A second build into the same directory overwrites `.c` and the binary. `File.WriteAllText` at `GeneratedHostBuildService.cs:59` has no existence check. CONFIRMED by reading. The overwrite behavior is PREDICTED from that.
-- The engine also writes `artifact-input.txt` and `artifact-image.bin` into the same directory (`RecompiledHostExecutionEngine.cs:515-516`). CONFIRMED.
-- Firmware distribution avoids this with a staging directory named `.<artifact>.staging-<guid>` (`FirmwareDistribution.cs:510`), then a commit. CONFIRMED.
+- The engine also writes `artifact-input.txt` and `artifact-image.bin` into the same directory (`RecompiledHostExecutionEngine.cs:511-512`). CONFIRMED.
+- Firmware distribution avoids this with a staging directory named `.<artifact>.staging-<guid>` (`FirmwareDistribution.cs:510`), then a promote (move into place). CONFIRMED.
 
 ### 2.3 Runtime inputs are external
 
-`RecompileCommand.cs:99` says: "Standard artifact (requires input files at runtime)". The standard artifact reads its input at run time and is not self-contained. The standalone artifact (`GenerateStandalone`, `RecompileCommand.cs:86-95`) embeds the initial state and program image in its C source. CONFIRMED from the comment and the call. The embedding is PREDICTED from the parameter list (`RecompiledArtifactCodeGen.cs:305-315`), since the `programImage` parameter is passed through to the source.
+`RecompileCommand.cs:99` says: "Standard artifact (requires input files at runtime)". The standard artifact reads its input at run time and is not self-contained. The standalone artifact (`GenerateStandalone`, `RecompileCommand.cs:86-95`) embeds the initial state and the program image in its C source. CONFIRMED: the source emits `static const uint8_t embedded_image[] = {` (`RecompiledArtifactCodeGen.cs:457`).
+
+This means the output directory already holds game-derived code and data before this design. The standalone `.c` contains the image, and the engine path writes it again as `artifact-image.bin` (`RecompiledHostExecutionEngine.cs:512`). This design does not change or add to that. Section 3.5 records only hashes of these inputs.
 
 The external BIOS path is a separate runtime input. It is read from the environment variable named at `RecompiledArtifactCodeGen.cs:629` (`ExternalBiosEnvironmentVariable`). CONFIRMED. The standalone source records `embedded_bios_external` (`RecompiledArtifactCodeGen.cs:456`). CONFIRMED.
 
@@ -61,8 +65,8 @@ The external BIOS path is a separate runtime input. It is read from the environm
 
 - `traceUnits` (`RecompilerHostCodeGen.cs:85`). The engine sets it from `UnitTraceScope.CurrentPath is not null` (`RecompiledHostExecutionEngine.cs:551`, `:1253`). CONFIRMED.
 - `guardStats` (`RecompilerHostCodeGen.cs:85`, `:284` emits guard support when it is true). The engine sets it from `GuardStats`. `GuardStatsScope.cs:34` turns it on from the environment variable `PSXRECOMP_NATIVE_GUARD_STATS`. `FirmwareDistribution.cs:404` says the same at package time. CONFIRMED.
-- `allowEmptyProgram` (`RecompilerHostCodeGen.cs:85`, used by `FirmwareDistribution.cs:405`). CONFIRMED.
-- `hostBridge`, `directLaunchHostRelativePath`, `externalBios`, `windowedLaunch` on `GenerateStandalone` (`RecompiledArtifactCodeGen.cs:305-315`). CONFIRMED.
+- `allowEmptyProgram` (`RecompilerHostCodeGen.cs:85`, used by `FirmwareDistribution.cs:405-406`). CONFIRMED.
+- `hostBridge`, `directLaunchHostRelativePath`, `externalBios`, `windowedLaunch` on `GenerateStandalone` (`RecompiledArtifactCodeGen.cs:305-318`). CONFIRMED.
 
 The consequence is that the same input can produce different C source depending on which entry point built it. `recompile` uses the defaults (`RecompileCommand.cs:42`), while `run` and `package` may set `traceUnits` or `guardStats`. PREDICTED from the code paths. This is the largest gap in the current design. Section 4 addresses it.
 
@@ -70,7 +74,7 @@ The consequence is that the same input can produce different C source depending 
 
 ### 2.5 Runtime host provisioning
 
-The runtime host (`runtime/`) is not produced by the codegen. `RuntimeHostBuildService.cs` runs `dotnet restore` and `dotnet publish -c Release` (`RuntimeHostBuildService.cs:146-171`, `:201`). CONFIRMED. Its output is not part of any identity today. See Section 3.4.
+The runtime host (`runtime/`) is not produced by the codegen. `RuntimeHostBuildService.cs` runs `dotnet restore` and `dotnet publish -c Release` (`RuntimeHostBuildService.cs:146-171`, `:201`). CONFIRMED. Its output is not part of any identity today. See Section 3.3 (runtime host row).
 
 ### 2.6 Existing identity and manifest pieces
 
@@ -111,9 +115,9 @@ Binary identity is not guaranteed to be stable across builds (Section 4.3). The 
 
 The build key hashes this set. Each item is a field in the manifest, so a mismatch is explainable:
 
-- Input identity (3.1.1), and for a standard artifact the runtime-input list in 3.4.
+- Input identity (item 1 of 3.1), and for a standard artifact the runtime-input names in 3.5 (`runtimeInputs`).
 - Entry roots (`arguments.EntryRoots`, `RecompileCommand.cs:40`) and the segment budget (`RecompileCommand.cs:38`).
-- Codegen mode: standard or standalone (`RecompileCommand.cs:56`), and the standalone options: `hostBridge`, `directLaunchHostRelativePath`, `externalBios`, `windowedLaunch`, initial state (GPRs, HI, LO, PC, budget, memory, image load address).
+- Codegen mode and standalone options, as the `codegen` fields listed in 3.5. Mode is standard or standalone (`RecompileCommand.cs:56`).
 - Codegen options: `traceUnits`, `guardStats`, `allowEmptyProgram` (2.4). These must be part of the key. Today they are not recorded anywhere.
 - Loaded-code table (`LoadedCodeTable`) identity, from `LoadImageManifest`. Its source SHA-256 is already computed (`LoadImageManifest.cs:356`).
 - Generator version (3.3).
@@ -133,28 +137,43 @@ The build key hashes this set. Each item is a field in the manifest, so a mismat
 
 Record, per build:
 
-- Compiler: the `--version` first line (captured instead of discarded, `DoctorCommand.cs:107-108` shows the probe). Target triple, from `<compiler> -dumpmachine` (PREDICTED to work with gcc and MinGW; UNVERIFIED).
+- Compiler: the first line of `<compiler> --version`. This needs a required change to the existing adapter. `ToolchainResult` (`GeneratedHostBuildService.cs:178`) has only `Outcome`, `ExitCode`, and `Stderr`. `RunToolchain` reads stdout into `stdoutTask` (`:271`) and discards it (`:281`, `_ = ReadStreamWithinCleanupBudget(stdoutTask, ...)`). The change is a `Stdout` field on `ToolchainResult`, filled on success. The port `IGeneratedHostBuildService` does not change. CONFIRMED that the field and discard exist. The change itself is not implemented by this design.
+- Target triple, from `<compiler> -dumpmachine`, which is a second probe invocation. PREDICTED to work with gcc and MinGW; UNVERIFIED.
+- Ownership: the probe runs a process, so it belongs to Infrastructure (Section 7.2, `IToolchainProbe`). The existing `DoctorCommand` probe (`DoctorCommand.cs:107-108`) calls `GeneratedHostBuildService.RunToolchain` directly. After the change it should call `IToolchainProbe` as well, so both paths share one implementation. Until then it is unchanged.
 - Compiler and linker arguments actually passed (`GeneratedHostBuildService.cs:77-85`, `:103`).
 - Step results: outcome and exit code per step (`ToolchainResult`, `GeneratedHostBuildService.cs:178`). Durations are not recorded in the deterministic part.
 - Compiler executable path. This is a local path. Per `docs/development/artifact-policy.md:72-73`, deterministic artifacts must not carry local paths, so the path goes in the local-only history record (Section 5), not in the manifest.
 
 ### 3.5 Manifest contents and location
 
-Proposed file: `<outputDir>/build-manifest.json`, schema version 1, written only after the build succeeds, atomically, and committed together with the artifact (the staging pattern in `FirmwareDistribution.cs:510`).
+Proposed file: `<outputDir>/build-manifest.json`, schema version 1. It is written only after the build succeeds. It is written into a staging area first, and then promoted (moved into place) together with the artifact files, using the staging pattern in `FirmwareDistribution.cs:510`.
 
 Deterministic fields (no timestamps, no local paths):
 
 ```text
 schemaVersion, buildKey,
-input:      { kind, sha256 }
-codegen:    { mode, traceUnits, guardStats, allowEmptyProgram, standaloneOptions..., generatorVersion }
+input:      { kind, sha256 }                    // kind: "exe" | "chd"; hash only
+codegen:    {
+  mode,                         // "standard" | "standalone"
+  traceUnits, guardStats, allowEmptyProgram,
+  hostBridge, externalBios,
+  directLaunchHostRelativePath, // string or null
+  windowedLaunch,               // { hostBinaryName, argumentRelativePath, waitLimitMs } or null
+  budget, initialPc, initialHi, initialLo, imageLoadAddress,
+  initialGprSha256,             // hash over the GPR words
+  initialMemorySha256,          // hash over the (address, value) pairs
+  programImageSha256,           // hash over the program image bytes
+  generatorVersion
+}
 loadedCode: [ { name, kind, loadAddress, wordCount, sourceSha256 } ]
-source:     { file, sha256 }
+source:     { file, sha256, sizeBytes }
 binary:     { file, sha256, sizeBytes }
 toolchain:  { compilerVersionLine, targetTriple, compileArgs, linkArgs }
 runtimeInputs: [ { name, requiredBy, kind } ]   // names only, never the BIOS or ROM content
 productRevision: "<InformationalVersion>"       // informational, not part of buildKey
 ```
+
+The `initialGpr`, `initialMemory`, and program-image values are hashed and never listed in the manifest. The manifest records their hashes only, the same way the project manifest already stores the input SHA-256 (`ProjectManifestDocument.cs:29`). The C source and `artifact-image.bin` still contain the game-derived data they always did (Section 2.3).
 
 Non-deterministic or local data goes into a separate local record, not into the manifest: timestamps, compiler path, machine name, and the run history. Section 5.
 
@@ -164,9 +183,9 @@ The manifest is a sidecar. It is not embedded in the C source. Embedding would c
 
 ## 4. Reproducibility: the guarantee and its limits
 
-### 4.1 What is guaranteed today (tier 0)
+### 4.1 What is expected today (tier 0)
 
-Same IR, same loaded-code table, same options, same code version: the generated C source is byte-identical. This is what the determinism tests check, in-process (`HostCodeGenTests.cs:576`, OBSERVED). The docs state the rules (`docs/development/recompiler-host-codegen.md:301-310`, OBSERVED): fixed naming, fixed indentation, fixed block order by `EntryPc`, no timestamps, GUIDs, random names, or paths.
+Expected, not run: the same IR, with default options, gives byte-identical C source when `RecompilerHostCodeGen.Generate(program)` is called twice in-process. The test `Determinism_Same_IR_Produces_ByteIdentical_Source` (`src/PSXRecomp.Tests/Recompiler/HostCodeGenTests.cs:576`, OBSERVED test name) does exactly that. Its scope is narrow. It calls only the single-argument overload with default options. It does not cover `traceUnits`, `guardStats`, a non-empty loaded-code table, or the artifact driver. The artifact-driver determinism tests (`RecompiledArtifactCodeGenTests.cs:144`, `:223`, `:252`, OBSERVED names) cover `GenerateStandalone` and `Generate`, and their option coverage was not checked. The docs state the rules (`docs/development/recompiler-host-codegen.md:301-310`, OBSERVED): fixed naming, fixed indentation, fixed block order by `EntryPc`, no timestamps, GUIDs, random names, or paths.
 
 The code supports those rules: block iteration follows the IR list (`RecompilerHostCodeGen.cs:288`), loaded code is ordered by entry PC (`:293`, `:937`, and `LoadedCodeTable.cs:63`). CONFIRMED. The `Dictionary<int, string> valueNames` at `RecompilerHostCodeGen.cs:565` is used for lookups in the code I read. I did not confirm that no iteration over a `Dictionary` or `HashSet` reaches the output. UNVERIFIED for the whole file.
 
@@ -174,7 +193,7 @@ Tier 0 does not cover: a different `traceUnits` or `guardStats` setting, a diffe
 
 ### 4.2 Proposed guarantee (tier 1), after this design is implemented
 
-Given the same input bytes (input SHA-256), the same psxrecomp generator version, the same codegen options, the same entry roots, and the same loaded-code table, the generated `.c` is byte-identical, and the `buildKey` is identical. The manifest's `sourceSha256` lets a reviewer verify it.
+Given the same input bytes (input SHA-256), the same psxrecomp generator version, the same codegen options, the same entry roots, and the same loaded-code table, the generated `.c` is byte-identical, and the `buildKey` is identical. The manifest's `source.sha256` field lets a reviewer verify it.
 
 This tier is not promised until these are done:
 
@@ -198,6 +217,7 @@ Experiment required before any tier-2 claim (run on one machine first, then two)
 - Runtime behavior of a standard artifact. It reads its input at run time (`RecompileCommand.cs:99`), so the same binary can behave differently with a different input file. CONFIRMED from the comment; behavior PREDICTED.
 - The runtime host. `dotnet publish` output is not in any identity (Section 2.5). Whether it is reproducible is UNVERIFIED.
 - Behavior across OS and compiler versions. Not guaranteed. The CI uses the runner's gcc (2.7).
+- Confidentiality of the output directory. It holds game-derived code and data (2.3, 3.5). This design does not make it safe to share. It stays under the same rules as before.
 - Any run that uses an external BIOS (`RecompiledArtifactCodeGen.cs:629`). The BIOS is never part of the artifact, so the BIOS file is outside the guarantee. Only its provenance label is recorded (`RuntimeHostManifest.cs:60-68` labels such as `user-supplied`). The BIOS content is never recorded, hashed into a committed file, or included in a manifest.
 - Artifacts built with `guardStats` or `traceUnits`. These are measurement builds. They are not release builds, and the manifest must say so.
 
@@ -205,7 +225,9 @@ Experiment required before any tier-2 claim (run on one machine first, then two)
 
 Proposed: an append-only local log, one JSON object per build, with the timestamp, compiler path, step outcomes, and the `buildKey`. It is local-only and is never committed, consistent with `docs/development/artifact-policy.md:72-73`. Its location depends on #42 (Project / Workspace), which is not implemented. Until then, the log can live next to the output directory (`<outputDir>/build-history.jsonl`) and be treated as a diagnostic, not as state.
 
-Open: whether history is per-output-directory or per-project. See Section 7.
+The timestamp and the compiler path are supplied by the Infrastructure adapter behind a Domain port (`IBuildHistoryLog`, Section 7.2), not by Domain code. Domain forbids `DateTime.Now` and `DateTime.UtcNow` (`src/architecture.contract.json:25-26`; matrix Forbidden API table), so the Domain entry type has no time field.
+
+Open: whether history is per-output-directory or per-project. See Section 9.
 
 ## 6. Clean, rebuild, and incremental policy (sketch)
 
@@ -215,24 +237,49 @@ Open: whether history is per-output-directory or per-project. See Section 7.
 
 ## 7. Management layer that keeps the Build API
 
-The goal is that every current caller compiles and behaves the same, and the new workflow sits above the port.
+The goal is that every current caller compiles and behaves the same, and the new workflow sits above the port. The layer rules are ADR-017 points 1-3 (Domain owns ports; Infrastructure owns file, process, and clock I/O; Application does not depend on Infrastructure except at one composition-root site) and matrix rule 3 (`docs/architecture-matrix.md:66`: Application does not acquire host resources directly).
 
 ### 7.1 Keep the port
 
 - `IGeneratedHostBuildService`, `GeneratedHostBuildRequest`, and `GeneratedHostBuildResult` (`GeneratedHostBuild.cs:48`, `:63`, `:86`) keep their current members. Any new request field is optional and goes at the end of the positional record, so every existing call site still compiles. The existing callers listed in 2.1 are not edited by this design.
 - The result keeps its shape. Build provenance is gathered by the layer above, not returned through the port.
 
-### 7.2 Add a layer above the port
+### 7.2 Domain ports, the workflow, and the composition root
 
-A class in the Application layer (name proposed: `ArtifactBuildWorkflow`) with one entry point that CLI and GUI both call:
+**Why the workflow lives in Domain (PSXRecomp.Core).** `PSXRecomp.Cli` is classified as Infrastructure, because its namespace is `PSXRecomp.Infrastructure.Cli` (`src/PSXRecomp.Cli/RecompileCommand.cs:7`, Infrastructure namespace root in `src/architecture.contract.json:5`). The contract forbids Infrastructure from depending on Application (`src/architecture.contract.json:13`). So the CLI cannot reference an Application project such as `PSXRecompStudio`. A workflow shared by CLI and GUI must therefore be a Domain service that takes ports, and the GUI (Application) may call it too (Application to Domain is allowed, ADR-017 and matrix dependency table).
 
-1. Compute the build key from the inputs in 3.2.
-2. Check the existing manifest (Section 6, Verify and Rebuild).
-3. Run the existing `IGeneratedHostBuildService.Build` into a staging directory, not the final one.
-4. Re-hash the source and the binary, and write `build-manifest.json` into the staging directory.
-5. Commit: move the staged files into the output directory, replacing only files the manifest lists.
+**Domain ports** (new, `PSXRecomp.Core`, no host calls, no `DateTime`, no `Guid`):
 
-`RecompileCommand` moves to this workflow first, because it is the CLI surface (#15). The engine and `PackageCommand` can keep calling the port directly until a later change.
+- `IBuildArtifactStore`: the only way the workflow touches files.
+  - `BuildStagingArea CreateStaging(string outputDirectory)`
+  - `string Sha256(BuildStagingArea area, string fileName)`
+  - `void WriteText(BuildStagingArea area, string fileName, string text)`
+  - `string? ReadOutputText(string outputDirectory, string fileName)`, used to read the existing manifest
+  - `string Sha256Output(string outputDirectory, string fileName)`, used by Verify
+  - `void Promote(BuildStagingArea area, string outputDirectory, IReadOnlyList<string> fileNames)`, which replaces only the listed files
+  - `void Discard(BuildStagingArea area)`
+- `IToolchainProbe`: `ToolchainIdentity Probe(string compilerExecutable)`, where `ToolchainIdentity` is `(bool Available, string? VersionLine, string? TargetTriple)`. Process execution happens only behind this port.
+- `IBuildHistoryLog`: `void Append(BuildHistoryEntry entry)`. The entry has no time field. The adapter stamps the time.
+
+**Pure Domain code** (no port needed): the build key (SHA-256 over the canonical form of the Section 3.5 fields), the `BuildManifest` record and its canonical JSON text, and the decision logic of Section 6 (Verify and Rebuild, given hashes that the store returns).
+
+**Infrastructure implementations** (`PSXRecomp.Infrastructure`, the only place with `File`, `Directory`, `Process`, `Guid`, and the clock):
+
+- `FileBuildArtifactStore : IBuildArtifactStore`. The staging name uses a GUID, as `FirmwareDistribution.cs:510` already does.
+- `ProcessToolchainProbe : IToolchainProbe`. It wraps `GeneratedHostBuildService.RunToolchain` and the stdout change in 3.4.
+- `FileBuildHistoryLog : IBuildHistoryLog`. It stamps the time.
+
+**Workflow.** `ArtifactBuildWorkflow` (Domain, `PSXRecomp.Core`) takes `IGeneratedHostBuildService`, `IBuildArtifactStore`, `IToolchainProbe`, and `IBuildHistoryLog` through its constructor. It runs these steps:
+
+1. Probe the toolchain through `IToolchainProbe` and compute the build key from the inputs in 3.2.
+2. Read the existing manifest through `ReadOutputText`, and decide Skip, Rebuild, or Verify (Section 6).
+3. Create a staging area through `CreateStaging`. `BuildStagingArea` carries the staging directory as a string, which the workflow passes as `OutputDirectory` to `IGeneratedHostBuildService.Build`. The workflow never opens or creates that directory itself. On failure, `Discard`.
+4. Hash the source and the binary through `Sha256`. Build the `BuildManifest`, and write it with `WriteText`.
+5. `Promote` the artifact files and `build-manifest.json`, replacing only what the manifest lists. Append one entry to `IBuildHistoryLog`.
+
+**Composition root.** `PSXRecomp.Cli` is the only place that constructs the Infrastructure classes. It creates `FileBuildArtifactStore`, `ProcessToolchainProbe`, `FileBuildHistoryLog`, and `GeneratedHostBuildService`, and passes them to `ArtifactBuildWorkflow`. This is the "one explicit composition-root site" of ADR-017 point 3. It needs no new suppression if the analyzer classifies the CLI as Infrastructure (open question 14).
+
+**Migration.** `RecompileCommand` (`RecompileCommand.cs:115-116`) moves to the workflow first, because it is the CLI surface (#15). The engine (`RecompiledHostExecutionEngine.cs:563`, `:1281`) and `PackageCommand` (`:171-178`) keep calling the port directly until a later change. `DoctorCommand` moves its probe to `IToolchainProbe` (Section 3.4).
 
 ### 7.3 What this does not change
 
@@ -242,11 +289,11 @@ A class in the Application layer (name proposed: `ArtifactBuildWorkflow`) with o
 
 ## 8. Recommendation
 
-1. Add the build key, source hash, and binary hash now, computed by the workflow in 7.2, in a sidecar `build-manifest.json` (schema 1). Do not change generated C.
+1. Add the build key, source hash, and binary hash now, computed by `ArtifactBuildWorkflow` (Domain) through the ports in 7.2, in a sidecar `build-manifest.json` (schema 1). Do not change generated C.
 2. Record codegen options and the generator version in the build key. This closes the largest gap (2.4).
-3. Capture the compiler `--version` and target at build time, through the same probe `DoctorCommand` already runs. Do not record local paths in the manifest.
+3. Add a `Stdout` field to `ToolchainResult` (3.4). Capture the compiler `--version` and target through `IToolchainProbe`, implemented in Infrastructure. Do not record local paths in the manifest.
 4. Promise tier 1 only (Section 4.2). Run the tier-2 experiment (4.3) before any binary-identity claim.
-5. Keep the existing Build API. Add the workflow above it. Migrate `RecompileCommand` first.
+5. Keep the existing Build API. Place the workflow in Domain over `IBuildArtifactStore`, `IToolchainProbe`, `IBuildHistoryLog`, and `IGeneratedHostBuildService`. Infrastructure implements the ports, and `PSXRecomp.Cli` composes them. Migrate `RecompileCommand` first.
 6. Keep history local-only and wait for #42 to decide its location.
 
 This sequence respects the issue's priority: it does not block the vertical slice, and it does not change the artifact bytes that the existing tests depend on.
@@ -265,3 +312,5 @@ This sequence respects the issue's priority: it does not block the vertical slic
 10. **Compiler version in diagnostics:** `ExecutionEnvironmentCollector.cs:28` always writes `compilerVersion: null`. Should it be filled from the same probe?
 11. **History location:** per output directory, or per project under #42?
 12. **Cleanup in source:** `src/PSXRecomp.Cli/RecompileCommand.cs:28-31` has a `<summary>` for "The standalone artifact binary name." with no member under it. It looks like a leftover. Not part of this design; noted for whoever edits that file.
+13. **GUI composition root:** the Studio is Application-layer and may not reference Infrastructure (ADR-017 point 3). Which host bootstrap constructs the GUI's Infrastructure adapters? The matrix recommends a dedicated Host/Bootstrap layer (`docs/architecture-matrix.md:210`). Not decided here.
+14. **Analyzer classification of the CLI:** the composition root in Section 7.2 assumes the analyzer treats `PSXRecomp.Cli` as Infrastructure by namespace (`RecompileCommand.cs:7`). UNVERIFIED until a build runs AARC on the new code.
