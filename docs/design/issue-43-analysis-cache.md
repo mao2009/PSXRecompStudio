@@ -817,7 +817,7 @@ are not cached. Locations are at `882500e`.
 | N8 basic blocks | yes | method `BasicBlockBuilder.Build` | `src/PSXRecomp.Core/DiscImage/BasicBlockBuilder.cs:19-20` | no |
 | N9 functions | yes | method `FunctionDiscovery.Build` | `src/PSXRecomp.Core/DiscImage/FunctionDiscovery.cs:81-88` | no |
 | N10 BIOS calls | yes | method `BiosCallRecognizer.Recognize` | `src/PSXRecomp.Core/DiscImage/BiosCallRecognition.cs:140` | no |
-| N11 report | yes | block: statements of the `try` at `RomAnalysisPipeline.cs:401`, excluding the catch at `:435` | `:402-434` | no (`:437` is in the catch) |
+| N11 report | yes | block: statements of the `try` at `RomAnalysisPipeline.cs:401`, excluding the catch at `:435` | `:403-433` | no (`:437` is in the catch) |
 | N12a classification | yes, after U1 | method `Analyze` | `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:88-187` | no |
 | N12d, N14, N15 | no | not cached | | |
 
