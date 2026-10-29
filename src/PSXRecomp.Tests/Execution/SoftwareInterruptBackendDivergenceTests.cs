@@ -9,12 +9,12 @@ using static PSXRecomp.Tests.Infrastructure.MixedFallbackTestSupport;
 namespace PSXRecomp.Tests.Execution;
 
 /// <summary>
-/// Issue #728 (investigation, characterization only): the interpreter half of the software-interrupt (CAUSE.IP0/IP1)
-/// divergence. A fallback segment whose return JR carries <c>MTC0 SR</c> in its delay slot leaves IP0 pending and enabled
-/// at the return PC. Run alone the interpreter takes that INT on its next step and stops with <c>Exception</c>; as a
-/// mixed segment it returns Clean and reports SR/CAUSE with the pending, enabled bit. The artifact side (not exercised
-/// here, it needs a generated host) accepts INT only for CAUSE.IP2 and SR.IM2
-/// (<c>artifact_interrupt_boundary</c>), so it resumes silently. These tests pin the observable half and change no behaviour.
+/// Issue #728: the software-interrupt (CAUSE.IP0/IP1) divergence between the interpreter and the artifact. A fallback
+/// segment whose return JR carries <c>MTC0 SR</c> in its delay slot leaves IP0 pending and enabled at the return PC. Run
+/// alone the interpreter takes that INT on its next step and stops with <c>Exception</c>. The artifact's INT boundary
+/// accepts INT only for CAUSE.IP2 and SR.IM2 (<c>artifact_interrupt_boundary</c>), so a segment that returned Clean and
+/// resumed the artifact would drop the interrupt silently. The mixed segment now stops with the same Runtime-failure
+/// classification the interpreter alone uses (docs/cpu/exceptions.md).
 /// </summary>
 [Test]
 public sealed class SoftwareInterruptBackendDivergenceTests
@@ -58,7 +58,7 @@ public sealed class SoftwareInterruptBackendDivergenceTests
     }
 
     [Fact]
-    public void Mixed_ReturnsCleanlyWithAPendingEnabledSoftwareInterrupt_TheStateTheArtifactBoundaryIgnores()
+    public void Mixed_DoesNotReturnWithAPendingEnabledSoftwareInterrupt_ItStopsAsTheInterpreterAloneDoes()
     {
         var (graph, engine) = Attached(Program(CauseIp0, SrIec_Im0));
         using var _ = graph;
@@ -66,12 +66,27 @@ public sealed class SoftwareInterruptBackendDivergenceTests
 
         var outcome = engine.RunFallbackSegment(Entering(), new HashSet<uint> { ReturnPc }, 100);
 
-        outcome.Status.Should().Be(FallbackSegmentStatus.Returned, "nothing in the segment stops at the return PC");
+        // The interpreter alone takes this INT at ReturnPc (see the test below). Resuming the artifact there would drop it.
+        outcome.Status.Should().Be(FallbackSegmentStatus.Stopped, "a takeable software interrupt is a Runtime failure, not a return");
+        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.ExceptionUnsupported, outcome.DiagnosticMessage);
         outcome.State.Pc.Should().Be(ReturnPc);
-        (outcome.State.Sr & 1).Should().Be(1u);
-        (outcome.State.Cause & outcome.State.Sr & 0x300u).Should().NotBe(0u, "IP0 is pending and enabled in the written-back state");
-        BiosBlockingCallWait.RefuseSoftwareInterrupt(outcome.State.Sr, outcome.State.Cause).Should().NotBeNull(
-            "the existing predicate already recognises this state; the mixed host does not consult it on Returned (#728)");
+        (outcome.State.Cause & outcome.State.Sr & 0x300u).Should().NotBe(0u, "IP0 is pending and enabled in the stopped state");
+    }
+
+    [Theory]
+    [InlineData(0x0000_0100u, 0x0000_0100u)] // IP0 pending, IM0 set, IEc clear: not takeable
+    [InlineData(0x0000_0100u, 0x0000_0001u)] // IP0 pending, IEc set, IM0 clear: masked
+    [InlineData(0u, 0x0000_0101u)]           // nothing pending
+    public void Mixed_ReturnsCleanlyWhenNoSoftwareInterruptIsTakeableAtTheReturnPc(uint cause, uint sr)
+    {
+        var (graph, engine) = Attached(Program(cause, sr));
+        using var _ = graph;
+        using var __ = engine;
+
+        var outcome = engine.RunFallbackSegment(Entering(), new HashSet<uint> { ReturnPc }, 100);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.Returned, outcome.DiagnosticMessage);
+        outcome.State.Pc.Should().Be(ReturnPc);
     }
 
     [Fact]

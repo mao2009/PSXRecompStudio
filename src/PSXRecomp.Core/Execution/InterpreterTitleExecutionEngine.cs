@@ -498,6 +498,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         if (returned)
         {
+            // Issue #728: the interpreter alone would take an enabled software interrupt at this return PC and stop there
+            // (docs/cpu/exceptions.md: a software interrupt is a Runtime failure). The artifact's INT boundary accepts only
+            // IP2, so resuming it here would silently drop that interrupt. Fail closed with the same stop.
+            if (IsTakeableSoftwareInterrupt(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)))
+            {
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired,
+                    MixedFallbackDiagnostics.ExceptionUnsupported,
+                    $"The fallback returned to pc 0x{state.Pc:X8} with a software interrupt pending and enabled " +
+                    $"(CAUSE=0x{state.Cause:X8}, SR=0x{state.Sr:X8}); the artifact's INT boundary takes only IP2, so mixed execution does not resume.");
+            }
+
             return new FallbackSegmentOutcome(FallbackSegmentStatus.Returned, state, retired, null, null);
         }
 
@@ -938,6 +950,13 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     private bool TookHardwareInterrupt() =>
         _core.ExceptionCode == InterruptExcode &&
         (_core.GetCop0(Cop0Cause) & _core.GetCop0(Cop0Status) & HardwareInterruptBit) != 0;
+
+    /// <summary>
+    /// Whether the CPU would take a software interrupt (CAUSE.IP0/IP1 enabled by SR.IM0/IM1, with SR.IEc) at a clean
+    /// boundary: the R3000A's own INT test restricted to the two software bits (Issue #728).
+    /// </summary>
+    private static bool IsTakeableSoftwareInterrupt(uint sr, uint cause) =>
+        (sr & 0x1u) != 0 && (cause & sr & 0x300u) != 0;
 
     /// <summary>
     /// Whether the next <see cref="PSXCoreWrapper.Step"/> would take an INT instead of fetching (Issue #717): the
