@@ -9,28 +9,47 @@ namespace PSXRecomp.Core.DiscImage;
 /// in memory, as <see cref="RawCdSectorSource"/> does.
 /// </summary>
 /// <remarks>
-/// LBA convention (pending owner decision, MAJOR-1): LBA 0 is the first sector of the BINARY file, so INDEX 01 MSF
-/// values are used as LBAs directly; a typical data track 1 with INDEX 01 00:02:00 starts at LBA 150. The lead-out is
-/// the file's sector count. This does not yet match the MSF 00:02:00 = LBA 0 wording at
-/// <see cref="CdTrack"/> in ICdSectorSource.cs:5 (and <see cref="RawCdSectorSource"/> also maps LBA 0 to the first
-/// image sector); the decision is pending and is not settled here.
-///
+/// Three position spaces are kept apart (owner ruling, Issue #10):
+/// <list type="bullet">
+/// <item>File index: a sector's position from the start of the BINARY file. CUE MSF values (INDEX 01 and so on) count
+/// in this space, and <see cref="BinCueTrack.Index01Frames"/> is in it.</item>
+/// <item>LBA: the ICdSectorSource.cs:5 convention, LBA 0 = MSF 00:02:00. <see cref="TryReadSector"/>, <see cref="CdTrack.StartLba"/>
+/// and <see cref="CdDiscToc.LeadOutLba"/> are in this space.</item>
+/// <item>Absolute MSF frames: LBA + 150, as the CD-ROM controller's SetLoc and GetTD report them.</item>
+/// </list>
+/// The mapping is LBA = file index - 150 (<see cref="FileIndexToLba"/>, <see cref="LbaToFileIndex"/>). A track start is
+/// its INDEX 01 file index minus 150; the lead-out is the file's sector count minus 150. INDEX 00 (pregap) is parsed and
+/// validated but not represented in the TOC, because the pregap lies before LBA 0 for a track 1 at 00:02:00 and the
+/// TOC has no position for it. A multi-track sheet yields one <see cref="CdTrack"/> per TRACK, in file order.
+/// </remarks>
+/// <remarks>
+/// The existing raw and CHD sources (<see cref="RawCdSectorSource"/>, <see cref="ChdCdSectorSource"/>) index the image
+/// by the LBA itself, with no 150-sector offset. That does not match the convention above, and the device's SetLoc
+/// path then reads 150 sectors earlier than a BIN dump would. Those paths are unchanged in this step and are an open
+/// question for the owner.
+/// </remarks>
+/// <remarks>
 /// The image is referenced, not copied: the caller's <paramref name="bin"/> array must not be mutated while this source
 /// is in use, or the sectors it returns change.
-///
+/// </remarks>
+/// <remarks>
 /// A <paramref name="destination"/> shorter than <see cref="ICdSectorSource.RawSectorSize"/> is not written to and
 /// returns false, the same as a sector the disc does not hold.
 /// </remarks>
 [Domain]
 public sealed class BinCueCdSectorSource : ICdSectorSource
 {
+    /// <summary>Frames before LBA 0: LBA 0 is MSF 00:02:00, and the file index of LBA 0 is this value.</summary>
+    public const int LeadInFrames = 150;
+
     private readonly ReadOnlyMemory<byte> _bin;
 
     /// <param name="cueText">The CUE sheet text.</param>
-    /// <param name="bin">The BINARY file's bytes: a non-empty whole number of raw 2352-byte sectors. Referenced, not copied.</param>
+    /// <param name="bin">The BINARY file's bytes: a non-empty whole number of raw 2352-byte sectors, at least
+    /// <see cref="LeadInFrames"/> of them. Referenced, not copied.</param>
     /// <exception cref="ArgumentNullException">A parameter is null.</exception>
-    /// <exception cref="ArgumentException">The file is empty or not a whole number of raw sectors, or the TOC is invalid
-    /// (for example an INDEX 01 at or after the end of the file).</exception>
+    /// <exception cref="ArgumentException">The file is empty, not a whole number of raw sectors, or shorter than the
+    /// 150-sector lead-in, or the TOC is invalid (for example an INDEX 01 before 00:02:00 or at or after the end of the file).</exception>
     /// <exception cref="InvalidDataException">The CUE sheet is malformed.</exception>
     /// <exception cref="NotSupportedException">The CUE sheet uses a track mode that is not read.</exception>
     public BinCueCdSectorSource(string cueText, ReadOnlyMemory<byte> bin)
@@ -42,14 +61,30 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
                 $"A BIN file is a non-empty multiple of {ICdSectorSource.RawSectorSize} bytes; got {bin.Length}.", nameof(bin));
         }
 
+        var fileSectors = bin.Length / ICdSectorSource.RawSectorSize;
+        if (fileSectors < LeadInFrames)
+        {
+            throw new ArgumentException(
+                $"A BIN file holds {fileSectors} sectors, fewer than the {LeadInFrames}-sector lead-in before LBA 0.", nameof(bin));
+        }
+
         var sheet = BinCueSheet.Parse(cueText);
-        var tracks = sheet.Tracks.Select(t => new CdTrack(t.Number, t.Index01Frames, t.IsAudio)).ToArray();
-        Toc = new CdDiscToc(tracks, bin.Length / ICdSectorSource.RawSectorSize);
+        var tracks = sheet.Tracks
+            .Select(t => new CdTrack(t.Number, FileIndexToLba(t.Index01Frames), t.IsAudio))
+            .ToArray();
+        Toc = new CdDiscToc(tracks, FileIndexToLba(fileSectors));
         _bin = bin;
     }
 
     public CdDiscToc Toc { get; }
 
+    /// <summary>Converts a file index (sector position from the start of the BINARY file) to an LBA.</summary>
+    public static int FileIndexToLba(int fileIndex) => fileIndex - LeadInFrames;
+
+    /// <summary>Converts an LBA (LBA 0 = MSF 00:02:00) to the file index of that sector in the BINARY file.</summary>
+    public static int LbaToFileIndex(int lba) => lba + LeadInFrames;
+
+    /// <summary>Reads the sector at LBA <paramref name="lba"/>, which is file index <c>lba + 150</c>.</summary>
     public bool TryReadSector(int lba, Span<byte> destination)
     {
         if (lba < 0 || lba >= Toc.LeadOutLba || destination.Length < ICdSectorSource.RawSectorSize)
@@ -57,7 +92,8 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
             return false;
         }
 
-        _bin.Span.Slice(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize).CopyTo(destination);
+        _bin.Span.Slice(LbaToFileIndex(lba) * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize)
+            .CopyTo(destination);
         return true;
     }
 }

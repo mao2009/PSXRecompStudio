@@ -3,8 +3,9 @@ using PSXRecomp.Architecture;
 
 namespace PSXRecomp.Core.DiscImage;
 
-/// <summary>One TRACK of a BIN/CUE sheet: its number, whether it is CD-DA audio, and its INDEX 01 position in frames
-/// (sectors) from the start of the BINARY file.</summary>
+/// <summary>One TRACK of a BIN/CUE sheet: its number, whether it is CD-DA audio, and its INDEX 01 position as a file index:
+/// frames (sectors) from the start of the BINARY file. This is not an LBA; <see cref="BinCueCdSectorSource"/> converts it
+/// (LBA = file index - 150).</summary>
 [Domain]
 public readonly record struct BinCueTrack(int Number, bool IsAudio, int Index01Frames);
 

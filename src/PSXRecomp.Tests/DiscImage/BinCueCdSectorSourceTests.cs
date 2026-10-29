@@ -42,24 +42,51 @@ public sealed class BinCueCdSectorSourceTests
 
         var source = new BinCueCdSectorSource(TwoTrackCue, bin);
 
-        // INDEX 01 00:32:00 is 32 seconds at 75 frames each: LBA 2400.
-        source.Toc.Tracks.Should().Equal(new CdTrack(1, 150, false), new CdTrack(2, 2400, true));
+        // INDEX 01 00:02:00 is file index 150, so track 1 is LBA 0. INDEX 01 00:32:00 is file index 2400, so track 2
+        // is LBA 2250. The lead-out is the file's 3000 sectors less 150, LBA 2850.
+        source.Toc.Tracks.Should().Equal(new CdTrack(1, 0, false), new CdTrack(2, 2250, true));
         source.Toc.FirstTrack.Should().Be(1);
         source.Toc.LastTrack.Should().Be(2);
-        source.Toc.LeadOutLba.Should().Be(3000);
+        source.Toc.LeadOutLba.Should().Be(2850);
     }
 
     [Fact]
-    public void TryReadSector_InRange_CopiesTheRawSectorFromTheBinary()
+    public void TryReadSector_InRange_ReadsFileIndexLbaPlus150()
     {
         var bin = Bin(3000);
         var source = new BinCueCdSectorSource(TwoTrackCue, bin);
         var destination = new byte[Raw];
 
-        var found = source.TryReadSector(2999, destination);
+        // LBA 2849 is the last sector before the lead-out, file index 2999.
+        var found = source.TryReadSector(2849, destination);
 
         found.Should().BeTrue();
         destination.Should().Equal(bin.AsSpan(2999 * Raw, Raw).ToArray());
+    }
+
+    [Fact]
+    public void TryReadSector_LbaZero_IsTheFileSectorAtIndex150()
+    {
+        var bin = Bin(3000);
+        var source = new BinCueCdSectorSource(TwoTrackCue, bin);
+        var destination = new byte[Raw];
+
+        source.TryReadSector(0, destination).Should().BeTrue();
+        destination.Should().Equal(bin.AsSpan(150 * Raw, Raw).ToArray());
+    }
+
+    [Fact]
+    public void FileIndexAndLba_ConvertWithTheLeadInOfOneHundredFifty()
+    {
+        BinCueCdSectorSource.FileIndexToLba(150).Should().Be(0);
+        BinCueCdSectorSource.FileIndexToLba(0).Should().Be(-150);
+        BinCueCdSectorSource.LbaToFileIndex(0).Should().Be(150);
+        BinCueCdSectorSource.LbaToFileIndex(-150).Should().Be(0);
+        BinCueCdSectorSource.LeadInFrames.Should().Be(150);
+        for (var fileIndex = 0; fileIndex < 1000; fileIndex += 37)
+        {
+            BinCueCdSectorSource.LbaToFileIndex(BinCueCdSectorSource.FileIndexToLba(fileIndex)).Should().Be(fileIndex);
+        }
     }
 
     [Fact]
@@ -68,7 +95,7 @@ public sealed class BinCueCdSectorSourceTests
         var source = new BinCueCdSectorSource(TwoTrackCue, Bin(3000));
         var destination = Enumerable.Repeat((byte)0xAB, Raw).ToArray();
 
-        source.TryReadSector(3000, destination).Should().BeFalse();
+        source.TryReadSector(2850, destination).Should().BeFalse();
         source.TryReadSector(-1, destination).Should().BeFalse();
         destination.Should().OnlyContain(b => b == 0xAB);
     }
@@ -143,8 +170,8 @@ public sealed class BinCueCdSectorSourceTests
     [Fact]
     public void TryReadSector_LeadOutAt149Sectors_LastSectorReadableAndNextAbsent()
     {
-        // One track starting at LBA 0 over 149 sectors: the lead-out is LBA 149.
-        var source = new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n", Bin(149));
+        // One track at file index 150 (LBA 0) over 299 file sectors: the lead-out is LBA 149.
+        var source = new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", Bin(299));
         var destination = new byte[Raw];
 
         source.Toc.LeadOutLba.Should().Be(149);
@@ -205,8 +232,25 @@ public sealed class BinCueCdSectorSourceTests
     [Fact]
     public void Ctor_IndexOneAtOrAfterFileEnd_ThrowsArgumentFromToc()
     {
-        // Track 1 at 00:02:00 (LBA 150) in a 150-sector file: the start is not before the lead-out.
+        // Track 1 at file index 150 (LBA 0) in a 150-sector file: the lead-out is LBA 0, so the start is not before it.
         var act = () => new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", Bin(150));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Ctor_FewerThanTheLeadInSectors_ThrowsArgument()
+    {
+        var act = () => new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", Bin(149));
+
+        act.Should().Throw<ArgumentException>().WithParameterName("bin").WithMessage("*lead-in*");
+    }
+
+    [Fact]
+    public void Ctor_IndexOneBeforeTheLeadIn_ThrowsArgumentFromToc()
+    {
+        // INDEX 01 00:01:00 is file index 75, which would be LBA -75: the TOC does not accept a negative start.
+        var act = () => new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:01:00\n", Bin(300));
 
         act.Should().Throw<ArgumentException>();
     }
