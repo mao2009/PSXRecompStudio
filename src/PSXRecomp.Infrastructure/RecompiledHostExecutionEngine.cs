@@ -192,18 +192,35 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     public Action<PsxDeviceGraph, ulong, ulong>? VBlankObserver { get; set; }
 
     /// <summary>
-    /// The one VBlank callback of a host scheduler: the live frame publish (Issue #818) and the boundary observer (Issue #774)
-    /// both run from it, on the pump thread. Neither is set on the headless path, which leaves the callback unset.
+    /// Registers the VBlank subscribers of a host scheduler, on the pump thread: the live frame publish (Issue #818) as a
+    /// game-execution callback, whose exception propagates, and the boundary observer (Issue #774) as a diagnostic observer,
+    /// whose exception is contained by the scheduler. <paramref name="onObserverFailure"/> is told of each observer exception
+    /// before it is contained, so the engine can report the run as observer-failed. Both null leaves the scheduler unchanged.
     /// </summary>
-    internal static void WireVBlank(DeviceScheduler scheduler, PsxDeviceGraph devices, Action<ulong>? live, Action<PsxDeviceGraph, ulong, ulong>? observer)
+    internal static void WireVBlank(DeviceScheduler scheduler, PsxDeviceGraph devices, Action<ulong>? live, Action<PsxDeviceGraph, ulong, ulong>? observer,
+        Action<VblankObserverFailure>? onObserverFailure = null)
     {
-        if (live is null && observer is null) return;
-        scheduler.VblankCallback = vblank =>
+        if (live is not null) scheduler.AddVblankCallback(live);
+        if (observer is null) return;
+        scheduler.AddDiagnosticVblankObserver(vblank =>
         {
-            live?.Invoke(vblank);
-            observer?.Invoke(devices, vblank, scheduler.ElapsedCycles);
-        };
+            try
+            {
+                observer(devices, vblank, scheduler.ElapsedCycles);
+            }
+            catch (Exception ex)
+            {
+                onObserverFailure?.Invoke(new VblankObserverFailure(vblank, ex.GetType().Name, ex.Message));
+                throw;
+            }
+        });
     }
+
+    /// <summary>
+    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw during the last run, or null. A non-null value
+    /// means the observer failed; the guest result is unaffected, but the run is not a clean observation.
+    /// </summary>
+    public VblankObserverFailure? VBlankObserverFailure { get; private set; }
 
     /// <summary>
     /// Opt-in record of RAM-placed code the artifact refused at a handoff (Issue #773). Set before the run; null (the default)
@@ -805,6 +822,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             {
                 LiveFrames = _liveFrames,
                 VBlankObserver = VBlankObserver,
+                VBlankObserverFailureSink = failure => VBlankObserverFailure ??= failure,
             };
         _bridge = bridge;
 
@@ -1931,6 +1949,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         /// <summary>The engine's <see cref="RecompiledHostExecutionEngine.VBlankObserver"/>, handed to this run's scheduler (Issue #774 W03).</summary>
         public Action<PsxDeviceGraph, ulong, ulong>? VBlankObserver { get; init; }
 
+        /// <summary>Told of the observer's first exception, so the engine can report the run as observer-failed (Issue #774 W03).</summary>
+        public Action<VblankObserverFailure>? VBlankObserverFailureSink { get; init; }
+
         /// <summary>
         /// The gate every read of this run's GPU/VRAM goes through, and the stop predicate it checks (Issue #827, owner requirement). Set by the
         /// engine before the pump starts. Without them the live publisher reads nothing (it fails closed).
@@ -2051,7 +2072,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                         action => FrameReads is { } gate && StopNow is { } stopNow && gate.TryRead(stopNow, action));
                     liveVBlank = _ => livePublisher.OnVBlank();
                 }
-                RecompiledHostExecutionEngine.WireVBlank(_scheduler, _devices, liveVBlank, VBlankObserver);
+                RecompiledHostExecutionEngine.WireVBlank(_scheduler, _devices, liveVBlank, VBlankObserver, VBlankObserverFailureSink);
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)

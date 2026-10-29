@@ -29,7 +29,7 @@ public sealed class OpenBiosProbeBoundaryLogTests
         var scheduler = graph.CreateScheduler();
         var writer = new StringWriter();
         using var log = new OpenBiosProbeBoundaryLog(writer);
-        scheduler.VblankCallback = vblank => log.Write("interpreter", graph, vblank, scheduler.ElapsedCycles);
+        _ = scheduler.AddVblankCallback(vblank => log.Write("interpreter", graph, vblank, scheduler.ElapsedCycles));
 
         scheduler.Advance(2 * DeviceScheduler.VblankIntervalCycles);
 

@@ -72,8 +72,51 @@ public sealed class DeviceScheduler
     private bool _gpuIrqLine;
     private ulong _lastCdRomInterruptGeneration;
 
-    /// <summary>Optional callback invoked when VBlank interrupts are delivered.</summary>
-    internal Action<ulong>? VblankCallback { get; set; }
+    // VBlank subscribers run in registration order at each VBlank. A diagnostic observer's exception is contained and the
+    // first one is kept in VblankObserverFailure; a game-execution callback's exception propagates, as it always did.
+    private readonly List<VblankSubscriber> _vblankSubscribers = [];
+    private int _nextSubscriberId;
+
+    /// <summary>The first exception a diagnostic VBlank observer threw, or null while none has. Read after a run.</summary>
+    public VblankObserverFailure? VblankObserverFailure { get; private set; }
+
+    /// <summary>
+    /// Registers a game-execution VBlank callback. Its exception propagates out of <see cref="Advance"/>, unchanged. The
+    /// same delegate registered twice runs once. Disposing the returned handle removes it.
+    /// </summary>
+    internal IDisposable AddVblankCallback(Action<ulong> callback) => Subscribe(callback, diagnostic: false);
+
+    /// <summary>
+    /// Registers a diagnostic VBlank observer. Its exception is contained: the first is recorded in
+    /// <see cref="VblankObserverFailure"/>, and the scheduler state and the other subscribers are unaffected.
+    /// </summary>
+    internal IDisposable AddDiagnosticVblankObserver(Action<ulong> observer) => Subscribe(observer, diagnostic: true);
+
+    private IDisposable Subscribe(Action<ulong> callback, bool diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        if (_vblankSubscribers.Any(s => s.Callback.Equals(callback)))
+            return new VblankSubscription(this, 0);
+        var id = ++_nextSubscriberId;
+        _vblankSubscribers.Add(new VblankSubscriber(id, callback, diagnostic));
+        return new VblankSubscription(this, id);
+    }
+
+    private void RemoveSubscriber(int id) => _vblankSubscribers.RemoveAll(s => s.Id == id);
+
+    private sealed record VblankSubscriber(int Id, Action<ulong> Callback, bool Diagnostic);
+
+    private sealed class VblankSubscription(DeviceScheduler owner, int id) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed || id == 0) return;
+            _disposed = true;
+            owner.RemoveSubscriber(id);
+        }
+    }
 
     /// <summary>Total VBlank interrupts that have been delivered since scheduler creation.</summary>
     public ulong VblankCount => _vblankCount;
@@ -228,6 +271,8 @@ public sealed class DeviceScheduler
 
         // VBlank: several intervals elapsed in one call still latch one IRQ0.
         var phase = (ulong)_cyclesSinceVblank + cycles;
+        // The accounting is updated before any subscriber runs, so a callback that throws cannot leave it stale.
+        _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);
         if (phase >= VblankIntervalCycles)
         {
             var vblanksElapsed = phase / VblankIntervalCycles;
@@ -237,15 +282,28 @@ public sealed class DeviceScheduler
             var previousVblankCount = _vblankCount;
             _vblankCount += vblanksElapsed;
 
-            // Invoke VBlank callback for each VBlank that elapsed
-            if (VblankCallback is not null)
+            // Each VBlank that elapsed is delivered to every subscriber, in registration order. A subscriber may dispose its
+            // handle during delivery, so the list is copied first.
+            for (ulong i = 1; i <= vblanksElapsed; i++)
             {
-                for (ulong i = 1; i <= vblanksElapsed; i++)
+                var vblank = previousVblankCount + i;
+                foreach (var subscriber in _vblankSubscribers.ToArray())
                 {
-                    VblankCallback(previousVblankCount + i);
+                    if (!subscriber.Diagnostic)
+                    {
+                        subscriber.Callback(vblank);
+                        continue;
+                    }
+                    try
+                    {
+                        subscriber.Callback(vblank);
+                    }
+                    catch (Exception ex)
+                    {
+                        VblankObserverFailure ??= new VblankObserverFailure(vblank, ex.GetType().Name, ex.Message);
+                    }
                 }
             }
         }
-        _cyclesSinceVblank = (uint)(phase % VblankIntervalCycles);
     }
 }

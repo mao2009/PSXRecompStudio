@@ -346,10 +346,22 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     public Action<ulong, ulong>? VBlankObserver { get; set; }
 
+    /// <summary>
+    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw during the run, or null. A non-null value means
+    /// the observer failed: the guest result is unaffected, but the run must not be reported as a clean observation.
+    /// </summary>
+    public VblankObserverFailure? VBlankObserverFailure => _scheduler?.VblankObserverFailure;
+
+    private IDisposable? _vblankObserverRegistration;
+
+    // Attaches this engine's observer to the current scheduler. It replaces only its own earlier registration; other
+    // subscribers on the scheduler are left in place.
     private void AttachVBlankObserver()
     {
+        _vblankObserverRegistration?.Dispose();
+        _vblankObserverRegistration = null;
         if (VBlankObserver is not { } observer || _scheduler is not { } scheduler) return;
-        scheduler.VblankCallback = vblank => observer(vblank, scheduler.ElapsedCycles);
+        _vblankObserverRegistration = scheduler.AddDiagnosticVblankObserver(vblank => observer(vblank, scheduler.ElapsedCycles));
     }
 
     /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>

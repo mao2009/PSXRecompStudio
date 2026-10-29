@@ -234,7 +234,7 @@ internal static class OpenBiosProbeCommand
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
                         firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog, boundaryLog)
-                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog, error);
             }
             finally
             {
@@ -385,7 +385,8 @@ internal static class OpenBiosProbeCommand
 
     private static int RunInterpreter(
         OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
-        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null)
+        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null,
+        TextWriter? error = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
@@ -538,6 +539,13 @@ internal static class OpenBiosProbeCommand
             }
             output.WriteLine($"Kernel boot milestones: {JsonSerializer.Serialize(report)} => kernelBooted={kernelBooted}");
             output.WriteLine("Title boot: NOT VERIFIED (kernel boot is not a game boot).");
+        }
+
+        // The diagnostic observer's failure is reported, never folded into success. The guest result above is unchanged.
+        if (observed?.VBlankObserverFailure is { } observerFailure)
+        {
+            error?.WriteLine($"openbios-probe: observer-failed: the VBlank observer threw at VBlank {observerFailure.VBlank} ({observerFailure.ExceptionType}: {observerFailure.Message}); the boundary log is not a clean observation.");
+            return 1;
         }
 
         // Exit 0 means only that the kernel booted to its shell (see OpenBiosBootMonitor); a title has not
@@ -845,6 +853,11 @@ internal static class OpenBiosProbeCommand
             }
 
             output.WriteLine(text);
+            if (hostEngine?.VBlankObserverFailure is { } hostObserverFailure)
+            {
+                error.WriteLine($"openbios-probe: observer-failed: the VBlank observer threw at VBlank {hostObserverFailure.VBlank} ({hostObserverFailure.ExceptionType}: {hostObserverFailure.Message}); the boundary log is not a clean observation.");
+                return 1;
+            }
             return kernelBooted && parityPassed ? 0 : 2;
         }
         finally
