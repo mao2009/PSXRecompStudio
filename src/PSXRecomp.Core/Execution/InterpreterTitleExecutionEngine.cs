@@ -501,8 +501,18 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
             // Issue #728: the interpreter alone would take an enabled software interrupt at this return PC (a Runtime failure,
             // docs/cpu/exceptions.md). The artifact's INT boundary accepts only IP2 (ADR-025), so resuming it would silently
             // drop that interrupt. Fail closed with the shared software-interrupt code.
+            LastReturnDeferredSoftwareInterrupt = false;
             if (IsTakeableSoftwareInterrupt(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)))
             {
+                // Issue #728 (owner ruling, option a): when the return point is the JAL into a BIOS vector, the next
+                // transfer is that call's first poll. A pending call stops there with the wait code
+                // (BIOS_HLE_WAIT_SOFTWARE_INTERRUPT); the host fails closed if the call completes instead. Defer to it.
+                if (IsBiosVectorCallSite(state.Pc))
+                {
+                    LastReturnDeferredSoftwareInterrupt = true;
+                    return new FallbackSegmentOutcome(FallbackSegmentStatus.Returned, state, retired, null, null);
+                }
+
                 return new FallbackSegmentOutcome(
                     FallbackSegmentStatus.Stopped, state, retired,
                     MixedFallbackDiagnostics.SoftwareInterruptUnsupported,
@@ -965,6 +975,27 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     private static bool IsTakeableSoftwareInterrupt(uint sr, uint cause) =>
         (sr & 0x1u) != 0 && (cause & sr & 0x300u) != 0;
+
+    /// <summary>
+    /// Whether the instruction at <paramref name="pc"/> is a JAL whose target is a BIOS vector (B0/A0/C0), so the next
+    /// transfer after it is a BIOS call's first poll (Issue #728). Decodes only; nothing executes.
+    /// </summary>
+    private bool IsBiosVectorCallSite(uint pc)
+    {
+        if (!TryReadGuestWord(pc, out var word) || (word >> 26) != 0x03u)
+        {
+            return false;
+        }
+
+        var target = ((word & 0x03FFFFFFu) << 2) | ((pc + 4u) & 0xF0000000u);
+        return BiosJumpTables.TryResolveVectorFamily(target, out _);
+    }
+
+    /// <summary>
+    /// Set by the last <see cref="RunFallbackSegment"/> when it returned with a takeable software interrupt pending at a
+    /// BIOS-vector call site (Issue #728). The mixed host carries it to that call's dispatch, which decides.
+    /// </summary>
+    public bool LastReturnDeferredSoftwareInterrupt { get; private set; }
 
     /// <summary>
     /// Whether the exception the last step raised is an INT caused by a software bit alone (Issue #728): Excode INT, a

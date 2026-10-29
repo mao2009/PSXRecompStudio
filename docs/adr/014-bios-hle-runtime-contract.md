@@ -2123,10 +2123,11 @@ express "not done yet" without a fake immediate return.
   backends report the same code for the same condition. The code is used only when the software-interrupt condition is
   identifiable; `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` and `CPU_EXCEPTION` keep their meaning. Tests:
   `SoftwareInterruptBackendDivergenceTests`. This is a temporary contract for unsupported paths, not a handler model.
-  Known gap, not decided: a fallback return whose next instruction is a BIOS blocking call (a JAL to a vector) stops at
-  the return with `SOFTWARE_INTERRUPT_UNSUPPORTED` before the call's first poll, so the wait code is not reached on that
-  path (`BiosBlockingCallWaitTests.SoftwareInterruptDuringAWait_StopsBothForms_WithTheSameDiagnostic_AfterTheSamePolls`
-  whole-program form). The owner must choose the contract for that case.
+  Owner ruling (option a): a fallback return whose return instruction is a JAL into a BIOS vector is deferred to that
+  call's first poll instead of stopping at the return. A pending call stops there with `BIOS_HLE_WAIT_SOFTWARE_INTERRUPT`
+  (the existing first-poll contract, no guest instruction or device time advanced before it). A call that completes
+  instead fails closed on the mixed host with `SOFTWARE_INTERRUPT_UNSUPPORTED`, because the artifact would otherwise drop
+  the interrupt. The interpreter-alone form of the completed-call case is not covered by a test.
 - **Scope.** This is the mechanism only. No real BIOS call returns `Pending` yet; A0:70/A0:55 `_bu_init` stay
   unregistered (#712), and running the PadCardIrq element is still #661. A service with its own semantic timeout (the
   card state machine's per-VBlank timeout) completes through its condition; `MaxPolls` is only the backstop.

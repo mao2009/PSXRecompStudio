@@ -189,6 +189,20 @@ internal sealed class ArtifactFallbackSession : IDisposable
 
     public string? StopCode { get; private set; }
 
+    private bool _deferredSoftwareInterrupt;
+
+    /// <summary>
+    /// Issue #728: returns and clears whether the last Resumed fallback returned with a takeable software interrupt pending
+    /// at a BIOS-vector call site. The next BIOS dispatch (that call's first poll) consumes it: a pending call stops with the
+    /// wait code, and a call that completes fails closed.
+    /// </summary>
+    public bool TakeDeferredSoftwareInterrupt()
+    {
+        var deferred = _deferredSoftwareInterrupt;
+        _deferredSoftwareInterrupt = false;
+        return deferred;
+    }
+
     public string? StopMessage { get; private set; }
 
     /// <summary>
@@ -229,6 +243,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
         StopCode = null;
         StopMessage = null;
         RejectReason = null;
+        _deferredSoftwareInterrupt = false;
 
         // Static eligibility: an aligned PC inside the PS-X EXE text image. The image is the only executable region a
         // fallback ever runs; RAM-generated code, out-of-image PCs and every vector stay with the existing fail-closed path.
@@ -351,6 +366,7 @@ internal sealed class ArtifactFallbackSession : IDisposable
             }
 
             _lastReturnPc = outcome.State.Pc;
+            _deferredSoftwareInterrupt = _interpreter.LastReturnDeferredSoftwareInterrupt;
             return Decision.Resumed;
         }
         catch

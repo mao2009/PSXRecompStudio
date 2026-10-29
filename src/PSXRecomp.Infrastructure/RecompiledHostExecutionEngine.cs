@@ -2190,6 +2190,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return;
             }
 
+            // Issue #728: a fallback return with a takeable software interrupt pending was deferred to this call's dispatch.
+            var deferredSoftwareInterrupt = _fallback?.TakeDeferredSoftwareInterrupt() ?? false;
             var outcome = BiosVectorDispatch.Dispatch(_biosRuntime, family, gpr, _blockingCallWait);
             if (!outcome.ContinueExecution)
             {
@@ -2229,6 +2231,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 Send(string.Create(
                     CultureInfo.InvariantCulture,
                     $"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.Success} {pc} 0 0"));
+                return;
+            }
+
+            // Issue #728: the call completed (it did not pend), so the deferred software interrupt would be dropped by the
+            // artifact's IP2-only boundary. Fail closed here, outside a wait, with the shared software-interrupt code.
+            if (deferredSoftwareInterrupt)
+            {
+                DiagnosticCode = MixedFallbackDiagnostics.SoftwareInterruptUnsupported;
+                DiagnosticMessage =
+                    $"A fallback returned to the BIOS call at 0x{pc:X8} with a software interrupt pending and enabled; the call " +
+                    "completed without a wait, and the artifact's INT boundary takes only IP2, so the interrupt is not resumed.";
+                Send($"{RecompiledArtifactCodeGen.ProtocolDecisionPrefix}{(byte)RecompilerIrTerminationReason.UnresolvedIndirectFlow} 0 0 0");
                 return;
             }
 
