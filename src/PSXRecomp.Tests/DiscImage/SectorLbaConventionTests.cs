@@ -162,12 +162,36 @@ public sealed class SectorLbaConventionTests
         source.TryReadSector(-1, raw).Should().BeFalse();
     }
 
-    [Fact]
-    public void RawAndChd_AndBinCue_ReturnTheSameUserDataForEachLba()
+    /// <summary>The expected 2048 user-data bytes of LBA <paramref name="lba"/>, computed independently of any builder.</summary>
+    private static byte[] ExpectedUserData(int lba)
     {
-        // The same disc in three containers: a raw Mode 2 image from 00:00:00, a BIN/CUE of those bytes, and a CHD that
-        // stores frames from LBA 0. Each LBA must yield the same 2048 user-data bytes in all three.
-        var iso = MarkedIso(300);
+        var data = new byte[IsoSectorSize];
+        for (var i = 0; i < data.Length; i++)
+        {
+            data[i] = (byte)((lba * 31 + i * 7 + 3) & 0xFF);
+        }
+
+        return data;
+    }
+
+    private static byte[] PatternIso(int sectors)
+    {
+        var iso = new byte[sectors * IsoSectorSize];
+        for (var n = 0; n < sectors; n++)
+        {
+            ExpectedUserData(n).CopyTo(iso, n * IsoSectorSize);
+        }
+
+        return iso;
+    }
+
+    [Fact]
+    public void RawBinCueAndChd_EachReturnTheExpectedUserDataForTheSameLba()
+    {
+        // Each path is checked against ExpectedUserData(lba), not against the others, so no path is the reference.
+        // The raw and BIN/CUE paths test the lead-in mapping (LBA L = file index L + 150). The CHD path assumes frame = LBA
+        // (its remarks: UNVERIFIED for production CHDs). This test pins that assumption; it does not verify it.
+        var iso = PatternIso(300);
         var rawImage = SyntheticDiscBuilder.Mode2Form1(iso);
         var raw = new RawCdSectorSource(rawImage);
         var bin = new BinCueCdSectorSource(Cue, rawImage);
@@ -187,12 +211,64 @@ public sealed class SectorLbaConventionTests
             cdChd.TryReadSector(lba, chdSector).Should().BeTrue();
             bin.TryReadSector(lba, binSector).Should().BeTrue();
 
-            var rawUser = rawSector.AsSpan(RawUserDataOffsetMode2, IsoSectorSize).ToArray();
-            var chdUser = chdSector.AsSpan(RawUserDataOffsetMode1, IsoSectorSize).ToArray();
-            var binUser = binSector.AsSpan(RawUserDataOffsetMode2, IsoSectorSize).ToArray();
-            chdUser.Should().Equal(rawUser, $"CHD and raw disagree at LBA {lba}");
-            binUser.Should().Equal(rawUser, $"BIN/CUE and raw disagree at LBA {lba}");
-            Marker(rawUser).Should().Be((uint)lba);
+            rawSector.AsSpan(RawUserDataOffsetMode2, IsoSectorSize).ToArray().Should().Equal(ExpectedUserData(lba), $"raw at LBA {lba}");
+            binSector.AsSpan(RawUserDataOffsetMode2, IsoSectorSize).ToArray().Should().Equal(ExpectedUserData(lba), $"BIN/CUE at LBA {lba}");
+            chdSector.AsSpan(RawUserDataOffsetMode1, IsoSectorSize).ToArray().Should().Equal(ExpectedUserData(lba), $"CHD at LBA {lba}");
+        }
+    }
+
+    /// <summary>The pre-Issue #10 Mode2Form1 layout: no lead-in, ISO sector n at file index n, header MSF n + 150.</summary>
+    private static byte[] LegacyMode2Form1NoLeadIn(byte[] iso)
+    {
+        var sectors = iso.Length / IsoSectorSize;
+        var image = new byte[sectors * ICdSectorSource.RawSectorSize];
+        for (var lba = 0; lba < sectors; lba++)
+        {
+            var sector = image.AsSpan(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
+            sector.Slice(1, 10).Fill(0xFF);
+            var absolute = lba + 150;
+            sector[12] = Bcd(absolute / 4500);
+            sector[13] = Bcd(absolute / 75 % 60);
+            sector[14] = Bcd(absolute % 75);
+            sector[15] = 2;
+            sector[18] = sector[22] = 0x08;
+            iso.AsSpan(lba * IsoSectorSize, IsoSectorSize).CopyTo(sector[24..]);
+        }
+
+        return image;
+    }
+
+    [Fact]
+    public void Mode2Form1_LeadIn_LeavesEveryDataSectorByteIdenticalToTheLegacyLayout()
+    {
+        // The lead-in adds sectors in front and does not change the data sectors: sector n of the legacy layout (header MSF
+        // n + 150, data at file index n) equals the whole 2352-byte sector at file index n + 150 of the current layout.
+        var iso = PatternIso(300);
+        var legacy = LegacyMode2Form1NoLeadIn(iso);
+        var current = SyntheticDiscBuilder.Mode2Form1(iso);
+
+        current.Length.Should().Be(legacy.Length + 150 * ICdSectorSource.RawSectorSize);
+        for (var n = 0; n < 300; n++)
+        {
+            current.AsSpan((n + 150) * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize).ToArray()
+                .Should().Equal(legacy.AsSpan(n * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize).ToArray(),
+                    $"data sector {n}");
+        }
+    }
+
+    [Fact]
+    public void Mode2Form1_LeadInSectors_HaveTheirOwnFileIndexAsHeaderMsfAndZeroUserData()
+    {
+        var current = SyntheticDiscBuilder.Mode2Form1(PatternIso(10));
+
+        // File index 0 is 00:00:00 and index 149 is 00:01:74: the header MSF is the file index, as for every sector.
+        current[12..15].Should().Equal(0x00, 0x00, 0x00);
+        var last = 149 * ICdSectorSource.RawSectorSize;
+        current[(last + 12)..(last + 15)].ToArray().Should().Equal(0x00, 0x01, 0x74);
+        for (var fileIndex = 0; fileIndex < 150; fileIndex++)
+        {
+            current.AsSpan(fileIndex * ICdSectorSource.RawSectorSize + RawUserDataOffsetMode2, IsoSectorSize).ToArray()
+                .Should().OnlyContain(b => b == 0, $"lead-in sector {fileIndex} carries no user data");
         }
     }
 

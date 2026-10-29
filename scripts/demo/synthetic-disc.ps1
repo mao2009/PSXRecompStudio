@@ -47,11 +47,14 @@ $MPathTableSector = 20
 $FirstFile = if ($BothEndianIso9660) { 21 } else { 20 }
 $BootPath = 'cdrom:\PSXRECOMP.EXE;1'
 $ExeIsoName = 'PSXRECOMP.EXE;1'
-$ExpectedSha256 = '4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27'
+# Re-pinned for the 150-sector lead-in (Issue #10 owner ruling). The previous pins were 4f75a05f..., 1a5c41f9...,
+# bbae905d... and 39892b2b...; see docs/runtime/openbios-firmware-backend.md for the migration note.
+$LeadInSectors = 150
+$ExpectedSha256 = '2f9773f517448647df7afba5616275f67fa3d25006e7ccde58b360f71e2a6043'
 
-if ($OpenBiosCompatible -and $BothEndianIso9660) { $ExpectedSha256 = '1a5c41f912e1e2b7687bd2dea8c127397581b34f7ed5271dbf509d46126e69c7' }
-elseif ($OpenBiosCompatible) { $ExpectedSha256 = 'bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03' }
-elseif ($BothEndianIso9660) { $ExpectedSha256 = '39892b2b734595491f234da7992fa9522b00025c72ec015d7ee51676d474c05b' }
+if ($OpenBiosCompatible -and $BothEndianIso9660) { $ExpectedSha256 = '89d11fb9a4c9262f03385965ad8d7fb15edb361e2d3b6ee1e8f4aba4da6febf7' }
+elseif ($OpenBiosCompatible) { $ExpectedSha256 = 'ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606' }
+elseif ($BothEndianIso9660) { $ExpectedSha256 = '78dd3d0019d99677745799480e5d89e38277f8ad4168e1441e014cfdb7c1e546' }
 
 # --- 1. the boot PS-X EXE: the checked BiosPutCharMarker fixture, built from first principles ----
 function Imm([int]$op, [int]$rt, [int]$imm) { [uint32](($op -shl 26) -bor ($rt -shl 16) -bor $imm) }
@@ -176,18 +179,22 @@ foreach ($file in $files) {
 
 # --- 3. wrap in Mode 2 Form 1 raw sectors ---
 function Bcd([int]$value) { [byte](([int][Math]::Floor($value / 10) -shl 4) -bor ($value % 10)) }
-$disc = New-Object byte[] ($cursor * $RawSector)
-for ($lba = 0; $lba -lt $cursor; $lba++) {
-    $base = $lba * $RawSector
+# File index 0 is MSF 00:00:00: 150 lead-in sectors (zero user data), then ISO sector n at file index n + 150.
+# Each header MSF is the file index, mirroring SyntheticDiscBuilder.Mode2Form1.
+$disc = New-Object byte[] (($LeadInSectors + $cursor) * $RawSector)
+for ($fileIndex = 0; $fileIndex -lt ($LeadInSectors + $cursor); $fileIndex++) {
+    $base = $fileIndex * $RawSector
     for ($i = 1; $i -le 10; $i++) { $disc[$base + $i] = 0xFF }
-    $absolute = $lba + 150
+    $absolute = $fileIndex
     $disc[$base + 12] = Bcd ([Math]::Floor($absolute / 4500))
     $disc[$base + 13] = Bcd ([Math]::Floor($absolute / 75) % 60)
     $disc[$base + 14] = Bcd ($absolute % 75)
     $disc[$base + 15] = 2
     $disc[$base + 18] = 0x08
     $disc[$base + 22] = 0x08
-    [Array]::Copy($iso, $lba * $SectorSize, $disc, $base + 24, $SectorSize)
+    if ($fileIndex -ge $LeadInSectors) {
+        [Array]::Copy($iso, ($fileIndex - $LeadInSectors) * $SectorSize, $disc, $base + 24, $SectorSize)
+    }
 }
 
 # --- 4. write and verify the checked contract ---
