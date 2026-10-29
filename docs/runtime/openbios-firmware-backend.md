@@ -396,16 +396,25 @@ re-computed for this layout; the old values belong to the pre-lead-in disc.
 **Migration for existing firmware bundles.** A raw `.bin` disc now maps LBA L to
 file index L + 150 (`CdSectorAddress`), so this changes the sectors that the
 load-image manifest and the AOT plan read. Affected:
-`FirmwareDistribution.cs` (packaging at about line 394, which writes `images.txt`
-and `rom.roots` from the disc, and the rebuild at about line 683, which reads the
-disc again). A bundle packaged before this change records a manifest built with the
-old mapping, so at run time the recorded inputs and the rebuilt plan can disagree.
-Migration: re-package every firmware bundle built from a raw `.bin` after upgrading;
-do not reuse an older bundle. A `.bin` without the 150-sector lead-in is no longer
-readable correctly, and a `.bin` with 150 sectors or fewer is now rejected. CHD
-discs (`ChdCdSectorSource`) are unchanged: their frames start at LBA 0, which is
-UNVERIFIED for production CHDs. The bundle format records no mapping version, so
-this is a documented migration, not a version check.
+`FirmwareDistribution.cs`. At packaging (about line 394 to 402) the staged disc
+and the AOT directory's `rom.roots` and `images.txt` are passed to
+`FirmwareAotPlan.Build`. That method does not write any file. It reads the two AOT
+inputs, which `scripts/openbios/prepare-aot.py` prepares and which are recorded
+with their digests in `AotInputs`, and it reads disc sectors through the LBA mapping
+(`LoadImageManifest.Read`). The run rebuilds the plan from the disc again (about line
+683). A bundle packaged before this change was built with the old mapping, so its
+recorded plan and a plan rebuilt now can disagree.
+
+Schema version 4 (`FirmwareBootManifest.CurrentSchemaVersion`) marks the new mapping.
+A schema 3 bundle is refused at load with an instruction to re-package it, so it
+cannot run against a plan built with the new mapping. The check is by version, so
+every schema 3 bundle is refused, CHD bundles included. Migration: re-package every
+firmware bundle with this build. The mapping change itself only affects raw `.bin`
+discs. A `.bin` without the
+150-sector lead-in is no longer read correctly, and a `.bin` with 150 sectors or
+fewer is rejected. CHD discs (`ChdCdSectorSource`) keep their LBA-origin frames,
+which is UNVERIFIED for production CHDs. The real-dump header MSF check stays
+UNVERIFIED.
 
 The minimal ISO retains the historical endian-field omissions (including the
 big-endian Path Table Size half) and lacks a complete ISO compliance proof

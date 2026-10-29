@@ -200,7 +200,8 @@ public sealed class OpenBiosStandaloneSelectionTests
     {
         using var dir = new TempDirectory();
         var rom = dir.WriteFile("rom.bin", new byte[OpenBiosFirmware.ImageSize]);
-        var disc = dir.WriteFile("d.bin", new byte[2352]);
+        // A raw image must hold more than the 150-sector lead-in (Issue #10); the roots error is what this test checks.
+        var disc = dir.WriteFile("d.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var aot = dir.CreateSubdirectory("aot");
         dir.WriteFile("aot/rom.roots", System.Text.Encoding.ASCII.GetBytes("not-hex\n"));
         dir.WriteFile("aot/images.txt", System.Text.Encoding.ASCII.GetBytes("# none\n"));
