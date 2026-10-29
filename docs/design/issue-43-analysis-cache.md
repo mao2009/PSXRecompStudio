@@ -3,11 +3,10 @@
 - Status: Proposed (design only; no implementation in this change)
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r4. Final fix cycle for the r3 review of `684b573`: closure made
-  operational (F1), golden verification made non-vacuous (F2), and the stale-entry
-  test made reachable with a named injection seam (F3). The minor items of that
-  review were not included in the handoff text, so they are not addressed here
-  (see section 11).
+- Revision: r5. r4 was the final fix cycle for the r3 review of `684b573`: closure
+  made operational (F1), golden verification made non-vacuous (F2), and the
+  stale-entry test made reachable with a named injection seam (F3). r5 applies the
+  r3 minor items m1 to m9 (section 12 maps every finding of every review to its section).
 - Scope: a design for the analysis cache. It does not change the decoder,
   the analyzer, the artifact format, or any public API.
 
@@ -136,6 +135,9 @@ units are N7 through N12a. N14 and N15 are recomputed on every run and have no k
   that the pipeline does not produce them (`src/PSXRecomp.Core/DiscImage/RomAnalysisStage.cs:10`).
 - **Proposal, not an existing convention.** An on-disk `COMPLETE` file marker is
   new. It is modeled on the stage record the driver already writes.
+- **Identity computation by path (r5, m7).** The SHA-256 is computed on every run on
+  the test-driver path (`RealRomAnalyzer.cs:102-104`) and on the CLI path
+  (`CliInput.cs:106-109`). The GUI path is UNVERIFIED (U10). See I2 (6.6).
 
 ### 2.3 Dependency graph (summary)
 
@@ -215,20 +217,15 @@ declaration order (`ArtifactJson.cs:23`).
 ### 3.5 Example keys (format only)
 
 ```
-stage=N7 decode
-setExtractFingerprint=<hex>  setDecodeFingerprint=<hex>
-dependencyFingerprint=<hex>
-schemaVersions={report:2,instructions:1,cfg:1,...}
-discImageSha256=<hex>  executableSha256=<hex>
-entryPoint=<u32>  textEnd=<u32>
-inputContainer=CHD
-upstreamKeys={}
+{"dependencyFingerprint":"<hex>","discImageSha256":"<hex>","entryPoint":<u32>,"executableSha256":"<hex>","inputContainer":"CHD","keyFormat":<int>,"schemaVersions":{"cfg":1,"instructions":1,"report":2},"setDecodeFingerprint":"<hex>","setExtractFingerprint":"<hex>","stage":"N7","textEnd":<u32>,"upstreamKeys":{}}
 
-stage=N8 basic blocks
-setExtractFingerprint=<hex>  setDecodeFingerprint=<hex>  setAnalysisFingerprint=<hex>
-dependencyFingerprint=<hex>
-instructionCount=<int>
-upstreamKeys={N7:<hex>}
+{"dependencyFingerprint":"<hex>","discImageSha256":"<hex>","executableSha256":"<hex>","inputContainer":"CHD","instructionCount":<int>,"keyFormat":<int>,"schemaVersions":{"cfg":1,"instructions":1,"report":2},"setAnalysisFingerprint":"<hex>","setDecodeFingerprint":"<hex>","setExtractFingerprint":"<hex>","stage":"N8","upstreamKeys":{"N7":"<hex>"}}
+
+These are placeholders in the encoder's form (3.6): member names are quoted and
+sorted by UTF-8 bytes, and there is no whitespace. `<hex>` stands for a quoted
+lowercase hex string, and `<int>` and `<u32>` for unquoted integers. The
+`schemaVersions` object above is abbreviated to three members. The real key lists
+every schema constant in name order.
 ```
 
 ### 3.6 Key encoder specification
@@ -279,7 +276,7 @@ includes the upstream key, so the change also reaches every stage below.
 **Set membership.** Every entry is a repository-relative path. Membership is a
 committed literal list in the generator and in T13. No glob defines membership.
 
-- **`setExtract`** (19 files, N2 to N6, and persistence gating): the readers and
+- **`setExtract`** (20 files, N2 to N6, and persistence gating): the readers and
   parsers, plus the pipeline's own control flow, plus the stage and outcome types.
   - `src/PSXRecomp.Core/DiscImage/`: `ChdReader.cs`, `ChdHeader.cs`,
     `ChdMapEntry.cs`, `ChdBitstream.cs`, `ChdHuffmanDecoder.cs`, `ChdCdCodec.cs`,
@@ -291,6 +288,10 @@ committed literal list in the generator and in T13. No glob defines membership.
     `RomAnalysisOutcome.cs`, `RomAnalysisStatus.cs`. The stage identifiers form
     part of cache-unit stage ids and the pass/fail gate of W5, so a change to them
     is in scope.
+  - `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs`: the
+    fixture identity type. Cache payloads that embed it (N12a) and every key carry
+    its fields, so a change to its shape is in scope. It moved here from
+    `setCoverage` in r5 (review 3, m5), which leaves `setCoverage` at five files.
 - **`setDecode`** (`setExtract` plus 17 files): all 16 files in
   `src/PSXRecomp.Core/Cpu/`, and `src/PSXRecomp.Core/DiscImage/MipsInstructionFormatter.cs`.
 - **`setAnalysis`** (`setDecode` plus 26 files): `DiscImage/BasicBlock.cs`,
@@ -300,13 +301,13 @@ committed literal list in the generator and in T13. No glob defines membership.
   `Runtime/BiosCallNames.cs` (the only `Runtime` file referenced from the analysis
   side; `BiosCallRecognition.cs:584`), and all 18 files in
   `src/PSXRecomp.Core/Analysis/Contracts/` (the contract types the report and CFG use).
-- **`setCoverage`** (`setAnalysis` plus 6 files): `Recompiler/RealRomCoverageAnalyzer.cs`,
+- **`setCoverage`** (`setAnalysis` plus 5 files): `Recompiler/RealRomCoverageAnalyzer.cs`,
   `Recompiler/MipsToIrLowerer.cs`, `Recompiler/MipsToIrLoweringResult.cs`,
-  `Recompiler/RecompilerContract.cs` (it defines `RecompilerIrDiagnosticCode` at
-  `:273` and `RecompilerIrProgram` at `:610`, which the lowerer returns),
+  `Recompiler/RecompilerContract.cs` (it declares every `RecompilerIr*` type the
+  lowerer uses, for example `RecompilerIrDiagnosticCode` at `:273` and
+  `RecompilerIrProgram` at `:610`), and
   `DiscImage/AnalysisArtifacts/RealRomCoverageDocument.cs` (it defines the
-  classification enum), and `DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs`
-  (the classification payload embeds the fixture identity; F1 addition).
+  classification enum). Section 9 (U9) closes this list for the IR types.
 - **`dependencyFingerprint`** (not counted in the 236 Core files):
   - `src/PSXRecomp.Core/PSXRecomp.Core.csproj` and `Directory.Build.props` (repository root).
   - `src/Architecture/PSXRecompArchitectureAttributes.cs`. Coverage of this file
@@ -338,8 +339,15 @@ committed literal list in the generator and in T13. No glob defines membership.
   exists (CONFIRMED). SharpCompress is used by `ChdCdCodec.cs:3`, and a version
   change can change decoded content under an unchanged image hash, so its version
   is a key input.
-- **SDK and target.** The .NET SDK version and `TargetFramework` `net10.0`
-  (`PSXRecomp.Core.csproj:3`).
+- **Explicit input exception (r5, m6).** `obj/project.assets.json` is the only
+  `obj/` file any fingerprint reads. It is build output written by NuGet restore, and
+  it is read by its exact name. This is the sole exception to the rule that `obj/` is
+  excluded (4.2.3, and "Files excluded by definition" in 4.2). The entries read from it
+  are the `(packageId, resolvedVersion)` pairs above.
+- **SDK version source (r5, m6).** The SDK version is taken from the MSBuild property
+  `$(NETCoreSdkVersion)`, which the .NET SDK sets during evaluation. The property
+  name is UNVERIFIED in this repository and must be confirmed when the target is
+  written (U12, U17). `TargetFramework` is `net10.0` (`PSXRecomp.Core.csproj:3`).
 
 #### 4.2.3 Hash input format
 
@@ -372,10 +380,10 @@ are ignored by `.gitignore:4-5`). Every file must belong to exactly one owner:
 
 | Owner | Files | Basis |
 |---|---|---|
-| `setExtract` (E) | 19 | 4.2 |
+| `setExtract` (E) | 20 | 4.2 |
 | `setDecode`-only (D) | 17 | 4.2 |
 | `setAnalysis`-only (A) | 26 | 4.2 |
-| `setCoverage`-only (C) | 6 | 4.2 |
+| `setCoverage`-only (C) | 5 | 4.2 |
 | NonAnalysis (N) | 168 | 4.2.5 |
 | **Total** | **236** | matches the 236 tracked files at base `2e3ecad` (CONFIRMED by count) |
 
@@ -415,7 +423,7 @@ the classification pass.
 | `Execution/` | 15 | Title-execution orchestration, engines, and firmware boot monitoring. |
 | `Dma/` | 14 | Memory bus and DMA adapters. |
 | `TitleIdentity/` | 7 | Title identity model. Used by `Runtime/Gpu/FrameSnapshot.cs`, not by the analysis side. |
-| `DiscImage/AnalysisArtifacts/` (excluding `RealRomCoverageDocument.cs` and `ArtifactFixtureIdentity.cs`, which are in C) | 10 | Document serialization for N14 and N15. Cached payloads use the key encoder, not `ArtifactJson`. |
+| `DiscImage/AnalysisArtifacts/` (excluding `RealRomCoverageDocument.cs`, which is in C, and `ArtifactFixtureIdentity.cs`, which is in E) | 10 | Document serialization for N14 and N15. Cached payloads use the key encoder, not `ArtifactJson`. |
 | `Project/` | 4 | Project metadata. Analysis-relevant fields are governed by rule P1 and `projectFields`. |
 | `MemoryCard/` | 3 | Memory-card storage model. |
 | `DiscImage/ChdMapStatistics.cs`, `DiscImage/IsoVolumeStatistics.cs` | 2 | Statistics computed for N14 (`DeterministicArtifactBuilder.cs:27-28`). The computation reads the reader's data but produces no cache payload. |
@@ -461,9 +469,9 @@ the native build and CI).
   `MipsToIrLowerer.LowerProgram` (`:251`). The class of each decoded instruction is
   therefore a function of the lowering validator.
 - **Rule L1.** A change to a file in `setCoverage` but not in `setAnalysis` changes
-  `setCoverageFingerprint`. Those files are `RealRomCoverageAnalyzer.cs`,
-  `MipsToIrLowerer.cs`, `MipsToIrLoweringResult.cs`, `RecompilerContract.cs`,
-  `RealRomCoverageDocument.cs`, and `ArtifactFixtureIdentity.cs`. Invalidated: **N12a
+  `setCoverageFingerprint`. Those five files are `RealRomCoverageAnalyzer.cs`,
+  `MipsToIrLowerer.cs`, `MipsToIrLoweringResult.cs`, `RecompilerContract.cs`, and
+  `RealRomCoverageDocument.cs`. Invalidated: **N12a
   only**. N7 through N11 keep their hits, because their keys do not carry
   `setCoverageFingerprint`. N14 and N15 are recomputed.
 - **Rule L1a.** A lowering change that alters `Classify` but lies in a file outside
@@ -475,9 +483,11 @@ the native build and CI).
   executed (`RealRomCoverageAnalyzer.cs:85-88`). Its absence means "nothing was proven".
 - **Rule C2.** N12d is never cached and is in no key. It is assembled at N14 from the
   validations supplied on that run.
-- **Follow-up refactor.** To cache N12a alone, `Analyze` must separate classification
-  from `Differential = BuildDifferential(validations)` (`RealRomCoverageAnalyzer.cs:185`,
-  `:377-382`). Until then, N12a is cached as the document built with no validations,
+- **Follow-up refactor.** To cache N12a alone, the static method `Analyze`
+  (`RealRomCoverageAnalyzer.cs:88`) must separate classification from
+  `Differential = BuildDifferential(validations)`. The assignment is at
+  `RealRomCoverageAnalyzer.cs:185`, and `BuildDifferential` is at `:377-382`. No
+  constructor is involved. Until then, N12a is cached as the document built with no validations,
   and N14 supplies the differential. That needs `BuildDifferential` to be reachable
   from N14 (U18).
 - **Test.** T15 compares warm and cold runs with the differential on and off.
@@ -489,8 +499,8 @@ the native build and CI).
 - **CONFIRMED** The current loop is bounded by `count` and by `textEnd`
   (`RomAnalysisPipeline.cs:507-511`). `maxAddress` is `exe.Header.TextEnd` (`:507`).
   The loop body reads `GetInstructionWord` inside a `try` (`:513-539`).
-- **Decision DEC-N7 (cost).** A cold N7 run decodes the whole text region up to
-  `textEnd`, not only the first `count` words. The cost is linear in text size and
+- **Decision DEC-N7 (cost).** A cold N7 run decodes from `EntryPoint` to `TextEnd`
+  (`RomAnalysisPipeline.cs:507-508`), not only the first `count` words. The cost is linear in text size and
   is not measured (U5). Each later request is served as a prefix with no re-decode.
 - **Prefix rule.** An N7 entry with `sweepEnd = textEnd` serves any `count`. For a
   requested `M`, the consumer takes the first `min(M, total)` instructions.
@@ -614,8 +624,10 @@ The seam is injected through two Core types, so tests need no filesystem:
 
 ### 6.6 Input identity is never cached as truth
 
-- **I2.** The disc image SHA-256 is computed on every run from the full file
-  (`RealRomAnalyzer.cs:102-104`), and the pipeline verifies it (8.3). A size-and-mtime
+- **I2.** The disc image SHA-256 is computed from the full file on every run on the
+  test-driver path (`RealRomAnalyzer.cs:102-104`) and on the CLI path
+  (`CliInput.cs:106-109`). The GUI path is UNVERIFIED (U10), so the design does not
+  rely on it. The pipeline verifies the supplied hash on every path (8.3). A size-and-mtime
   shortcut is rejected because it is not a content identity.
 
 ## 7. Deterministic test plan
@@ -639,7 +651,7 @@ content is used. Clocks are injected. Temp paths are not asserted.
 | T10 | Concurrent write | Two writers with the same key leave one complete entry. A fake filesystem that interleaves renames does not produce a torn entry |
 | T11 | Shared store and identity | The CLI and GUI entry points, given the same bytes, compute the same verified `discImageSha256`, the same key, and read the same entry. A wrong supplied hash fails at the Input stage, with no cache write and no artifact |
 | T12 | No path in key | No key or entry contains an absolute path (`PathRedactor.cs` under `src/PSXRecomp.Tests/RealRomAnalysis/`; API UNVERIFIED, U7) |
-| T13 | Set membership | Each committed list equals its literal list exactly. Counts are E 19, D 17, A 26, C 6. No `obj/` or `bin/` path, no generated constant. The fingerprint of a fixed sample tree equals a committed golden value. Unchanged under CRLF to LF. Changed by a single content byte |
+| T13 | Set membership | Each committed list equals its literal list exactly. Counts are E 20, D 17, A 26, C 5. No `obj/` or `bin/` path, no generated constant. The fingerprint of a fixed sample tree equals a committed golden value. Unchanged under CRLF to LF. Changed by a single content byte |
 | T14 | Prefix reuse with failure filter (5.1) | An N7 entry computed without `count`, sliced to `M`, equals a cold decode at `M`, including failures filtered by `A < entry + 4*M` |
 | T15 | Differential on and off | Warm and cold runs compared with validations supplied and without. Both match byte for byte. N12d is never read from the cache |
 | T16 | Lowering scope (L1) | A change to `MipsToIrLowerer.cs` changes `setCoverageFingerprint`, invalidates N12a only, and leaves N7 through N11 hits |
@@ -647,7 +659,7 @@ content is used. Clocks are injected. Temp paths are not asserted.
 | T18 | Identity verification (8.3) | A supplied hash that differs from the computed hash fails the Input stage with a dedicated failure kind, with no analysis and no cache write |
 | T19 | Dependency fingerprint | Changing a resolved `(packageId, version)` pair, the SDK version, or `src/Architecture/PSXRecompArchitectureAttributes.cs` changes `dependencyFingerprint` and every key |
 | T20 | Multi-line verbatim literal lint (DEC-LF1) | Fails if any file in a committed set contains a multi-line verbatim string literal |
-| T21 | Closure (F1, 4.2.4) | Enumerates tracked `.cs` files under `src/PSXRecomp.Core/` from the git index (not the disk glob, so `obj/` and `bin/` are excluded). Requires exactly one owner per file, owner counts E 19, D 17, A 26, C 6, N 168, total 236. Fails on an unassigned file, a double-assigned file, a missing listed file, or a different total |
+| T21 | Closure (F1, 4.2.4) | Enumerates tracked `.cs` files under `src/PSXRecomp.Core/` from the git index (not the disk glob, so `obj/` and `bin/` are excluded). Requires exactly one owner per file, owner counts E 20, D 17, A 26, C 5, N 168, total 236. Fails on an unassigned file, a double-assigned file, a missing listed file, or a different total |
 | T22 | Golden verification (F2, 6.5 and 4.2) | See 4.2.7. Requires a minimum number of compared entries per cache unit and fails on payload mismatch |
 
 Determinism rules for every test:
@@ -712,7 +724,10 @@ The issue's acceptance criteria (OBSERVED, from a fetched summary; unchecked):
 
 ### 8.1 AI result reuse (proposal)
 
-- **OBSERVED** No AI result producer exists.
+- **OBSERVED** No AI result producer exists. The search `git grep AIPrediction` at base
+  `2e3ecad` over the whole tree returns exactly one hit,
+  `src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`. No consumer of the label
+  exists in the repository (r5, m4).
 - **CONFIRMED** `EvidenceType.AIPrediction = 6` already exists
   (`src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`), next to
   `AnalyzerFinding = 5` (`:16`).
@@ -806,8 +821,15 @@ Resolution:
 - **U6.** Confirm the behavioral-guard corpus coverage (4.1).
 - **U7.** Read `PathRedactor.cs` and the synthetic builder APIs before the tests are implemented.
 - **U8.** Check whether `DeterministicArtifactTests.cs` already pins golden bytes.
-- **U9.** Confirm that `setCoverage` (6 files) is closed under the lowering call graph. The
-  greps in 4.2.4 do not establish that the lowerer reaches no other Recompiler file.
+- **U9. Closed (r5).** `setCoverage` is the five files listed in 4.2. Evidence, all
+  OBSERVED from `git grep` at base `2e3ecad`: `RecompilerIrMemoryEffectClassifier` is
+  declared in `src/PSXRecomp.Core/Recompiler/RecompilerIrMemoryEffectClassifier.cs:28`
+  and has no reference anywhere in `src/PSXRecomp.Core` other than that file. Every
+  other `RecompilerIr*` type declared in Core is in `RecompilerContract.cs`
+  (declarations at lines 9 to 639, and the serializer at `:1119`). The lowerer's
+  types are therefore in one file. This closes U9 for the IR types. The lowerer's
+  own call graph into other Recompiler files is covered by the same grep, which
+  found none.
 - **U10.** Read the caller of `AnalyzeAndExecuteFromDisc` for the GUI hash (8.3).
 - **U11.** Confirm an identity-mismatch failure kind can be added without changing the mapping in `DiagnosticAdapter.cs`.
 - **U12.** Verify the set-fingerprint build target under the native build and `.github/workflows/ci.yml`.
@@ -815,12 +837,12 @@ Resolution:
   computes a real SHA-256 (8.3). Count the callers that pass a constant.
 - **U14.** Roslyn reachability check: no N-file (4.2.5) is referenced from an E, D, A, or C file. Closure (T21) is a classification guarantee until this runs.
 - **U15. Decided here (owner may override).** Location: `src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGolden/`. Format: one canonical JSON file per (unit, fixture), `<unit>/<fixtureId>.golden.json`, with the fields in 4.2.7. Content: synthetic fixtures only.
-- **U16.** Audit consumers of `EvidenceType` for any that treat `AIPrediction` as evidence (8.1).
+- **U16. Closed (r5).** The base-commit search in 8.1 finds no consumer of `AIPrediction`. The collision risk stays a rule for future code (Rule AI4), not a present defect.
 - **U17.** Confirm the dependency-input capture of `obj/project.assets.json` (4.2.2).
 - **U18.** Plan the `Analyze` split of N12a and N12d (4.7).
 - **U19.** `setAnalysis` membership of the Analysis contract types (4.2) is taken as the full
   18-file directory; U14 can narrow it, but narrowing is not required for correctness.
-- **U20.** Check the Architecture attribute file's compile-time link (`Directory.Build.props:22-24`) against the architecture contract file (`src/architecture.contract.json`), which was not read.
+- **U20.** Check the Architecture attribute file's compile-time link (`Directory.Build.props:22-24`) against the architecture contract file (`src/architecture.contract.json`), which was not read. The marker types themselves are named in DEC-ARCH (4.2.1), which is the cited coverage for this item (r5, m9).
 
 ## 10. Non-goals
 
@@ -833,13 +855,64 @@ Resolution:
 
 ## 11. Review status
 
-- r3 review, F1 (closure): resolved in 4.2.4 and 4.2.5, with counts E 19, D 17, A 26, C 6,
-  N 168 (total 236), and T21 scoped to the git index.
+- r3 review, F1 (closure): resolved in 4.2.4 and 4.2.5, with counts E 20, D 17, A 26, C 5,
+  N 168 (total 236) as of r5, and T21 scoped to the git index.
 - r3 review, F2 (vacuous golden verify): resolved in 4.2.7 and 6.5. Key mismatch is no
   longer treated as "superseded". Every unit is cold-recomputed and compared byte for
   byte, with a minimum of 4 comparisons per unit, and intentional change requires the
   named command `regenerate-analysis-goldens`.
 - r3 review, F3 (T9 unreachable): resolved in 6.3 (residual risk), 6.5 (seam), and T9.
-- r3 review, minor items m1 to m9: not addressed. The handoff gave only the three major
-  findings and not the text of m1 to m9, so they cannot be mapped to edits in this
-  revision. They need to be re-sent.
+- r3 review, minor items m1 to m9: applied in r5. The mapping is in section 12.
+- r5 also moves `ArtifactFixtureIdentity.cs` from `setCoverage` to `setExtract` so that
+  `setCoverage` is the five files named by the r3 handoff. The move is a choice made
+  here: the file is an identity type that every key and payload depends on, so it
+  belongs with the extraction-side types. The owner may reverse it.
+
+## 12. Finding traceability
+
+Each finding of each review round, and where it is resolved. Section labels in the
+review text (for example "CRITICAL-A" and "CRITICAL-1 of r2") no longer appear in
+this file. The table uses the review round and the finding ID instead. Round 1 is
+the review of `6d038a0`, round 2 of `c8299d4`, and round 3 of `684b573`.
+
+| Round | ID | Finding | Resolved in |
+|---|---|---|---|
+| 1 | C1 | A lowering change must invalidate N12a | 3.2 (`setCoverage`), 4.6 (L1), T16 |
+| 1 | C2 | The differential section depends on validations | 4.7 (C2), T15 |
+| 1 | C3 | A missed engineRevision bump gives silent stale hits | 4.2 (per-stage sets), 4.2.7, 6.3 (residual risk), 6.5 |
+| 1 | M1 | `instructionCount` in the N7 key | 3.2, 5.1, T2, T14 |
+| 1 | M2 | The decoder fingerprint misses `MipsInstructionFormatter` | 4.1 (D1, D1a) |
+| 1 | M3 | Key ordering is not specified | 3.6, T1 |
+| 1 | M4 | Store placement contradicts the architecture matrix | 8.4 |
+| 1 | M5 | The shared-cache identity hash is trusted | 8.3 (V1, V2), T11, T18 |
+| 1 | m1 | Use a dedicated diagnostic code | 6.4 (Q3) |
+| 1 | m2 | `FunctionProvenanceSchemaVersion` missing from 1.3 | 1.3 |
+| 1 | m3 | Cite ADR-001 and ADR-002; Y1 is a current-state rule | 1.2, 4.3 (Y1) |
+| 1 | m4 | Decoder consumer list incomplete | 4.1 |
+| 2 | CRITICAL-A | Scoped rules are unreachable (global fingerprint) | 3.2, 4.2, 4.6 (L1), 4.1 (D1), T4, T16 |
+| 2 | M1 | Fingerprint input set is wrong (obj, generated constant, packages, csproj, hash format) | 4.2 (membership), 4.2.2, 4.2.3, T13 |
+| 2 | M2 | Verify mode does not catch a stale entry | 4.2.7, 6.5, T9 |
+| 2 | m1 | AIPrediction citation and collision risk | 8.1 |
+| 2 | m2 | CRLF evidence labeled CONFIRMED; LF rule unnumbered | 4.2.3 (DEC-LF1) |
+| 2 | m3 | Unused count parameter; failure rule; T2 omits N12a | 2.1, 5.1, 5.2, T2, T17 |
+| 2 | m4 | Key encoder escaping and separators | 3.6, T1 |
+| 2 | m5 | Example `upstreamKeys` refers to N6 | 3.5 |
+| 2 | m6 | Cost of cold decode; N12a/N12d follow-up | 5.1 (DEC-N7), 4.7, U18 |
+| 2 | m7 | N14 manifest citation is stale | 2.1 (N14 and manifest note) |
+| 2 | m8 | V1 breaks existing tests that pass a constant | 8.3 (Migration), U13 |
+| 2 | m9 | COMPLETE citation is a doc comment | 2.2 |
+| 3 | F1 | Closure is not operational | 4.2.4, 4.2.5, T21, DEC-ARCH (4.2.1) |
+| 3 | F2 | Golden verification passes vacuously | 4.2.7, 6.5, T22 |
+| 3 | F3 | T9 is unreachable as written | 6.3 (residual risk), 6.5 (seam), T9 |
+| 3 | m1 | "whole text region" wording | 5.1 |
+| 3 | m2 | "same constructor" wording | 4.7 |
+| 3 | m3 | Example member names unquoted | 3.5 |
+| 3 | m4 | AIPrediction base-commit search; U16 | 8.1, U16 (closed) |
+| 3 | m5 | U9 closure; setCoverage list | 3.2, 4.2 (setCoverage, setExtract), 4.2.4, 4.6, U9 (closed) |
+| 3 | m6 | Explicit input exception; SDK version source | 4.2.2 |
+| 3 | m7 | "computed on every run" holds only for some paths | 2.2, 6.6 (I2) |
+| 3 | m8 | Traceability table; label consistency | section 12 (this table) |
+| 3 | m9 | Architecture marker types cited under the props lines | 4.2.1 (DEC-ARCH), U20 |
+
+Round-1 and round-2 items that changed in later rounds are listed under the round
+that last changed them. Items marked "closed" have an OBSERVED basis in section 9 or 8.1.
