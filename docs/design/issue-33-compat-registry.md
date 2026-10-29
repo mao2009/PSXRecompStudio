@@ -133,7 +133,7 @@ Five facets, each evaluated on its own ladder:
 
 CD-ROM streaming and load-from-disc behaviour are not a sixth facet here. They are scenarios under Gameplay and Save. [PREDICTED; see open question Q2]
 
-Facets are never averaged. A title's displayed summary is the minimum across facets, with unverified facets shown explicitly. Only `Subject = RealTitle` results with a real `TitleKey` and a facet other than `None` enter this derivation. [PREDICTED; the Subject filter follows the owner ruling]
+Facets are never averaged. A title's displayed summary is the minimum across facets, with unverified facets shown explicitly. The Subject filter in section 3.4 applies to every derivation in this document: Evidence Count (4.2), Confidence (4.3), level derivation (5), Known Issue and Regression (6), and display (9). A result enters any of them only if it is `Subject = RealTitle`, has a `TitleKey`, and has a facet other than `None`. [PREDICTED; the Subject filter follows the owner ruling]
 
 ### 3.3 Scenario
 
@@ -168,9 +168,10 @@ ScenarioResult {
 
 Subject rules (owner ruling):
 
-- `SyntheticFixture` results must never enter a real-title compatibility evaluation. Section 5 derivation takes only `Subject = RealTitle` records. This is enforced by the derivation input filter, not by convention.
+- `SyntheticFixture` results must never enter a real-title compatibility evaluation. Every derivation takes only `Subject = RealTitle` results, enforced by the input filter, not by convention. A `SyntheticFixture` result is excluded from every derivation even when it carries a `TitleKey`.
 - `TitleKey` may be omitted only for `SyntheticFixture`. For `RealTitle` it is mandatory.
 - Binding is required for both Subjects. The identity and binding rules in section 4 do not change.
+- Fail closed: a result whose `Subject` is missing or unknown is rejected at write time, is excluded from every derivation and from every display, and is reported as invalid. It is never treated as `RealTitle` by default. [PREDICTED]
 
 ### 3.5 Outcome vocabulary
 
@@ -189,7 +190,7 @@ Outcome is kept separate from Evidence and Confidence. The values are:
 
 Derived state, not an Outcome. `Unknown` is a derived title or facet state: the registry holds no record at all for that title or facet, so nothing can be said. The owner ruling requires `Unknown` to stay distinct from `NotRun` and `Cancelled`, which are the Outcome rows in the table above.
 
-`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. A facet with no `Pass` for the current binding is `Unverified`. `Unknown`, `NotRun`, and `Cancelled` are never rendered as each other, and none of them is rendered as `Pass` or `Fail`. [PREDICTED for the derived state; the non-equivalence rule is owner-ruled]
+`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. `Unknown`, `NotRun`, and `Cancelled` are never rendered as each other, and none of them is rendered as `Pass` or `Fail`. A facet with no `Pass` on the current binding is not automatically `Unverified`: its cell label is set by the precedence in section 9.2, so that `Unknown`, `NotRun`, and `Cancelled` stay visible. [PREDICTED for the derived state; the non-equivalence rule is owner-ruled]
 
 `Blocked` is not a defect. It is a diagnosable stop, consistent with `docs/status/capabilities.md` "Measured blocker" language. [OBSERVED: `docs/status/capabilities.md:49`]
 
@@ -221,7 +222,7 @@ Community results need a reporter class without a required agent identity. Propo
 
 ### 4.2 Evidence count
 
-Evidence Count is derived, never typed in. It is the number of distinct `EvidenceRecord` ids with `Outcome = Pass` for a given `(TitleKey, Facet, ScenarioId, Binding)`. Duplicates by content hash are counted once. [PREDICTED]
+Evidence Count is derived, never typed in. It counts `ScenarioResult` records with `Subject = RealTitle` and `Outcome = Pass` for a given `(TitleKey, Facet, ScenarioId, Binding)`. The count is over the distinct `EvidenceIds[]` entries (content hashes) those results reference, so a duplicate content hash is counted once. `EvidenceRecord` has no `Outcome` field; the Outcome lives on `ScenarioResult` (section 3.4). `SyntheticFixture` results are never counted. [PREDICTED]
 
 ### 4.3 Confidence
 
@@ -238,7 +239,7 @@ DerivedConfidence {
 - Use `Confidence` (`src/PSXRecomp.Core/Analysis/Contracts/Confidence.cs:11-17`) as the carrier, with `Rationale` mandatory.
 - Do not use `ConfidenceLevel.Certain`. Permitted values for the registry are `Unspecified`, `Low`, `Medium`, `High`. [PREDICTED]
 - Do not use the numeric `Score`. A numeric score invites false precision and a "Perfect = 1.0" reading. [PREDICTED]
-- Confidence is computed from: number of distinct Pass evidence records, number of distinct reporter classes, recency relative to the binding's last change, and whether any Fail or Blocked record exists for the same binding. [PREDICTED]
+- Confidence is computed from the `Subject = RealTitle` `ScenarioResult` records only: number of distinct Pass evidence ids (4.2), number of distinct reporter classes, recency relative to the binding's last change, and whether any Fail or Blocked result exists for the same binding. A `Cancelled` result is not a Pass or a Fail and does not count toward the Pass total; it is reported as incomplete evidence (Q15). `SyntheticFixture` results are never inputs. [PREDICTED]
 
 Evidence and Confidence are different things. A single maintainer-recorded Pass with a full trace can have higher Confidence than ten Community Passes on mismatched bindings.
 
@@ -269,7 +270,7 @@ Levels are derived per facet and then per title. They are not written by hand.
 Proposed per-facet ladder (names are placeholders for owner decision, section 10 Q4):
 
 ```
-Unverified   -> no Pass for the binding
+Level 0      -> no Pass for the binding (the cell label comes from section 9.2, not from this level)
 Boot-Verified -> all required Boot scenarios Pass for the binding
 Playable     -> Boot-Verified and all required Gameplay scenarios Pass
 Stable       -> Playable and no open Known Issue of severity >= major on the binding
@@ -302,10 +303,12 @@ Open issues cap the level they affect (section 5). `UnresolvedItem` (`src/PSXRec
 
 ### 6.2 Regression
 
-A Regression is derived, not stored by hand:
+A Regression is derived, not stored by hand. Its input is `Subject = RealTitle` `ScenarioResult` records only; `SyntheticFixture` results never create or close a Regression (section 3.4):
 
 - A scenario has `Pass` on binding A, and `Fail` or `Blocked` on a later binding B for the same title, facet, and scenario.
-- Or a scenario has `Pass` on binding A and no evidence on B while the title's binding changed. This is reported as `Unverified after change`, not as a regression.
+- Or a scenario has `Pass` on binding A and no result on B while the title's binding changed. This is reported as `Unverified after change`, not as a regression. It is a display label in section 9.2 and not a level.
+
+A `Cancelled` result on binding B is neither a Fail nor a Pass, so it does not create a Regression by itself. How it is shown and whether it changes the Regression state is open (Q16). [PREDICTED]
 
 The derived record names both bindings and both evidence ids. [PREDICTED]
 
@@ -366,6 +369,21 @@ Per title: one row per binding in use, five facet columns, each cell showing the
 
 SyntheticFixture results are never shown in a real-title view. They may appear only in a separate, labelled fixture view. `Facet.None` is never a column. [PREDICTED; follows the owner ruling]
 
+### 9.2 Cell labels (Unknown, NotRun, Cancelled kept distinct)
+
+Each cell is one `(title, facet, binding)`. It is labelled by the first matching rule, using `Subject = RealTitle` results only:
+
+| Order | Condition | Label | Meaning |
+|---|---|---|---|
+| 1 | No record at all for the title or facet | `Unknown` | Nothing can be said. |
+| 2 | Records exist for the facet, but none for this binding | `Not run` | The binding has not been tested for this facet. Not Unverified. |
+| 3 | Any `Fail` result on this binding | `Fail` | Evidence exists and criteria were not met. |
+| 4 | Any `Blocked` or `Error` result on this binding, and no `Pass` | `Blocked` or `Error` | Stopped at a known boundary, or a harness or engine failure. |
+| 5 | Any `Cancelled` result on this binding, and no `Pass` | `Cancelled` (label wording pending Q15) | The run was stopped and its evidence is incomplete. |
+| 6 | At least one `Pass` on this binding | the derived level from section 5 | Level 0 when no ladder rung is met. |
+
+`Unverified` is not a cell label in this table. It is only the name of level 0 in section 5. A cell is never shown as `Unverified` when its real state is `Unknown`, `Not run`, or `Cancelled`. [PREDICTED; follows the owner ruling]
+
 ### 9.1 Required #33 changes (owner ruling)
 
 The owner approved these changes to the #33 design. Each one is recorded in the sections cited:
@@ -397,6 +415,8 @@ Additional conditions from the same ruling:
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
 - **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`src/PSXRecompStudio/Services/TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
+- **Q15. Cancelled display label.** The label for a cell whose only non-Pass result is `Cancelled` (section 9.2, row 5) is pending the owner's decision (N3 in the coordinator's list). Until then the draft uses the placeholder `Cancelled`.
+- **Q16. Cancelled on binding B for regression.** If binding B holds a `Cancelled` result for a scenario that had Pass on binding A, is that a regression, `Unverified after change`, or neither? This draft says neither, and only shows it as Cancelled (section 6.2). Owner to decide.
 - **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 
 ## 11. Verification of this document
