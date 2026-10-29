@@ -39,7 +39,7 @@ Summary: the Domain layer already owns most pipeline logic (analysis, execution 
 | `PSXRecompStudio` | Application (`PSXRecompStudio`) | **CONFIRMED** `src/architecture.contract.json:4`; `docs/architecture-matrix.md:23` |
 | `PSXRecomp.Infrastructure` | Infrastructure | **CONFIRMED** `src/architecture.contract.json:5`; `docs/architecture-matrix.md:24` (Layer Definitions, Infrastructure row) |
 | `PSXRecomp.Cli` | Infrastructure (per matrix) | **CONFIRMED** `docs/architecture-matrix.md:24` lists `PSXRecomp.Cli` as an Infrastructure project; `src/PSXRecomp.Cli/CliInput.cs:34` and `:149` are `[Infrastructure]` |
-| `PSXRecomp.RuntimeHost` | not declared in the matrix | **CONFIRMED** project exists and is listed in `src/PSXRecompStudio.slnx:7`; **OBSERVED** it is packaged by the `package` command (`docs/development/headless-cli.md:153-156`); **UNVERIFIED** its layer attribute (not checked) |
+| `PSXRecomp.RuntimeHost` | Infrastructure by attribute; not in the matrix Projects column | **CONFIRMED** `src/PSXRecomp.RuntimeHost/Program.cs:23` and `src/PSXRecomp.RuntimeHost/UnverifiedIdentityProbe.cs:12` are `[Infrastructure]`; **CONFIRMED** the matrix Infrastructure row lists only `PSXRecomp.Infrastructure` and `PSXRecomp.Cli` (`docs/architecture-matrix.md:24`); **CONFIRMED** listed in `src/PSXRecompStudio.slnx:7`; **OBSERVED** it is packaged by the `package` command (`docs/development/headless-cli.md:153-156`) |
 | `PSXRecomp.GameWindow` | not declared | **CONFIRMED** listed in `src/PSXRecompStudio.slnx:5`; **OBSERVED** no `[Application]` or `[Infrastructure]` attribute under `src/PSXRecomp.GameWindow`; **UNVERIFIED** whether AARC004 applies to it |
 | `PSXRecomp.Tests`, `PSXRecompStudio.Tests` | Test | **CONFIRMED** `src/architecture.contract.json:6`; `src/PSXRecompStudio.slnx:8-9` |
 | `src/Architecture` (`PSXRecomp.Architecture` marker attributes) | attribute source, not a layer | **CONFIRMED** `src/Architecture/PSXRecompArchitectureAttributes.cs` exists; `docs/architecture-matrix.md` Architecture Attribute Contract section |
@@ -65,7 +65,7 @@ Consequence: the CLI is in the Infrastructure layer, so under the current contra
 - Production code never assigns that property; only tests do. **CONFIRMED** by grep over `src`: assignments exist only in `src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:44,60,81` and `src/PSXRecompStudio.Tests/RealRomProductionFlowTests.cs:106,121,144`. Consequence: the shipped window cannot run a real title; the action is reachable only when a test supplies the bytes. **CONFIRMED** by the two facts above.
 - The diagnostic run is synchronous on the UI thread. **CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:68-72`. Its budget is small (outer 4, segment 64). **CONFIRMED** `src/PSXRecompStudio/Services/TitleExecutionService.cs:159-160`.
 - The real-title action is `async` with `AllowConcurrentExecutions = false`, runs analysis and interpretation on `Task.Run`, and marshals only the final status back to the UI. **CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:95-113`.
-- The real-title action computes a SHA-256 of the disc inside the view model. **CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:107-109`. The CLI computes the same identity from a file stream. **CONFIRMED** `src/PSXRecomp.Cli/CliInput.cs:106`.
+- The real-title action computes a SHA-256 of the disc inside the view model. **CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:107-109`. The CLI computes the same identity from a file stream. **CONFIRMED** `src/PSXRecomp.Cli/CliInput.cs:106-109`.
 - The real-title service is I/O-free by design and documents that disc acquisition is deferred to Issue #38. **CONFIRMED** `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:59-62`.
 - The real-title service calls the Domain analysis pipeline and keeps the analyzed executable. **CONFIRMED** `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97`, `:137-161`.
 - Layout rejections are caught as `ArgumentException` and classified into the result. **CONFIRMED** `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:142-153`.
@@ -98,7 +98,7 @@ Consequence: the CLI is in the Infrastructure layer, so under the current contra
 | Entry point | Token accepted | Stop inside a segment | Source |
 |---|---|---|---|
 | `ExecutionOrchestrator.Execute` / `Resume` | yes (`CancellationToken`, defaulted) | forwards to `ICancellableExecutionEngine` if the engine implements it | **CONFIRMED** `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61-67`, `:73-75`; `ICancellableExecutionEngine.cs:11-25` |
-| `RecompiledHostExecutionEngine` | yes, via `AttachCancellation` and `RequestCancel` | yes | **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:49`, `:291`, `:306` |
+| `RecompiledHostExecutionEngine` | yes, via `AttachCancellation` and `RequestCancel` | yes | **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:50`, `:291`, `:306` |
 | `LiveGameRunner.RunAsync` | yes | forwards to the generated host | **CONFIRMED** `src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:32` |
 | `PackagedArtifactLiveRunner.RunAsync` | yes | forwards to the generated host | **CONFIRMED** `src/PSXRecomp.Infrastructure/Standalone/PackagedArtifactLiveRunner.cs:30` |
 | `InterpreterTitleExecutionEngine` (Studio path) | no | no; stop only at segment boundaries | **CONFIRMED** `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31` |
@@ -116,7 +116,7 @@ Progress: no progress-reporting type exists in Domain, Infrastructure or CLI. **
 | F2 | The headless doc says the CLI and Studio compose "exactly the same pipelines"; they use different engines (interpreter in the Studio, generated host with mixed fallback in `run`). | `docs/development/headless-cli.md:16-17`, `TitleExecutionService.cs:78`, `RunCommand.cs:68`, `headless-cli.md:74-79` | CONFIRMED (drift) |
 | F3 | The contract's reason for `Application -> Infrastructure` ("composition-root exception") differs from the reason ADR-015 quotes ("only through the Domain interop boundary"). | `src/architecture.contract.json:12`, `docs/adr/015-production-execution-engine-ownership.md:29-31` | CONFIRMED (drift) |
 | F4 | The guest-end handoff is duplicated in at least four production sites although Core has the public type. | `TitleExecutionService.cs:183`, `RunCommand.cs:302`, `ScreenshotCommand.cs:629`, `ProductionFrameEvidenceCollector.cs:121`, `ProgramEndHandoff.cs:16` | CONFIRMED |
-| F5 | Disc identity (SHA-256) is computed in two front ends. | `MainWindowViewModel.cs:107-109`, `CliInput.cs:106` | CONFIRMED |
+| F5 | Disc identity (SHA-256) is computed in two front ends. | `MainWindowViewModel.cs:107-109`, `CliInput.cs:106-109` | CONFIRMED |
 | F6 | The Studio performs memory-card file I/O in Application under AARC003 suppressions, though the Infrastructure project now exists and ADR-017 says it is activated for the first production adapter. | `FileMemoryCardStorage.cs:14-22,166-324`; `docs/adr/017-managed-host-io-port-adapter-boundary.md:35` (item 7) | CONFIRMED |
 | F7 | The shipped Studio cannot load a disc; the real-title action is reachable only with bytes supplied by a test. | `MainWindow.axaml:63-78`, `MainWindowViewModel.cs:61`, `RealRomProductionFlowTests.cs:144` | CONFIRMED (code reading) |
 | F8 | Stop support is uneven: the interpreter engine (used by the Studio) has no stop; the generated-host engine does. Analysis, codegen, build and the launcher take no token. | section 2.5 table | CONFIRMED |
@@ -145,7 +145,7 @@ Three placements are possible. Each has a documented contract or ADR cost.
 
 | Option | Shape | Contract and doc cost | Consequence |
 |---|---|---|---|
-| **A. Use cases in Domain** (`PSXRecomp.Core`) | Pure orchestration over Domain ports; Studio and CLI both call it. | **Revision required.** The matrix places "use-case orchestration" in the Application layer: `docs/architecture-matrix.md:23` (Application row). Option A moves that responsibility to Domain, so the matrix row must be revised to say orchestration is Domain-owned and Application composes it. `docs/architecture-matrix.md:66` ("Studio/CLI use cases") must be revised the same way. No contract edge changes. | CLI and Studio stay on edges already allowed. Existing precedent: `ExecutionOrchestrator` and `RomAnalysisPipeline` are Domain orchestration. |
+| **A. Use cases in Domain** (`PSXRecomp.Core`) | Pure orchestration over Domain ports; Studio and CLI both call it. | **Revision required.** The matrix places "use-case orchestration" in the Application layer: `docs/architecture-matrix.md:23` (Application row). Option A moves that responsibility to Domain, so the matrix row must be revised to say orchestration is Domain-owned and Application composes it. `docs/architecture-matrix.md:66` ("Studio/CLI use cases") must be revised the same way. No contract edge changes. | CLI and Studio stay on edges already allowed. **CONFIRMED** existing precedent: `ExecutionOrchestrator` (`src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61`) and `RomAnalysisPipeline` (`src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:142`) are Domain orchestration, and `RecompilerHostCodeGen` (`src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:15`) is Domain code generation. |
 | **B. Use cases in an Application project** (namespace root `PSXRecompStudio.*`) | Studio references it. | **Contract change required** for the CLI: the CLI (Infrastructure) cannot reference Application (`src/architecture.contract.json:13`). Without that change, the CLI keeps its own orchestration (F1 persists). | UI-adjacent policy stays with the GUI. |
 | **C. Domain engine-provider port** (ADR-015 sketch point 2) | Domain declares a factory or selector, for example `IExecutionEngineProvider` beside `IRecompiledExecutionEngine`; Infrastructure implements it; a composition root supplies it. | **ADR revision required.** ADR-015 records this shape as still open: sketch point 2 says "no `IExecutionEngineProvider`-shaped selector exists yet" (`docs/adr/015-production-execution-engine-ownership.md:176-179`) and describes the expected shape at `:194-200`. It addresses engine selection, not the use-case layer, so it complements A or B. | Lets the Studio select an engine without `Application -> Infrastructure` (D3). |
 
@@ -245,7 +245,7 @@ Notes:
 
 ### 3.9 Headless independence
 
-The Runtime and the headless CLI must not reference Avalonia; a test guards this (`docs/architecture/gui-ux.md:115`). Option A (3.2) must keep that property: no Avalonia type in Core use cases.
+**CONFIRMED** (rule stated in `docs/architecture/gui-ux.md:115`): the Runtime and the headless CLI must not reference Avalonia, and a test guards this. Option A (3.2) must keep that property: no Avalonia type in Core use cases.
 
 ## 4. Recommended approach
 
@@ -253,7 +253,7 @@ Incremental, each phase separately reviewable.
 
 | Phase | Change | Behavior change | Gate |
 |---|---|---|---|
-| 0 | This design; owner decisions D1-D10 recorded in ADR revisions (ADR-015 sketch point 2, ADR-017 wording) and the matrix revisions in 3.2 | None | Owner sign-off |
+| 0 | This design; owner decisions D1-D11 recorded in ADR revisions (ADR-015 sketch point 2, ADR-017 wording) and the matrix revisions in 3.2 | None | Owner sign-off |
 | 1 | Replace duplicate guest-end handoffs (F4) with `ProgramEndHandoff` | None expected | Existing tests |
 | 2 | Add the shared result type, tokens, and `IProgress` plumbing to Core use cases (Option A); add stop support to `InterpreterTitleExecutionEngine` (`ICancellableExecutionEngine`, `AttachCancellation`, `RequestCancel`, modeled on `RecompiledHostExecutionEngine.cs:291-306`); move the CLI's recompile orchestration into use cases | None for CLI output; the Studio gains mid-segment stop only if D4 Option A is chosen | CLI JSON and exit-code tests unchanged; new interpreter stop tests |
 | 3 | Studio: disc load through a Domain port with an Infrastructure reader (F7); Cancel and progress UI; shared error panel | New UI | GUI tests drive real controls |
@@ -353,5 +353,5 @@ Each decision lists options and a recommendation. The owner decides; this docume
 ## 10. Verification performed for this document
 
 - Read-only survey of the files cited above at base `2e3ecad`. Labels CONFIRMED mean the cited line was read in this session.
-- No build, test or analyzer run. **UNVERIFIED:** that the contract, the AARC analyzer, or existing GUI tests pass at this base; feasibility of the proposed rule tests; the layer attribute of `PSXRecomp.RuntimeHost` and `PSXRecomp.GameWindow`.
+- No build, test or analyzer run. **UNVERIFIED:** that the contract, the AARC analyzer, or existing GUI tests pass at this base; feasibility of the proposed rule tests; the layer attribute of `PSXRecomp.GameWindow` (`PSXRecomp.RuntimeHost` is attributed `[Infrastructure]` at `src/PSXRecomp.RuntimeHost/Program.cs:23`, but is not in the matrix Projects column).
 - No BIOS, ROM, disc or copyrighted content was read or included. Paths are repository-relative.
