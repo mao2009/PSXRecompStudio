@@ -177,7 +177,7 @@ public sealed class LiveFramePublisherTests
         using var graph = new PsxDeviceGraph();
         var scheduler = graph.CreateScheduler();
         var calls = new List<ulong>();
-        scheduler.VblankCallback = count => calls.Add(count);
+        _ = scheduler.AddVblankCallback(count => calls.Add(count));
 
         scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
 
@@ -192,7 +192,7 @@ public sealed class LiveFramePublisherTests
         UploadRow(gpu, 0, 0, [0x7C00]);
         var slot = new LiveFrameSlot();
         var scheduler = graph.CreateScheduler();
-        scheduler.VblankCallback = _ => LiveFramePublisher.TryPublish(gpu, slot, Unguarded);
+        _ = scheduler.AddVblankCallback(_ => LiveFramePublisher.TryPublish(gpu, slot, Unguarded));
 
         // A reader polls once before each VBlank, as the GUI does on its timer.
         for (var i = 0; i < 3; i++)

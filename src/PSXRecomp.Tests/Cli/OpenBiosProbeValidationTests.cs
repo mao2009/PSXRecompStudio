@@ -49,6 +49,13 @@ public sealed class OpenBiosProbeValidationTests
 
     private static string GetTempPath(TempDirectory dir, string name) => dir.Combine(name);
 
+    private static System.Text.Json.Nodes.JsonObject RunCompare(string left, string right)
+    {
+        var outputWriter = new StringWriter();
+        OpenBiosProbeCommand.Run(["--compare-boundary-logs", left, right], outputWriter, new StringWriter()).Should().Be(0);
+        return System.Text.Json.Nodes.JsonNode.Parse(outputWriter.ToString())!.AsObject();
+    }
+
     // ===== m1: OpenBIOS Probe option validation (Issue #772) =====
 
     [Fact]
@@ -116,6 +123,28 @@ public sealed class OpenBiosProbeValidationTests
 
         exit.Should().Be(1);
         error.Should().Contain("--dump-ram requires --capture-at");
+    }
+
+    [Fact]
+    public void Run_InterpreterBoundaryLog_Writes_A_Record_At_The_First_VBlank()
+    {
+        // Issue #774 (W03): the interpreter's scheduler exists only after the image loads, so the VBlank hook must be attached then.
+        // Synthetic ROM: its loop retires one instruction per cycle, and the first VBlank is 564480 cycles in.
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        var boundaryLog = GetTempPath(dir, "boundary.jsonl");
+
+        var exit = RunProbe([
+            rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "600000",
+            "--boundary-log", boundaryLog, "--json"
+        ], out _, out var error);
+
+        // 2 = the run completed without booting the kernel (the synthetic loop never boots); 1 would be a refusal or error.
+        exit.Should().Be(2, error);
+        // The compare entry counts the records and names the VBlank of the first one; the test reads no file itself.
+        var compared = RunCompare(boundaryLog, boundaryLog);
+        compared["leftBoundaries"]!.GetValue<int>().Should().Be(1);
+        compared["firstMismatch"].Should().BeNull();
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using PSXRecomp.Architecture;
 using PSXRecomp.Core.Cpu;
@@ -184,6 +185,51 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
     /// <summary>Called once per artifact-to-interpreter handoff after its segment ran (measurement only, Issue #732).</summary>
     public Action<MixedFallbackTransition>? FallbackTransitionObserver { get; set; }
+
+    /// <summary>
+    /// Called on the pump thread at each VBlank of the host scheduler with the run's device graph, the VBlank index and the
+    /// scheduler time (diagnostic observation only, Issue #774 W03: the boundary log). Null leaves the run unchanged.
+    /// </summary>
+    public Action<PsxDeviceGraph, ulong, ulong>? VBlankObserver { get; set; }
+
+    /// <summary>
+    /// Registers the VBlank subscribers of a host scheduler, on the pump thread: the live frame publish (Issue #818) as a
+    /// game-execution callback (LiveFramePublisher catches its own failures and never throws, so nothing propagates from it in
+    /// practice; the propagation contract still applies to any game-execution callback), and the boundary observer (Issue #774) as a diagnostic observer,
+    /// whose exception is contained by the scheduler. <paramref name="onObserverFailure"/> is told of each observer exception
+    /// before it is contained, so the engine can report the run as observer-failed. Both null leaves the scheduler unchanged.
+    /// </summary>
+    internal static void WireVBlank(DeviceScheduler scheduler, PsxDeviceGraph devices, Action<ulong>? live, Action<PsxDeviceGraph, ulong, ulong>? observer,
+        Action<VblankObserverFailure>? onObserverFailure = null)
+    {
+        if (live is not null) scheduler.AddVblankCallback(live);
+        if (observer is null) return;
+        scheduler.AddDiagnosticVblankObserver(vblank =>
+        {
+            try
+            {
+                observer(devices, vblank, scheduler.ElapsedCycles);
+            }
+            catch (Exception ex)
+            {
+                onObserverFailure?.Invoke(new VblankObserverFailure(vblank, ex.GetType().Name, ex.Message));
+                throw;
+            }
+        });
+    }
+
+    /// <summary>
+    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw in any run of this engine instance, or null.
+    /// It is not reset when the engine runs again, so a reused engine keeps an earlier failure; the probe creates one engine
+    /// per run. A non-null value means the observer failed; the guest result is unaffected, but the run is not a clean observation.
+    /// </summary>
+    public VblankObserverFailure? VBlankObserverFailure { get; private set; }
+
+    /// <summary>
+    /// Called with each run's scheduler once it is created and before the guest runs, so a caller can register further
+    /// VBlank subscribers on it. Null (the default) changes nothing. Used by the probe's test seam.
+    /// </summary>
+    public Action<DeviceScheduler>? OnSchedulerCreated { get; set; }
 
     /// <summary>
     /// Opt-in record of RAM-placed code the artifact refused at a handoff (Issue #773). Set before the run; null (the default)
@@ -784,6 +830,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             : new HostTransferBridge(_biosRuntimeFactory, _blockEntryPcs, _configureDevices, _exceptionChain, _mixedFallback, _imageWords, _imageLoadAddress, _memoryCardSlots, _guestFirmware, FallbackFetchObserver, _disc, FallbackTransitionObserver, _loadedCode, LoadedCodeMismatchDiagnostics)
             {
                 LiveFrames = _liveFrames,
+                VBlankObserver = VBlankObserver,
+                VBlankObserverFailureSink = failure => VBlankObserverFailure ??= failure,
+                OnSchedulerCreated = OnSchedulerCreated,
             };
         _bridge = bridge;
 
@@ -856,7 +905,17 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord);
         }
-        catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop)
+        // A game-execution VBlank callback's exception that ends a requested stop (owner ruling, PR #850) propagates unchanged. Before it does,
+        // the stop is decided and its outcome recorded, so the run is never reported as NotStopped (Issue #827, invariant). Seal waits for a stop
+        // still deciding, and makes the outcome final; the kill RunProcess made before rethrowing is part of that outcome.
+        catch (Exception exception) when (stopToken.IsCancellationRequested && ReferenceEquals(exception, bridge?.GameCallbackFailure))
+        {
+            stopRecord.Seal();
+            LastStopDiagnostics = ShutdownDiagnostics(stopRecord, stopRequested: true);
+            throw;
+        }
+        catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop
+            && !ReferenceEquals(exception, bridge?.GameCallbackFailure))
         {
             // A failure while a live child was being stopped is the run's result, and what the stop could not do is in the diagnostics. A child that
             // ended on its own before the stop reached it is not a stop failure: the exception is not converted into ARTIFACT_RUN_EXCEPTION, which
@@ -1418,7 +1477,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             pumpCompleted = WaitPumpWithinOutputBudget(pump, process, timeoutMs, outputBudgetMs, stopRecord, out drainTimedOut);
         }
-        catch (Exception exception)
+        catch (AggregateException aggregate) when (IsGameCallbackFailure(aggregate, bridge))
+        {
+            // A game-execution VBlank callback's exception (owner ruling, PR #850) is not a protocol fault. The pump task wraps it, so the
+            // child is stopped and the original instance is rethrown: the run fails with that exception, not as a clean non-boot.
+            TryKillTree(process, stopRecord, stopToken);
+            ExceptionDispatchInfo.Capture(bridge!.GameCallbackFailure!).Throw();
+            throw;
+        }
+        catch (Exception exception) when (!IsGameCallbackFailure(exception, bridge))
         {
             // The host-transfer pump faulted. Kill and drain the child, keep the
             // exception out of the result contract (log it locally for
@@ -1767,6 +1834,18 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// Kills the child's tree on a timeout or a stop path. An exited child is left alone. A kill the OS refuses is never a raw exception
     /// out of the run: during a stop it is recorded as a refusal with its reason (Issue #827 review, MEDIUM 1).
     /// </summary>
+    /// <summary>
+    /// True when <paramref name="exception"/> is the run's recorded game-callback exception, either as itself or inside an aggregate (at any
+    /// depth). Identity, not type: a scheduler fault of the same type is not the game's (owner ruling, PR #850).
+    /// </summary>
+    private static bool IsGameCallbackFailure(Exception exception, HostTransferBridge? bridge)
+    {
+        var game = bridge?.GameCallbackFailure;
+        if (game is null) return false;
+        if (ReferenceEquals(exception, game)) return true;
+        return exception is AggregateException aggregate && aggregate.Flatten().InnerExceptions.Any(inner => ReferenceEquals(inner, game));
+    }
+
     private static void TryKillTree(Process process, StopRecord stopRecord, CancellationToken stopToken)
     {
         try
@@ -1813,6 +1892,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         private IBiosRuntime? _biosRuntime;
         private PsxDeviceGraph? _devices;
         private DeviceScheduler? _scheduler;
+
+        /// <summary>
+        /// The game-execution VBlank callback exception this bridge's scheduler recorded, or null. The run's pump reads it to let that
+        /// exception propagate unchanged instead of classifying it as a protocol fault (owner ruling, PR #850).
+        /// </summary>
+        internal Exception? GameCallbackFailure => _scheduler?.GameCallbackFailure;
         private ulong _issuedCredit;
 
         /// <summary>The outstanding blocking BIOS call's poll bound (Issue #717); lives as long as this launch's devices.</summary>
@@ -1908,6 +1993,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         /// headless path never sets it.
         /// </summary>
         public LiveFrameSlot? LiveFrames { get; init; }
+
+        /// <summary>The engine's <see cref="RecompiledHostExecutionEngine.VBlankObserver"/>, handed to this run's scheduler (Issue #774 W03).</summary>
+        public Action<PsxDeviceGraph, ulong, ulong>? VBlankObserver { get; init; }
+
+        /// <summary>Told of the observer's first exception, so the engine can report the run as observer-failed (Issue #774 W03).</summary>
+        public Action<VblankObserverFailure>? VBlankObserverFailureSink { get; init; }
+
+        /// <summary>Called with the run's scheduler once it is created, before the guest runs (see the engine's <see cref="OnSchedulerCreated"/>).</summary>
+        public Action<DeviceScheduler>? OnSchedulerCreated { get; init; }
 
         /// <summary>
         /// The gate every read of this run's GPU/VRAM goes through, and the stop predicate it checks (Issue #827, owner requirement). Set by the
@@ -2015,9 +2109,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 // device time, order and interrupt delivery to the controller are the existing
                 // scheduler's, fed by the guest time the artifact reports.
                 _scheduler = _devices.CreateScheduler();
+                OnSchedulerCreated?.Invoke(_scheduler);
                 // Issue #774 (B-7): the MDEC event observer reports this scheduler's time. Diagnostic only.
                 _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
                 // Issue #818: VBlank is raised inside AdvanceExact on the pump thread, the one thread that owns the GPU.
+                Action<ulong>? liveVBlank = null;
                 if (LiveFrames is { } liveFrames)
                 {
                     var livePublisher = new LiveFrameVBlankPublisher(
@@ -2026,8 +2122,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                         exception => Trace.WriteLine($"Live frame publishing stopped for this run: {exception}"),
                         // Every live read goes through the run's gate, which refuses it once a stop was requested (fails closed without one).
                         action => FrameReads is { } gate && StopNow is { } stopNow && gate.TryRead(stopNow, action));
-                    _scheduler.VblankCallback = _ => livePublisher.OnVBlank();
+                    liveVBlank = _ => livePublisher.OnVBlank();
                 }
+                RecompiledHostExecutionEngine.WireVBlank(_scheduler, _devices, liveVBlank, VBlankObserver, VBlankObserverFailureSink);
                 _biosRuntime = _biosRuntimeFactory?.Invoke(new GuestMemoryReader(ReadPhysicalByte), new GuestMemoryWriter(WritePhysicalByte));
                 (_biosRuntime as IDeviceBiosRuntime)?.AttachDevices(_devices);
                 if (_mixedFallback is not null)
@@ -2662,12 +2759,16 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             {
                 throw;
             }
-            catch (ArtifactDeviceRam.UnroutableException exception)
+            // A game callback's exception that happens to be this type is still the game's: the identity check comes first (owner ruling, PR #850).
+            catch (ArtifactDeviceRam.UnroutableException exception) when (!ReferenceEquals(exception, _scheduler?.GameCallbackFailure))
             {
                 Trace.WriteLine($"Device RAM access refused: {exception}");
                 return ("ARTIFACT_DEVICE_RAM_UNROUTABLE", exception.Message);
             }
-            catch (Exception exception)
+            // A game-execution VBlank callback's exception is not a scheduler fault: it propagates unchanged (owner ruling, PR #850),
+            // so the run fails visibly rather than being reported as a clean non-boot. It is told apart by identity: the scheduler
+            // records the instance it rethrows. Any other exception from the advance is a scheduler fault, classified here.
+            catch (Exception exception) when (!ReferenceEquals(exception, _scheduler?.GameCallbackFailure))
             {
                 Trace.WriteLine($"DeviceScheduler advance failed: {exception}");
                 return ("ARTIFACT_SCHEDULER_FAILED", $"The Runtime device scheduler failed advancing {cycles} cycles.");
