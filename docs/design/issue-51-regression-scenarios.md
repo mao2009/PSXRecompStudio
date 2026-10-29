@@ -25,7 +25,7 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 
 ### 2.1 What exists
 
-- Repository-authored synthetic PS-X EXE fixtures exist. They are generated in memory from MIPS instruction words, pinned by SHA-256, and run through the production recompiler/runtime path. Two of the five (`BiosPutCharMarker`, `UnresolvedJump`) are consumed by `RecompiledArtifactE2ETests`; the other three are not consumed by any existing test. [CONFIRMED: `docs/development/generated-psx-exe-fixtures.md`, "Generation contract" and "Verification"; `src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs` references only `BiosPutCharMarker` (lines 57, 112) and `UnresolvedJump` (line 141)]
+- Repository-authored synthetic PS-X EXE fixtures exist. They are generated in memory from MIPS instruction words, pinned by SHA-256, and run through the production recompiler/runtime path. Two of the five (`BiosPutCharMarker`, `UnresolvedJump`) are consumed by `RecompiledArtifactE2ETests`; consumed by name in `RecompiledArtifactE2ETests` (`BiosPutCharMarker`, `UnresolvedJump`) and in `RuntimeHostPublishE2E` (`NaturalEndWithV0`, `GuestFirmwareOpenbios`). All five are enumerated by `GeneratedPsxExeFixtureTests` via `All`. No test asserts the expected outcome fields of `NaturalEndWithTransitions` or `GuestFirmwareOpenbios`. [CONFIRMED: `docs/development/generated-psx-exe-fixtures.md`, "Generation contract" and "Verification"; `src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs:57,112,141`; `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs:50,455,493,535,679`; `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtureTests.cs:13-25,40`]
 - The catalog `GeneratedPsxExeFixtures.All` contains **five** fixtures: `BiosPutCharMarker`, `UnresolvedJump`, `NaturalEndWithV0`, `NaturalEndWithTransitions`, `GuestFirmwareOpenbios`. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:202-203`, with IDs at lines 94, 112, 133, 157, 184]
 - The fixture doc's "Current fixtures" table lists only two entries, so it is stale for the three added later. [CONFIRMED that the table lists two; OBSERVED that it is stale, since `All` lists five]
 - The fixture doc states that no generated `.exe` is checked in and that the catalog excludes Sony BIOS code and user-provided inputs. [CONFIRMED: same doc, "Legal and ownership boundary"]
@@ -67,7 +67,7 @@ Rules:
 
 - A criterion must assert an observable contract: an outcome enum value, a guest PC, a register value, a TTY byte, a frame hash, a diagnostic code. "Did not throw" is not a criterion. [OBSERVED: capability matrix verification threshold]
 - A scenario that depends on a facet not yet implemented (for example, Audio output, `Not claimed` in `capabilities.md:78`) must declare `Tier = Manual` or be absent. It must not be listed as Pass. [PREDICTED]
-- **Facets versus tags.** The five #33 facet values are unchanged. The issue's extra areas (Input, Runtime stability, CD/Disc) are carried as `Tags`, and a scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. `None` is a new #33 value and is listed in section 9. It is excluded from level derivation (section 8). This follows one of the options in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [OBSERVED: #33 Q14 at `700633d`]
+- **Facets versus tags.** The five #33 facet values are unchanged. The issue's extra areas (Input, Runtime stability, CD/Disc) are carried as `Tags`, and a scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. `None` is a new #33 value and is listed in section 9. It is excluded from level derivation (section 8). This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [OBSERVED: #33 Q14 at `700633d`]
 
 ## 4. Smoke-test set (synthetic fixtures)
 
@@ -79,7 +79,7 @@ The smoke set is the subset that runs on every change without any user input. It
 |---|---|---|---|
 | `smoke.boot.synthetic-putchar` | `bios-putchar-marker` | outcome `completed/success`; S1 = `0x7777`; TTY byte `P` | catalog expected fields (CONFIRMED); consumed by `RecompiledArtifactE2ETests` (CONFIRMED) |
 | `smoke.runtime.unresolved-jump` | `unresolved-jump` | outcome `blocked/unsupported-transfer`; guest PC `0x80020000`; diagnostic `UNRESOLVED_TRANSFER` | catalog expected fields (CONFIRMED); consumed by `RecompiledArtifactE2ETests` (CONFIRMED) |
-| `smoke.runtime.natural-end-transitions` | `natural-end-transitions` | outcome `completed/success`; result value `0x42`; guest PC `EntryPc + 16` | catalog expected fields; no existing test consumes it yet (CONFIRMED) |
+| `smoke.runtime.natural-end-transitions` | `natural-end-transitions` | outcome `completed/success`; result value `0x42`; guest PC `EntryPc + 16` | catalog expected fields (CONFIRMED). No test asserts its expected outcome fields. It is enumerated by `GeneratedPsxExeFixtureTests` via `All`, so it gets the hash check (CONFIRMED) |
 | `smoke.parse.fixture-hash` | every catalog entry | generated bytes match pinned SHA-256 | fixture test (CONFIRMED: doc "Verification") |
 | `smoke.native.rust-abi` | native staticlib | `AbiVersion == 1`; round-trip sentinel | `RustAbiSmokeTests.cs` (CONFIRMED that the test exists) |
 | `smoke.studio.window` | headless window | DataContext type; binding resolves | `MainWindowSmokeTests.cs` (CONFIRMED that the test exists) |
@@ -89,7 +89,7 @@ Fixture selection for the smoke tier:
 Host mode per fixture, applied to every fixture the same way:
 
 - `bios-putchar-marker` and `unresolved-jump`: run through the production recompiler/runtime path used by `RecompiledArtifactE2ETests`. [CONFIRMED]
-- `natural-end-transitions`: its source comment says it verifies "bridge mode" for non-guest-firmware cases. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:156-157`; OBSERVED: `docs/runtime/runtime-host.md:295`] Whether bridge mode needs host setup beyond the E2E path is UNVERIFIED. This is the reason it is in the smoke set only if that check passes.
+- `natural-end-transitions`: its source comment says it verifies "bridge mode" for non-guest-firmware cases. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:153-154`; OBSERVED: `docs/runtime/runtime-host.md:295-298`] Whether bridge mode needs host setup beyond the E2E path is UNVERIFIED. This is the reason it is in the smoke set only if that check passes.
 - `natural-end-v0`: described as a "RuntimeHost-managed natural-end flow" [CONFIRMED description text]. It depends on host launch behavior that this design has not reviewed. Extended tier.
 - `guest-firmware-openbios`: exercises the `GuestFirmware=true` mode, with no HLE, at `0x1FC00000`. Its input requirements beyond the repository-authored instruction words are UNVERIFIED. Extended tier, and not enabled in CI until those are checked. [CONFIRMED description text]
 
@@ -154,7 +154,7 @@ Stop reasons, which are carried in `ObservedFacts` and not in `Outcome`:
 | Unsupported transfer | `TitleExecutionState.UnsupportedTransfer` | `Blocked` | Diagnosable stop |
 | Budget stop | `BudgetExhausted` / `OUTER_BUDGET_EXHAUSTED` pattern (`capabilities.md:87`) | `Blocked` | Diagnosable stop |
 | **User cancel** | `RecompilerExecutionStatus.Cancelled` (`RecompilerExecutionStatus.cs:35`), reaching `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`) | `Blocked` per existing code, with `ObservedFacts.stopReason = Cancelled`. The engine status becomes `Cancelled` at `ExecutionOrchestrator.cs:156-159` (returns `TitleExecutionState.Cancelled`); `RecompiledArtifactExitCode.cs:59` maps `Cancelled` to `Blocked`. [CONFIRMED] | A cancel is not a guest boundary. Section 7.1 rule 6 stops it from creating a regression. |
-| Engine timeout | `RecompilerExecutionStatus.TimedOut` | `Error` with `stopReason = TimedOut`. The orchestrator maps any non-`Completed`, non-`Cancelled` status to `RuntimeFailure` with the engine's diagnostic code or `ENGINE_FAILED` (`ExecutionOrchestrator.cs:162-170`); `RecompiledArtifactExitCode.cs:56` maps `RuntimeFailure` to `Failure`; #33 aligns `Failure` with `Error`. [CONFIRMED for each step] | Closes Q9 for the orchestrator path. A caller that bypasses the orchestrator is UNVERIFIED. |
+| Engine timeout | `RecompilerExecutionStatus.TimedOut` | `Error` with `stopReason = TimedOut`. The orchestrator maps any non-`Completed`, non-`Cancelled` status to `RuntimeFailure` with the engine's diagnostic code or `ENGINE_FAILED` (`ExecutionOrchestrator.cs:162-170`); `RecompiledArtifactExitCode.cs:56` maps `RuntimeFailure` to `Failure`; #33 aligns `Failure` with `Error`. [CONFIRMED for each step] | Closes Q8 for the orchestrator path. A caller that bypasses the orchestrator is UNVERIFIED. |
 
 Rules:
 
@@ -272,7 +272,8 @@ This design adds these requirements to #33 at `700633d`. [PREDICTED]
 - **Q3. Synthetic exclusion and related #33 fields.** #33 must add:
   - a `Subject` field (section 5.4), and exclude synthetic subjects from title levels;
   - `TitleKey` optional when `Subject` is `SyntheticFixture` (section 5);
-  - a `None` value on `Facet` (section 3).
+  - a `None` value on `Facet` (section 3);
+  - a `Cancelled` row in the execution-state table (section 2.3). #33 §2.1 has no `Cancelled` entry at `700633d`.
 
   None of these is agreed. Section 9 lists them.
 - **Q4. Disc hash in results.** The disc hash is needed for checklist item 3. Whether it is stored in shared records is the same question as #33 Q3. UNVERIFIED.
@@ -283,9 +284,9 @@ This design adds these requirements to #33 at `700633d`. [PREDICTED]
   - the fixture doc and `docs/development/showcase-demo.md:25`, which names the ID in its text.
 
   It would not change the pinned SHA-256 or the generated bytes. The ID is not written into the EXE: `BuildExe` takes instruction words and header fields only (`GeneratedPsxExeFixtures.cs`, method `BuildExe`). [CONFIRMED for the BuildExe signature; the ID-usage list is OBSERVED from a grep not repeated here]. Owner decision.
-- **Q9. Timeout classification. Closed for the orchestrator path.** `RecompilerExecutionStatus.TimedOut` becomes `RuntimeFailure` and then `Failure`, which maps to `Error` (section 5.1). [CONFIRMED: `ExecutionOrchestrator.cs:162-170`, `RecompiledArtifactExitCode.cs:56`] Still UNVERIFIED: whether any caller reads `TimedOut` outside the orchestrator.
-- **Q10. Where smoke results live.** Local JSONL only, or also a committed snapshot of synthetic results? A committed snapshot would churn. Proposed: local only in v1. UNVERIFIED that CI can persist between runs.
-- **Q11. #33 review.** Section 9 depends on #33 at `700633d`. Any changes from #33's review must be reconciled here. #33 Q10 (feedback intake) is also open and is not used by this design.
+- **Q8. Timeout classification. Closed for the orchestrator path.** `RecompilerExecutionStatus.TimedOut` becomes `RuntimeFailure` and then `Failure`, which maps to `Error` (section 5.1). [CONFIRMED: `ExecutionOrchestrator.cs:162-170`, `RecompiledArtifactExitCode.cs:56`] Still UNVERIFIED: whether any caller reads `TimedOut` outside the orchestrator.
+- **Q9. Where smoke results live.** Local JSONL only, or also a committed snapshot of synthetic results? A committed snapshot would churn. Proposed: local only in v1. UNVERIFIED that CI can persist between runs.
+- **Q10. #33 review.** Section 9 depends on #33 at `700633d`. Any changes from #33's review must be reconciled here. #33 Q10 (feedback intake) is also open and is not used by this design.
 
 ## 12. Verification of this document
 
