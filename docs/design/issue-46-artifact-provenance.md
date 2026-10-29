@@ -162,7 +162,7 @@ Record, per build:
 
 ### 3.5 Manifest contents and location
 
-Proposed file: `<outputDir>/build-manifest.json`, schema version 1. It is written only after the build succeeds. It is written into a staging area first, and then promoted (moved into place) together with the artifact files, using the staging pattern in `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:510`.
+Proposed file: `build-manifest.json`, schema version 1. It has one location per build. A non-packaged build writes `<outputDir>/build-manifest.json`. A packaged build writes `runtime/build-manifest.json` and nothing at `<outputDir>` (3.8). It is written once per build, by one writer (the caller at the composition root, through `IBuildArtifactStore.WriteText`, Section 7.2). It is written only after the artifact files are promoted (moved into place, using the staging pattern in `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:510`), and for a packaged build only after the image sidecar exists. The workflow never writes it.
 
 Deterministic fields (no timestamps, no local paths):
 
@@ -180,7 +180,7 @@ codegen:    {
   budget, initialPc, initialHi, initialLo, imageLoadAddress,
   initialGprSha256,             // hash over the GPR words
   initialMemorySha256,          // hash over the (address, value) pairs
-  programImageSha256,           // hash over the program image bytes
+  programImageInputSha256,      // hash over the program image bytes passed to codegen (key input, pre-build; NOT the H3 digest, see 3.8)
   generatorVersion
 }
 loadedCode: [ { name, kind, loadAddress, wordCount, sourceSha256 } ]   // explanation only, not keyed (3.2)
@@ -188,7 +188,7 @@ source:     { file, sha256, sizeBytes }     // file: "<name>.c", a bare file nam
 binary:     { file, sha256, sizeBytes }     // file: "<name>" or "<name>.exe", as produced
 files:      [ "<name>.c", "<name>[.exe]", "<name>.o" (game builds only) ]   // bare names, what promote moves
 toolchain:  { compilerVersionLine, linkerVersionLine, targetTriple, recipeTokens }   // path-free, see 3.6
-digests:    { artifact: { file, sha256, sizeBytes }, imageSidecar: { file, sha256, sizeBytes } }   // packaged builds only, read by the packaged host; see 3.8
+packaged:   { imageSidecar: { file, sha256, sizeBytes } }   // packaged builds only; H3 digest, read by the packaged host; NOT in buildKey; see 3.8. H2 is binary.sha256 above.
 runtimeInputs: [ { name, kind, requiredBy, sha256? } ]   // names and hashes only, never the BIOS or ROM content
 productRevision: "<InformationalVersion>"       // informational, not part of buildKey
 ```
@@ -272,21 +272,29 @@ The workaround is the same for each: rebuild. Because the build always runs, a r
 
 ### 3.8 Digests read by the packaged host (H2, H3)
 
-The packaged host (issue #48, W12) must verify the SHA-256 of two files before use. H2 is the artifact binary. H3 is the image sidecar. The host fails closed on a mismatch or a missing file. W12 names this build manifest as the carrier for the expected digests. The digests are not written into `runtime-host.json`, because that would be a schema-2 change, which Q16 rejects (W12).
+The packaged host (issue #48, W12) verifies two files before use, and fails closed on a mismatch or a missing file. H2 is the game artifact named by `manifest.Artifact` in `runtime-host.json` (W12 section 3.4). H3 is the program image sidecar named by `manifest.Image` (`artifact-image.bin`). The expected digests live in one carrier, `build-manifest.json`, described in 3.5. They are not in `runtime-host.json`, because that would be a schema-2 change, which Q16 rejects (W12).
 
-**Fields.** `digests.artifact` holds `{ file, sha256, sizeBytes }` for H2. `digests.imageSidecar` holds `{ file, sha256, sizeBytes }` for H3. The file names are bare names. The sidecar name is `RuntimeHostLayout.ImageFileName`, which is `artifact-image.bin` (`src/PSXRecomp.Infrastructure/Standalone/RuntimeHostLayout.cs:45`). The packager writes it into `runtime/` (`src/PSXRecomp.Cli/PackageCommand.cs:231`). It is not the engine's file of the same name in the output directory (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:512`), which is a different file and not a digest source.
+**Carrier fields, one per digest.**
+- H2: `binary.sha256`, with `binary.file` as the bare file name of the artifact.
+- H3: `packaged.imageSidecar.sha256`, with `packaged.imageSidecar.file` (`artifact-image.bin`, `RuntimeHostLayout.ImageFileName`, `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostLayout.cs:45`).
 
-**Location.** A packaged build writes its manifest to `runtime/build-manifest.json`, beside the sidecar it describes, so the host reads it from where the host runs. A non-packaged build keeps the manifest in the output directory (3.5).
+**H3 is not `codegen.programImageInputSha256`.** The codegen field is the hash of the bytes passed to codegen. It is computed before the build and is a key input (`src/PSXRecomp.Cli/PackageCommand.cs:155`). H3 is the hash of the file the packager writes after the build (`src/PSXRecomp.Cli/PackageCommand.cs:231`). The two values are the same only if both see the same bytes. The basis is that both call the same function, `ProgramImageBytes(input.InstructionWords)`, and that function writes each word little-endian with no header (`src/PSXRecomp.Cli/PackageCommand.cs:322-330`). No code in `src/` computes either hash today (grep, OBSERVED). **Equality is UNVERIFIED** until a test hashes the written `artifact-image.bin` and compares the result with the codegen input bytes.
 
-**Computation order.** H2 is hashed from the staged artifact, and the promote step (7.2) is a move of the same bytes, so the digest stays valid after promotion. The packager writes the sidecar, then hashes it (H3), then writes the manifest. The manifest is never written before the digests it contains.
+**Location.** A packaged build writes the manifest to `runtime/build-manifest.json`, beside the sidecar, and writes nothing at `<outputDir>/build-manifest.json`. A non-packaged build writes `<outputDir>/build-manifest.json`. A build has one location and one writer.
 
-**Owner.** The owner of the `digests` field is issue #46 (this design, W14). The writer is the build-manifest writer in Domain (7.2), called by the packager. Today `PackageCommand` does not go through the workflow, so moving the packager onto that writer is a migration item (Section 7.2).
+**Writer and order.** The single writer is the caller at the composition root (7.2), through `IBuildArtifactStore.WriteText`. For a packaged build the order is: the workflow builds and promotes the artifact (H2 is `binary.sha256`, computed from the staged artifact before promotion; promotion is a move of the same bytes). The packager then writes the sidecar (`PackageCommand.cs:231`), hashes it (H3), and writes `runtime/build-manifest.json` last. The manifest is never written before the digests it contains.
 
-**Read-only input.** The packaged host reads `digests` as read-only input. It verifies H2 and H3 against the recorded values before use. It never writes, regenerates, or edits the manifest or any digest. If a digest is wrong, the fix is on the writer side: rebuild or repackage. Editing the manifest is never the fix.
+**Owner.** Issue #46 (this design, W14) owns the schema, the contents, and the writer. W12 owns the host check and its fail-closed behaviour (W12 section 3.4).
 
-**Fail closed (W12).** On a mismatch in H2 or H3, or a missing H2, H3, or manifest file, the host refuses to start. It does not run unverified. The check itself is implemented in W12. This design only defines the contract and the writer.
+**Read-only input.** The packaged host reads the carrier as a read-only input. It never writes, regenerates, or edits the manifest or any digest. If a digest is wrong, the fix is on the writer side: rebuild or repackage. Editing the manifest is never the fix.
 
-**Not part of the key.** The digests are outputs, derived after the build. They are not in `buildKey` and do not affect the build decision, because there is no Skip in v1. The identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is not covered by these digests. Its integrity is W12's concern.
+**Fail closed (W12).** On a mismatch in H2 or H3, or a missing H2, H3, or carrier, the host refuses to start and runs no guest code. The check is implemented in W12.
+
+**Packaging consequence (Q13).** `runtime/build-manifest.json` is a new packaged file. The ADR-027 Step C layout does not list it (W12 section 2.9). Adding it changes the packaged layout, and that decision belongs to the Q13 baseline decision, which the owner takes together with #46 (W12 section 3.4). The integrity requirement stands regardless of Q13.
+
+**Cross-document change needed in W12 (not made here).** W12 section 3.4 currently names `codegen.programImageSha256` for H3 and `<outputDir>/build-manifest.json` as the location. Both must change to the fields and location in this section: `packaged.imageSidecar.sha256` for H3, and `runtime/build-manifest.json` for packaged builds.
+
+**Not part of the key.** The digests are outputs. They are not in `buildKey`, and they do not affect the build decision, because there is no Skip in v1. The identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is not covered by these digests. Its integrity is W12's concern.
 
 ## 4. Reproducibility: scope and limits (no guarantee)
 
@@ -352,7 +360,7 @@ Open: whether history is per-output-directory or per-project. See Section 9.
 
 **Build always runs.** In v1 the workflow runs the build on every request. There is no Skip path, and no record, hash, or environment check can cause a build to be skipped. A future Skip needs a separate design. That design must fingerprint every file the driver resolves, including the C runtime, import libraries, headers, specs, driver configuration, and the compiler binary, and it must be reviewed on its own. This document does not define it.
 
-- **Clean.** Remove exactly the files in the manifest's `files` list (Section 3.5): `<name>.c`, `<name>[.exe]`, and `<name>.o` for game builds. `build-manifest.json` is removed as well. It is named explicitly and not hashed, because it cannot list its own hash. The workflow promotes it in step 5 (Section 7.2). A file not in that list, and not the manifest, is never deleted. `artifact-input.txt` and `artifact-image.bin` are not in the list. The engine writes them (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:511-512`), and the engine is not migrated to the workflow (Section 7.2), so clean does not touch them. Their removal belongs to the engine migration.
+- **Clean.** Remove exactly the files in the manifest's `files` list (Section 3.5): `<name>.c`, `<name>[.exe]`, and `<name>.o` for game builds. `build-manifest.json` is removed as well. It is named explicitly and not hashed, because it cannot list its own hash. The caller writes it after promotion (Section 7.2). For a packaged build the same rule applies to `runtime/build-manifest.json`, and clean removes that one file only. It never removes any other `runtime/` file, because the rest of the packaged layout is Q13's concern. A file not in that list, and not the manifest, is never deleted. `artifact-input.txt` and `artifact-image.bin` are not in the list. The engine writes them (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:511-512`), and the engine is not migrated to the workflow (Section 7.2), so clean does not touch them. Their removal belongs to the engine migration.
 - **Verify.** Re-hash the listed files and compare with the manifest. This is a check that the output has not been changed since the build. It is not a build decision, and it never prevents a build. A mismatch is reported. It is not repaired by editing the manifest.
 
 **Extra arguments.** The manifest records extra arguments as given. Each build with an extra argument runs like any other build. Relative tokens such as `-Iinclude` resolve against the working directory, which is not keyed. That is an accepted limit (3.7). Release builds keep the working directory fixed.
@@ -414,8 +422,9 @@ The goal is that every current caller compiles and behaves the same, and the new
 1. Resolve `compiler = request.CompilerExecutable ?? GccGeneratedHostRecipe.DefaultCompiler` once. Probe it through `IToolchainProbe.Probe(compiler)`, and compute the build key from the inputs in 3.2, including the probed driver version line, linker version line, and target triple. If `Available` is false, fail with `TOOLCHAIN_UNAVAILABLE` before staging. No staging area is created, and no build runs.
 2. If an existing manifest is present, run Verify on its listed files (Section 6). The result is reported. It does not decide whether the build runs.
 3. Always run the build. Create a staging area through `CreateStaging`. The workflow passes the staging directory string as `OutputDirectory`, `request.Source` as `Source`, `request.BinaryName`, the extra arguments, the `FirmwareDistribution` flag, and `CompilerExecutable: compiler` (the same string the probe received, from step 1) to `IGeneratedHostBuildService.Build`. Without the explicit `CompilerExecutable`, the adapter would fall back to its own default (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:74`) and could build with a different driver than the one probed. The workflow never opens or creates that directory itself. On failure, `Discard`.
-4. Hash the source and the binary through `Sha256`. Build the `BuildManifest`, and write it with `WriteText`.
-5. `Promote` the artifact files and `build-manifest.json`, replacing only what the manifest lists. Append one entry to `IBuildHistoryLog`.
+4. Hash the source and the binary through `Sha256`, and return the `BuildManifest` record. The workflow does not write the manifest.
+5. `Promote` the artifact files, replacing only the names in `files`. Append one entry to `IBuildHistoryLog`.
+6. The caller writes `build-manifest.json` once, with `WriteText`, to the location for that build (3.5, 3.8). For a packaged build, this happens after the packager writes the image sidecar. This is the only writer of the manifest.
 
 **Composition root.** `PSXRecomp.Cli` is the composition root for the new port implementations. It alone constructs `FileBuildArtifactStore`, `ProcessToolchainProbe`, and `FileBuildHistoryLog`, and passes them to `ArtifactBuildWorkflow`. The claim covers only those new implementations. Other callers still construct `GeneratedHostBuildService` directly, as listed in 2.1 (`src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:77`, `src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:109`, `src/PSXRecomp.Cli/PackageCommand.cs:170`, constructor). The CLI may reference Infrastructure because it is classified as Infrastructure by namespace (`src/PSXRecomp.Cli/RecompileCommand.cs:7`, `docs/architecture-matrix.md:24`). ADR-017 point 3 governs the composition of Application-layer code. This design puts no Application code on the composition path, so that rule does not apply here. Whether the analyzer agrees is open question 14.
 
@@ -429,7 +438,7 @@ The goal is that every current caller compiles and behaves the same, and the new
 
 ## 8. Recommendation
 
-1. Record the build key, source hash, and binary hash now, computed by `ArtifactBuildWorkflow` (Domain) through the ports in 7.2, in a sidecar `build-manifest.json` (schema 1). Do not change generated C. Record and verify; make no stability promise.
+1. Record the build key, source hash, and binary hash now, computed by `ArtifactBuildWorkflow` (Domain) through the ports in 7.2, and written once by the caller as `build-manifest.json` (schema 1), at the location in 3.8. Do not change generated C. Record and verify; make no stability promise.
 2. Record codegen options and the generator version in the build key. This closes the largest gap (2.4).
 3. Add a `Stdout` field to `ToolchainResult` (3.4). Capture the compiler `--version` and target through `IToolchainProbe`, implemented in Infrastructure. Do not record local paths in the manifest.
 4. Keep Build always-on in v1 (Section 6). Treat any future Skip as a separate design with a file fingerprint.
