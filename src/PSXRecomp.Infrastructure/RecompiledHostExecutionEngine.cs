@@ -217,8 +217,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw during the last run, or null. A non-null value
-    /// means the observer failed; the guest result is unaffected, but the run is not a clean observation.
+    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw in any run of this engine instance, or null.
+    /// It is not reset when the engine runs again, so a reused engine keeps an earlier failure; the probe creates one engine
+    /// per run. A non-null value means the observer failed; the guest result is unaffected, but the run is not a clean observation.
     /// </summary>
     public VblankObserverFailure? VBlankObserverFailure { get; private set; }
 

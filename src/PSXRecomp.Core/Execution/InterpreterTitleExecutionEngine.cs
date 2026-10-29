@@ -347,8 +347,9 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     public Action<ulong, ulong>? VBlankObserver { get; set; }
 
     /// <summary>
-    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw during the run, or null. A non-null value means
-    /// the observer failed: the guest result is unaffected, but the run must not be reported as a clean observation.
+    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw on the scheduler this engine uses, or null. When
+    /// <c>Load</c> creates the scheduler, the value starts empty for each Load. An attached engine reads the owner's scheduler.
+    /// A non-null value means the observer failed: the guest result is unaffected, but the run is not a clean observation.
     /// </summary>
     public VblankObserverFailure? VBlankObserverFailure => _scheduler?.VblankObserverFailure;
 
@@ -905,6 +906,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             return;
         }
+
+        // The observer's registration may sit on a scheduler this engine does not own (an attached run), so it is removed
+        // here: a disposed engine must not stay subscribed to a scheduler that outlives it.
+        _vblankObserverRegistration?.Dispose();
+        _vblankObserverRegistration = null;
 
         if (_ownsDevices)
         {

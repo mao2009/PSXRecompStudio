@@ -92,6 +92,10 @@ public sealed class DeviceScheduler
     /// </summary>
     internal IDisposable AddDiagnosticVblankObserver(Action<ulong> observer) => Subscribe(observer, diagnostic: true);
 
+    // Duplicate rule (no reference counting). A delegate already registered on this scheduler, as either kind, is not added
+    // again. The first registration's kind (propagating or diagnostic) applies to it. The later call returns an inert handle:
+    // disposing that handle does nothing. Disposing the first handle removes the subscriber even while the inert handle is
+    // still held, so the first registration owns the subscriber's lifetime.
     private IDisposable Subscribe(Action<ulong> callback, bool diagnostic)
     {
         ArgumentNullException.ThrowIfNull(callback);
@@ -102,9 +106,22 @@ public sealed class DeviceScheduler
         return new VblankSubscription(this, id);
     }
 
-    private void RemoveSubscriber(int id) => _vblankSubscribers.RemoveAll(s => s.Id == id);
+    private void RemoveSubscriber(int id)
+    {
+        var index = _vblankSubscribers.FindIndex(s => s.Id == id);
+        if (index < 0) return;
+        // Marked before it is taken out, so a delivery already holding a snapshot that includes it skips it.
+        _vblankSubscribers[index].Removed = true;
+        _vblankSubscribers.RemoveAt(index);
+    }
 
-    private sealed record VblankSubscriber(int Id, Action<ulong> Callback, bool Diagnostic);
+    private sealed class VblankSubscriber(int id, Action<ulong> callback, bool diagnostic)
+    {
+        public int Id { get; } = id;
+        public Action<ulong> Callback { get; } = callback;
+        public bool Diagnostic { get; } = diagnostic;
+        public bool Removed { get; set; }
+    }
 
     private sealed class VblankSubscription(DeviceScheduler owner, int id) : IDisposable
     {
@@ -289,6 +306,8 @@ public sealed class DeviceScheduler
                 var vblank = previousVblankCount + i;
                 foreach (var subscriber in _vblankSubscribers.ToArray())
                 {
+                    // A subscriber disposed earlier in this same delivery (by a callback that ran before it) does not run again.
+                    if (subscriber.Removed) continue;
                     if (!subscriber.Diagnostic)
                     {
                         subscriber.Callback(vblank);

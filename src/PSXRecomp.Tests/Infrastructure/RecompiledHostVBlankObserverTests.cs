@@ -62,7 +62,7 @@ public sealed class RecompiledHostVBlankObserverTests
     // ----- Issue #774 (W03), owner ruling: the diagnostic observer is contained; game-execution callbacks are not. -----
 
     [Fact]
-    public void A_Throwing_Observer_Leaves_The_Guest_Result_And_Scheduler_State_Unchanged()
+    public void A_Throwing_Observer_Leaves_Scheduler_Counters_And_Device_State_Unchanged()
     {
         // Advance by several VBlanks plus a remainder, twice, so the phase accounting is exercised across calls.
         var cycles = 3 * DeviceScheduler.VblankIntervalCycles + 1234;
@@ -164,34 +164,110 @@ public sealed class RecompiledHostVBlankObserverTests
     [Fact]
     public void Disposing_A_Handle_Removes_Only_That_Subscriber_And_Is_Idempotent()
     {
+        // The kept subscriber is registered first and the removed one second, so an overwriting composition would drop the kept one.
         using var graph = new PsxDeviceGraph();
         var scheduler = graph.CreateScheduler();
-        var removed = new List<ulong>();
         var kept = new List<ulong>();
-        var handle = scheduler.AddVblankCallback(removed.Add);
+        var removed = new List<ulong>();
         _ = scheduler.AddVblankCallback(kept.Add);
+        var handle = scheduler.AddVblankCallback(removed.Add);
 
         handle.Dispose();
         handle.Dispose();
-        scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        scheduler.Advance(2 * DeviceScheduler.VblankIntervalCycles);
 
         removed.Should().BeEmpty();
-        kept.Should().Equal(1UL);
+        kept.Should().Equal(1UL, 2UL);
     }
 
     [Fact]
-    public void A_Subscriber_Does_Not_Leak_Into_A_Later_Scheduler()
+    public void A_Subscriber_Disposed_By_An_Earlier_Subscriber_Does_Not_Run_Again_In_That_VBlank_Or_Later()
     {
-        var leaked = new List<ulong>();
-        using (var first = new PsxDeviceGraph())
-        {
-            _ = first.CreateScheduler().AddVblankCallback(leaked.Add);
-        }
+        // A runs first and disposes B during the VBlank-1 delivery. B's snapshot entry must be skipped, not run.
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        IDisposable? handleB = null;
+        var bRuns = new List<ulong>();
+        _ = scheduler.AddVblankCallback(vblank => { if (vblank == 1) handleB!.Dispose(); });
+        handleB = scheduler.AddVblankCallback(bRuns.Add);
 
+        scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
+
+        bRuns.Should().BeEmpty("B was disposed before its turn in VBlank 1, so it never runs");
+    }
+
+    [Fact]
+    public void A_Subscriber_Disposed_Mid_Run_Stops_After_The_VBlank_In_Which_It_Was_Disposed()
+    {
+        // B runs before A in each delivery, so B's VBlank 2 run is legitimate (it precedes the dispose). It must not run in VBlank 3.
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var bRuns = new List<ulong>();
+        IDisposable? handleB = null;
+        handleB = scheduler.AddVblankCallback(bRuns.Add);
+        _ = scheduler.AddVblankCallback(vblank => { if (vblank == 2) handleB!.Dispose(); });
+
+        scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
+
+        bRuns.Should().Equal(1UL, 2UL);
+    }
+
+    [Fact]
+    public void A_Subscriber_Does_Not_Run_On_Another_Scheduler()
+    {
+        // A callback registered on scheduler 1 must not run for VBlanks delivered by scheduler 2.
+        using var first = new PsxDeviceGraph();
         using var second = new PsxDeviceGraph();
+        var firstScheduler = first.CreateScheduler();
         var secondScheduler = second.CreateScheduler();
+        var seenOnFirst = new List<ulong>();
+        _ = firstScheduler.AddVblankCallback(seenOnFirst.Add);
+
         secondScheduler.Advance(DeviceScheduler.VblankIntervalCycles);
 
-        leaked.Should().BeEmpty("a registration belongs to the scheduler it was made on");
+        seenOnFirst.Should().BeEmpty("the registration belongs to scheduler 1; scheduler 2's VBlank must not reach it");
+        firstScheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        // Scheduler 1 still delivers its own VBlanks.
+        seenOnFirst.Should().Equal(1UL);
+    }
+
+    [Fact]
+    public void The_Same_Delegate_Registered_As_Diagnostic_Then_Propagating_Keeps_The_First_Kind_And_Runs_Once()
+    {
+        // Duplicate rule: the first registration's kind applies. As a diagnostic, its throw is contained (not propagated),
+        // and it runs once per VBlank even though it was registered a second time.
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var runs = new List<ulong>();
+        Action<ulong> callback = vblank => { runs.Add(vblank); throw new InvalidOperationException("contained"); };
+        _ = scheduler.AddDiagnosticVblankObserver(callback);
+        _ = scheduler.AddVblankCallback(callback);
+
+        var act = () => scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+
+        act.Should().NotThrow();
+        runs.Should().Equal(1UL);
+        scheduler.VblankObserverFailure.Should().Be(new VblankObserverFailure(1, nameof(InvalidOperationException), "contained"));
+    }
+
+    [Fact]
+    public void A_Duplicate_Handle_Is_Inert_And_The_First_Handle_Owns_The_Subscription()
+    {
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var runs = new List<ulong>();
+        Action<ulong> callback = runs.Add;
+        var first = scheduler.AddVblankCallback(callback);
+        var duplicate = scheduler.AddVblankCallback(callback);
+
+        duplicate.Dispose();
+        scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        // Disposing the inert duplicate handle does nothing: the subscriber still runs.
+        runs.Should().Equal(1UL);
+
+        first.Dispose();
+        scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        // Disposing the first handle removes the subscriber even though the duplicate handle is still held: no new run.
+        runs.Should().Equal(1UL);
     }
 }
