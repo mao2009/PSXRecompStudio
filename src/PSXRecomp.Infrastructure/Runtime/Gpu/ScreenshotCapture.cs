@@ -106,8 +106,15 @@ public sealed class ScreenshotCapture : IDisposable
             return;
 
         var currentVblank = _scheduler.VblankCount;
+        // Same picture as the last saved frame (same VBlank, same GPU state): not saved again, so the run stays partial.
+        if (_lastSavedVblank == currentVblank)
+            return;
+
         if (CaptureAndSave(null, currentVblank, customName))
+        {
             _screenshotsTaken++;
+            _lastSavedVblank = currentVblank;
+        }
     }
 
     /// <summary>

@@ -405,6 +405,33 @@ public sealed class ScreenshotCaptureTests : IDisposable
     }
 
     [Fact]
+    public void FinalFrame_AtTheVBlankOfTheLastSave_IsNotSavedAgainAndTheRunStaysPartial()
+    {
+        // Targets 2 and 3; the counter jumps 0 -> 3 and the check at 3 saves target 2. The run then ends at VBlank 3: the
+        // final frame would repeat that picture, so it is not written and the run is partial.
+        using var dir = new TempDirectory();
+        var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 2, startVblank: 2);
+
+        _scheduler.AdvanceExact(3ul * DeviceScheduler.VblankIntervalCycles);
+        capture.TryCapture().Should().BeTrue();
+        capture.ForceCapture("persona_vblank_final.png");
+
+        capture.ScreenshotsTaken.Should().Be(1);
+        capture.AllTargetsSaved.Should().BeFalse();
+        capture.SavedFiles.Should().ContainSingle().Which.Should().EndWith("persona_vblank_0002.png");
+        #pragma warning disable AARC003
+        File.Exists(Path.Combine(dir.FullPath, "persona_vblank_final.png")).Should().BeFalse("the final frame repeats VBlank 3");
+        #pragma warning restore AARC003
+
+        capture.WriteManifest("execution_budget", _scheduler.VblankCount, TimeSpan.Zero, null, null, goalReached: capture.AllTargetsSaved);
+        #pragma warning disable AARC003
+        var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json"))).RootElement;
+        #pragma warning restore AARC003
+        manifest.GetProperty("captureStatus").GetString().Should().Be("partial");
+        manifest.GetProperty("frames").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
     public void SkippedTarget_IsSavedOnALaterCheckFromALaterPicture()
     {
         // Targets 2 and 3. The counter jumps 0 -> 3 (skipping target 2) and then stays on 3. Target 2 is saved at VBlank 3.
