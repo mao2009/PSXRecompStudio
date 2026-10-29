@@ -111,6 +111,8 @@ public sealed class PadCardIrqBackendParityTests
         static string Detail(TitleExecutionResult r) => r.DiagnosticMessage![..r.DiagnosticMessage!.IndexOf("|EPC=", StringComparison.Ordinal)];
         interpreter.DiagnosticCode.Should().Be(BiosExceptionHandler.ChainUnsupportedDiagnosticCode, Describe(interpreter));
         host.DiagnosticCode.Should().Be(interpreter.DiagnosticCode, Describe(host));
-        Detail(host).Should().Be(Detail(interpreter)).And.Contain("priority 2 PadCardIrq").And.Contain("0x2");
+        // The B0:5B auto-ack value is RAM-derived and is kept out of public diagnostics (commit 6f4be29): the detail names the setting by its
+        // class only, so the test asserts that the value is absent rather than present.
+        Detail(host).Should().Be(Detail(interpreter)).And.Contain("priority 2 PadCardIrq").And.Contain("outside 0 and 1").And.NotContain("auto-ack is 0x");
     }
 }
