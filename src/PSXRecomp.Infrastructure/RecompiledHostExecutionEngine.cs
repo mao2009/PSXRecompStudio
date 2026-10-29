@@ -904,7 +904,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord);
         }
-        catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop)
+        // A game-execution VBlank callback's exception (owner ruling, PR #850) is not converted, even during a stop: it propagates to the caller
+        // unchanged, after the child was stopped (RunProcess kills it before rethrowing).
+        catch (Exception exception) when (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop
+            && !ReferenceEquals(exception, bridge?.GameCallbackFailure))
         {
             // A failure while a live child was being stopped is the run's result, and what the stop could not do is in the diagnostics. A child that
             // ended on its own before the stop reached it is not a stop failure: the exception is not converted into ARTIFACT_RUN_EXCEPTION, which
@@ -1464,7 +1467,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         {
             pumpCompleted = WaitPumpWithinOutputBudget(pump, process, timeoutMs, outputBudgetMs, stopRecord, out drainTimedOut);
         }
-        catch (AggregateException aggregate) when (bridge?.GameCallbackFailure is { } gameFailure && aggregate.InnerExceptions.Any(inner => ReferenceEquals(inner, gameFailure)))
+        catch (AggregateException aggregate) when (bridge?.GameCallbackFailure is { } gameFailure && aggregate.Flatten().InnerExceptions.Any(inner => ReferenceEquals(inner, gameFailure)))
         {
             // A game-execution VBlank callback's exception (owner ruling, PR #850) is not a protocol fault. The pump task wraps it, so the
             // child is stopped and the original instance is rethrown: the run fails with that exception, not as a clean non-boot.
@@ -2733,7 +2736,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             {
                 throw;
             }
-            catch (ArtifactDeviceRam.UnroutableException exception)
+            // A game callback's exception that happens to be this type is still the game's: the identity check comes first (owner ruling, PR #850).
+            catch (ArtifactDeviceRam.UnroutableException exception) when (!ReferenceEquals(exception, _scheduler?.GameCallbackFailure))
             {
                 Trace.WriteLine($"Device RAM access refused: {exception}");
                 return ("ARTIFACT_DEVICE_RAM_UNROUTABLE", exception.Message);

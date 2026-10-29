@@ -441,4 +441,87 @@ public sealed class FirmwareGeneratedHostTests(ITestOutputHelper output)
 
         create.Should().Throw<ArgumentException>();
     }
+
+    // ----- Owner ruling on PR #850: a game-execution VBlank callback's exception propagates to the caller, unchanged. -----
+
+    /// <summary>
+    /// A generated-host run whose game callback throws at VBlank 1. The ROM spins natively, so the time reports reach VBlank 1
+    /// within the budget. <paramref name="onVBlank"/> runs in that VBlank and must end by throwing.
+    /// </summary>
+    private static (RecompiledHostExecutionEngine Engine, Func<Exception?> RecordedFailure, Action Execute)
+        HostWithGameCallback(TempDirectory dir, Action<RecompiledHostExecutionEngine, ulong> onVBlank)
+    {
+        var rom = Rom();
+        var image = ReachableProgramBuilder.BuildFirmwareImage(RomBase, Code(rom), RomBase, []);
+        DeviceScheduler? scheduler = null;
+        RecompiledHostExecutionEngine? self = null;
+        var engine = new RecompiledHostExecutionEngine(
+            image.Program, rom, RomBase, new GeneratedHostBuildService(), dir.FullPath,
+            mixedFallback: new MixedFallbackOptions(), guestFirmware: true)
+        {
+            OnSchedulerCreated = s =>
+            {
+                scheduler = s;
+                _ = s.AddVblankCallback(vblank => onVBlank(self!, vblank));
+            },
+        };
+        self = engine;
+        return (engine, () => scheduler?.GameCallbackFailure,
+            () => { _ = new ExecutionOrchestrator().Execute(engine, handoff: null, Request(2_000_000)); });
+    }
+
+    [Fact]
+    public void A_Game_Callback_Exception_Propagates_Unchanged_From_A_Generated_Host_Run()
+    {
+        using var dir = new TempDirectory();
+        var thrown = new KeyNotFoundException("game defect at VBlank 1");
+        var (engine, recorded, execute) = HostWithGameCallback(dir, (_, _) => throw thrown);
+        using var _ = engine;
+
+        var act = execute;
+
+        act.Should().Throw<KeyNotFoundException>().Which.Should().BeSameAs(thrown);
+        recorded().Should().BeSameAs(thrown, "the scheduler records the same instance it rethrew");
+    }
+
+    [Fact]
+    public void A_Game_Callback_Exception_Of_The_Unroutable_Type_Propagates_Unchanged()
+    {
+        // ArtifactDeviceRam.UnroutableException is caught in AdvanceDevices for device-RAM refusals. A game callback that throws this
+        // type is still the game's exception, so it must propagate unchanged and not be reclassified as ARTIFACT_DEVICE_RAM_UNROUTABLE.
+        using var dir = new TempDirectory();
+        var thrown = new ArtifactDeviceRam.UnroutableException("game defect of the refused-RAM type");
+        var (engine, recorded, execute) = HostWithGameCallback(dir, (_, _) => throw thrown);
+        using var _ = engine;
+
+        var act = execute;
+
+        act.Should().Throw<ArtifactDeviceRam.UnroutableException>().Which.Should().BeSameAs(thrown);
+        recorded().Should().BeSameAs(thrown);
+    }
+
+    [Fact]
+    public void A_Game_Callback_Exception_During_A_Stop_Propagates_Unchanged_And_Is_Not_Converted_To_Run_Exception()
+    {
+        // The stop is requested inside the callback, and the callback waits (bounded) until the engine's stop token is cancelled, so the
+        // throw happens while the stop is in effect and the child is alive. The exception must reach the caller, not ARTIFACT_RUN_EXCEPTION.
+        using var dir = new TempDirectory();
+        var thrown = new KeyNotFoundException("game defect during a stop");
+        var (engine, recorded, execute) = HostWithGameCallback(dir, (host, _) =>
+        {
+            host.RequestCancel();
+            var stop = (System.Threading.CancellationTokenSource)typeof(RecompiledHostExecutionEngine)
+                .GetField("_stopRequested", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .GetValue(host)!;
+            // Bounded: the wait handle is signalled when the token is cancelled, so a stop that never arrives fails here instead of hanging.
+            stop.Token.WaitHandle.WaitOne(TimeSpan.FromSeconds(60)).Should().BeTrue("the stop must be in effect when the callback throws");
+            throw thrown;
+        });
+        using var _ = engine;
+
+        var act = execute;
+
+        act.Should().Throw<KeyNotFoundException>().Which.Should().BeSameAs(thrown, "a game exception during a stop is not a run exception");
+        recorded().Should().BeSameAs(thrown);
+    }
 }
