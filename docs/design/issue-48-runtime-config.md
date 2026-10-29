@@ -73,7 +73,7 @@ Subcommands that take no configuration beyond the above: `doctor` (`Program.cs:2
 
 ### 2.2 Runtime host (`PSXRecomp.RuntimeHost`): every input it reads
 
-The packaged host is the process a distribution launches. Its own documentation says it runs "on a machine with no Studio, no CLI and no development repository present" (`src/PSXRecomp.RuntimeHost/Program.cs:21`, CONFIRMED). The complete input list, as read by the code, is:
+The packaged host is the process a distribution launches. Its own documentation says it runs "on a machine with no Studio, no CLI and no development repository present" (`src/PSXRecomp.RuntimeHost/Program.cs:21`, CONFIRMED). The complete input list, H1 to H14, as read by the host and by the Infrastructure code it calls, is (per-variable detail in 2.6):
 
 | # | Input | Read at | Condition | Label |
 |---|---|---|---|---|
@@ -85,8 +85,14 @@ The packaged host is the process a distribution launches. Its own documentation 
 | H6 | Environment `PSXRECOMP_BIOS_ROM` (a path to a user-supplied BIOS file) | `RuntimeHost/Program.cs:239` | firmware runs only | CONFIRMED |
 | H7 | Host CLI flags `--diagnostics <path>`, `--loaded-code-diagnostics <path>`, `--frame-out <path>` | `RuntimeHost/Program.cs:59`, `:72`, `:95` | optional | CONFIRMED |
 | H8 | Input file identities, read only to refuse report targets that would overwrite an input | `RuntimeHost/Program.cs:141-205`, `ReadInputPaths` at `:537-560` | when a report target is set | CONFIRMED (read-only check, no configuration meaning) |
+| H9 | `runtime/disc/<leaf>`: the disc image named by `boot.DiscFile` (`FirmwareBootManifest.cs:20`). Path built at `FirmwareDistribution.cs:666`; refused if it is a symbolic link (`:667-670`); its SHA-256 is checked against `boot.DiscSha256` at `:672`; opened through `DiscSectorSourceOpener.Open` at `:683` | firmware distributions only | CONFIRMED |
+| H10 | `runtime/firmware/<roots leaf>` (`boot.RootsFile`) and `runtime/firmware/<load-images leaf>` (`boot.LoadImagesFile`), passed to `FirmwareAotPlan.Build` at `FirmwareDistribution.cs:686-688`; both must be AOT inputs (`FirmwareBootManifest.cs:148`) | firmware distributions only | CONFIRMED |
+| H11 | Environment `PSXRECOMP_IPC_PROFILE`, read by `IpcProfile.FromEnvironment()` through the engine's `Profile` initializer (`Infrastructure/RecompiledHostExecutionEngine.cs:1830`; `Standalone/IpcProfile.cs:48-50`) | opt-in, any run | CONFIRMED |
+| H12 | Environment `PSX_UNIT_TRACE_FILE`, `PSX_UNIT_TRACE_MAX_BYTES`, `PSX_UNIT_TRACE_FROM` / `_TO`, and `PSX_TRACE_SESSION`: `UnitTraceRun.TryStart()` through the engine's `_unitTrace` initializer (`RecompiledHostExecutionEngine.cs:1893`; `UnitTraceRun.cs:24-26`); the generated code reads the same keys (`RecompilerHostCodeGen.cs:1121-1161`) | opt-in, any run | CONFIRMED (keys and call sites); the `_FROM` / `_TO` condition is UNVERIFIED |
+| H13 | Environment `PSXRECOMP_TRANSITION_ATTRIBUTION`, read by `TransitionAttributionRecorder.FromEnvironment()` in the firmware launch path (`FirmwareDistribution.cs:705`; `Standalone/TransitionAttributionRecorder.cs:35`, `:37`) | firmware runs, opt-in | CONFIRMED |
+| H14 | Environment `PSX_GUARD_STATS_*`: the engine writes these into a guard-stats child only inside a `GuardStatsScope` (`RecompiledHostExecutionEngine.cs:1341-1349`, a write, not a read); the generated child reads them (`RecompilerHostCodeGen.cs:983-1021`). `PSXRECOMP_NATIVE_GUARD_STATS` is read at build time (`GuardStatsScope.cs:34`, `FirmwareDistribution.cs:404`), not by the packaged run | opt-in, measurement only | CONFIRMED |
 
-Two further groups are read by the artifact code that the host runs, not by the host's own `Program.cs`:
+Environment reads reached through Infrastructure and the generated code are H11 to H14 above and the per-variable table in 2.6. Two further facts:
 
 - Generated-code environment reads: `PSXRECOMP_BIOS_ROM` (`src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs:639`); `PSX_GUARD_STATS_FILE`, `_RUN_ID`, `_PERIOD`, `_ABORT_AFTER` (`RecompilerHostCodeGen.cs:983`, `:994`, `:1018`, `:1021`); `PSX_TRACE_SESSION` (`:1126`); `PSX_UNIT_TRACE_FILE`, `_MAX_BYTES`, `_FROM`, `_TO` (`:1158-1161`). All CONFIRMED as strings in the code generator. Whether a given packaged artifact contains these reads depends on how it was built (UNVERIFIED; see 9.2).
 - Not read by the packaged host: `project.json`, any runtime configuration file, any Studio state. OBSERVED: a search of `src/PSXRecomp.RuntimeHost/*.cs` for `project`, `Studio`, `ProjectManifest` and `runtime-config` returns only the comment at `Program.cs:21`.
@@ -185,7 +191,7 @@ Summary: of the nine areas the issue names, one (Memory Card) has a typed model 
 
 ### 2.9 Architecture and ADR constraints
 
-- ADR-027 Step C (`docs/adr/027-standalone-artifact-runtime-integration.md`, "Step C scope", lines 128-155, CONFIRMED): the distributed host runs "with no Studio, no CLI, and no .NET SDK at runtime" (lines 130-132). Its layout block (lines 148-156) and implementation list (line 138) name two packaged inputs: `runtime/runtime-host.json` and `artifact-image.bin`. The string `firmware-boot` does not appear anywhere in that ADR (CONFIRMED by search). The firmware inputs H4 and H5 are therefore not in the Step C baseline. Whether they are a Step C baseline change or a later amendment is UNVERIFIED.
+- ADR-027 Step C (`docs/adr/027-standalone-artifact-runtime-integration.md`, "Step C scope", lines 128-155, CONFIRMED): the distributed host runs "with no Studio, no CLI, and no .NET SDK at runtime" (lines 130-132). Its layout block (lines 148-156) and implementation list (line 138) name two packaged inputs: `runtime/runtime-host.json` and `artifact-image.bin`. The string `firmware-boot` does not appear anywhere in that ADR (CONFIRMED by search). The Step C baseline is therefore exactly these two packaged inputs. The firmware inputs (H4, H5, H9, H10) and the environment and host-flag inputs (H6 to H8, H11 to H14) are outside it. Whether firmware distributions amend the baseline, or the ADR is out of date, is UNVERIFIED (Q13).
 - `docs/development/headless-cli.md:405-407` (CONFIRMED): "config files ... belongs to Issue #15 and is deliberately absent here." Config-file support was explicitly deferred to Issue #15 and is not part of #460's CLI.
 - `docs/architecture-matrix.md` Layer rules (CONFIRMED): rule 1, Domain owns ports, never adapters; rule 2, Infrastructure executes host APIs (`System.IO.File`, `Directory`, `Process`, and so on); rule 3, Application does not acquire host resources directly.
 - `src/architecture.contract.json:22` (CONFIRMED): `System.Environment` is a forbidden API in the Domain layer ("execution environment dependencies break determinism"). Line 37 forbids it in Test and line 48 in Generated; the contract does not restrict Infrastructure.
@@ -199,11 +205,11 @@ The schema separates two kinds of value, because they have different lifetimes a
 1. **Execution settings (frozen at package time).** Values that change what the guest runs or how long it may run: budgets, timeouts, mixed-fallback enable and limits, guest firmware on or off, BIOS provenance label, entry roots. They are resolved once at packaging time and written into `runtime-host.json` (schema 1, section 4). The packaged host reads them through H1.
 2. **Host settings (launch-time).** Values that affect only presentation, input, and host-side output, not guest semantics: window size, presentation mode, input device mapping, memory-card file paths, diagnostics output paths. These are consumed by the launcher (Studio, GameWindow, or CLI `run`) before a run starts.
 
-The packaged host reads no host setting in this design. Its complete read list is H1 to H8 in 2.2. No new file and no new environment variable is added to that list. So:
+The packaged host reads no host setting in this design. Its complete read list is H1 to H14 in 2.2. No new file and no new environment variable is added to that list. So:
 
-- The packaged run keeps the ADR-027 Step C baseline (`runtime-host.json` and `artifact-image.bin`, plus the firmware inputs H4 and H5 that already ship). This design adds nothing to it.
+- The ADR-027 Step C baseline is `runtime-host.json` and `artifact-image.bin` (2.9). This design adds no input to the packaged run. The firmware inputs (H4, H5, H9, H10) and H6 to H8 and H11 to H14 are outside that baseline; they already ship and this design does not add them.
 - A host setting that must reach the packaged run needs one of two changes, and each changes the Step C baseline: a new execution field in `runtime-host.json` (schema 2, section 4), or a new packaged input or host CLI flag. Such a change is listed as open question Q13 and is not proposed here.
-- Memory-card paths are not read by the packaged host today (no field in H1-H8). They are consumed only where a `RecompiledHostExecutionEngine` is constructed (Q8).
+- Memory-card paths are not read by the packaged host today (no field among H1 to H14). They are consumed only where a `RecompiledHostExecutionEngine` is constructed (Q8).
 
 This split keeps the Runtime execution contract unchanged: the guest sees only the frozen values in the manifest.
 
@@ -225,14 +231,14 @@ RuntimeConfig (schemaVersion: int, kind: "psxrecomp.runtime.config")   // Projec
       presentation:       "fit" | "integer" | "stretch"   // UNVERIFIED need
       vsync:              bool | null                      // UNVERIFIED need (Q3)
     input:
-      ports:              [ { port: 1|2, device: "pad"|"none", bindings: <InputBindingMap> } ]
+      ports:              [ { port: 1|2, device: "pad"|"none", bindings: <InputBindingMap> } ]   // not written until the binding schema is checked (5.1)
 
 PerUserStore (not shareable; see section 5.1)     // path-valued keys only
   memoryCard:
     slot1Path:            string | null
     slot2Path:            string | null
 
-CLI only (never stored)
+CLI or environment only (never stored)
   --diagnostics, --loaded-code-diagnostics, --frame-out     // paths named per invocation
 
 Title overlay (Project directory, per title; see section 7)
@@ -257,9 +263,13 @@ Notes:
 
 ## 4. Relation to the existing manifest schema
 
-- The existing `RuntimeHostManifest` (schema 1) already carries every execution value listed in 3.2 `execution`, with the same field names in camel case. The design maps `RuntimeConfig.execution` to these fields and does not replace them.
-- The packaged distribution's input list is H1 to H8 (2.2). This design adds no packaged input, so `runtime-host.json` keeps schema 1 and the distribution layout keeps its Step C baseline.
-- Adding any new execution field to `runtime-host.json` changes the manifest schema, so `CurrentSchemaVersion` must advance (2) and the reader must accept 2 only with that version (CONFIRMED rule at `RuntimeHostManifest.cs:133`). That changes the packaged-artifact contract, so it is out of scope for this issue unless the issue owner accepts it (Q13). This document does not propose a schema 2.
+- Mapping from 3.2 `execution` to `RuntimeHostManifest` (schema 1, `RuntimeHostManifest.cs:40-54`, CONFIRMED):
+  - `runTimeoutMs` -> `RunTimeoutMs`; `mixedFallback` -> `MixedFallback`; `fallbackSegmentBudget` -> `FallbackSegmentInstructionBudget`; `fallbackMaxTransitions` -> `FallbackMaxTransitions`; `guestFirmware` -> `GuestFirmware`.
+  - `entryRoots` -> `BlockEntryPcs` (sorted and unique, CONFIRMED); the single `EntryPc` field carries the primary entry.
+  - `segmentBudget`: **no field**. The manifest has no segment-budget field (CONFIRMED), and the packaged host hard-codes `segmentBudget: uint.MaxValue` at `RuntimeHost/Program.cs:307` (CONFIRMED).
+- **Segment budget for packaged runs (not silently dropped).** `package` rejects `--segment-budget` (`Program.cs:57`, `allowSegmentBudget: false`), so `PackageCommand` uses `DefaultSegmentBudget` (`PackageCommand.cs:43`, `:75-76`). That value is passed at `PackageCommand.cs:152` (`uint.MaxValue` for `--gui`); the callee at that call was not read (UNVERIFIED). The `run` subcommand's `--segment-budget` (`Program.cs:162`, `allowSegmentBudget: true` at `:56`) does not reach packaged runs. Whether the value baked at package time reaches the packaged run unchanged is UNVERIFIED. Consequence: a user-settable packaged segment budget has no schema-1 carrier. It is either a package-time build input only (no schema change; the host keeps reading nothing new), or a schema-2 field. Q15 asks which.
+- The packaged distribution's input list is H1 to H14 (2.2). This design adds no packaged input, so `runtime-host.json` keeps schema 1 and the distribution layout keeps its Step C baseline.
+- Adding any new execution field to `runtime-host.json` (for example `segmentBudget`, Q15) changes the manifest schema, so `CurrentSchemaVersion` must advance (2) and the reader must accept 2 only with that version (CONFIRMED rule at `RuntimeHostManifest.cs:133`). That changes the packaged-artifact contract, so it is out of scope for this issue unless the issue owner accepts it (Q13). This document does not propose a schema 2.
 - Host settings (3.2 `host`) do not enter `runtime-host.json` and are not written as a new packaged file. They are applied by the launcher.
 
 ## 5. Relation to project configuration, and privacy
@@ -268,10 +278,11 @@ Notes:
 
 Path values are not safe in a shareable file. A path such as `C:\Users\<name>\...` reveals a local account name and directory layout. A Project directory is likely to be copied, zipped, committed, or attached to a bug report, so path values must not sit there. This design therefore splits storage by content:
 
-- **Project directory** (shareable by design): `project.json` (identity and format only, 2.5) and `runtime-config.json`, holding only non-path keys (`execution` and the non-path `host` keys) and per-title overlays (section 7) that contain no path keys.
+- **Project directory** (treated as shareable; an assumption, Q6): `project.json` (identity and format only, 2.5) and `runtime-config.json`, holding only non-path keys (`execution` and the non-path `host` keys) and per-title overlays (section 7) that contain no path keys.
 - **Per-user store** (not shareable): a file in the user's own application data folder, keyed by `ProjectId`, holding path-valued keys only (`memoryCard.slot1Path`, `memoryCard.slot2Path`). Its exact location is UNVERIFIED: no existing per-user settings convention was confirmed in the repository (Q14).
-- **CLI only, never stored**: diagnostic output paths (`--diagnostics`, `--loaded-code-diagnostics`, `--frame-out`, H7). They are named per invocation.
+- **CLI or environment only, never stored**: diagnostic output paths `--diagnostics`, `--loaded-code-diagnostics`, `--frame-out` (H7), and the environment variables that name output paths, `PSX_UNIT_TRACE_FILE` (H12), `PSX_GUARD_STATS_FILE` (H14), `PSXRECOMP_IPC_PROFILE` (H11) and `PSXRECOMP_TRANSITION_ATTRIBUTION` (H13). Each is named per invocation or per shell session and is never written to any file in this design.
 - **Environment only**: the BIOS location (H6, `PSXRECOMP_BIOS_ROM`). It is never copied into any file.
+- **Bindings check before placement.** `input.ports[].bindings` (section 3.2) may hold device identifiers that reveal host hardware or a machine. Its schema is deferred to #47, so the `input` section is not written to any file until the binding schema has been checked for host-specific data (device identifiers, paths, machine or user names).
 
 Consequences:
 
@@ -301,7 +312,7 @@ Consequences:
 Execution layers (1, 3, 4, 6) are resolved at packaging time. Host layers (2, 3, 4, 6) are resolved at launch. Each layer is tagged with which kind it affects.
 
 1. Compiled-in defaults (the single defaults table, 6.3). Execution and host.
-2. Per-user store (path-valued keys and personal host preferences). Host only, launcher-side.
+2. Per-user store (path-valued keys only, 5.1). Host only, launcher-side.
 3. Project `runtime-config.json`. Execution at packaging; host at launch.
 4. Per-title overlay for the matching title identity (section 7). Execution at packaging; non-path host at launch.
 5. Environment variables for diagnostic keys only. Launcher-side and generated-code-side. Never sets an execution setting, except the documented exception in 9.2.
@@ -318,7 +329,7 @@ One module in `PSXRecomp.Core` holds every default in 2.7, with a name and a com
 ## 7. Per-title overrides
 
 - **Key.** A title is identified by `DiscIdentity` (serial, region, revision, `DiscIndex`; `DiscIdentity.cs:10-14`, CONFIRMED). The override key is the serial plus region plus revision. The disc index is part of the key for multi-disc titles, so each disc has its own overlay (PREDICTED; UNVERIFIED how the Project records disc order).
-- **Location.** Per-title overlays are stored in the Project directory, under a sub-folder keyed by the title identity, not in the application-wide settings. They are shareable and therefore hold no path-valued keys (5.1).
+- **Location.** Per-title overlays are stored in the Project directory, under a sub-folder keyed by the title identity, not in the application-wide settings. The Project directory is treated as shareable (Q6), so overlays hold no path-valued keys (5.1).
 - **Allowed keys.** Execution keys may be overridden per title (for example a larger budget for a slow title). Non-path host keys may be overridden per title (for example controller mapping). Path-valued keys and diagnostic outputs may not be overridden per title, because they are not stored in that file. Debug keys may not be made permanent per title in a production profile (see 9).
 - **Applied at packaging time** for execution keys. The effective value is frozen into the manifest. A per-title override therefore never needs a runtime lookup.
 - **Not a source of identity.** An overlay never changes `ProjectId` or `InputSha256`, and it never changes which input file is accepted.
@@ -359,14 +370,13 @@ Version 1 is the first version; there is nothing to migrate from. The first impl
 
 - Introduce a `profile` in the config: `production` or `debug`. Debug enables the trace and guard-statistics keys (2.6) and the `--report`, `--frame-evidence`, and `--diagnostics` outputs. Production refuses those keys.
 - A packaged artifact records its profile. Because a manifest change is a schema change (section 4), the first version of this should keep the profile in the packaging log and README, not in `runtime-host.json`. Moving it into the manifest is open question Q5.
-- Environment variables for debug remain allowed in both profiles, with one explicit exception. The general rule is that debug variables cannot change execution settings (6.2 layer 5).
-- **Exception: `PSX_GUARD_STATS_ABORT_AFTER`.** It is run-affecting. `GuardStatsScope.cs:23-24` documents that it "ends the child without its final dump", `RecompiledHostExecutionEngine.cs:1349` sets it on the child, and the generated code reads it at `RecompilerHostCodeGen.cs:1021` (CONFIRMED). So the generated code reads it ambiently from the process environment: a packaged artifact that contains the read would end early if the variable were set on the user's machine. Whether a distributed artifact contains that read depends on whether it was built with guard counters (`PSXRECOMP_NATIVE_GUARD_STATS` at package time, `FirmwareDistribution.cs:404`), which is UNVERIFIED for the codegen condition. Rule for this design: the debug profile refuses this key at packaging; the production profile never builds with guard counters; and no launcher forwards it.
-- `PSX_UNIT_TRACE_FILE` selects a trace build. Whether that build changes guest timing is UNVERIFIED, so it is treated as a debug-only key that the production profile refuses, pending a check.
+- Debug environment variables remain allowed in the debug profile. The general rule is that they cannot change execution settings (6.2 layer 5). The exception list is complete and consists of exactly these six variables, each refused by the production profile at packaging, so that no distributed artifact is built with the code that reads it, and no launcher forwards them: `PSX_GUARD_STATS_ABORT_AFTER`, `PSX_UNIT_TRACE_FILE`, `PSX_UNIT_TRACE_MAX_BYTES`, `PSX_UNIT_TRACE_FROM`, `PSX_UNIT_TRACE_TO`, `PSX_TRACE_SESSION`. The trace group is listed because its effect on guest timing is UNVERIFIED (2.6), not because it is known to change execution.
+- **Exception: `PSX_GUARD_STATS_ABORT_AFTER`.** It is run-affecting. `GuardStatsScope.cs:23-24` declares it "scope-only, test hook" and says it "ends the child without its final dump" (CONFIRMED). `RecompiledHostExecutionEngine.cs:1349` sets it on the child, and the generated code reads it at `RecompilerHostCodeGen.cs:1021`, so it is read ambiently from the process environment. A distributed artifact that contains the read would end early if the variable were set on the user's machine. Whether the read is present depends on guard counters at build time (`PSXRECOMP_NATIVE_GUARD_STATS`, `FirmwareDistribution.cs:404`; the codegen condition is UNVERIFIED). Rule: the production profile refuses this key at packaging, the debug profile may allow it for measurement, and no launcher forwards it.
 
 ## 10. Recommendation
 
-1. Adopt the two-tier model (3.1): frozen execution settings in the packaged manifest, and launch-time host settings applied by the launcher. The packaged host reads no new input, so the ADR-027 Step C baseline (including H1 to H8) is unchanged.
-2. Keep `runtime-host.json` schema 1 as the execution carrier. Do not add fields in this issue. Map the existing CLI options to it (2.1, 2.5).
+1. Adopt the two-tier model (3.1): frozen execution settings in the packaged manifest, and launch-time host settings applied by the launcher. The packaged host reads no new input, so the packaged inputs are unchanged. The ADR-027 Step C baseline (`runtime-host.json` and `artifact-image.bin`) is unchanged; the firmware and environment inputs H4 to H14 are outside that baseline (2.9, Q13).
+2. Keep `runtime-host.json` schema 1 as the execution carrier. Do not add fields in this issue. Map the existing CLI options to it (2.1, 2.5). `segmentBudget` has no schema-1 field; packaged runs keep today's behaviour (4, Q15), and it is not silently dropped.
 3. Add `runtime-config.json` (Project directory, non-path keys only) and a per-user store (path-valued keys only), both behind an `IRuntimeConfigStore` port in Core with the implementation in Infrastructure (5.1, 6.1).
 4. Create a single defaults table and re-point the constants (6.3). Resolve the inconsistent segment-budget defaults first (Q1), because the table cannot be written without it.
 5. Implement per-title overlays only after the title-identity key is confirmed (Q2), and only with non-path keys (section 7).
@@ -382,15 +392,16 @@ Suggested order of follow-up work (for the owner to schedule; not started here):
 - **Q3. Does a host VSync or frame-pacing choice affect guest-visible timing?** The guest VBlank model is in `DeviceScheduler` and `BiosTimerVblankIrqHandler`, and the OpenBIOS `waitVSync` field flips at VBlank (`DeviceSchedulerTests.cs:274`, 2.8). If that model is the only timing source, VSync is host-only. Whether a host presentation choice ever feeds back into the guest is UNVERIFIED and must be checked before the key is placed (section 3.2).
 - **Q4. Invalid-value policy.** Should an invalid environment variable disable a feature (current trace behaviour, 2.6) or fail the run (CLI behaviour, 2.1)? A single policy is needed.
 - **Q5. Where does the profile (production or debug) live?** In `runtime-host.json` (needs schema 2, section 4) or only in the packaging record? Owner decision.
-- **Q6. Is the Project directory a shareable unit?** Section 5.1 assumes it is, and keeps path keys out of it. If the owner decides it is not, that changes only where non-path keys live, not the rule that paths never enter it. Confirm the intended sharing model.
+- **Q6. Is the Project directory a shareable unit?** Section 5.1 treats it as shareable as an assumption, and keeps path keys out of it. If the owner decides it is not, that changes only where non-path keys live, not the rule that paths never enter it. Confirm the intended sharing model.
 - **Q7. Should the Studio write `runtime-config.json`, or only read it?** A settings UI is needed for #40 and does not exist today (2.3). Owner decision on who owns the write path, and whether the Studio also writes the per-user store.
-- **Q8. Memory card: which layer chooses the card file?** `MemoryCardSlotConfiguration` exists in Core (2.8), but no CLI or GUI setter was found, and the packaged host has no card input (H1 to H8). Is the intended entry point the per-user store with a launcher, or a package-time field? (UNVERIFIED call sites outside Infrastructure.)
+- **Q8. Memory card: which layer chooses the card file?** `MemoryCardSlotConfiguration` exists in Core (2.8), but no CLI or GUI setter was found, and the packaged host has no card input (H1 to H14). Is the intended entry point the per-user store with a launcher, or a package-time field? (UNVERIFIED call sites outside Infrastructure.)
 - **Q9. Controller mapping owner.** Does #47 own the binding file format, with #48 only referencing it, as section 3.2 assumes? (UNVERIFIED with #47's scope.)
 - **Q10. Are config files in scope at all?** `headless-cli.md:405-407` defers config files to Issue #15 (2.9). This design assumes #48 may introduce a runtime config file. Confirm that this does not collide with #15.
 - **Q11. Does the issue's completion criterion "Debug/production configuration separated" require a runtime switch, or only a documented profile?** Section 9 assumes a profile field. (UNVERIFIED with issue owner.)
 - **Q12. Issue comments and timeline.** The issue reports zero comments at read time (CONFIRMED), but the timeline was not read (`gh` not authenticated; UNVERIFIED). Any decision recorded there would change this design.
-- **Q13. ADR-027 Step C baseline.** Step C lists two packaged inputs (`runtime-host.json`, `artifact-image.bin`), while the shipped host also reads `firmware-boot.json` and `runtime/firmware/` AOT inputs (H4, H5), and the ADR never mentions `firmware-boot` (2.9). Should the ADR be amended to record the firmware inputs as a baseline? Separately, any future host setting that reaches a packaged run (schema 2, a new packaged file, or a new host CLI flag) is a baseline change and needs the owner's approval.
+- **Q13. ADR-027 Step C baseline.** Step C lists two packaged inputs (`runtime-host.json`, `artifact-image.bin`), while the shipped host also reads `firmware-boot.json` and `runtime/firmware/` AOT inputs and the disc image (H4, H5, H9, H10), and the ADR never mentions `firmware-boot` (2.9). Should the ADR be amended to record the firmware inputs as a baseline? Separately, any future host setting that reaches a packaged run (schema 2, a new packaged file, or a new host CLI flag) is a baseline change and needs the owner's approval.
 - **Q14. Per-user store location and convention.** Which per-user application data location should hold path-valued keys, and does the repository already have a per-user settings convention? None was confirmed (5.1). UNVERIFIED.
+- **Q15. Segment budget for packaged runs.** `segmentBudget` has no field in `runtime-host.json` schema 1, `package` rejects `--segment-budget`, and the packaged host hard-codes `uint.MaxValue` (4). Should a packaged segment budget be a user setting? If yes, is it a package-time build input only (no schema change) or a schema-2 manifest field, and is it recorded in the packaging log? Owner decision; UNVERIFIED whether the package-time value reaches the packaged run.
 
 ## 12. Verification status of this document
 
