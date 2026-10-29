@@ -25,9 +25,9 @@ Issue #40 asks for a design, not an implementation. Nothing in this change alter
 
 ## 1. Problem statement
 
-Issue #40 requires that GUI, CLI and MCP share Application-layer use cases, that the GUI add no business logic, and that Analysis -> Recomp -> Build -> Run have async work, progress, cancellation and error display. This document records what the current code supports, where the boundary is broken, and the smallest coherent next step.
+Issue #40 requires that GUI, CLI and MCP share Application-layer use cases, that the GUI add no business logic, and that Analysis -> Recomp -> Build -> Run have async work, progress, cancellation and error display (**CONFIRMED** issue #40 body, read via the GitHub public API in this session: GUI, CLI and MCP use the same Application-layer use cases where possible; GUI-specific domain logic is not created; long operations provide progress, cancellation and logs). This document records what the current code supports, where the boundary is broken, and the smallest coherent next step.
 
-Summary: the Domain layer already owns most pipeline logic (analysis, execution orchestration, code generation, a build port), and the Studio already calls part of it. What is missing is a use-case layer that both the Studio and the CLI can call. The architecture contract and matrix do not allow that layer to be placed freely (sections 2.1 and 3.2). Cancellation is complete only for the generated-host engine; the Studio's interpreter path is stoppable only at segment boundaries. The shipped Studio cannot load a disc.
+Summary: **CONFIRMED** the Domain layer already owns most pipeline logic (analysis `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:142`, execution orchestration `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61`, code generation `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:15`, a build port `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:86`), and the Studio already calls part of it (`src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97`, `src/PSXRecompStudio/Services/TitleExecutionService.cs:78`). What is missing is a use-case layer that both the Studio and the CLI can call. **CONFIRMED** (`src/architecture.contract.json:12-13`, `docs/architecture-matrix.md:23`): the contract and matrix do not allow that layer to be placed freely (sections 2.1 and 3.2). **CONFIRMED** (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:49`, `:291`; `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31`; `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:133-135`): cancellation is complete only for the generated-host engine; the Studio's interpreter path is stoppable only at segment boundaries. **CONFIRMED** (`src/PSXRecompStudio/Views/MainWindow.axaml:63-78`, `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:61`): the shipped Studio cannot load a disc.
 
 ## 2. Current state survey
 
@@ -39,7 +39,7 @@ Summary: the Domain layer already owns most pipeline logic (analysis, execution 
 | `PSXRecompStudio` | Application (`PSXRecompStudio`) | **CONFIRMED** `src/architecture.contract.json:4`; `docs/architecture-matrix.md:23` |
 | `PSXRecomp.Infrastructure` | Infrastructure | **CONFIRMED** `src/architecture.contract.json:5`; `docs/architecture-matrix.md:24` (Layer Definitions, Infrastructure row) |
 | `PSXRecomp.Cli` | Infrastructure (per matrix) | **CONFIRMED** `docs/architecture-matrix.md:24` lists `PSXRecomp.Cli` as an Infrastructure project; `src/PSXRecomp.Cli/CliInput.cs:34` and `:149` are `[Infrastructure]` |
-| `PSXRecomp.RuntimeHost` | Infrastructure by attribute; not in the matrix Projects column | **CONFIRMED** `src/PSXRecomp.RuntimeHost/Program.cs:23` and `src/PSXRecomp.RuntimeHost/UnverifiedIdentityProbe.cs:12` are `[Infrastructure]`; **CONFIRMED** the matrix Infrastructure row lists only `PSXRecomp.Infrastructure` and `PSXRecomp.Cli` (`docs/architecture-matrix.md:24`); **CONFIRMED** listed in `src/PSXRecompStudio.slnx:7`; **OBSERVED** it is packaged by the `package` command (`docs/development/headless-cli.md:153-156`) |
+| `PSXRecomp.RuntimeHost` | Infrastructure by attribute; not in the matrix Projects column | **CONFIRMED** `src/PSXRecomp.RuntimeHost/Program.cs:23` and `src/PSXRecomp.RuntimeHost/UnverifiedIdentityProbe.cs:12` are `[Infrastructure]`; **CONFIRMED** the matrix Infrastructure row lists only `PSXRecomp.Infrastructure` and `PSXRecomp.Cli` (`docs/architecture-matrix.md:24`); **CONFIRMED** listed in `src/PSXRecompStudio.slnx:7`; **OBSERVED** it is packaged by the `package` command (`docs/development/headless-cli.md:153-158`, `:170-174`) |
 | `PSXRecomp.GameWindow` | not declared | **CONFIRMED** listed in `src/PSXRecompStudio.slnx:5`; **OBSERVED** no `[Application]` or `[Infrastructure]` attribute under `src/PSXRecomp.GameWindow`; **UNVERIFIED** whether AARC004 applies to it |
 | `PSXRecomp.Tests`, `PSXRecompStudio.Tests` | Test | **CONFIRMED** `src/architecture.contract.json:6`; `src/PSXRecompStudio.slnx:8-9` |
 | `src/Architecture` (`PSXRecomp.Architecture` marker attributes) | attribute source, not a layer | **CONFIRMED** `src/Architecture/PSXRecompArchitectureAttributes.cs` exists; `docs/architecture-matrix.md` Architecture Attribute Contract section |
@@ -55,7 +55,7 @@ Edges that matter here:
 - The CLI references Core and Infrastructure. **CONFIRMED** `src/PSXRecomp.Cli/PSXRecomp.Cli.csproj:23-24`.
 - The Studio's `[Application]` composition root uses the Domain interpreter directly. **CONFIRMED** `src/PSXRecompStudio/Services/TitleExecutionService.cs:78`.
 
-Consequence: the CLI is in the Infrastructure layer, so under the current contract it cannot depend on Application-layer use-case types. Section 3.2 gives the placement options and their contract cost.
+Consequence: the CLI is in the Infrastructure layer, so under the current contract it cannot depend on Application-layer use-case types (**CONFIRMED** `docs/architecture-matrix.md:24`, `src/architecture.contract.json:13`). Section 3.2 gives the placement options and their contract cost.
 
 ### 2.2 The Studio today (Application layer)
 
@@ -98,7 +98,7 @@ Consequence: the CLI is in the Infrastructure layer, so under the current contra
 | Entry point | Token accepted | Stop inside a segment | Source |
 |---|---|---|---|
 | `ExecutionOrchestrator.Execute` / `Resume` | yes (`CancellationToken`, defaulted) | forwards to `ICancellableExecutionEngine` if the engine implements it | **CONFIRMED** `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61-67`, `:73-75`; `ICancellableExecutionEngine.cs:11-25` |
-| `RecompiledHostExecutionEngine` | yes, via `AttachCancellation` and `RequestCancel` | yes | **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:50`, `:291`, `:306` |
+| `RecompiledHostExecutionEngine` | yes, via `AttachCancellation` and `RequestCancel` | yes | **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:49`, `:291`, `:306` |
 | `LiveGameRunner.RunAsync` | yes | forwards to the generated host | **CONFIRMED** `src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:32` |
 | `PackagedArtifactLiveRunner.RunAsync` | yes | forwards to the generated host | **CONFIRMED** `src/PSXRecomp.Infrastructure/Standalone/PackagedArtifactLiveRunner.cs:30` |
 | `InterpreterTitleExecutionEngine` (Studio path) | no | no; stop only at segment boundaries | **CONFIRMED** `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31` |
@@ -133,7 +133,7 @@ Progress: no progress-reporting type exists in Domain, Infrastructure or CLI. **
 |---|---|---|
 | **GUI** (Studio views and window code) | Layout, bindings, input, presentation copies (`PresentationFrame`), localized labels, progress and cancel controls, dispatch to the UI thread | Analysis, codegen, execution, hashing, budgets, verdicts, file or process operations |
 | **Use cases** (placement in 3.2) | Orchestration, request and result contracts, single-flight policy, progress and cancel plumbing, one shared result shape | Engine semantics, parsing, lowering, host I/O |
-| **Domain** (`PSXRecomp.Core`) | Analysis pipeline, orchestrator, codegen, execution semantics, ports (`IGeneratedHostBuildService`, `IProjectMetadataStore`, `IMemoryCardStorage`, `IRuntimeOutputSink`, `ICancellableExecutionEngine`) | Host I/O, process control, UI types |
+| **Domain** (`PSXRecomp.Core`) | Analysis pipeline, orchestrator, codegen, execution semantics, ports (**CONFIRMED** declarations: `IGeneratedHostBuildService` `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:86`, `IProjectMetadataStore` `src/PSXRecomp.Core/Project/IProjectMetadataStore.cs:18`, `IMemoryCardStorage` `src/PSXRecomp.Core/MemoryCard/IMemoryCardStorage.cs:130`, `IRuntimeOutputSink` `src/PSXRecomp.Core/Runtime/IRuntimeOutputSink.cs:11`, `ICancellableExecutionEngine` `src/PSXRecomp.Core/Execution/ICancellableExecutionEngine.cs:11`) | Host I/O, process control, UI types |
 | **Infrastructure** (`PSXRecomp.Infrastructure`) | Concrete adapters: disc reading, toolchain process, generated-host launcher, stores | Business rules; any rule not already in a Domain contract |
 | **Interop** (`NativeInterop`, `PSXCoreWrapper` in Core) | C ABI boundary to `PSXRecomp.Native` | Anything above |
 | **CLI** (`PSXRecomp.Cli`) | Argument parsing, exit codes, JSON envelope, stdout and stderr | Use-case orchestration (target state; F1) |
@@ -147,7 +147,7 @@ Three placements are possible. Each has a documented contract or ADR cost.
 |---|---|---|---|
 | **A. Use cases in Domain** (`PSXRecomp.Core`) | Pure orchestration over Domain ports; Studio and CLI both call it. | **Revision required.** The matrix places "use-case orchestration" in the Application layer: `docs/architecture-matrix.md:23` (Application row). Option A moves that responsibility to Domain, so the matrix row must be revised to say orchestration is Domain-owned and Application composes it. `docs/architecture-matrix.md:66` ("Studio/CLI use cases") must be revised the same way. No contract edge changes. | CLI and Studio stay on edges already allowed. **CONFIRMED** existing precedent: `ExecutionOrchestrator` (`src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61`) and `RomAnalysisPipeline` (`src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:142`) are Domain orchestration, and `RecompilerHostCodeGen` (`src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:15`) is Domain code generation. |
 | **B. Use cases in an Application project** (namespace root `PSXRecompStudio.*`) | Studio references it. | **Contract change required** for the CLI: the CLI (Infrastructure) cannot reference Application (`src/architecture.contract.json:13`). Without that change, the CLI keeps its own orchestration (F1 persists). | UI-adjacent policy stays with the GUI. |
-| **C. Domain engine-provider port** (ADR-015 sketch point 2) | Domain declares a factory or selector, for example `IExecutionEngineProvider` beside `IRecompiledExecutionEngine`; Infrastructure implements it; a composition root supplies it. | **ADR revision required.** ADR-015 records this shape as still open: sketch point 2 says "no `IExecutionEngineProvider`-shaped selector exists yet" (`docs/adr/015-production-execution-engine-ownership.md:176-179`) and describes the expected shape at `:194-200`. It addresses engine selection, not the use-case layer, so it complements A or B. | Lets the Studio select an engine without `Application -> Infrastructure` (D3). |
+| **C. Domain engine-provider port** (ADR-015 sketch point 2) | Domain declares a factory or selector, for example `IExecutionEngineProvider` beside `IRecompiledExecutionEngine`; Infrastructure implements it; a composition root supplies it. | **ADR revision required.** ADR-015 records this shape as still open: sketch point 2 says "no `IExecutionEngineProvider`-shaped selector exists yet" (paraphrase of `docs/adr/015-production-execution-engine-ownership.md:152-153`, where the text is **CONFIRMED**; the expected shape is at `:194-200`). It addresses engine selection, not the use-case layer, so it complements A or B. | Lets the Studio select an engine without `Application -> Infrastructure` (D3). |
 
 Recommendation: A for use-case orchestration, combined with C for engine selection. Option A requires revising `docs/architecture-matrix.md:23` and `:66`. Option C requires completing ADR-015's sketch point 2.
 
@@ -169,11 +169,11 @@ Options for D2:
 
 | Stage | Today: owner and entry | Shared use case (target) | Adapter needed | GUI state | Cancellation today and needed |
 |---|---|---|---|---|---|
-| Input / disc load | Studio: none (F7). CLI: `CliInput.Load` (`CliInput.cs:41`) reads files at `:74,84,106` | `LoadDisc` returns identity (SHA-256) and format | Disc reader (Infrastructure: path to bytes or stream) | Choose, Loading, Loaded (hash, size) | Needed: token checked before read |
-| Analysis | Studio: `RealRomTitleExecutionService.cs:97`. CLI: `CliInput.cs:115` | `AnalyzeDisc` returns `RomAnalysisOutcome` | None beyond bytes or stream | Running (stage), Pass, Fail with `FailureKind` | Needed: no token today (section 2.5); Domain change |
-| Recomp (codegen) | CLI only: `RecompileCommand.cs:32-63`, `RecompilerHostCodeGen.Generate` | `RecompileTitle` returns generated source and state | None | Running, Done | Needed: token before codegen |
-| Build | CLI only: `RecompileCommand.cs:115` (`GeneratedHostBuildService.Build`) | `BuildArtifact` through `IGeneratedHostBuildService` | Toolchain (Infrastructure) | Building (compile, link), Built, ToolingError | Today: timeout only (`GeneratedHostBuildService.cs:42`); the port takes no token (`GeneratedHostBuild.cs:89`). Needed: a token that kills the toolchain (D4) |
-| Run | Studio: interpreter, `TitleExecutionService.cs:92-93` (no token). CLI: generated host with mixed fallback, `RunCommand.cs:68` | `RunTitle` with engine selection (D3) | Launcher port (no port today: `RecompiledArtifactLauncher.cs:21`, `:73-80`) | Running (segment count), Success, Blocked, Failed, Cancelled | Generated host: stop supported (section 2.5). Interpreter: segment boundary only; needed: interpreter stop support (D4) |
+| Input / disc load | **CONFIRMED** Studio: none (F7). CLI: `CliInput.Load` (`CliInput.cs:41`) reads files at `:74,84,106` | `LoadDisc` returns identity (SHA-256) and format | Disc reader (Infrastructure: path to bytes or stream) | Choose, Loading, Loaded (hash, size) | Needed: token checked before read |
+| Analysis | **CONFIRMED** Studio: `RealRomTitleExecutionService.cs:97`. CLI: `CliInput.cs:115` | `AnalyzeDisc` returns `RomAnalysisOutcome` | None beyond bytes or stream | Running (stage), Pass, Fail with `FailureKind` | Needed: no token today (section 2.5); Domain change |
+| Recomp (codegen) | **CONFIRMED** CLI only: `RecompileCommand.cs:32-63`, `RecompilerHostCodeGen.Generate` | `RecompileTitle` returns generated source and state | None | Running, Done | Needed: token before codegen |
+| Build | **CONFIRMED** CLI only: `RecompileCommand.cs:115` (`GeneratedHostBuildService.Build`) | `BuildArtifact` through `IGeneratedHostBuildService` | Toolchain (Infrastructure) | Building (compile, link), Built, ToolingError | **CONFIRMED** Today: timeout only (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:42`); the port takes no token (`GeneratedHostBuild.cs:89`). Needed: a token that kills the toolchain (D4) |
+| Run | **CONFIRMED** Studio: interpreter, `TitleExecutionService.cs:92-93` (no token). CLI: generated host with mixed fallback, `RunCommand.cs:68` | `RunTitle` with engine selection (D3) | Launcher port (no port today: `RecompiledArtifactLauncher.cs:21`, `:73-80`) | Running (segment count), Success, Blocked, Failed, Cancelled | Generated host: stop supported (section 2.5). Interpreter: segment boundary only; needed: interpreter stop support (D4) |
 
 Notes:
 
@@ -182,15 +182,15 @@ Notes:
 
 ### 3.5 Async, progress and cancellation
 
-**Async.** Each use case is a `Task<TResult>` with a `CancellationToken` parameter, and CPU-bound work runs off the UI thread. The Studio already does this for the real-title action (`src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:105`), and the GameWindow does it for runs (`src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`).
+**Async.** Each use case is a `Task<TResult>` with a `CancellationToken` parameter, and CPU-bound work runs off the UI thread. **CONFIRMED** The Studio already does this for the real-title action (`src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:105`), and the GameWindow does it for runs (`src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`).
 
-**Single-flight.** A second concurrent start of the same use case is rejected, as `AllowConcurrentExecutions = false` does today (`MainWindowViewModel.cs:95`). The rule belongs in the use-case or command layer, not in views.
+**Single-flight.** A second concurrent start of the same use case is rejected, as `AllowConcurrentExecutions = false` does today (**CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:95`). The rule belongs in the use-case or command layer, not in views.
 
-**Progress.** Use-case progress is a small Domain-owned value (stage name, step index, step total, optional message) delivered through `IProgress<T>` (BCL). The Studio marshals it to the UI thread with the Avalonia dispatcher, as the GameWindow does (`src/PSXRecomp.GameWindow/MainWindow.axaml.cs:79`). Granularity:
+**Progress.** Use-case progress is a small Domain-owned value (stage name, step index, step total, optional message) delivered through `IProgress<T>` (BCL). The Studio would marshal it to the UI thread with the Avalonia dispatcher, as the GameWindow does (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:79`; **OBSERVED** the Studio has no progress path today, and `src` contains no `IProgress` use outside tests). Granularity:
 
-- Analysis: per stage. Today stage results arrive only after completion (`RomAnalysisOutcome.cs:69`). Live per-stage delivery is a Domain change (PREDICTED).
-- Run: per segment, via the orchestrator callback (`ExecutionOrchestrator.cs:65`).
-- Build: toolchain steps (compile, link) are not reported (**OBSERVED**: `GeneratedHostBuildService.cs` has no progress hook). Infrastructure change (PREDICTED).
+- Analysis: per stage. Today stage results arrive only after completion (**CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:69`). Live per-stage delivery is a Domain change (PREDICTED).
+- Run: per segment, via the orchestrator callback (**CONFIRMED** `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:65`).
+- Build: toolchain steps (compile, link) are not reported (**OBSERVED**: `src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs` has no progress hook). Infrastructure change (PREDICTED).
 
 **Cancellation.** One token per user-initiated operation; the Cancel button cancels it; each stage checks it between units of work.
 
@@ -206,11 +206,11 @@ Notes:
 - `Outcome`: `Succeeded`, `Blocked` (explicit unsupported boundary), `Failed`, `Cancelled`, `ToolingError`, `InvalidInput`. The CLI exit-code mapping (0, 2, 1) lives only in the CLI. **CONFIRMED** `src/PSXRecomp.Cli/RunCommand.cs:29-30` (Success 0, Blocked 2, Failure and tooling 1).
 - `Code`: a stable machine string, for example `EXECUTION_CANCELLED` (`src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:90`) or `FailureKind` (`src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:32-33`).
 - `MessageKey` and arguments: a localization key (issue #21). English text is a fallback until #21 lands.
-- `Details`: optional path to a diagnostic report, reusing the existing bundle contract (`docs/development/headless-cli.md`, diagnostic report section).
+- `Details`: optional path to a diagnostic report, reusing the existing bundle contract (**CONFIRMED** `docs/development/headless-cli.md:328`, Diagnostic report bundle section).
 
-**GUI rule.** The GUI renders `Outcome`, `Code`, the localized message, and a details disclosure. It never parses CLI text or stderr. This follows the issue's requirement that the GUI not depend on CLI-specific internals or text logs.
+**GUI rule.** The GUI renders `Outcome`, `Code`, the localized message, and a details disclosure. It never parses CLI text or stderr. This follows the issue's requirement that the GUI not depend on CLI-specific internals or text logs (**CONFIRMED** issue #40 body, GitHub public API, read this session: GUIはCLI固有の内部実装やテキストログの解析に依存しない).
 
-**Migration.** Today's composed strings (`MainWindowViewModel.cs:74-77`, `:117-137`) become one `Outcome`, a `Code`, and formatted detail. The text mapping moves to a pure presentation mapper.
+**Migration.** Today's composed strings (**CONFIRMED** `MainWindowViewModel.cs:74-77`, `:117-137`) become one `Outcome`, a `Code`, and formatted detail. The text mapping moves to a pure presentation mapper.
 
 ### 3.7 The "GUI adds no business logic" rule
 
@@ -223,10 +223,10 @@ Notes:
 
 **The GUI must not:**
 
-- compute hashes, identities, checksums or file formats. Current violation: `MainWindowViewModel.cs:107-109` (F5); move to the use case;
-- choose or change execution budgets, engines or fallbacks. Defaults live in `RealRomTitleExecutionService.cs:68-71`, which the CLI does not share;
-- classify outcomes or decide pass or fail from raw fields. The view model maps states to text (`MainWindowViewModel.cs:117-137`); that is presentation only and must not grow rules;
-- read or write files, start processes, or touch Infrastructure types. The view model currently has none of these; the memory-card store in Application is the exception (F6);
+- compute hashes, identities, checksums or file formats. Current violation (**CONFIRMED** `MainWindowViewModel.cs:107-109`, F5); move to the use case;
+- choose or change execution budgets, engines or fallbacks. Defaults live in `RealRomTitleExecutionService.cs:68-71` (**CONFIRMED**), and the CLI has its own constant (**CONFIRMED** `src/PSXRecomp.Cli/RunCommand.cs:41`, `DefaultSegmentBudget = 1_000_000u`), so the defaults are not shared;
+- classify outcomes or decide pass or fail from raw fields. The view model maps states to text (**CONFIRMED** `MainWindowViewModel.cs:117-137`); that is presentation only and must not grow rules;
+- read or write files, start processes, or touch Infrastructure types. **CONFIRMED** (code reading of `MainWindowViewModel.cs`) the view model currently has none of these; the memory-card store in Application is the exception (F6);
 - parse CLI output or log text.
 
 **Enforcement.** Proposed, not built:
@@ -239,7 +239,7 @@ Notes:
 ### 3.8 CLI, MCP and Tests
 
 - **CLI.** Target: a composition root and presentation layer only. Its `recompile`, `run` and frame-evidence paths call the same use cases as the Studio, and its duplicate handoffs (F4) are replaced by `PSXRecomp.Core.Execution.ProgramEndHandoff` (`src/PSXRecomp.Core/Execution/ProgramEndHandoff.cs:16`). The headless doc's parity sentence (F2) becomes accurate only after the engine decision (D3).
-- **GUI-to-CLI process.** The issue allows the GUI to launch the CLI but does not require it. Recommendation: in-process use cases (D6).
+- **GUI-to-CLI process.** **CONFIRMED** (issue #40 body, GitHub public API, read this session): the GUI may launch the CLI process as an implementation option; the issue does not require it. Recommendation: in-process use cases (D6).
 - **MCP.** No MCP project exists (F12). MCP should be a third thin adapter over the same use cases, designed in a separate issue.
 - **Tests.** GUI tests keep driving real controls (`src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:11-21` states that the Project, Analysis, Recompile and Approval screens do not exist yet). Use-case tests run without Avalonia. The headless doc says `HeadlessAvaloniaIndependenceTests` guards that property. **CONFIRMED** `docs/architecture/gui-ux.md:115`.
 
@@ -276,9 +276,9 @@ Issue #851 is scoped to the GameWindow. **CONFIRMED** issue #851 body: target is
 
 Consequences for this design:
 
-- The Studio IDE stays on Avalonia. The egui comparison does not affect the use-case boundary in section 3, the Studio's disc and analysis flow, or the Studio's error model.
-- The egui PoC is in Rust. It cannot call the C# Domain use cases directly. Any integration needs IPC or FFI, as #851 items 1-2 describe (same-process FFI or local IPC with frame transport). That is a runtime-boundary decision, not a use-case decision.
-- The GameWindow path that #851 would replace uses `PackagedArtifactLiveRunner` and the run, stop and timeout contracts (`src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`, `:109`). Any PoC must keep those contracts, which the Domain stop semantics in section 3.5 also depend on.
+- The Studio IDE stays on Avalonia (**CONFIRMED** issue #851 body: IDE migration is out of scope). The egui comparison does not affect the use-case boundary in section 3, the Studio's disc and analysis flow, or the Studio's error model.
+- The egui PoC is in Rust (**CONFIRMED** issue #851 body, GitHub public API: Rust + egui + wgpu). **UNVERIFIED** that no direct call path exists; this design assumes the C# Domain use cases cannot be called directly and need IPC or FFI, as #851 items 1-2 describe (same-process FFI or local IPC with frame transport). That is a runtime-boundary decision, not a use-case decision.
+- The GameWindow path that #851 would replace uses `PackagedArtifactLiveRunner` (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`; cancel at `:109`) and the run, stop and timeout contracts (**UNVERIFIED** as described: issue #851 cites issues #827 and #829 for them, and those contracts were not read in this session). Any PoC must keep those contracts, which the Domain stop semantics in section 3.5 also depend on.
 - The use-case boundary in section 3 is toolkit-neutral: no Avalonia type in Core use cases. This is what keeps a future non-Avalonia host possible without rework.
 - Owner decision D9 covers the GameWindow's future; it is the only place #851 bears on this design.
 
@@ -341,14 +341,14 @@ Each decision lists options and a recommendation. The owner decides; this docume
 - Option B: English text only until #21 lands; retrofit later.
 
 **D9. GameWindow's future and the #851 outcome.**
-- The GameWindow is a separate Avalonia app that references Infrastructure directly (`src/PSXRecomp.GameWindow/PSXRecomp.GameWindow.csproj:20`) and is listed separately in the solution (`src/PSXRecompStudio.slnx:5`). Its layer attribute is not declared (UNVERIFIED enforcement).
-- Owner decides whether it stays a separate host, is folded into the Studio, or is replaced after #851. Per #851, replacing the default host is not approved by that issue; that needs its own decision.
+- **CONFIRMED** the GameWindow is a separate Avalonia app that references Infrastructure directly (`src/PSXRecomp.GameWindow/PSXRecomp.GameWindow.csproj:20`) and is listed separately in the solution (`src/PSXRecompStudio.slnx:5`). **OBSERVED** it declares no layer attribute; **UNVERIFIED** whether enforcement applies.
+- Owner decides whether it stays a separate host, is folded into the Studio, or is replaced after #851. Per #851, replacing the default host is not approved by that issue (**CONFIRMED** issue #851 body, GitHub public API: 既定ホストの置換 ... を承認するものではない); that needs its own decision.
 
 **D10. Application-layer `Process` prohibition.**
 - Option A (recommended): propose adding `System.Diagnostics.Process` as an Application `forbiddenApis` entry in the contract, with a matrix row. **PREDICTED:** this would produce AARC003 errors for any current Application code that uses `Process`; none was checked (UNVERIFIED).
 - Option B: leave `Process` unforbidden in Application and rely on review and section 3.7.
 
-**D11. Session and trace storage.** Issue #40 requires that important operations leave reproducible Session and Trace records. Where they are stored is not designed here; the owner should assign it.
+**D11. Session and trace storage.** Issue #40 requires that important operations leave reproducible Session and Trace records (**CONFIRMED** issue #40 body, GitHub public API, read this session: すべての重要操作で再現可能なSession/Trace情報を残せるようにする). Where they are stored is not designed here; the owner should assign it.
 
 ## 10. Verification performed for this document
 
