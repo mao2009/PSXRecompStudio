@@ -208,6 +208,30 @@ public sealed class OpenBiosProbeBoundaryLogTests
     }
 
     [Fact]
+    public void A_Surrogate_Pair_Straddling_The_Cut_Is_Kept_Whole_Not_Split()
+    {
+        // 47 characters, then an emoji (two UTF-16 code units, the 48th code point), then one more character. A cut counted
+        // in code units would fall between the surrogates. The cut is after 48 code points, so the emoji is kept whole.
+        var key = new string('k', 47) + "\U0001F600" + "z";
+        var line = Line("interpreter", vram: "aa").Replace("\"vramSha256\"", "\"" + key + "\":1,\"vramSha256\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: unexpected field \"" + new string('k', 47) + "\U0001F600...\"");
+    }
+
+    [Fact]
+    public void Format_And_Separator_Characters_In_An_Echoed_Key_Are_Written_As_Escape_Text()
+    {
+        // U+202E (bidi override, category Cf), U+2028 (line separator): written in the file as JSON escapes, echoed as escape text.
+        var line = Line("interpreter", vram: "aa").Replace("\"vramSha256\"", "\"ab\\u202Ecd\\u2028\":1,\"vramSha256\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: unexpected field \"ab\\u202Ecd\\u2028\"");
+    }
+
+    [Fact]
     public void A_Huge_Integer_Beyond_UInt64_Is_Refused_With_A_Diagnostic()
     {
         var line = Line("interpreter", vram: "aa").Replace("\"vblank\":1", "\"vblank\":18446744073709551616", StringComparison.Ordinal);

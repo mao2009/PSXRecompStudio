@@ -285,10 +285,31 @@ internal static class OpenBiosProbeCommand
         }
 
         IReadOnlyList<OpenBiosProbeBoundaryRecord> left, right;
+        JsonObject document;
+        int common;
         try
         {
+            // Parsing and comparison both run inside this try, so a defect in either is labelled rather than escaping.
             left = parseLog(leftLines, "left");
             right = parseLog(rightLines, "right");
+            common = Math.Min(left.Count, right.Count);
+            JsonNode? first = null;
+            if (OpenBiosProbeBoundaryLog.FirstMismatch(left, right) is { } mismatch)
+            {
+                first = new JsonObject
+                {
+                    ["index"] = mismatch.Index,
+                    ["vblank"] = left[mismatch.Index].VBlank,
+                    ["field"] = mismatch.Field,
+                };
+            }
+            document = new JsonObject
+            {
+                ["leftBoundaries"] = left.Count,
+                ["rightBoundaries"] = right.Count,
+                ["commonBoundaries"] = common,
+                ["firstMismatch"] = first,
+            };
         }
         catch (BoundaryLogFormatException ex)
         {
@@ -303,25 +324,6 @@ internal static class OpenBiosProbeCommand
             return 1;
         }
 
-        var common = Math.Min(left.Count, right.Count);
-        JsonNode? first = null;
-        if (OpenBiosProbeBoundaryLog.FirstMismatch(left, right) is { } mismatch)
-        {
-            first = new JsonObject
-            {
-                ["index"] = mismatch.Index,
-                ["vblank"] = left[mismatch.Index].VBlank,
-                ["field"] = mismatch.Field,
-            };
-        }
-
-        var document = new JsonObject
-        {
-            ["leftBoundaries"] = left.Count,
-            ["rightBoundaries"] = right.Count,
-            ["commonBoundaries"] = common,
-            ["firstMismatch"] = first,
-        };
         output.WriteLine(document.ToJsonString());
         // Issue #774 (W03): no common boundary means nothing was compared. A clean exit would read as a match, so it fails.
         if (common == 0)

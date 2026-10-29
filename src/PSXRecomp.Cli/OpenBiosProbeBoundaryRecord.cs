@@ -132,20 +132,36 @@ internal sealed record OpenBiosProbeBoundaryRecord(
     private const int MaxEchoedKeyLength = 48;
 
     /// <summary>
-    /// A key read from the file, in a form safe to echo in a diagnostic: control characters become \uXXXX text, and a long
-    /// key is cut to <see cref="MaxEchoedKeyLength"/> characters. A file cannot write arbitrary text to the console this way.
+    /// A key read from the file, in a form safe to echo in a diagnostic. Control, format and line or paragraph separator
+    /// characters become escape text (\uXXXX, or \UXXXXXXXX above the BMP). A key longer than <see cref="MaxEchoedKeyLength"/>
+    /// code points is cut after that many whole code points, so a surrogate pair is never split, and "..." follows.
+    /// A file cannot write arbitrary text to the console this way.
     /// </summary>
     internal static string DisplayKey(string key)
     {
         var builder = new System.Text.StringBuilder();
-        foreach (var c in key.Take(MaxEchoedKeyLength))
+        var count = 0;
+        foreach (var rune in key.EnumerateRunes())
         {
-            if (char.IsControl(c)) builder.Append($"\\u{(int)c:X4}");
-            else builder.Append(c);
+            if (count == MaxEchoedKeyLength)
+            {
+                builder.Append("...");
+                break;
+            }
+            count++;
+            if (NeedsEscape(rune))
+                builder.Append(rune.Value <= 0xFFFF ? $"\\u{rune.Value:X4}" : $"\\U{rune.Value:X8}");
+            else
+                builder.Append(rune.ToString());
         }
-        if (key.Length > MaxEchoedKeyLength) builder.Append("...");
         return builder.ToString();
     }
+
+    private static bool NeedsEscape(System.Text.Rune rune) =>
+        System.Text.Rune.IsControl(rune)
+        || System.Text.Rune.GetUnicodeCategory(rune) is System.Globalization.UnicodeCategory.Format
+            or System.Globalization.UnicodeCategory.LineSeparator
+            or System.Globalization.UnicodeCategory.ParagraphSeparator;
 
     private static string DescribeKind(JsonValueKind kind) => kind switch
     {

@@ -125,6 +125,24 @@ public sealed class OpenBiosProbeBoundaryCompareTests
     }
 
     [Fact]
+    public void A_Defect_In_The_Comparison_Itself_Is_Labelled_As_An_Internal_Error()
+    {
+        // The injected parser returns a null record, so FirstMismatch throws NullReferenceException. The comparison runs
+        // inside the labelled catch, so the defect is reported as internal, not escaped and not mislabelled as a path.
+        using var dir = new TempDirectory();
+        var left = dir.WriteFile("left.jsonl", Lines("interpreter", "aa"));
+        var right = dir.WriteFile("right.jsonl", Lines("standalone", "aa"));
+        var o = new StringWriter();
+        var e = new StringWriter();
+
+        var exit = OpenBiosProbeCommand.CompareBoundaryLogs(left, right, o, e, parseLog: (_, _) => [null!]);
+
+        exit.Should().Be(1);
+        o.ToString().Should().BeEmpty();
+        e.ToString().Should().Contain("internal error while parsing or comparing (NullReferenceException)");
+    }
+
+    [Fact]
     public void A_Parser_Logic_Error_Is_Not_Reported_As_A_Path_Problem()
     {
         // Simulated defect: the parser throws a type that a path refusal can also be (an ArgumentException). It must be
