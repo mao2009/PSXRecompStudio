@@ -272,7 +272,7 @@ The workaround is the same for each: rebuild. Because the build always runs, a r
 
 ### 3.8 Digests read by the packaged host (H2, H3)
 
-The packaged host (issue #48, W12) verifies its inputs before use: H2 for every package, and H3 for HLE packages only. The fail-closed rules are those of W12 section 3.4, quoted in the paragraph "Fail closed" below. H2 is the game artifact named by `manifest.Artifact` in `runtime-host.json` (W12 section 3.4). H3 is the program image sidecar named by `manifest.Image` (`artifact-image.bin`). The expected digests live in one carrier, `build-manifest.json`, described in 3.5. They are not in `runtime-host.json`, because that would be a schema-2 change, which Q16 rejects (W12).
+The packaged host (issue #48, W12) verifies its inputs before use: H2 for every package, and H3 for HLE packages only. The fail-closed rules are those of W12 section 3.4, summarised in the paragraph "Fail closed" below. H2 is the game artifact named by `manifest.Artifact` in `runtime-host.json` (W12 section 3.4). H3 is the program image sidecar named by `manifest.Image` (`artifact-image.bin`). The expected digests live in one carrier, `build-manifest.json`, described in 3.5. They are not in `runtime-host.json`, because that would be a schema-2 change, which Q16 rejects (W12).
 
 **Carrier fields, one per digest.**
 - H2: `binary.sha256`, with `binary.file` as the bare file name of the artifact.
@@ -282,7 +282,7 @@ The packaged host (issue #48, W12) verifies its inputs before use: H2 for every 
 
 **Location.** A packaged build, HLE or firmware, writes the manifest to `runtime/build-manifest.json` and writes nothing at `<outputDir>/build-manifest.json`. For an HLE package the manifest sits beside the sidecar. A non-packaged build writes `<outputDir>/build-manifest.json`. A build has one location and one writer.
 
-**Firmware packages (carrier).** A firmware package (`FirmwarePackageCommand`, routed at `src/PSXRecomp.Cli/PackageCommand.cs:70-72`) has its carrier at `runtime/build-manifest.json`, with `binary.sha256` (H2) and no `packaged` block. H2 applies to every package, and the host runs its H2 check at `src/PSXRecomp.RuntimeHost/Program.cs:229`, before the firmware branch (W12 section 3.4). Without this carrier a firmware run would have no expected digest and would fail closed every time. The writer is the firmware packaging caller, which uses the same single writer, once, after the artifact is built (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:426-427`) and before its staging is committed. Moving that caller onto the writer is a listed migration item (7.2).
+**Firmware packages (carrier).** A firmware package (`FirmwarePackageCommand`, routed at `src/PSXRecomp.Cli/PackageCommand.cs:70-72`) has its carrier at `runtime/build-manifest.json`, with `binary.sha256` (H2) and no `packaged` block. H2 applies to every package, and the host runs its H2 check at `src/PSXRecomp.RuntimeHost/Program.cs:229`, before the firmware branch (W12 section 3.4). Without this carrier a firmware run would have no expected digest and would fail closed every time. The writer is the firmware packaging caller, which uses the same single writer, once, after the artifact is built (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:426-427`) and before its staging is committed. Moving that caller onto the writer is part 2 of the migration in 7.2, and it is part of Issue A (3.9).
 
 **Writer and order.** The single writer is the caller at the composition root (7.2), through `IBuildArtifactStore.WriteText`. For a packaged build the order is: the workflow builds and promotes the artifact (H2 is `binary.sha256`, computed from the staged artifact before promotion; promotion is a move of the same bytes). The packager then writes the sidecar (`PackageCommand.cs:231`), hashes it (H3), and writes `runtime/build-manifest.json` last. The manifest is never written before the digests it contains.
 
@@ -290,13 +290,13 @@ The packaged host (issue #48, W12) verifies its inputs before use: H2 for every 
 
 **Read-only input.** The packaged host reads the carrier as a read-only input. It never writes, regenerates, or edits the manifest or any digest. If a digest is wrong, the fix is on the writer side: rebuild or repackage. Editing the manifest is never the fix.
 
-**Fail closed (W12 section 3.4, quoted).** "A missing or unreadable input, a missing or unreadable carrier, or a digest mismatch fails closed. The run is classified as a setup failure, and no guest code runs. A warning is not sufficient. The host reads the carrier as a read-only input and never writes, regenerates, or edits it or any digest." The H15 game-window path reads the same two files, and it must run the same two checks before its reads (W12 section 3.4). The check itself is implemented in W12.
+**Fail closed (summary of W12 section 3.4; the wording is W12's).** W12 states that each fail-closed condition "is a classified setup failure, no guest code runs, and a warning is not sufficient". The conditions are: an input (H2 or H3) missing or unreadable; the carrier missing or unreadable; the carrier invalid (JSON that does not parse, `schemaVersion` not 1, a required field missing, a digest that is not 64 lowercase hexadecimal characters, a `packaged` block that does not match the distribution mode, a file name that does not equal the name `manifest.Artifact` or `manifest.Image` resolves to); and a digest mismatch. The host reads the carrier as read-only and never writes it. The H15 game-window path reads the same two files, and it must run the same two checks before its reads (W12 section 3.4). The check itself is implemented in W12.
 
 **Other checks (UNVERIFIED).** W12 found no SHA-256 check for H2 or H3 in the code it read (OBSERVED there). Whether another code path checks H2 or H3 is UNVERIFIED.
 
 **Packaging consequence (Q13).** `runtime/build-manifest.json` is a new packaged file. The ADR-027 Step C layout does not list it (W12 section 2.9). Adding it changes the packaged layout, and that decision belongs to the Q13 baseline decision, which the owner takes together with #46 (W12 section 3.4). The firmware carrier is also a new packaged file outside the layout, under the same decision. The integrity requirement stands regardless of Q13.
 
-**Skip and build-key rule for the digests (citable by W12).** The digests in `build-manifest.json` (`binary.sha256`, `packaged.imageSidecar.sha256`) are post-build outputs. They are not in `buildKey`. They do not affect the build decision, because there is no Skip in v1 (Section 6). The host's reads of them are not build inputs. The identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is not covered by these digests. Its integrity is W12's concern.
+**Skip and build-key rule for the digests (citable by W12).** The digests in `build-manifest.json` (`binary.sha256`, `packaged.imageSidecar.sha256`) are post-build outputs. They are not in `buildKey`. They do not affect the build decision, because there is no Skip in v1 (Section 6). The host's reads of them are not build inputs. The identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is outside the digest check. The carrier has no digest for it, so neither Issue A nor Issue B checks it. This is W12 Q17 option (a). The earlier wording "its integrity is W12's concern" is withdrawn, because W12 does not take that concern.
 
 ### 3.9 Final rules for the packaged digests (owner ruling, converged with W12)
 
@@ -304,10 +304,10 @@ This subsection records the final rules. Where an earlier paragraph in 3.8 diffe
 
 1. **Carrier.** `runtime/build-manifest.json` is the digest carrier for every packaged build, HLE and firmware. H2 is `binary.sha256`. H3 is `packaged.imageSidecar.sha256`, for HLE packages only.
 2. **Verification is required.** The packaged host verifies H2 for every package. It verifies H3 for HLE packages. The check cannot be turned off, and there is no warning-only mode.
-3. **The verified bytes are the used bytes.** The digest is computed over the same byte sequence the host reads and then uses, not over a second read of the path. For H3 the host hashes the byte array it passes on. For H2 the executable is launched by the operating system from a path, so the hashed bytes and the executed bytes can differ unless the host makes them the same. Open question 17 covers this.
+3. **The verified bytes are the used bytes.** The digest is computed over the same byte sequence the host reads and then uses, not over a second read of the path. For H3 the host hashes the byte array it passes on. For H2 the executable is launched by the operating system from a path, so the hashed bytes and the executed bytes can differ unless the host makes them the same. Open question 18 covers this.
 4. **Fail safe.** A missing, unreadable, or unparsable carrier; a missing or unreadable H2 or H3; or a digest mismatch is a setup failure. No guest code runs. This follows W12 section 3.4. The H15 game-window path runs the same checks before its reads.
 5. **Single writer, read-only reader.** The writer is the single writer of 3.5 and 3.8. The host only reads the carrier and never writes it.
-6. **No Skip, no key effect.** v1 always builds (Section 6). The digests are outputs and are not in `buildKey` (3.8).
+6. **No Skip, no key effect.** v1 always builds (Section 6). The digests are outputs and are not in `buildKey` (3.8). **No environment hash is kept in any record.** The earlier draft that kept one is withdrawn with Skip (3.7). Only environment variable names are kept, in the local history (Section 5).
 
 **Tamper resistance is not claimed.** `build-manifest.json` is not signed. A person who can write to the package can change the carrier and the file it describes together. The verification in this section therefore shows that the files match the carrier. It does not show that the carrier is authentic. Tamper resistance, meaning signing, a trusted root, or a protected location, is a separate issue and not part of this design. No document or code comment may describe the carrier as tamper-proof.
 
@@ -322,6 +322,8 @@ This subsection records the final rules. Where an earlier paragraph in 3.8 diffe
   - (c) The equality of the codegen input and the written sidecar (3.8) is checked by a test that hashes the written file. Until that test passes, the equality stays UNVERIFIED.
   - (d) The manifest is written exactly once per build.
   - (e) Test A (3.8, two output directories) still passes, and no digest enters `buildKey`.
+  - (f) `PackageCommand` (HLE) and `FirmwareDistribution` write the carrier through the writer, after the migration in 7.2 (part 2). An HLE package has a `packaged` block. A firmware package has no `packaged` block.
+  - (g) Carrier format, checked by the writer and by a test: `schemaVersion` is 1; each digest is 64 lowercase hexadecimal characters; `binary.file` equals the file name the artifact is written under; `packaged.imageSidecar.file` equals `artifact-image.bin` (`RuntimeHostLayout.ImageFileName`).
 
 **Issue B (host verification). Owner: issue #48 (W12).**
 - Title: `packaged host が H2/H3 を検証し、失敗時は安全側に停止する`
@@ -332,7 +334,8 @@ This subsection records the final rules. Where an earlier paragraph in 3.8 diffe
   - (c) A firmware package is checked for H2 only.
   - (d) The H15 window path runs the same checks before its reads.
   - (e) The host never writes the carrier.
-  - (f) The H2 approach decided under open question 17 is implemented and tested.
+  - (f) The H2 method is the private copy of W12 section 3.4 (the "Verified bytes are the used bytes" steps 1 to 5), or the alternative decided under open question 18, and it is implemented and tested.
+  - Out of scope: `runtime-host.json` integrity (W12 Q17 option (a)).
 - Dependency: Issue B needs the carrier from Issue A. Issue B's tests can use fixtures until Issue A lands.
 
 **Ordering.** Issue A is first, because it defines the carrier that Issue B reads.
@@ -351,7 +354,7 @@ Tier 0 does not cover: a different `traceUnits` or `guardStats` setting, a diffe
 
 ### 4.2 Proposed key scope (tier 1), not a guarantee
 
-Given the same input bytes (input SHA-256), the same psxrecomp generator version, the same codegen options, the same entry roots, and the same loaded-code table, the generated `.c` is byte-identical, and the `buildKey` is identical. The manifest's `source.sha256` field records this, and a reviewer can verify it. This is a description of what the key covers. It is not a stability promise.
+Given the same input bytes (input SHA-256), the same psxrecomp generator version, the same codegen options, the same entry roots, and the same loaded-code table, the generated `.c` is byte-identical (CONDITIONAL: expected for the tested cases only, and UNVERIFIED for the whole file, see 4.1), and the `buildKey` is identical. The manifest's `source.sha256` field records this, and a reviewer can verify it. This is a description of what the key covers. It is not a stability promise.
 
 Before this scope is relied on, these tests must exist and pass:
 
@@ -452,6 +455,8 @@ The goal is that every current caller compiles and behaves the same, and the new
 
 **Pure Domain code** (no port needed): the build key (SHA-256 over the canonical form of the Section 3.5 fields), the `BuildManifest` record and its canonical JSON text, and the Verify comparison of Section 6 (given hashes that the store returns).
 
+**Writer placement** is described after the workflow steps below.
+
 **Infrastructure implementations** (`PSXRecomp.Infrastructure`; every host call this design adds, namely `File`, `Directory`, `Process`, `Guid`, and the clock, is implemented here):
 
 - `FileBuildArtifactStore : IBuildArtifactStore`. The staging name uses a GUID, as `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:510` already does.
@@ -469,7 +474,16 @@ The goal is that every current caller compiles and behaves the same, and the new
 
 **Composition root.** `PSXRecomp.Cli` is the composition root for the new port implementations. It alone constructs `FileBuildArtifactStore`, `ProcessToolchainProbe`, and `FileBuildHistoryLog`, and passes them to `ArtifactBuildWorkflow`. The claim covers only those new implementations. Other callers still construct `GeneratedHostBuildService` directly, as listed in 2.1 (`src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:77`, `src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:109`, `src/PSXRecomp.Cli/PackageCommand.cs:170`, constructor). The CLI may reference Infrastructure because it is classified as Infrastructure by namespace (`src/PSXRecomp.Cli/RecompileCommand.cs:7`, `docs/architecture-matrix.md:24`). ADR-017 point 3 governs the composition of Application-layer code. This design puts no Application code on the composition path, so that rule does not apply here. Whether the analyzer agrees is open question 14.
 
-**Migration.** `RecompileCommand` (`src/PSXRecomp.Cli/RecompileCommand.cs:115-116`) moves to the workflow first, because it is the CLI surface (#15). The engine (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:563`, `:1281`) and `PackageCommand` (constructor `:170`, build call `:171-178`) keep calling the port directly until a later change. `DoctorCommand` moves its probe to `IToolchainProbe` (Section 3.4).
+**Writer placement.** `BuildManifestWriter` is a pure Domain function (`[Domain]`). It turns a `BuildManifest` record into the canonical JSON text and does no I/O. The caller writes that text with `IBuildArtifactStore.WriteText` to the build's location (3.5, 3.8). There are three callers, one per carrier:
+- `RecompileCommand` (`src/PSXRecomp.Cli/RecompileCommand.cs:115-116`), non-packaged builds, `<outputDir>/build-manifest.json`.
+- `PackageCommand` (HLE path), after the sidecar is written (`src/PSXRecomp.Cli/PackageCommand.cs:231`), `runtime/build-manifest.json`.
+- `FirmwareDistribution` (firmware path), before its staging is committed (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:426-427`), `runtime/build-manifest.json`.
+
+**Migration, in two parts.**
+- Part 1 (not needed for any carrier): `RecompileCommand` moves to the workflow first, because it is the CLI surface (#15).
+- Part 2 (part of Issue A, Section 3.9): `PackageCommand` (constructor `:170`, build call `:171-178`, sidecar write `:231`) and `FirmwareDistribution` (`:426-427`) move onto the workflow, so that they obtain the `BuildManifest` record, and onto the writer. Without part 2, no packaged carrier exists.
+- The engine (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:563`, `:1281`) writes no carrier and keeps calling the port directly.
+- `DoctorCommand` moves its probe to `IToolchainProbe` (Section 3.4).
 
 ### 7.3 What this does not change
 
@@ -506,4 +520,5 @@ This sequence respects the issue's priority: it does not block the vertical slic
 14. **Analyzer classification of the CLI:** the composition root in Section 7.2 assumes the analyzer treats `PSXRecomp.Cli` as Infrastructure by namespace (`src/PSXRecomp.Cli/RecompileCommand.cs:7`). UNVERIFIED until a build runs AARC on the new code.
 15. **Resolved (M1), with one residual:** extra arguments that contain `/`, `\`, or `:` are rejected before any build (3.6), so no absolute path enters the key through them. Relative tokens such as `-Iinclude` are accepted, recorded as given, and resolve against the working directory, which is not keyed. The residual is accepted. Should a future toolchain kind (3.6) record the working directory instead?
 16. **Presence list maintenance:** who owns the fixed presence list in 3.7, and what reviews a change to it? Names outside the list are not reported.
-17. **H2 verified bytes versus launched bytes (owner decision needed):** the host must hash the bytes it uses (3.9 rule 3), but the OS launches the native artifact from a path. Options: (a) read the artifact once, hash the buffer, write that buffer to a private location, and launch that copy; (b) launch from the path and accept the time-of-check to time-of-use window as a stated limit. This decides Issue B's acceptance criterion (f).
+17. **Resolved (W12 Q17, option (a)):** `runtime-host.json` is outside the digest check. The carrier has no digest for it, and no Issue A or Issue B item checks it (3.8, 3.9). Any later check is a separate issue. This number matches W12 Q17.
+18. **H2 verified bytes versus launched bytes (owner decision needed):** the host must hash the bytes it uses (3.9 rule 3), but the OS launches the native artifact by path, so no handle can be the launched object. Options: (a) the private-copy method of W12 section 3.4 (W12 Q18): the host writes the verified bytes to a private copy, holds a `FileShare.Read` handle on the copy from the hash until the process is created, and launches the copy by its path. The handle prevents writes to the copy, and nothing else is claimed. (b) Launch the original path after the check, and accept the time-of-check to time-of-use window as a stated limit. This decides Issue B's acceptance criterion (f). W12 Q18 and this question are the same question; the answer is recorded in both documents.
