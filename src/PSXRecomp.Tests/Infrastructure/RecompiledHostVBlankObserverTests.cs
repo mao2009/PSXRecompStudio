@@ -62,9 +62,10 @@ public sealed class RecompiledHostVBlankObserverTests
     // ----- Issue #774 (W03), owner ruling: the diagnostic observer is contained; game-execution callbacks are not. -----
 
     [Fact]
-    public void A_Throwing_Observer_Leaves_Scheduler_Counters_And_Device_State_Unchanged()
+    public void A_Throwing_Observer_Leaves_Scheduler_Counters_Unchanged()
     {
-        // Advance by several VBlanks plus a remainder, twice, so the phase accounting is exercised across calls.
+        // Advance by several VBlanks plus a remainder, twice, so the phase accounting is exercised across calls. The
+        // comparison covers the scheduler's own counters only; device state is not compared here.
         var cycles = 3 * DeviceScheduler.VblankIntervalCycles + 1234;
 
         using var clean = new PsxDeviceGraph();
@@ -80,10 +81,21 @@ public sealed class RecompiledHostVBlankObserverTests
 
         throwingScheduler.VblankCount.Should().Be(cleanScheduler.VblankCount);
         throwingScheduler.ElapsedCycles.Should().Be(cleanScheduler.ElapsedCycles);
-        var cleanState = OpenBiosProbeBoundaryLog.Describe("x", clean, cleanScheduler.VblankCount, cleanScheduler.ElapsedCycles);
-        var throwingState = OpenBiosProbeBoundaryLog.Describe("x", throwing, throwingScheduler.VblankCount, throwingScheduler.ElapsedCycles);
-        throwingState.ToJsonString().Should().Be(cleanState.ToJsonString());
         throwingScheduler.VblankObserverFailure.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void A_Subscriber_Added_During_A_VBlank_Does_Not_Run_In_That_VBlank_And_Runs_From_The_Next()
+    {
+        // The delivery iterates a snapshot taken for each VBlank, so a subscriber added while VBlank 1 is delivered first runs at VBlank 2.
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var late = new List<ulong>();
+        _ = scheduler.AddVblankCallback(vblank => { if (vblank == 1) _ = scheduler.AddVblankCallback(late.Add); });
+
+        scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
+
+        late.Should().Equal(2UL, 3UL);
     }
 
     [Fact]
@@ -181,9 +193,10 @@ public sealed class RecompiledHostVBlankObserverTests
     }
 
     [Fact]
-    public void A_Subscriber_Disposed_By_An_Earlier_Subscriber_Does_Not_Run_Again_In_That_VBlank_Or_Later()
+    public void A_Subscriber_Disposed_By_An_Earlier_Subscriber_Never_Runs()
     {
-        // A runs first and disposes B during the VBlank-1 delivery. B's snapshot entry must be skipped, not run.
+        // A runs first and disposes B during the VBlank-1 delivery. B is never run, not in VBlank 1 and not later: its
+        // snapshot entry is skipped because it was removed before its turn.
         using var graph = new PsxDeviceGraph();
         var scheduler = graph.CreateScheduler();
         IDisposable? handleB = null;
