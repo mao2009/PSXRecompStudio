@@ -41,25 +41,42 @@ public sealed class GuestStopFallbackTests
     }
 
     /// <summary>
-    /// Issue #828 (the stop's outcome table, ApplyStopOutcome), measured path only. In this fallback the child has already handed over and
-    /// ended, and the stop still reaches the run as "child ended before stop" (path 1 of the table). The child is observed alive when
-    /// the stop starts, and in measurements it ends during the stop's own enumeration, before the kill; that ordering is a race inside
-    /// the stop, not something this test controls. The test therefore fixes the observed outcome of that path, not a deterministic
-    /// schedule. The Cancelled path (a live child killed and confirmed) cannot be reached from a fallback segment; it is checked by the
-    /// unit table (GuestCancellationTests.ApplyStopOutcome_*).
+    /// Issue #829 (process level). A stop during an interpreter fallback segment reaches the artifact process, the run ends within a bounded
+    /// time, and the observed stop state agrees with the reported outcome class.
+    /// <para>
+    /// This test does not fix the order between the child's exit and the stop's decision: that order is a scheduling race (the child exits
+    /// once the fallback has stopped), so the test accepts either observed order and checks that each one is consistent. The ordering claims
+    /// and the outcome table are verified deterministically by GuestCancellationTests.ApplyStopOutcome_Row1 (child ended before stop, the
+    /// result is kept, ChildEndedBeforeStop is true), Row2 (live child killed and confirmed, Cancelled) and Row3 (refused kill, result kept).
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task StopDuringAFallbackSegment_MeasuredPath_ChildEndsBeforeKill_KeepsItsResult()
+    public async Task StopDuringAFallbackSegment_ReachesTheProcess_EndsBounded_AndMatchesItsOutcomeClass()
     {
         using var run = new StoppableFallback();
         var result = await run.StopAfterFetches();
 
         var diagnostics = run.Diagnostics;
-        diagnostics.Should().NotBeNull("a stop was requested during the run");
-        diagnostics!.ChildEndedBeforeStop.Should().BeTrue("the stop reached the fallback after the artifact child had ended (measured path)");
-        diagnostics.Confirmed.Should().BeFalse("no kill was sent to a child that had already ended");
-        result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
-        result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.StoppedOnRequest);
+        diagnostics.Should().NotBeNull("the stop request reached the run");
+        diagnostics!.ProcessId.Should().BeGreaterThan(0, "the stop was attached to the artifact process");
+        run.StopDecisions.Should().BeGreaterThan(0, "the stop's decision ran for the artifact process");
+
+        if (result.State == TitleExecutionState.Cancelled)
+        {
+            // Cancelled is the only class a confirmed kill produces (ApplyStopOutcome).
+            diagnostics.Confirmed.Should().BeTrue("a Cancelled run was stopped by a kill whose exit was seen");
+        }
+        else
+        {
+            diagnostics.Confirmed.Should().BeFalse("a run that is not Cancelled has no confirmed kill");
+            result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{result.DiagnosticCode} {result.DiagnosticMessage}");
+            result.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.StoppedOnRequest);
+        }
+
+        if (diagnostics.ChildEndedBeforeStop)
+        {
+            diagnostics.Confirmed.Should().BeFalse("no kill was sent to a child that had already ended");
+        }
     }
 
     /// <summary>
@@ -104,9 +121,21 @@ public sealed class GuestStopFallbackTests
                 (reader, writer) => new BiosHleRuntime(new NullSink(), reader, writer),
                 mixedFallback: fallback);
             _engine.FallbackFetchObserver = (_, _) => Interlocked.Increment(ref _fetches);
+            // Test seam: the stop's decision asks for the child's descendants only once it runs for the child, so a counted call is proof that the
+            // stop reached the process. It reports no descendants, which is accurate for this fallback child.
+            _engine.StopDescendantsProbe = _ =>
+            {
+                Interlocked.Increment(ref _stopDecisions);
+                return [];
+            };
             var token = _cts.Token;
             _run = Task.Run(() => new ExecutionOrchestrator().Execute(_engine, new ExitAtZeroHandoff(), Request(), cancellationToken: token));
         }
+
+        private long _stopDecisions;
+
+        /// <summary>How many times the stop's decision ran for the child (see the probe in the constructor).</summary>
+        public long StopDecisions => Volatile.Read(ref _stopDecisions);
 
         public long Fetches => Volatile.Read(ref _fetches);
 
