@@ -11,7 +11,8 @@ namespace PSXRecomp.Tests.DiscImageTests;
 [Test]
 public sealed class BinCueCdSectorSourceTests
 {
-    private const int Raw = ICdSectorSource.RawSectorSize;
+    // Literal, not ICdSectorSource.RawSectorSize, so a change to the constant fails these tests (MINOR-6).
+    private const int Raw = 2352;
 
     /// <summary>A BINARY file of <paramref name="sectors"/> raw sectors where every byte encodes its sector and offset.</summary>
     private static byte[] Bin(int sectors)
@@ -109,11 +110,55 @@ public sealed class BinCueCdSectorSourceTests
     [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 99999999999:00:00\n", "*MSF*")]
     [InlineData("FILE \"a.bin\" BINARY\n", "*no TRACK*")]
     [InlineData("TRACK 01 MODE2/2352\n", "*before FILE*")]
+    [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\nTRACK 01 MODE2/2352\nINDEX 01 00:03:00\n", "*TRACK 01 does not follow TRACK 01*")]
+    [InlineData("FILE \"a.bin\" BINARY\nTRACK 02 MODE2/2352\nINDEX 01 00:02:00\nTRACK 01 MODE2/2352\nINDEX 01 00:03:00\n", "*TRACK 01 does not follow TRACK 02*")]
+    [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\nTRACK 03 MODE2/2352\nINDEX 01 00:03:00\n", "*TRACK 03 does not follow TRACK 01*")]
+    [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\nINDEX 00 00:01:00\n", "*INDEX 00 after INDEX 01*")]
+    [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 00 00:03:00\nINDEX 01 00:02:00\n", "*greater than INDEX 01*")]
+    [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 00 00:00:00\nINDEX 00 00:01:00\nINDEX 01 00:02:00\n", "*more than one INDEX 00*")]
     public void Parse_MalformedSheet_ThrowsInvalidData(string cue, string message)
     {
         var act = () => BinCueSheet.Parse(cue);
 
         act.Should().Throw<InvalidDataException>().WithMessage(message);
+    }
+
+    [Fact]
+    public void Parse_IndexZeroEqualToIndexOne_IsAccepted()
+    {
+        var cue = "FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 00 00:02:00\nINDEX 01 00:02:00\n";
+
+        var sheet = BinCueSheet.Parse(cue);
+
+        sheet.Tracks.Should().Equal(new BinCueTrack(1, false, 150));
+    }
+
+    [Fact]
+    public void RawSectorSize_IsTheRawCdSectorOf2352Bytes()
+    {
+        ICdSectorSource.RawSectorSize.Should().Be(2352);
+    }
+
+    [Fact]
+    public void TryReadSector_LeadOutAt149Sectors_LastSectorReadableAndNextAbsent()
+    {
+        // One track starting at LBA 0 over 149 sectors: the lead-out is LBA 149.
+        var source = new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n", Bin(149));
+        var destination = new byte[Raw];
+
+        source.Toc.LeadOutLba.Should().Be(149);
+        source.TryReadSector(148, destination).Should().BeTrue();
+        source.TryReadSector(149, destination).Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryReadSector_DestinationShorterThanASector_ReturnsFalseWithoutWriting()
+    {
+        var source = new BinCueCdSectorSource(TwoTrackCue, Bin(3000));
+        var destination = Enumerable.Repeat((byte)0xCD, Raw - 1).ToArray();
+
+        source.TryReadSector(0, destination).Should().BeFalse();
+        destination.Should().OnlyContain(b => b == 0xCD);
     }
 
     [Fact]

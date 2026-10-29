@@ -32,7 +32,8 @@ public sealed class BinCueSheet
 
     /// <exception cref="ArgumentNullException"><paramref name="text"/> is null.</exception>
     /// <exception cref="InvalidDataException">The sheet is malformed: no or repeated FILE, a TRACK before FILE, a track without
-    /// INDEX 01, a bad MSF, or no tracks at all.</exception>
+    /// INDEX 01, a bad MSF, TRACK numbers that are not consecutive from the previous track, INDEX 00 after INDEX 01 or
+    /// above it, a repeated INDEX 00 or INDEX 01, or no tracks at all.</exception>
     /// <exception cref="NotSupportedException">A TRACK uses a mode other than MODE1/2352, MODE2/2352 or AUDIO.</exception>
     public static BinCueSheet Parse(string text)
     {
@@ -42,6 +43,7 @@ public sealed class BinCueSheet
         var fileSeen = false;
         int? number = null;
         var isAudio = false;
+        int? index00 = null;
         int? index01 = null;
 
         void CloseTrack()
@@ -56,8 +58,14 @@ public sealed class BinCueSheet
                 throw new InvalidDataException($"TRACK {n} has no INDEX 01.");
             }
 
+            if (tracks.Count > 0 && n != tracks[^1].Number + 1)
+            {
+                throw new InvalidDataException($"TRACK {n:D2} does not follow TRACK {tracks[^1].Number:D2}; TRACK numbers must be consecutive.");
+            }
+
             tracks.Add(new BinCueTrack(n, isAudio, frames));
             number = null;
+            index00 = null;
             index01 = null;
             isAudio = false;
         }
@@ -107,7 +115,7 @@ public sealed class BinCueSheet
                         throw new InvalidDataException("INDEX appears before any TRACK.");
                     }
 
-                    ParseIndex(rest, ref index01);
+                    ParseIndex(rest, ref index00, ref index01);
                     break;
 
                 default:
@@ -158,7 +166,8 @@ public sealed class BinCueSheet
         };
     }
 
-    private static void ParseIndex(string rest, ref int? index01)
+    /// <remarks>INDEX 00 (pregap start) must come before INDEX 01 and must not be greater than it; equal is accepted.</remarks>
+    private static void ParseIndex(string rest, ref int? index00, ref int? index01)
     {
         var parts = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var index))
@@ -167,11 +176,30 @@ public sealed class BinCueSheet
         }
 
         var frames = ParseMsf(parts[1]);
-        if (index == 1)
+        if (index == 0)
+        {
+            if (index00 is not null)
+            {
+                throw new InvalidDataException("A TRACK has more than one INDEX 00.");
+            }
+
+            if (index01 is not null)
+            {
+                throw new InvalidDataException("INDEX 00 after INDEX 01 is not allowed.");
+            }
+
+            index00 = frames;
+        }
+        else if (index == 1)
         {
             if (index01 is not null)
             {
                 throw new InvalidDataException("A TRACK has more than one INDEX 01.");
+            }
+
+            if (index00 is { } pregapStart && pregapStart > frames)
+            {
+                throw new InvalidDataException($"INDEX 00 ({pregapStart} frames) is greater than INDEX 01 ({frames} frames).");
             }
 
             index01 = frames;

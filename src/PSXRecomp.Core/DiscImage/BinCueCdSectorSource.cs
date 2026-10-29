@@ -9,8 +9,17 @@ namespace PSXRecomp.Core.DiscImage;
 /// in memory, as <see cref="RawCdSectorSource"/> does.
 /// </summary>
 /// <remarks>
-/// LBA 0 is the first sector of the BINARY file, so INDEX 01 MSF values are used as LBAs directly; a typical data
-/// track 1 with INDEX 01 00:02:00 starts at LBA 150. The lead-out is the file's sector count.
+/// LBA convention (pending owner decision, MAJOR-1): LBA 0 is the first sector of the BINARY file, so INDEX 01 MSF
+/// values are used as LBAs directly; a typical data track 1 with INDEX 01 00:02:00 starts at LBA 150. The lead-out is
+/// the file's sector count. This does not yet match the MSF 00:02:00 = LBA 0 wording at
+/// <see cref="CdTrack"/> in ICdSectorSource.cs:5 (and <see cref="RawCdSectorSource"/> also maps LBA 0 to the first
+/// image sector); the decision is pending and is not settled here.
+///
+/// The image is referenced, not copied: the caller's <paramref name="bin"/> array must not be mutated while this source
+/// is in use, or the sectors it returns change.
+///
+/// A <paramref name="destination"/> shorter than <see cref="ICdSectorSource.RawSectorSize"/> is not written to and
+/// returns false, the same as a sector the disc does not hold.
 /// </remarks>
 [Domain]
 public sealed class BinCueCdSectorSource : ICdSectorSource
@@ -18,7 +27,7 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
     private readonly ReadOnlyMemory<byte> _bin;
 
     /// <param name="cueText">The CUE sheet text.</param>
-    /// <param name="bin">The BINARY file's bytes: a non-empty whole number of raw 2352-byte sectors.</param>
+    /// <param name="bin">The BINARY file's bytes: a non-empty whole number of raw 2352-byte sectors. Referenced, not copied.</param>
     /// <exception cref="ArgumentNullException">A parameter is null.</exception>
     /// <exception cref="ArgumentException">The file is empty or not a whole number of raw sectors, or the TOC is invalid
     /// (for example an INDEX 01 at or after the end of the file).</exception>
@@ -43,7 +52,7 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
 
     public bool TryReadSector(int lba, Span<byte> destination)
     {
-        if (lba < 0 || lba >= Toc.LeadOutLba)
+        if (lba < 0 || lba >= Toc.LeadOutLba || destination.Length < ICdSectorSource.RawSectorSize)
         {
             return false;
         }
