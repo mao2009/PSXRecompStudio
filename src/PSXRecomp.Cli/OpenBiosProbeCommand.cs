@@ -36,7 +36,8 @@ internal static class OpenBiosProbeCommand
     internal sealed record ObserverSeam(
         Func<Action<ulong, ulong>, Action<ulong, ulong>>? Interpreter = null,
         Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? GeneratedHost = null,
-        Action<DeviceScheduler>? InterpreterGameCallbacks = null);
+        Action<DeviceScheduler>? InterpreterGameCallbacks = null,
+        Action<DeviceScheduler>? GeneratedHostGameCallbacks = null);
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error, ObserverSeam? observerSeam = null)
     {
@@ -243,7 +244,7 @@ internal static class OpenBiosProbeCommand
                 boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
-                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog, boundaryLog, observerSeam?.GeneratedHost)
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog, boundaryLog, observerSeam?.GeneratedHost, observerSeam?.GeneratedHostGameCallbacks)
                     : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog, error, observerSeam?.Interpreter, observerSeam?.InterpreterGameCallbacks);
             }
             finally
@@ -595,7 +596,7 @@ internal static class OpenBiosProbeCommand
     /// the result is a verified boot.
     /// </summary>
     private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null,
-        Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? wrapObserver = null)
+        Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? wrapObserver = null, Action<DeviceScheduler>? gameCallbacks = null)
     {
         var wall = Stopwatch.StartNew();
         var clock = Stopwatch.StartNew();
@@ -739,6 +740,8 @@ internal static class OpenBiosProbeCommand
                 },
                 // Issue #774 (W03): the standalone run's VBlank boundary, on the same record the interpreter writes.
                 VBlankObserver = hostObserver,
+                // Test seam (ObserverSeam.GeneratedHostGameCallbacks): registers game-execution callbacks on the run's scheduler. Null in production.
+                OnSchedulerCreated = gameCallbacks,
             };
             hostEngine = engine;
             var compileMs = clock.Elapsed.TotalMilliseconds;

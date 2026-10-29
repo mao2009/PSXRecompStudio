@@ -84,6 +84,12 @@ public sealed class DeviceScheduler
     private readonly List<VblankSubscriber> _vblankSubscribers = [];
     private int _nextSubscriberId;
 
+    /// <summary>
+    /// The first exception a game-execution VBlank callback threw, or null. It is the same instance that propagated out of
+    /// <see cref="Advance"/>, so a caller can tell a game-callback exception from a scheduler fault by reference identity.
+    /// </summary>
+    public Exception? GameCallbackFailure { get; private set; }
+
     /// <summary>The first exception a diagnostic VBlank observer threw, or null while none has. Read after a run.</summary>
     public VblankObserverFailure? VblankObserverFailure { get; private set; }
 
@@ -328,7 +334,16 @@ public sealed class DeviceScheduler
                     if (subscriber.Removed) continue;
                     if (!subscriber.Diagnostic)
                     {
-                        subscriber.Callback(vblank);
+                        try
+                        {
+                            subscriber.Callback(vblank);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Recorded so a caller can tell this exception from a scheduler fault by identity; rethrown unchanged.
+                            GameCallbackFailure ??= ex;
+                            throw;
+                        }
                         continue;
                     }
                     try

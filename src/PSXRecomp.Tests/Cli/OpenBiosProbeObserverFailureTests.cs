@@ -109,6 +109,30 @@ public sealed class OpenBiosProbeObserverFailureTests
 
         exit.Should().Be(1, "a game callback's failure must be reported as a failed run");
         error.Should().Contain("KeyNotFoundException").And.Contain("game defect");
+        // A failed run prints no JSON: the report is written only after a run completes, so stdout is empty.
+        output.Should().BeEmpty("a failed run must not print a success-looking partial document");
+    }
+
+    [Fact]
+    public void A_Generated_Host_Run_Whose_Game_Callback_Throws_Is_Reported_As_A_Failure_Not_A_Clean_Non_Boot()
+    {
+        // The generated-host path must not map a game-callback exception to ARTIFACT_SCHEDULER_FAILED and exit 2 (a clean non-boot).
+        // KeyNotFoundException is not one of the probe's listed exception types.
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        var roots = dir.WriteFile("roots.txt", []);
+        var seam = new OpenBiosProbeCommand.ObserverSeam(
+            GeneratedHostGameCallbacks: scheduler => _ = scheduler.AddVblankCallback(_ => throw new KeyNotFoundException("game defect")));
+
+        var exit = Run(
+            [rom, "--engine", "generated-host", "--roots", roots, "--code-bytes", "64", "--segments", "1", "--segment-budget", "600000",
+             "--standalone", "--boundary-log", dir.Combine("game.jsonl"), "--json"],
+            out var output, out var error, seam);
+
+        exit.Should().NotBe(2, "2 is the clean non-boot exit; a game callback's failure must not look like one");
+        exit.Should().Be(1, "a game callback's failure must be reported as a failed run");
+        error.Should().Contain("KeyNotFoundException").And.Contain("game defect");
+        output.Should().BeEmpty("a failed run must not print a success-looking partial document");
     }
 
     [Fact]
