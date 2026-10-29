@@ -27,7 +27,7 @@ Issue #40 asks for a design, not an implementation. Nothing in this change alter
 
 Issue #40 requires that GUI, CLI and MCP share Application-layer use cases, that the GUI add no business logic, and that Analysis -> Recomp -> Build -> Run have async work, progress, cancellation and error display (**CONFIRMED** issue #40 body, read via the GitHub public API in this session: GUI, CLI and MCP use the same Application-layer use cases where possible; GUI-specific domain logic is not created; long operations provide progress, cancellation and logs). This document records what the current code supports, where the boundary is broken, and the smallest coherent next step.
 
-Summary: **CONFIRMED** the Domain layer already owns most pipeline logic (analysis `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:142`, execution orchestration `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61`, code generation `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:15`, a build port `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:86`), and the Studio already calls part of it (`src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97`, `src/PSXRecompStudio/Services/TitleExecutionService.cs:78`). What is missing is a use-case layer that both the Studio and the CLI can call. **CONFIRMED** (`src/architecture.contract.json:12-13`, `docs/architecture-matrix.md:23`): the contract and matrix do not allow that layer to be placed freely (sections 2.1 and 3.2). **CONFIRMED** (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:49`, `:291`; `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31`; `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:133-135`): cancellation is complete only for the generated-host engine; the Studio's interpreter path is stoppable only at segment boundaries. **CONFIRMED** (`src/PSXRecompStudio/Views/MainWindow.axaml:63-78`, `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:61`): the shipped Studio cannot load a disc.
+Summary: **CONFIRMED** the Domain layer already owns most pipeline logic (analysis `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:142`, execution orchestration `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61`, code generation `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:15`, a build port `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:86`), and the Studio already calls part of it (`src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97`, `src/PSXRecompStudio/Services/TitleExecutionService.cs:78`). **CONFIRMED** (sections 2.2 and 2.3): what is missing is a use-case layer that both the Studio and the CLI can call. **CONFIRMED** (`src/architecture.contract.json:12-13`, `docs/architecture-matrix.md:23`): the contract and matrix do not allow that layer to be placed freely (sections 2.1 and 3.2). **CONFIRMED** (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:49`, `:291`; `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31`; `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:133-135`): cancellation is complete only for the generated-host engine; the Studio has no stop mechanism at all, because it passes no token. **CONFIRMED** (`src/PSXRecompStudio/Views/MainWindow.axaml:63-78`, `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:61`): the shipped Studio cannot load a disc.
 
 ## 2. Current state survey
 
@@ -71,7 +71,7 @@ Consequence: the CLI is in the Infrastructure layer, so under the current contra
 - Layout rejections are caught as `ArgumentException` and classified into the result. **CONFIRMED** `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:142-153`.
 - The Studio runs titles only with the interpreter. **CONFIRMED** `src/PSXRecompStudio/Services/TitleExecutionService.cs:78` and `:121`. This is the decision recorded in ADR-015. **CONFIRMED** `docs/adr/015-production-execution-engine-ownership.md:67-70`.
 - The Studio's execution calls do not pass a cancellation token to the orchestrator. **CONFIRMED** `src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93` and `:126-129` (the overload with `cancellationToken` is not used).
-- The Studio's stop behavior is therefore segment-boundary only. The orchestrator checks the token before each segment. **CONFIRMED** `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:133-135`. The interpreter engine has no stop support: it does not implement `ICancellableExecutionEngine` and has no `RequestCancel`, `AttachCancellation` or token parameter. **CONFIRMED** `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31` (class declaration, interface list: `IRecompiledExecutionEngine` only) and a grep of that file for `Cancel` returned no matches.
+- The Studio has no stop mechanism at all. **CONFIRMED** it passes no token (`src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93`, `:126-129`); the orchestrator's default token is `CancellationToken.None` (`src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:67`), so the per-segment check (`ExecutionOrchestrator.cs:133-135`) never fires for Studio runs; and the window has no Cancel control (`src/PSXRecompStudio/Views/MainWindow.axaml:47-78`). The interpreter engine has no stop support: it does not implement `ICancellableExecutionEngine` and has no `RequestCancel`, `AttachCancellation` or token parameter. **CONFIRMED** `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31` (class declaration, interface list: `IRecompiledExecutionEngine` only) and a grep of that file for `Cancel` returned no matches.
 - The status strings are composed in the view model from state, engine name, segment count, TTY text and diagnostic code. **CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:74-77`, `:117-137`. These are presentation strings and the only error surface; they are unlocalized.
 - The Studio composes its own copy of the guest-end handoff. **CONFIRMED** `src/PSXRecompStudio/Services/TitleExecutionService.cs:183-192`, while Core has a public one. **CONFIRMED** `src/PSXRecomp.Core/Execution/ProgramEndHandoff.cs:16-27`. The behavior is the same, so the copy is duplication.
 - The Studio contains memory-card file I/O under suppressions. **CONFIRMED** `src/PSXRecompStudio/Services/FileMemoryCardStorage.cs:166-167`, `:176-177`, `:212-213`, `:277-280`, `:304-324`, each with `#pragma warning disable AARC003`. The class comment calls this a composition-root I/O site until Infrastructure exists. **CONFIRMED** `src/PSXRecompStudio/Services/FileMemoryCardStorage.cs:14-22`. Production code does not use the class; only tests do. **OBSERVED** by grep (`src/PSXRecompStudio.Tests/FileMemoryCardStorageTests.cs`). The Infrastructure project now exists. **CONFIRMED** `src/PSXRecomp.Infrastructure/PSXRecomp.Infrastructure.csproj`.
@@ -101,7 +101,7 @@ Consequence: the CLI is in the Infrastructure layer, so under the current contra
 | `RecompiledHostExecutionEngine` | yes, via `AttachCancellation` and `RequestCancel` | yes | **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:49`, `:291`, `:306` |
 | `LiveGameRunner.RunAsync` | yes | forwards to the generated host | **CONFIRMED** `src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:32` |
 | `PackagedArtifactLiveRunner.RunAsync` | yes | forwards to the generated host | **CONFIRMED** `src/PSXRecomp.Infrastructure/Standalone/PackagedArtifactLiveRunner.cs:30` |
-| `InterpreterTitleExecutionEngine` (Studio path) | no | no; stop only at segment boundaries | **CONFIRMED** `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31` |
+| `InterpreterTitleExecutionEngine` (Studio path) | no | no; the Studio passes no token, so no stop mechanism exists (`src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93`) | **CONFIRMED** `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:31` |
 | `RecompiledArtifactLauncher.Launch` | no | no; runs build then launch | **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:73-80` |
 | `IGeneratedHostBuildService.Build` (port) | no | no; toolchain steps have a timeout only | **CONFIRMED** `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:89`; `src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:42` (30 s default) |
 | Analysis (`RomAnalysisPipeline`) | no | no | **CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:142` (`RunFromIsoImage`, no token parameter; the CHD overloads at `:42`, `:78` likewise take none) |
@@ -119,7 +119,7 @@ Progress: no progress-reporting type exists in Domain, Infrastructure or CLI. **
 | F5 | Disc identity (SHA-256) is computed in two front ends. | `MainWindowViewModel.cs:107-109`, `CliInput.cs:106-109` | CONFIRMED |
 | F6 | The Studio performs memory-card file I/O in Application under AARC003 suppressions, though the Infrastructure project now exists and ADR-017 says it is activated for the first production adapter. | `FileMemoryCardStorage.cs:14-22,166-324`; `docs/adr/017-managed-host-io-port-adapter-boundary.md:35` (item 7) | CONFIRMED |
 | F7 | The shipped Studio cannot load a disc; the real-title action is reachable only with bytes supplied by a test. | `MainWindow.axaml:63-78`, `MainWindowViewModel.cs:61`, `RealRomProductionFlowTests.cs:144` | CONFIRMED (code reading) |
-| F8 | Stop support is uneven: the interpreter engine (used by the Studio) has no stop; the generated-host engine does. Analysis, codegen, build and the launcher take no token. | section 2.5 table | CONFIRMED |
+| F8 | The Studio has no stop path: it passes no token (`TitleExecutionService.cs:92-93`, `:126-129`) and the window has no Cancel control (`MainWindow.axaml:47-78`). The generated host can stop; the interpreter cannot stop mid-segment; analysis, codegen, build and the launcher take no token. | section 2.5 table | CONFIRMED |
 | F9 | No progress reporting exists in Domain, Infrastructure or CLI. | section 2.5 | OBSERVED (grep) |
 | F10 | Studio errors are raw composed strings; the CLI uses stable codes (for example `EXECUTION_CANCELLED`) and exit codes. | `MainWindowViewModel.cs:74-77,117-137`; `ExecutionOrchestrator.cs:90`; `RomAnalysisOutcome.cs:32-33` (`FailureKind`) | CONFIRMED |
 | F11 | `ARCHITECTURE.md` names `PSXRecomp.Runtime`, `PSXRecomp.Recompiler`, `PSXRecomp.Debugger` projects that do not exist in the solution, and a `mcp/` directory that is not in `src`. | `ARCHITECTURE.md:31-33` (tree) and `:360-363` (diagram); `src/PSXRecompStudio.slnx` | CONFIRMED (drift; out of scope to fix here) |
@@ -134,8 +134,8 @@ Progress: no progress-reporting type exists in Domain, Infrastructure or CLI. **
 | **GUI** (Studio views and window code) | Layout, bindings, input, presentation copies (`PresentationFrame`), localized labels, progress and cancel controls, dispatch to the UI thread | Analysis, codegen, execution, hashing, budgets, verdicts, file or process operations |
 | **Use cases** (placement in 3.2) | Orchestration, request and result contracts, single-flight policy, progress and cancel plumbing, one shared result shape | Engine semantics, parsing, lowering, host I/O |
 | **Domain** (`PSXRecomp.Core`) | Analysis pipeline, orchestrator, codegen, execution semantics, ports (**CONFIRMED** declarations: `IGeneratedHostBuildService` `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:86`, `IProjectMetadataStore` `src/PSXRecomp.Core/Project/IProjectMetadataStore.cs:18`, `IMemoryCardStorage` `src/PSXRecomp.Core/MemoryCard/IMemoryCardStorage.cs:130`, `IRuntimeOutputSink` `src/PSXRecomp.Core/Runtime/IRuntimeOutputSink.cs:11`, `ICancellableExecutionEngine` `src/PSXRecomp.Core/Execution/ICancellableExecutionEngine.cs:11`) | Host I/O, process control, UI types |
-| **Infrastructure** (`PSXRecomp.Infrastructure`) | Concrete adapters: disc reading, toolchain process, generated-host launcher, stores | Business rules; any rule not already in a Domain contract |
-| **Interop** (`NativeInterop`, `PSXCoreWrapper` in Core) | C ABI boundary to `PSXRecomp.Native` | Anything above |
+| **Infrastructure** (`PSXRecomp.Infrastructure`) | **CONFIRMED** (`docs/architecture-matrix.md:24`) concrete adapters for filesystem and disc acquisition and process and toolchain execution; the generated-host launcher (`src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:21`); stores | Business rules; any rule not already in a Domain contract |
+| **Interop** (`NativeInterop`, `PSXCoreWrapper` in Core) | **CONFIRMED** (`src/PSXRecomp.Core/NativeInterop.cs`, `src/PSXRecomp.Core/PSXCoreWrapper.cs`; `docs/architecture-matrix.md` C ABI section): C ABI boundary to `PSXRecomp.Native` | Anything above |
 | **CLI** (`PSXRecomp.Cli`) | Argument parsing, exit codes, JSON envelope, stdout and stderr | Use-case orchestration (target state; F1) |
 | **Tests** | Drive the GUI through simulated controls; drive use cases directly | Production dependencies on tests |
 
@@ -149,7 +149,7 @@ Three placements are possible. Each has a documented contract or ADR cost.
 | **B. Use cases in an Application project** (namespace root `PSXRecompStudio.*`) | Studio references it. | **Contract change required** for the CLI: the CLI (Infrastructure) cannot reference Application (`src/architecture.contract.json:13`). Without that change, the CLI keeps its own orchestration (F1 persists). | UI-adjacent policy stays with the GUI. |
 | **C. Domain engine-provider port** (ADR-015 sketch point 2) | Domain declares a factory or selector, for example `IExecutionEngineProvider` beside `IRecompiledExecutionEngine`; Infrastructure implements it; a composition root supplies it. | **ADR revision required.** ADR-015 records this shape as still open: sketch point 2 says "no `IExecutionEngineProvider`-shaped selector exists yet" (paraphrase of `docs/adr/015-production-execution-engine-ownership.md:152-153`, where the text is **CONFIRMED**; the expected shape is at `:194-200`). It addresses engine selection, not the use-case layer, so it complements A or B. | Lets the Studio select an engine without `Application -> Infrastructure` (D3). |
 
-Recommendation: A for use-case orchestration, combined with C for engine selection. Option A requires revising `docs/architecture-matrix.md:23` and `:66`. Option C requires completing ADR-015's sketch point 2.
+Recommendation: A for use-case orchestration, combined with C for engine selection. **Departure from issue #40:** the issue's background says the common use-case execution base is the Application layer (`Application層を共通のユースケース実行基盤とし`), and its diagram places the Application Layer between the GUI and the CLI, MCP and Tests, above Core/Domain (issue #40 body, GitHub public API, read this session). Option A instead places orchestration in Domain, outside the Application layer. The departure is forced by the contract, which forbids Infrastructure (the CLI) from depending on Application (`src/architecture.contract.json:13`); the owner must accept it explicitly (D1). Option A requires revising `docs/architecture-matrix.md:23` and `:66`. Option C requires completing ADR-015's sketch point 2.
 
 ### 3.3 Composition roots and the Application -> Infrastructure edge (owner decision D2)
 
@@ -157,7 +157,7 @@ Both executables need concrete adapters: the Studio needs a disc reader and poss
 
 - The contract keeps `Application -> Infrastructure` globally forbidden and permits a composition-root exception. **CONFIRMED** `src/architecture.contract.json:12`.
 - ADR-017 describes the exception as a single site: "Concrete adapter construction is limited to one explicit composition-root site with a narrowly scoped `AARC002` suppression and rationale until evidence justifies a dedicated Host/Bootstrap layer." **CONFIRMED** `docs/adr/017-managed-host-io-port-adapter-boundary.md:31`. The matrix uses the same singular wording: "one **composition-root site** may use a narrowly scoped `AARC002` suppression" (`docs/architecture-matrix.md:47`), and "Keep composition-root adapter construction isolated" (`docs/architecture-matrix.md:210`).
-- The matrix's trigger for a Host/Bootstrap layer is "repeated `AARC002` exceptions" and "wiring spreads beyond one obvious bootstrap site" (`docs/architecture-matrix.md:47`, `:210`). ADR-017 gives the same trigger as spreading.
+- The matrix's trigger for a Host/Bootstrap layer is "repeated `AARC002` exceptions" and "wiring spreads beyond one obvious bootstrap site" (`docs/architecture-matrix.md:47`, `:210`). ADR-017 gives the same trigger as spreading (**CONFIRMED** `docs/adr/017-managed-host-io-port-adapter-boundary.md:64`).
 - Two executables (Studio and CLI) each with a composition-root suppression is more than the singular wording covers. **PREDICTED** the owner will need to decide whether this is "one site per executable" (an ADR-017 revision) or the trigger for a Host/Bootstrap layer now.
 
 Options for D2:
@@ -173,7 +173,7 @@ Options for D2:
 | Analysis | **CONFIRMED** Studio: `RealRomTitleExecutionService.cs:97`. CLI: `CliInput.cs:115` | `AnalyzeDisc` returns `RomAnalysisOutcome` | None beyond bytes or stream | Running (stage), Pass, Fail with `FailureKind` | Needed: no token today (section 2.5); Domain change |
 | Recomp (codegen) | **CONFIRMED** CLI only: `RecompileCommand.cs:32-63`, `RecompilerHostCodeGen.Generate` | `RecompileTitle` returns generated source and state | None | Running, Done | Needed: token before codegen |
 | Build | **CONFIRMED** CLI only: `RecompileCommand.cs:115` (`GeneratedHostBuildService.Build`) | `BuildArtifact` through `IGeneratedHostBuildService` | Toolchain (Infrastructure) | Building (compile, link), Built, ToolingError | **CONFIRMED** Today: timeout only (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:42`); the port takes no token (`GeneratedHostBuild.cs:89`). Needed: a token that kills the toolchain (D4) |
-| Run | **CONFIRMED** Studio: interpreter, `TitleExecutionService.cs:92-93` (no token). CLI: generated host with mixed fallback, `RunCommand.cs:68` | `RunTitle` with engine selection (D3) | Launcher port (no port today: `RecompiledArtifactLauncher.cs:21`, `:73-80`) | Running (segment count), Success, Blocked, Failed, Cancelled | Generated host: stop supported (section 2.5). Interpreter: segment boundary only; needed: interpreter stop support (D4) |
+| Run | **CONFIRMED** Studio: interpreter, `TitleExecutionService.cs:92-93` (no token). CLI: generated host with mixed fallback, `RunCommand.cs:68` | `RunTitle` with engine selection (D3) | Launcher port (no port today; **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:21` is the concrete class declaration, `:73-80` the `Launch` method) | Running (segment count), Success, Blocked, Failed, Cancelled | Generated host: stop supported (section 2.5). Studio interpreter: no stop mechanism (no token passed, `TitleExecutionService.cs:92-93`); needed: a token path and interpreter stop support (D4) |
 
 Notes:
 
@@ -196,7 +196,7 @@ Notes:
 
 - Pre-cancelled runs end as `Cancelled` without loading. **CONFIRMED** `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:73-75`.
 - A running generated-host segment stops through `RequestCancel`. **CONFIRMED** `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:291`, `:306` (`AttachCancellation`).
-- A running interpreter segment does not stop. The orchestrator checks the token only before each segment (`ExecutionOrchestrator.cs:133-135`). The interpreter's segment length is bounded by the segment budget (`TitleExecutionService.cs:159-160`, `RealRomTitleExecutionService.cs:71`: 4096 steps), so the Studio's worst-case stop latency is one segment. **PREDICTED** from these budgets; not measured.
+- Studio runs have no stop mechanism: no token is passed (`src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93`, `:126-129`), the orchestrator default is `CancellationToken.None` (`src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:67`), and the window has no Cancel control (`src/PSXRecompStudio/Views/MainWindow.axaml:47-78`). **CONFIRMED.** Once a token is passed, the orchestrator checks it only before each segment (`ExecutionOrchestrator.cs:133-135`), and the interpreter does not stop mid-segment. The interpreter's segment is bounded by the segment budget (`TitleExecutionService.cs:159-160`, `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:71`: 4096 steps), so the worst-case latency would be one segment. **PREDICTED** from these budgets; not measured.
 - A cancelled operation must end as a classified `Cancelled` outcome, not as an exception and not as a hung spinner.
 
 ### 3.6 Error display
@@ -217,7 +217,7 @@ Notes:
 **The GUI may:**
 
 - bind, lay out, select, and show progress and state;
-- convert a Domain result to a presentation model with a pure, lossless transform, as `PresentationFrame.From` does (`MainWindowViewModel.cs:72`, `:111`; `docs/architecture/gui-ux.md:110-113`);
+- convert a Domain result to a presentation model with a pure, lossless transform, as `PresentationFrame.From` does (**CONFIRMED** `src/PSXRecompStudio/ViewModels/MainWindowViewModel.cs:72`, `:111`; `docs/architecture/gui-ux.md:110-113`);
 - localize labels and format numbers and dates;
 - choose what to show first, what to collapse, and how to order rows.
 
@@ -241,7 +241,7 @@ Notes:
 - **CLI.** Target: a composition root and presentation layer only. Its `recompile`, `run` and frame-evidence paths call the same use cases as the Studio, and its duplicate handoffs (F4) are replaced by `PSXRecomp.Core.Execution.ProgramEndHandoff` (`src/PSXRecomp.Core/Execution/ProgramEndHandoff.cs:16`). The headless doc's parity sentence (F2) becomes accurate only after the engine decision (D3).
 - **GUI-to-CLI process.** **CONFIRMED** (issue #40 body, GitHub public API, read this session): the GUI may launch the CLI process as an implementation option; the issue does not require it. Recommendation: in-process use cases (D6).
 - **MCP.** No MCP project exists (F12). MCP should be a third thin adapter over the same use cases, designed in a separate issue.
-- **Tests.** GUI tests keep driving real controls (`src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:11-21` states that the Project, Analysis, Recompile and Approval screens do not exist yet). Use-case tests run without Avalonia. The headless doc says `HeadlessAvaloniaIndependenceTests` guards that property. **CONFIRMED** `docs/architecture/gui-ux.md:115`.
+- **Tests.** GUI tests keep driving real controls (`src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:14-15` states that the Project, Analysis, Recompile and Approval screens do not exist yet). Use-case tests run without Avalonia. The guard test is `src/PSXRecomp.Tests/HeadlessAvaloniaIndependenceTests.cs:10` (**CONFIRMED**); the rule it guards is stated in `docs/architecture/gui-ux.md:115` (**CONFIRMED**).
 
 ### 3.9 Headless independence
 
@@ -266,7 +266,7 @@ Why this order: Phase 1 removes duplication without risk. Phase 2 creates the sh
 ## 5. Alignment with ADR-015 and ADR-017
 
 - ADR-015's decision (interpreter as the Studio's production engine, in Domain) is preserved. **CONFIRMED** `docs/adr/015-production-execution-engine-ownership.md:43`, `:67-70`.
-- ADR-017's rule that Application does not acquire host resources is violated by F6 and motivates Phase 4. **CONFIRMED** `docs/adr/017-managed-host-io-port-adapter-boundary.md:31`; `docs/architecture-matrix.md:66` (item 3).
+- The rule that Application does not acquire host resources (**CONFIRMED** `docs/architecture-matrix.md:66`, item 3) is violated by F6 and motivates Phase 4. The composition-root sentence is at `docs/adr/017-managed-host-io-port-adapter-boundary.md:31` (**CONFIRMED**).
 - The contract reason text (F3) should be corrected in the same ADR revision that records D1 and D2, so that rationale and contract agree. The contract itself is not changed by this document.
 - ADR-017's singular "one composition-root site" wording (`:31`) needs revision if D2 Option A is chosen (3.3).
 
@@ -287,7 +287,7 @@ Consequences for this design:
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | Use-case code drifts back into the view model | PREDICTED high without a checklist | 3.7 checklist; Phase 3 tests drive use cases directly |
-| Core use cases pick up host I/O or UI types | PREDICTED medium | AARC003 already forbids host APIs in Domain; add a no-Avalonia rule test (PREDICTED) |
+| Core use cases pick up host I/O or UI types | PREDICTED medium | AARC003 already forbids host APIs in Domain (**CONFIRMED** `src/architecture.contract.json:19-30`); add a no-Avalonia rule test (PREDICTED) |
 | Composition-root suppressions spread across executables | PREDICTED medium | D2 decision and ADR-017 revision |
 | Cancellation gaps leave work running after Cancel | CONFIRMED gap (F8) | Phase 2 interpreter stop; toolchain kill is the hardest item and may stay timeout-only until D4 |
 | Studio and CLI run different engines, and results are compared as if equal | CONFIRMED today (F2) | D3; label the engine in every result |
@@ -297,7 +297,7 @@ Consequences for this design:
 ## 8. Out of scope
 
 - Implementing any GUI screen, use case, port or adapter.
-- The Project, Compatibility Registry, AI review and Approval screens listed in issue #40 (each needs its own design).
+- The Project, Compatibility Registry, AI review and Approval screens listed in issue #40 (**CONFIRMED** issue #40 body, GitHub public API; `src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:14-15` states the Project, Analysis, Recompile and Approval screens do not exist yet). Each needs its own design.
 - The MCP surface.
 - Changing `src/architecture.contract.json`, `ARCHITECTURE.md`, `docs/architecture-matrix.md`, or any ADR. Revisions are listed as owner decisions.
 - The Studio IDE's UI toolkit. Issue #851 excludes it, and this document does not reopen it.
@@ -307,8 +307,8 @@ Consequences for this design:
 Each decision lists options and a recommendation. The owner decides; this document does not.
 
 **D1. Where the shared use cases live.**
-- Option A (recommended): Domain (`PSXRecomp.Core`). **Revision required:** `docs/architecture-matrix.md:23` (Application row says "use-case orchestration") and `:66` (Studio/CLI use cases) must say orchestration is Domain-owned and Application composes it.
-- Option B: a new Application project. **Contract change required** so the CLI can reference it (`src/architecture.contract.json:13` forbids Infrastructure to Application). Otherwise the CLI keeps duplicate orchestration.
+- Option A (recommended): Domain (`PSXRecomp.Core`). **This departs from issue #40's background**, which names the Application layer as the common use-case execution base (`Application層を共通のユースケース実行基盤とし`; GitHub public API, read this session). **Revision required:** `docs/architecture-matrix.md:23` (Application row says "use-case orchestration") and `:66` (Studio/CLI use cases) must say orchestration is Domain-owned and Application composes it.
+- Option B: a new Application project. This matches issue #40's background (`Application層を共通のユースケース実行基盤とし`), but needs the contract change below. **Contract change required** so the CLI can reference it (`src/architecture.contract.json:13` forbids Infrastructure to Application). Otherwise the CLI keeps duplicate orchestration.
 - Combine with option C from 3.2 for engine selection in either case.
 
 **D2. Composition root and Application -> Infrastructure wiring.**
@@ -321,8 +321,8 @@ Each decision lists options and a recommendation. The owner decides; this docume
 - Either way: the CLI `run` is generated-host by default with mixed fallback enabled (`docs/development/headless-cli.md:74-79`), so the Studio and `run` do not execute the same way for indirect transfers. Correct the headless doc's parity claim (F2) and state the engine in every result.
 
 **D4. Stop support for the interpreter and for build.**
-- Option A (recommended): implement `ICancellableExecutionEngine` on `InterpreterTitleExecutionEngine` (Phase 2) so a running segment can stop, and accept that the Studio's worst case is one segment otherwise (3.5, PREDICTED). For the toolchain, add a token that kills the process, with the timeout kept as the backstop (`GeneratedHostBuildService.cs:42`).
-- Option B: keep segment-boundary stop for the interpreter and timeout-only for build, and show "cannot cancel during build" in the GUI.
+- Option A (recommended): implement `ICancellableExecutionEngine` on `InterpreterTitleExecutionEngine` (Phase 2) so a running segment can stop, and accept that, without it, the Studio's worst-case stop latency would be one segment (3.5, PREDICTED). Until a token is wired, the Studio has no stop mechanism at all (section 2.2). For the toolchain, add a token that kills the process, with the timeout kept as the backstop (`GeneratedHostBuildService.cs:42`).
+- Option B: no stop for Studio interpreter runs (as today, since no token is passed), timeout-only for build, and show "cannot cancel" for those operations in the GUI.
 
 **D5. Split of Build and Run in the generated-host path.**
 - Option A (recommended): a Domain launcher port with separate build and run steps, matching the GUI's stages. Today's `Launch` is one operation (`RecompiledArtifactLauncher.cs:73-80`).
