@@ -87,6 +87,7 @@ public sealed class MdecDeviceTests : IDisposable
         _mdec.WriteRegister(4, 0x60000000u); // enable DMA in/out
 
         // DMA1 armed first: 16 words to 0x3000, nothing decoded yet.
+        // 現在の実装を固定する。実機未検証（UNVERIFIED）。
         _dma.WriteRegister(Ps1MemoryMap.GetChannelMadr(1), 0x3000);
         _dma.WriteRegister(Ps1MemoryMap.GetChannelBcr(1), 0x00010010);
         _dma.WriteRegister(Ps1MemoryMap.GetChannelChcr(1), BlockFromDevice);
@@ -94,6 +95,7 @@ public sealed class MdecDeviceTests : IDisposable
         (_dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(1)) & StartBusy).Should().NotBe(0u, "no output yet");
 
         _mdec.WriteRegister(0, 0x28000000u | 1);
+        // 現在の実装を固定する。実機未検証（UNVERIFIED）: bit 28 は DMA0 要求が保留中のときに立つ、と実装が定めている。
         (_mdec.ReadRegister(4) & (1u << 28)).Should().NotBe(0u, "data-in request");
         _memory.Write32(0x2000, ZeroBlock);
         _dma.WriteRegister(Ps1MemoryMap.GetChannelMadr(0), 0x2000);
@@ -108,6 +110,7 @@ public sealed class MdecDeviceTests : IDisposable
         _dma.ReadRegister(Ps1MemoryMap.GetChannelMadr(1)).Should().Be(0x3040u);
     }
 
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: コマンド 0 と 4-7 はパラメータ数 word&amp;0xFFFF で受理され、実行は何もしない。</summary>
     [Fact]
     public void InvalidCommandWithoutParameters_IsIgnored_AndLeavesTheDeviceIdle()
     {
@@ -128,6 +131,7 @@ public sealed class MdecDeviceTests : IDisposable
         _mdec.FifoWordCount.Should().Be(0);
     }
 
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: 不完全なマクロブロックは例外もエラーもなく出力を破棄する。</summary>
     [Fact]
     public void FifteenBit_ShortData_ProducesNoOutputForTheIncompleteMacroblock()
     {
@@ -157,7 +161,7 @@ public sealed class MdecDeviceTests : IDisposable
     }
 
     [Fact]
-    public void Dma_OutputBurstLargerThanTheFifo_WaitsAndKeepsTheWords()
+    public void Dma_OutputBurstLargerThanTheFifo_WaitsWithoutConsumingWords()
     {
         _dma.WriteRegister(Ps1MemoryMap.Dpcr, 0x07654321u | (1u << 3) | (1u << 7));
         var bridge = new MdecDmaTransfer(_mdec, _dma, _memory);
