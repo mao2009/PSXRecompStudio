@@ -90,7 +90,10 @@ public sealed class BinCueSheet
                         throw new InvalidDataException("A CUE sheet names one BINARY FILE; a second FILE is not supported.");
                     }
 
-                    if (!rest.EndsWith("BINARY", StringComparison.OrdinalIgnoreCase))
+                    // The file type is the last whitespace-separated token, so "XBINARY" is not "BINARY".
+                    var lastSpace = rest.LastIndexOfAny([' ', '\t']);
+                    var fileType = lastSpace < 0 ? rest : rest[(lastSpace + 1)..];
+                    if (!fileType.Equals("BINARY", StringComparison.OrdinalIgnoreCase))
                     {
                         throw new InvalidDataException($"FILE must be of type BINARY: '{line}'.");
                     }

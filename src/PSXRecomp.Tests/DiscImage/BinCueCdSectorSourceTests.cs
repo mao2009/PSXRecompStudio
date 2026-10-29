@@ -101,6 +101,7 @@ public sealed class BinCueCdSectorSourceTests
     [InlineData("TRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", "*before FILE*")]
     [InlineData("FILE \"a.bin\" BINARY\nFILE \"b.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", "*second FILE*")]
     [InlineData("FILE \"a.bin\" WAVE\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", "*BINARY*")]
+    [InlineData("FILE \"a.bin\" XBINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", "*BINARY*")]
     [InlineData("FILE \"a.bin\" BINARY\nINDEX 01 00:02:00\n", "*before any TRACK*")]
     [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:75\n", "*MSF*")]
     [InlineData("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:60:00\n", "*MSF*")]
