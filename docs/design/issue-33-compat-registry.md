@@ -40,7 +40,7 @@ Title identity:
 - `Region` enum with `Unknown = 0`, `Japan`, `NorthAmerica`, `Europe`, `Asia`, `Korea`, `Australia`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Region.cs:10-32`]
 - `Revision` is `(Level, BuildYear, BuildMonth)` with `CanonicalKey` `Level.YYYY.MM`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Revision.cs:10-37`]
 - A SHA-256 hex helper exists for artifacts. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:72-75`]
-- Disc image SHA-256 is recorded in artifact fixture identity. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`, `:39`] A `discHash` diagnostics key is declared, with no writer of that key found in `src` at `2e3ecad`. Its value and algorithm are UNVERIFIED. [CONFIRMED for the declaration: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`] A disc SHA-256 is persisted under a different name in the firmware boot manifest: `FirmwareDistribution.cs` computes it with `OpenBiosRomInput.Sha256HexOfFile(stagedDisc)` at line 391 and writes it as `discHash` into `FirmwareBootManifest` at line 451. The manifest field is `DiscSha256` (`src/PSXRecomp.Infrastructure/Standalone/FirmwareBootManifest.cs:21`, `:35`) and is verified before each run at `FirmwareDistribution.cs:672`. This is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. [CONFIRMED]
+- Disc image SHA-256 is recorded in artifact fixture identity as `DiscImageSha256`. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`] A `discHash` diagnostics key is declared, with no writer of that key found in `src` at `2e3ecad`. Its value and algorithm are UNVERIFIED. [CONFIRMED for the declaration: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`] A disc SHA-256 is passed into the firmware boot manifest under a different name: `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs` computes it with `OpenBiosRomInput.Sha256HexOfFile(stagedDisc)` at line 391, then passes the local `discHash` as the `DiscSha256` constructor argument of `FirmwareBootManifest` at line 451. The manifest field is `DiscSha256` (`src/PSXRecomp.Infrastructure/Standalone/FirmwareBootManifest.cs:21`, `:35`) and is verified before each run at `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:672`. This is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. [CONFIRMED]
 
 Evidence and confidence (Analysis contracts):
 
@@ -66,7 +66,7 @@ Environment:
 - `ExecutionEnvironmentReport` records `OsPlatform`, `OsVersion`, `OsArchitecture`, process architecture, .NET version, runtime identifier, compiler version, and target architecture. Schema string `psxrecomp.execution-environment.v1`. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:11` (record), `:14` (`CurrentSchema`), `:16` (private constructor), `:38-40` (OS properties)]
 - No GPU field exists in `src/PSXRecomp.Core/Diagnostics`. A search for `gpu`/`GPU` in that folder returned no environment field. [CONFIRMED: grep over `src/PSXRecomp.Core/Diagnostics`]
 - No `RecompBuildId` or `RuntimeVersion` identifier was found in `src/PSXRecomp.Core`. The only `BuildIdentity` hits are the analysis artifact builder's fixture identity, not a recomp build id. [CONFIRMED: grep for `BuildId|RuntimeVersion|DiscHash|GameId|ReleaseId` in `src/PSXRecomp.Core` returned `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/DeterministicArtifactBuilder.cs:86,162,165`, `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`, `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`]
-- A `discHash` diagnostics key is declared (`DiagnosticContextKeys.DiscHash = "discHash"`) and listed in `ExecutionDiagnosticLog`. No writer of this key was found in `src` at `2e3ecad`, and the value and algorithm are UNVERIFIED. The disc SHA-256 that does exist is written to the firmware boot manifest (`FirmwareDistribution.cs:391`, `:451`; see §2.1 above), which is a staging artifact. This is a diagnostics key, not a title-registry field. [CONFIRMED for the declaration and listing: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
+- A `discHash` diagnostics key is declared (`DiagnosticContextKeys.DiscHash = "discHash"`) and listed in `ExecutionDiagnosticLog`. No writer of this key was found in `src` at `2e3ecad`, and the value and algorithm are UNVERIFIED. The disc SHA-256 that does exist is written to the firmware boot manifest (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, `:451`; see §2.1 above), which is a staging artifact. This is a diagnostics key, not a title-registry field. [CONFIRMED for the declaration and listing: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
 
 Persistence precedent:
 
@@ -115,7 +115,7 @@ TitleEntry {
 }
 ```
 
-A content hash on the disc is a new field. [PREDICTED] Whether to store disc hashes in a public file is an open question (section 10).
+`TitleKey` = `ReleaseKey` in this document, that is `(Serial, Region, Revision)` as defined above. A content hash on the disc is a new field. [PREDICTED] Whether to store disc hashes in a public file is an open question (section 10).
 
 ### 3.2 Facet
 
@@ -180,22 +180,16 @@ Outcome is kept separate from Evidence and Confidence. The values are:
 |---|---|---|
 | `Pass` | Evidence exists for this binding and the scenario criteria were met. | Yes |
 | `Fail` | Evidence exists and criteria were not met. | No; may open a Known Issue |
-| `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`RecompiledArtifactExitCode.cs:18-21`). | No |
-| `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`RecompiledArtifactExitCode.cs:23-25`). | No; excluded from the denominator and reported |
-| `Cancelled` | A run was stopped by a cancellation request before a classified guest end (owner ruling; `TitleExecutionState.Cancelled`, `TitleExecutionContract.cs:49`). | No; never Pass or Fail; reported as stopped, not as Blocked |
+| `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:18-21`). | No |
+| `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:23-25`). | No; excluded from the denominator and reported |
+| `Cancelled` | A run was stopped by a cancellation request before a classified guest end (owner ruling; `TitleExecutionState.Cancelled`, `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:49`). | No; never Pass or Fail; reported as stopped, not as Blocked |
 | `NotRun` | Absence of evidence for this scenario and binding. | No |
 
-`Cancelled` is not `Blocked`, even though `RecompiledArtifactExitCode.Classify` maps it to `Blocked` (`RecompiledArtifactExitCode.cs:59`). The registry keeps it distinct.
+`Cancelled` is not `Blocked`, even though `RecompiledArtifactExitCode.Classify` maps it to `Blocked` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:59`). The registry keeps it distinct.
 
-Derived states, not Outcomes. The owner ruling requires these three to stay distinct:
+Derived state, not an Outcome. `Unknown` is a derived title or facet state: the registry holds no record at all for that title or facet, so nothing can be said. The owner ruling requires `Unknown` to stay distinct from `NotRun` and `Cancelled`, which are the Outcome rows in the table above.
 
-| State | Where it applies | Meaning |
-|---|---|---|
-| `Unknown` | Title or facet, derived | The registry holds no record at all for the title or facet, so nothing can be said. |
-| `NotRun` | Scenario and binding | Records exist for the title, but none for this scenario and binding. |
-| `Cancelled` | Result | A run exists and was stopped before a classified end. Its evidence is incomplete. |
-
-`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. A facet with no `Pass` for the current binding is `Unverified`. `Unknown`, `NotRun`, and `Cancelled` are never rendered as each other, and none of them is rendered as `Pass` or `Fail`. [PREDICTED for the three derived states; the non-equivalence rule is owner-ruled]
+`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. A facet with no `Pass` for the current binding is `Unverified`. `Unknown`, `NotRun`, and `Cancelled` are never rendered as each other, and none of them is rendered as `Pass` or `Fail`. [PREDICTED for the derived state; the non-equivalence rule is owner-ruled]
 
 `Blocked` is not a defect. It is a diagnosable stop, consistent with `docs/status/capabilities.md` "Measured blocker" language. [OBSERVED: `docs/status/capabilities.md:49`]
 
@@ -207,7 +201,7 @@ An Evidence record is an immutable observation:
 
 ```
 EvidenceRecord {
-  Id                  // content hash, same scheme as EvidenceReference.Create (EvidenceReference.cs:23-31)
+  Id                  // content hash, same scheme as EvidenceReference.Create (src/PSXRecomp.Core/Analysis/Contracts/EvidenceReference.cs:23-31)
   Type                // see 4.1.1
   Source              // bundle or report identifier, never a path to game data
   ProducedBy          // tool name and version; reporter class (see 4.1.2)
@@ -219,7 +213,7 @@ EvidenceRecord {
 
 #### 4.1.1 Evidence type
 
-The existing `EvidenceType` (`EvidenceType.cs:9-18`) is reused for the observation kind: `Screenshot`, `Trace`, `RuntimeObservation`, `ManualObservation`. `AIPrediction` and `AnalyzerFinding` must never satisfy a registry Pass. [PREDICTED] `DiagnosticEvidenceKind` is not reused, to keep the separation its own doc describes (`DiagnosticEvidenceReference.cs:7-10`). [CONFIRMED]
+The existing `EvidenceType` (`src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:9-18`) is reused for the observation kind: `Screenshot`, `Trace`, `RuntimeObservation`, `ManualObservation`. `AIPrediction` and `AnalyzerFinding` must never satisfy a registry Pass. [PREDICTED] `DiagnosticEvidenceKind` is not reused, to keep the separation its own doc describes (`src/PSXRecomp.Core/Diagnostics/DiagnosticEvidenceReference.cs:7-10`). [CONFIRMED]
 
 #### 4.1.2 Reporter class
 
@@ -241,7 +235,7 @@ DerivedConfidence {
 }
 ```
 
-- Use `Confidence` (`Confidence.cs:11-17`) as the carrier, with `Rationale` mandatory.
+- Use `Confidence` (`src/PSXRecomp.Core/Analysis/Contracts/Confidence.cs:11-17`) as the carrier, with `Rationale` mandatory.
 - Do not use `ConfidenceLevel.Certain`. Permitted values for the registry are `Unspecified`, `Low`, `Medium`, `High`. [PREDICTED]
 - Do not use the numeric `Score`. A numeric score invites false precision and a "Perfect = 1.0" reading. [PREDICTED]
 - Confidence is computed from: number of distinct Pass evidence records, number of distinct reporter classes, recency relative to the binding's last change, and whether any Fail or Blocked record exists for the same binding. [PREDICTED]
@@ -256,7 +250,7 @@ A binding is the environment a result is valid for:
 Binding {
   BuildId             // new: recomp build identifier (no equivalent exists, section 2.1)
   RuntimeVersion      // new: Runtime version (no equivalent exists)
-  Os                  // ExecutionEnvironmentReport.OsPlatform, OsVersion, OsArchitecture (ExecutionEnvironmentReport.cs:38-40)
+  Os                  // ExecutionEnvironmentReport.OsPlatform, OsVersion, OsArchitecture (src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:38-40)
   Gpu                 // new: backend name and driver version (absent from ExecutionEnvironmentReport)
   DotNet, RuntimeIdentifier   // from ExecutionEnvironmentReport
 }
@@ -346,7 +340,7 @@ Option D, staged:
 Format rules, based on existing precedent:
 
 - Schema identity string `psxrecomp.compatibility-registry.v1`, following `ExecutionEnvironmentReport.CurrentSchema` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:14`). [PREDICTED]
-- Canonical UTF-8 JSON through the same encoder as project metadata (`ProjectMetadataSerializer.cs:37-43`), so identical input yields identical bytes. [PREDICTED]
+- Canonical UTF-8 JSON through the same encoder as project metadata (`src/PSXRecomp.Core/Project/ProjectMetadataSerializer.cs:37-43`), so identical input yields identical bytes. [PREDICTED]
 - Store raw records. Store derived levels only in the snapshot, and only with the scenario catalog version and a recomputation check in tests. [PREDICTED]
 - Never store game data, ROM/BIOS bytes, or paths into a user's game library. The `Source` field is a bundle id. The repository's legal boundary against embedding such data is stated in its project docs [OBSERVED: README and `docs/project-mission.md`, not re-read for this design]. The field rule itself is [PREDICTED].
 
@@ -379,7 +373,7 @@ The owner approved these changes to the #33 design. Each one is recorded in the 
 1. Add a `Subject` field to every result (`RealTitle` or `SyntheticFixture`). See section 3.4.
 2. When `Subject = SyntheticFixture`, `TitleKey` may be omitted. Binding stays required. See section 3.4.
 3. Add `Facet.None`. See section 3.2.
-4. Add a `Cancelled` row to the execution-state vocabulary. See sections 2.1 and 3.5.
+4. Add a `Cancelled` row to the registry Outcome vocabulary. The execution state already exists: `TitleExecutionState.Cancelled` (`src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:49`), set by `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:75`. See sections 2.1 and 3.5.
 
 Additional conditions from the same ruling:
 
@@ -392,16 +386,16 @@ Additional conditions from the same ruling:
 
 - **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
 - **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
-- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is persisted in the firmware boot manifest (`FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision. Under the owner ruling, a `SyntheticFixture` result has no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is passed into the firmware boot manifest (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision. Under the owner ruling, a `SyntheticFixture` result may have no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
 - **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
 - **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
-- **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
+- **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
 - **Q7. Runtime version.** No `RuntimeVersion` identifier was found in `src`. Is the Runtime version the assembly version, a git commit, or a new constant? UNVERIFIED.
 - **Q8. GPU identity.** Environment reporting has no GPU field. Is GPU backend and driver recorded in the environment report, or only in the Studio? Changing `ExecutionEnvironmentReport` is a schema change (`psxrecomp.execution-environment.v1`) and needs care.
 - **Q9. Reporter identity.** Community results need a reporter class (4.1.2) without an agent identity. Whether to collect any personal identity is a privacy decision. This draft collects none.
 - **Q10. Feedback intake.** In the repository, #23 is the review-finding feedback process: it converts recurring review findings into durable prevention [CONFIRMED: `docs/development/quality-stack.md:162`, `:192`]. Reading #23 as the community feedback intake for this registry is UNVERIFIED. The registry only defines the record, and the intake path needs an owner ruling.
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
-- **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
+- **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`src/PSXRecompStudio/Services/TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
 - **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 
