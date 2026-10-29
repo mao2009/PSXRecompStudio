@@ -1,6 +1,6 @@
 # Issue #46: Artifact identity, build provenance, and the management layer
 
-Tracking: [#46](https://github.com/mao2009/PSXRecompStudio/issues/46). Related: #456 (first runnable artifact, complete through #458-#461), #15 (CLI build/run), #42 (Project / Workspace), #43 (incremental analysis and cache), #40 (Studio GUI).
+Tracking: [#46](https://github.com/mao2009/PSXRecompStudio/issues/46). Related: #456 (first runnable artifact, complete through #458-#461), #15 (CLI build/run), #42 (Project / Workspace), #43 (incremental analysis and cache), #40 (Studio GUI), #48 (runtime configuration, W12).
 
 Status: **design only**. No code, test, or shared document is changed by this document. Baseline: `origin/main` at `2e3ecad`.
 
@@ -17,9 +17,11 @@ No BIOS, ROM, disc, or other copyrighted content was read or is recorded here. P
 
 Layer rules this design follows: ADR-017 points 1-3 (`docs/adr/017-managed-host-io-port-adapter-boundary.md:29-31`), the managed host I/O rules in `docs/architecture-matrix.md` (rule 3 at `:66`, Forbidden API Matrix at `:92`), and the machine-enforced entries in `src/architecture.contract.json` (`forbiddenDependencies` at `:9`, `forbiddenApis` at `:18`). Where the matrix and the contract differ, the contract governs.
 
+**Decision for this round (binding).** In v1, automated Build Skip is disabled. Every build runs. The design cannot prove that an untracked input (the C runtime, import libraries, headers, specs, driver configuration, or the compiler binary itself) is unchanged, so no Skip path is safe. A future Skip needs a separate design with a fingerprint of every file the driver resolves. This document covers identity, the manifest, and verification. It does not cover Skip.
+
 ## 1. Where Issue #46 stands
 
-The issue body marks the first runnable-artifact slice as complete (#458 adapter, #459/#460 CLI and run surface, #461 E2E). Its open items are: artifact identity, build manifest, input/toolchain/output association, build history, clean/rebuild/incremental policy, a shared CLI/GUI workflow, and reproducibility requirements. This document covers the first three, the reproducibility requirements, and the shape of the shared workflow. History and incremental policy are only sketched, because they depend on #42 and #43.
+The issue body marks the first runnable-artifact slice as complete (#458 adapter, #459/#460 CLI and run surface, #461 E2E). Its open items are: artifact identity, build manifest, input/toolchain/output association, build history, clean/rebuild/incremental policy, a shared CLI/GUI workflow, and reproducibility requirements. This document covers the first three, the scope of the reproducibility requirements, and the shape of the shared workflow. History is only sketched, because it depends on #42. Incremental policy is out of scope for v1, because Skip is disabled.
 
 ## 2. Current artifact generation path
 
@@ -68,7 +70,7 @@ The external BIOS path is a separate runtime input. It is read from the environm
 - `allowEmptyProgram` (`src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:85`, used by `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:405-406`). CONFIRMED.
 - `hostBridge`, `directLaunchHostRelativePath`, `externalBios`, `windowedLaunch` on `GenerateStandalone` (`src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs:305-318`). CONFIRMED.
 
-The consequence is that the same input can produce different C source depending on which entry point built it. `recompile` uses the defaults (`src/PSXRecomp.Cli/RecompileCommand.cs:42`), while `run` and `package` may set `traceUnits` or `guardStats`. PREDICTED from the code paths. This is the largest gap in the current design. Section 4 addresses it.
+The consequence is that the same input can produce different C source depending on which entry point built it. `recompile` uses the defaults (`src/PSXRecomp.Cli/RecompileCommand.cs:42`), while `run` and `package` may set `traceUnits` or `guardStats`. PREDICTED from the code paths. This is the largest gap in the current design. Section 3.2 keys these options.
 
 `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:57` declares `s_guardStats` as `[ThreadStatic]`, and `:88` sets it on each call. Concurrent calls on different threads therefore do not share it. CONFIRMED.
 
@@ -107,35 +109,35 @@ Note: the name `Manifest` is already used for three different things (`RuntimeHo
 Keep four identities separate. Collapsing them is what caused the problems in #734, which this design follows (`docs/runtime/loaded-code-identity.md`).
 
 1. **Input identity.** SHA-256 of the input bytes that the codegen consumed: the EXE file for PS-X EXE input (`src/PSXRecomp.Cli/CliInput.cs:79`), or the CHD stream for CHD input (`src/PSXRecomp.Cli/CliInput.cs:100`). It identifies provenance. It is not a runtime proof. Source: `CliInput.LoadWithIdentity`.
-2. **Build key.** A hash of everything that decides the generated source and the build recipe, computed before building. Its inputs are listed in 3.2. Two builds with the same build key should produce the same source (Section 4.1). It is the natural lookup key for caching later (#43).
-3. **Source identity.** SHA-256 of the generated `.c` bytes. Computed after codegen. It is the strongest "what did we generate" identity.
+2. **Build key.** A hash of everything that decides the generated source and the build recipe, computed before building. Its inputs are listed in 3.2. The key records what was built. It is not a skip key, because Skip is disabled in v1.
+3. **Source identity.** SHA-256 of the generated `.c` bytes. Computed after codegen. It is recorded and verified, and it identifies what was generated.
 4. **Binary identity.** SHA-256 of the native binary. Computed after the build. It is the artifact identity that `src/PSXRecomp.Cli/RunCommand.cs:191` already reports, but only after a run.
 
-Binary identity is not guaranteed to be stable across builds (Section 4.3). The source identity is the stable one that the design can promise.
+Binary identity is not guaranteed to be stable across builds (Section 4.3). The design records and verifies the source and binary hashes. It makes no stability promise for either.
 
 ### 3.2 Build key inputs
 
 The build key hashes this set. Each item is a field in the manifest, so a mismatch is explainable:
 
 - Input identity (item 1 of 3.1). The input SHA-256 is computed in the CLI by `CliInput.LoadWithIdentity` (`src/PSXRecomp.Cli/CliInput.cs:56`). `recompile` does not call it today (`src/PSXRecomp.Cli/RecompileCommand.cs:39` calls `Load`), so the CLI must switch to it. The value reaches the workflow as `ArtifactBuildRequest.InputSha256` (Section 7.2). For a standard artifact, the runtime-input names are in 3.5 (`runtimeInputs`).
+- Input kind: `exe` or `chd`, chosen by file extension (`src/PSXRecomp.Cli/CliInput.cs:44-46`). It is keyed, because it selects the loading path that produces the IR.
 - Requested binary name (`BinaryName`). In standalone mode it is derived from the input file name (`src/PSXRecomp.Cli/RecompileCommand.cs:63`, `ResolveStandaloneArtifactName` at `:213`). It is a bare file name, not a path. Two inputs with identical bytes and different names therefore have different keys, and their manifests differ in `source.file`, `binary.file`, and `files`.
 - Entry roots: `arguments.EntryRoots` (`src/PSXRecomp.Cli/RecompileCommand.cs:40`), passed into `CliInput.Lower` (`src/PSXRecomp.Cli/CliInput.cs:130-136`). They change the lowered program and therefore the generated source. The key holds them as a list of decimal values, in order. An empty list means no explicit roots.
 - Segment budget (`src/PSXRecomp.Cli/RecompileCommand.cs:38`), keyed as `Codegen.Budget`.
-- Input kind: `exe` or `chd`, chosen by file extension (`src/PSXRecomp.Cli/CliInput.cs:44-46`). It is keyed, because it selects the loading path that produces the IR.
 - SHA-256 of the generated `Source` text (`source.sha256`). The CLI runs codegen before the workflow is called (`src/PSXRecomp.Cli/RecompileCommand.cs:42`, `:86-101`), and the workflow holds the result. This hash covers every input that changes `Source` that is not listed above, including the loaded-code table.
-- Presence of extra compiler or linker arguments. Any extra argument disables Skip (Section 6, M1 rule). The arguments themselves are recorded in the manifest, as they were given.
+- Extra compiler or linker arguments. They are recorded in the manifest as given (`extraArguments`), and their presence is part of the record. They are not rejected unless they contain a path separator or drive qualifier (3.6).
 - Codegen mode and standalone options, as the `codegen` fields listed in 3.5. Mode is standard or standalone (`src/PSXRecomp.Cli/RecompileCommand.cs:56`).
 - Codegen options: `traceUnits`, `guardStats`, `allowEmptyProgram` (2.4). These must be part of the key. Today they are not recorded anywhere.
 - Loaded-code table (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs`) identity, from `LoadImageManifest`. Its source SHA-256 is already computed (`src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:356`). Loaded-code names are not keyed separately. The CLI `recompile` path passes no loaded-code table: `src/PSXRecomp.Cli/RecompileCommand.cs:42` calls the single-argument `Generate`. On the engine path, the table is covered by `source.sha256`. Its descriptors go into the manifest as an explanation only.
 - Generator version (3.3).
 - Build recipe, path-free (3.6): the fixed compiler and linker tokens, the caller's extra arguments, `FirmwareDistribution`, and the `--gui` linker arguments. No absolute path and no staging GUID enters the key.
-- Toolchain identity (MAJOR-1, MAJOR-2). Every component below is a version line or a triple, never an executable path. The workflow resolves the driver once, as `compiler = request.CompilerExecutable ?? GccGeneratedHostRecipe.DefaultCompiler` (`"gcc"`; the adapter default is `src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:24`, the override field `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:52`). It passes `compiler` to `IToolchainProbe.Probe` and sets `CompilerExecutable: compiler` on the build request. Both receive the identical string.
+- Toolchain identity. Every component below is a version line or a triple, never an executable path. The workflow resolves the driver once, as `compiler = request.CompilerExecutable ?? GccGeneratedHostRecipe.DefaultCompiler` (`"gcc"`; the adapter default is `src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:24`, the override field `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:52`). It passes `compiler` to `IToolchainProbe.Probe` and sets `CompilerExecutable: compiler` on the build request. Both receive the identical string.
   - Driver version: the first line of `<compiler> --version`.
   - Target triple: from `<compiler> -dumpmachine`.
-  - Linker version (MAJOR-2): the link step runs the same driver (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:105`), which invokes `ld`. The probe runs `<compiler> -print-prog-name=ld` to locate the linker, then keys the first line of that linker's `--version`. The linker path is not keyed.
-  - C library (accepted limit, rebuild rule): the C runtime and import libraries are not probed. A change is not detected automatically. Rebuild when it could have changed. The trigger is any update of the C runtime or import-library package, including a runtime-only update that leaves the driver version line unchanged. The workaround is to rebuild, never to skip. Section 3.7 gives the full rule.
-  - Driver configuration (accepted limit, rebuild rule): a driver configuration file (`<driver>.cfg`, UNVERIFIED for this toolchain) is not keyed. A `@file` response file already disables Skip through the extra-argument rule (Section 6). Rebuild after any edit to a driver configuration file. The workaround is to rebuild, never to skip (Section 3.7).
-  - Environment presence (MAJOR-3): Section 6, Environment rule.
+  - Linker version: the link step runs the same driver (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:105`), which invokes `ld`. The probe runs `<compiler> -print-prog-name=ld` to locate the linker, then keys the first line of that linker's `--version`. The linker path is not keyed. If the driver prints a bare `ld` with no directory, the probe runs `ld --version` through `PATH`, which is the same resolution the build uses. If that run fails, `Available` is false (3.7 and 7.2).
+  - C library (accepted limit). The C runtime and import libraries are not probed or keyed. A change is not detected. Because the build always runs, the next build uses the changed library, but its manifest does not record the change. Trigger for operator review: any update of the C runtime or import-library package, including a runtime-only update that leaves the driver version line unchanged. Section 3.7 gives the full rule.
+  - Driver configuration (accepted limit). A driver configuration file (`<driver>.cfg`, UNVERIFIED for this toolchain) is not keyed. The same rule applies: the build runs, the manifest does not record the change. Trigger for operator review: any edit to a driver configuration file. A `@file` response file is recorded because it changes the argument list, and its presence is in the manifest (Section 6).
+  - Environment and working directory. Environment names are reported in the local history (3.7). `PATH` and the current working directory are not keyed (3.7).
 
 ### 3.3 Tool versions
 
@@ -167,7 +169,7 @@ Deterministic fields (no timestamps, no local paths):
 ```text
 schemaVersion, buildKey, binaryName,   // binaryName: the requested bare name, also a key input (3.2)
 entryRoots: [ uint ],                  // decimal, in order; keyed (3.2)
-extraArguments: { compiler: bool, linker: bool }   // presence only for Skip; the values are in toolchain (3.6)
+extraArguments: { compiler: bool, linker: bool, values: [ string ] }   // as given; values are path-free (3.6)
 input:      { kind, sha256 }                    // kind: "exe" | "chd"; hash only
 codegen:    {
   mode,                         // "standard" | "standalone"
@@ -185,13 +187,21 @@ loadedCode: [ { name, kind, loadAddress, wordCount, sourceSha256 } ]   // explan
 source:     { file, sha256, sizeBytes }     // file: "<name>.c", a bare file name
 binary:     { file, sha256, sizeBytes }     // file: "<name>" or "<name>.exe", as produced
 files:      [ "<name>.c", "<name>[.exe]", "<name>.o" (game builds only) ]   // bare names, what promote moves
-toolchain:  { compilerVersionLine, targetTriple, recipeTokens }   // path-free, see 3.6
+toolchain:  { compilerVersionLine, linkerVersionLine, targetTriple, recipeTokens }   // path-free, see 3.6
 digests:    { artifact: { file, sha256, sizeBytes }, imageSidecar: { file, sha256, sizeBytes } }   // packaged builds only, read by the packaged host; see 3.8
 runtimeInputs: [ { name, kind, requiredBy, sha256? } ]   // names and hashes only, never the BIOS or ROM content
 productRevision: "<InformationalVersion>"       // informational, not part of buildKey
 ```
 
 The `initialGpr`, `initialMemory`, and program-image values are hashed and never listed in the manifest. The manifest records their hashes only, the same way the project manifest already stores the input SHA-256 (`src/PSXRecomp.Core/Project/ProjectManifestDocument.cs:29`). The C source and `artifact-image.bin` still contain the game-derived data they always did (Section 2.3).
+
+**runtimeInputs.** For a standard artifact, the artifact reads its input at run time (`src/PSXRecomp.Cli/RecompileCommand.cs:99`). Its single entry is `{ name: "input", kind: "exe" | "chd", requiredBy: "standard run", sha256: <input.sha256> }`. It carries a name, never a path. Its hash is already in the key. For a standalone artifact the list is empty, except for an external BIOS. That adds `{ name: "PSXRECOMP_BIOS_ROM", kind: "environment", requiredBy: "externalBios" }`, which records the variable name only, never its value or the file content (`src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs:629`).
+
+Non-deterministic or local data goes into a separate local record, not into the manifest: timestamps, compiler path, machine name, environment variable names, and the run history. Section 5.
+
+The manifest is a sidecar. It is not embedded in the C source. Embedding would change the source bytes and invalidate the existing determinism tests (`src/PSXRecomp.Tests/Recompiler/HostCodeGenTests.cs:576`, `src/PSXRecomp.Tests/Recompiler/RecompiledArtifactCodeGenTests.cs:144`, `:223`, `:252`, OBSERVED test names). It would also make the source identity depend on the manifest that describes it.
+
+`RuntimeHostManifest` is not changed. It is the run contract for the packaged host, and it should stay one.
 
 ### 3.6 Path-free recipe
 
@@ -204,51 +214,61 @@ The recorded `recipeTokens` are these fixed tokens, in order:
 - `-c`, then the placeholder `<source>`, then `-o`, then the placeholder `<object>` (`:82-85`).
 - For the link step: `<object>`, then `-s` when `FirmwareDistribution` is set (`:102-103`), then the caller's `ExtraLinkerArguments`, then `-o`, then the placeholder `<binary>` (`:219-220`).
 
-The placeholders `<source>`, `<object>`, and `<binary>` replace the three output-dependent values. Real paths go only into the local history record (Section 5). **Caller-supplied extra arguments: rule.** The workflow rejects, before any build step, an extra compiler or linker argument that contains `/`, `\`, or `:` anywhere in the token. This covers rooted paths, drive-qualified paths, and forms such as `-I/does not exist/include`. `Path.IsPathRooted` is not enough, because it returns false for `-I/...`, and the adapter test at `src/PSXRecomp.Tests/Infrastructure/GeneratedHostBuildServiceTests.cs:213` uses exactly that form. A rejected request returns an outcome `ArgumentRejected` with code `PATH_ARGUMENT_NOT_ALLOWED`, makes no port call, and creates no staging area. The rule sits in the workflow. The adapter keeps accepting such tokens, so its existing test stays valid. Tokens without a separator, such as `-Iinclude`, are accepted and recorded as given. They resolve against the process working directory, which the key does not record. A build with any extra argument always rebuilds and never Skips (Section 6). The rule also rejects a few non-path tokens that contain `:`, such as `-Wl,--subsystem,windows:5.0` and `-DURL=http://...`. No production caller passes them, so that cost is accepted.
+The placeholders `<source>`, `<object>`, and `<binary>` replace the three output-dependent values. Real paths go only into the local history record (Section 5).
+
+**Caller-supplied extra arguments: rule.** The workflow rejects, before any build step, an extra compiler or linker argument that contains `/`, `\`, or `:` anywhere in the token. This covers rooted paths, drive-qualified paths, and forms such as `-I/does not exist/include`. `Path.IsPathRooted` is not enough, because it returns false for `-I/...`, and the adapter test at `src/PSXRecomp.Tests/Infrastructure/GeneratedHostBuildServiceTests.cs:213` uses exactly that form. A rejected request returns an outcome `ArgumentRejected` with code `PATH_ARGUMENT_NOT_ALLOWED`, makes no port call, and creates no staging area. The rule sits in the workflow. The adapter keeps accepting such tokens, so its existing test stays valid. The rule also rejects a few non-path tokens that contain `:`, such as `-Wl,--subsystem,windows:5.0` and `-DURL=http://...`. No production caller passes them, so that cost is accepted.
+
+Tokens without a separator, such as `-Iinclude`, are accepted and recorded as given. They resolve against the process working directory, which is not keyed. That is an accepted limit (3.7).
 
 **Recipe ownership.** The fixed tokens move into a Domain constant, `GccGeneratedHostRecipe` (`[Domain]`, `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs`). It holds `DefaultCompiler` (`"gcc"`), `DefaultCompilerArgTokens`, the literals `-c`, `-o`, and `-s`, and the three placeholders. The adapter consumes this constant (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:25`, `:82-85`, `:102-103`) and no longer keeps its own copy. The workflow computes `recipeTokens` from the same constant. The constant is named for gcc because every flag in it is a gcc flag. A second toolchain needs its own kind (for example an enum with `Gcc` and `Mingw`, keyed in the build key) and its own recipe constant. No such kind exists today. A change to a flag therefore changes the key, and the adapter cannot drift from it. This move is a required change and is not implemented by this design.
 
 The tier-1 test in Section 4.2 checks this rule: the same input built into two different directories gives the same `buildKey` and the same manifest bytes.
 
-**runtimeInputs.** For a standard artifact, the artifact reads its input at run time (`src/PSXRecomp.Cli/RecompileCommand.cs:99`). Its single entry is `{ name: "input", kind: "exe" | "chd", requiredBy: "standard run", sha256: <input.sha256> }`. It carries a name, never a path. Its hash is already in the key. For a standalone artifact the list is empty, except for an external BIOS. That adds `{ name: "PSXRECOMP_BIOS_ROM", kind: "environment", requiredBy: "externalBios" }`, which records the variable name only, never its value or the file content (`src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs:629`).
+### 3.7 Environment, PATH, working directory, and driver inputs
 
-Non-deterministic or local data goes into a separate local record, not into the manifest: timestamps, compiler path, machine name, and the run history. Section 5.
+Each input that could change the output is one of three classes:
 
-The manifest is a sidecar. It is not embedded in the C source. Embedding would change the source bytes and invalidate the existing determinism tests (`src/PSXRecomp.Tests/Recompiler/HostCodeGenTests.cs:576`, `src/PSXRecomp.Tests/Recompiler/RecompiledArtifactCodeGenTests.cs:144`, `:223`, `:252`, OBSERVED test names). It would also make the source identity depend on the manifest that describes it.
+- **Keyed**: it is in the build key or in a checked identity in the manifest.
+- **Presence-reported**: the probe reports whether it is set. The name goes into the local history entry. The build still runs. The name is not keyed, because the key must not depend on the machine.
+- **Out of scope for the key**: it does not change output bytes under the stated basis, or it is not read by the build. The reason is given.
 
-`RuntimeHostManifest` is not changed. It is the run contract for the packaged host, and it should stay one.
+Since Skip is disabled, no class triggers a Skip decision. Every build runs.
 
-### 3.7 Inputs that could change the output, and how each is handled
+**Presence-reported list.** `RunToolchain` does not set or clear the environment (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:244-250`), so the child process inherits the parent's variables. The probe reports the names that are set, using ordinal, ignore-case comparison. Windows environment names are case-insensitive, so `cpath` and `CPATH` are the same name. The fixed list is `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`, `LIBRARY_PATH`, `COMPILER_PATH`, `GCC_EXEC_PREFIX`, `LD_RUN_PATH`, and `GNUTARGET`. Any name beginning with `GCC_` (prefix rule) is also reported, which includes `GCC_COLORS`. The list is fixed in the workflow. It cannot cover every variable a toolchain might read. No environment hash is kept. An earlier draft kept one to gate Skip. That draft is withdrawn with Skip.
 
-Each input is one of three classes. **Keyed**: it is in the build key or in a checked identity. **Rebuild-trigger**: Skip is disabled automatically, or an operator must rebuild. **Out of scope**: it does not change output bytes, and the reason is given.
+**Driver and linker inputs, per row:**
 
-| Input | Could change output | Class | Reason / basis |
+| Input | Could change output | Class | Basis |
 |---|---|---|---|
-| `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` | header search | rebuild-trigger (presence disables Skip) | fixed list (3.2); names only recorded |
-| `LIBRARY_PATH` | library search | rebuild-trigger (presence) | fixed list |
-| `COMPILER_PATH`, `GCC_EXEC_PREFIX` | tool and sub-program search | rebuild-trigger (presence) | fixed list |
-| any other `GCC_*` name (for example `GCC_COLORS`) | driver behavior | rebuild-trigger (presence, prefix rule) | conservative; names cannot be enumerated |
-| `PATH` | selects the driver and linker that run | keyed indirectly (driver and linker version lines); any change also changes the environment hash | the probe runs under the same `PATH` |
-| every other variable, name and value | untracked by design | rebuild-trigger (environment hash) | a change of any value forces a rebuild |
-| `TMPDIR`, `TMP`, `TEMP` | location of temporary files | out of scope for output bytes; still covered by the environment hash | PREDICTED: gcc writes only temporaries here |
-| `SOURCE_DATE_EPOCH` | `__DATE__`, `__TIME__`, archive timestamps | out of scope for output bytes; still covered by the environment hash | OBSERVED: the codegen contains no `__DATE__` or `__TIME__` (grep over `src/PSXRecomp.Core/Recompiler`, `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`). PREDICTED: the link does not use an archive |
-| `LANG`, `LC_ALL`, `LC_MESSAGES` | diagnostic language | out of scope | PREDICTED: diagnostics only |
-| `DEPENDENCIES_OUTPUT`, `SUNPRO_DEPENDENCIES` | dependency-file output | out of scope | PREDICTED: writes an extra file, not the binary; the adapter does not set them |
-| `<driver>.cfg` (driver configuration) | prepends driver options | rebuild-trigger (operator action after an edit) | untracked; UNVERIFIED for this toolchain |
-| `@file` response files | adds arguments | rebuild-trigger (Skip disabled by the extra-argument rule) | already enforced |
-| C runtime, import libraries, headers (package) | compile and link inputs | rebuild-trigger (operator action on any update, runtime-only included) | not probed |
+| `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` | header search | presence-reported | fixed list; names only |
+| `LIBRARY_PATH` | library search | presence-reported | fixed list |
+| `COMPILER_PATH`, `GCC_EXEC_PREFIX` | tool and sub-program search | presence-reported | fixed list |
+| `LD_RUN_PATH` | linker runtime search path | presence-reported | fixed list; PREDICTED to affect the link |
+| `GNUTARGET` | selects the binary format of the linker | presence-reported | fixed list; PREDICTED to affect the link |
+| any `GCC_*` name (for example `GCC_COLORS`) | driver behavior | presence-reported (prefix rule) | conservative; names cannot be enumerated |
+| `PATH` | selects the driver and linker that run | not keyed | The probe and the build resolve the driver by the same name, in the same process, so the recorded driver version line describes the driver that ran. A different `gcc` found earlier on `PATH`, or in the working directory on Windows, is an accepted limit, not detected. |
+| current working directory | relative `-I` tokens and any name the driver resolves from it | not keyed | accepted limit (3.6). Relative tokens are recorded as given. |
+| `TMPDIR`, `TMP`, `TEMP` | location of temporary files | out of scope for the key | PREDICTED: gcc writes only temporaries here. Not used to decide anything. |
+| `SOURCE_DATE_EPOCH` | `__DATE__` and `__TIME__` in the source, timestamps in archives | out of scope for the key | OBSERVED: no `__DATE__` or `__TIME__` in `src/PSXRecomp.Core/Recompiler`, `src/PSXRecomp.Cli`, or `src/PSXRecomp.Infrastructure` (grep). Not checked: the included runtime headers were not grepped. PREDICTED: the link does not use an archive. UNVERIFIED: clang may honour `SOURCE_DATE_EPOCH`, which would matter if clang were ever the driver. |
+| `LANG`, `LC_ALL`, `LC_MESSAGES` | diagnostic language | out of scope for the key | PREDICTED: diagnostics only. UNVERIFIED for the exec charset of compiler output. |
+| `DEPENDENCIES_OUTPUT`, `SUNPRO_DEPENDENCIES` | dependency-file output | out of scope for the key | PREDICTED: writes an extra file, not the binary. The adapter does not set them. |
+| `<driver>.cfg` (driver configuration) | prepends driver options | accepted limit (not keyed) | UNVERIFIED for this toolchain. Section 3.2. |
+| `@file` response files | adds arguments | keyed as presence, through the extra-argument record | 3.5 `extraArguments` |
+| `-specs=` and other extra arguments | driver behavior | keyed as given | 3.5 `extraArguments`, rule in 3.6 |
+| C runtime, import libraries, headers (package) | compile and link inputs | accepted limit (not keyed) | not probed. Section 3.2. |
 | driver version line | driver behavior | keyed | 3.2 |
 | linker version line | link behavior | keyed | 3.2 |
 | target triple | ABI and default flags | keyed | 3.2 |
-| `-specs=` and other extra arguments | driver behavior | rebuild-trigger (Skip disabled by the extra-argument rule) | M1 rule |
 
-**Accepted limits (owner ruling, conditional acceptance).** A tracked limit is accepted only while it is stated. The rule is: when a limit could have changed, rebuild. Skip is never safe while an untracked input may have changed.
+**Accepted limits.** A tracked limit is accepted only while it is stated. The owner rule is: when a limit could have changed, rebuild. In v1 the build always runs, so every build takes the changed input into account. The limit that remains is about the record. The manifest of a build does not show an untracked change (for example a C runtime update or a driver configuration edit), so the manifest cannot prove that such a change did not affect the output. Operators must treat these triggers as review events:
 
-- Trigger conditions. The workflow cannot detect these, so an operator must rebuild after any of them: (a) any update of the C runtime or import-library package, including a runtime-only update that leaves the driver version line unchanged; (b) any edit to a driver configuration file (`<driver>.cfg`) or to a `@file` response file; (c) any reinstallation or edit of the toolchain directory.
-- Automatically detected: changes to the driver version line, the linker version line, the target triple, any environment variable (name or value, through the environment hash), any fixed-list variable, and any extra argument.
-- Workaround: rebuild. Delete the output directory, which forces Build. Skip is never the workaround for an untracked input. A forced-rebuild command-line option is a possible later addition and is not part of this design.
+- any update of the C runtime or import-library package, including a runtime-only update that leaves the driver version line unchanged;
+- any edit to a driver configuration file (`<driver>.cfg`) or to a `@file` response file;
+- any reinstallation or edit of the toolchain directory, or a change of what `PATH` and the working directory resolve to.
 
-**Complete reproducibility is not guaranteed.** The rules above make Skip conservative. They do not make the build reproducible across machines, toolchains, or library versions. Section 4 gives the scope of what the key covers.
+The workaround is the same for each: rebuild. Because the build always runs, a rebuild is simply running the build again, and the operator should also delete the output directory when a clean record is wanted. Skip is never the workaround for an untracked input, and no Skip exists in v1 to misuse.
+
+**Complete reproducibility is not guaranteed.** The always-build rule and the keyed inputs do not make the build reproducible across machines, toolchains, library versions, or working directories. Section 4 gives the scope of what the key covers.
 
 ### 3.8 Digests read by the packaged host (H2, H3)
 
@@ -266,9 +286,11 @@ The packaged host (issue #48, W12) must verify the SHA-256 of two files before u
 
 **Fail closed (W12).** On a mismatch in H2 or H3, or a missing H2, H3, or manifest file, the host refuses to start. It does not run unverified. The check itself is implemented in W12. This design only defines the contract and the writer.
 
-**Not part of the key.** The digests are outputs, derived after the build. They are not in `buildKey` and do not change Skip (Section 6), so the identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is not covered by these digests. Its integrity is W12's concern.
+**Not part of the key.** The digests are outputs, derived after the build. They are not in `buildKey` and do not affect the build decision, because there is no Skip in v1. The identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is not covered by these digests. Its integrity is W12's concern.
 
 ## 4. Reproducibility: scope and limits (no guarantee)
+
+**Complete reproducibility is not guaranteed.** This section gives what the key covers and what it does not. It does not promise that a build is reproducible.
 
 ### 4.1 What is expected today (tier 0)
 
@@ -280,21 +302,21 @@ Tier 0 does not cover: a different `traceUnits` or `guardStats` setting, a diffe
 
 ### 4.2 Proposed key scope (tier 1), not a guarantee
 
-Given the same input bytes (input SHA-256), the same psxrecomp generator version, the same codegen options, the same entry roots, and the same loaded-code table, the generated `.c` is byte-identical, and the `buildKey` is identical. The manifest's `source.sha256` field lets a reviewer verify it.
+Given the same input bytes (input SHA-256), the same psxrecomp generator version, the same codegen options, the same entry roots, and the same loaded-code table, the generated `.c` is byte-identical, and the `buildKey` is identical. The manifest's `source.sha256` field records this, and a reviewer can verify it. This is a description of what the key covers. It is not a stability promise.
 
-This tier is not promised until these are done:
+Before this scope is relied on, these tests must exist and pass:
 
 - The codegen options are recorded (3.2), so two builds with different `guardStats` are not the same build.
 - The generator version constant exists (3.3).
 - Test A (required): build the same input twice through the same entry point, into two different output directories. The `buildKey`, the `source.sha256` field, and the manifest bytes must all be identical. The test fails if any path, GUID, or timestamp reaches the key or the manifest.
-- Test C (required): equal-byte inputs built under two binary names (for example `game-a.exe` and `game-b.exe`) produce different `buildKey` values. A build under the second name is not skipped when only the first name's output exists (Section 6). This test catches a key that omits the name, which Test A cannot catch, because Test A keeps the name fixed.
+- Test B (later): compare across entry points for the default options.
+- Test C (required): equal-byte inputs built under two binary names (for example `game-a.exe` and `game-b.exe`) produce different `buildKey` values. Each build runs and produces its own name. Building the second name never reuses the first name's output. This test catches a key that omits the name, which Test A cannot catch, because Test A keeps the name fixed.
 - Test D (required): the workflow rejects each of `-I/does not exist/include`, `C:\\lib`, and `-Wl,-rpath,/opt/lib` with `PATH_ARGUMENT_NOT_ALLOWED`. It makes zero calls to `IGeneratedHostBuildService` and creates no staging area. It accepts `-Iinclude`. The test uses a fake port that counts calls.
-- Test E (required): with an extra compiler or linker argument present, Skip is never taken, even when the key and every listed hash match.
+- Test E (required): two identical requests with an extra compiler or linker argument each call the build port. No code path skips the build.
 - Test F (required): changing only `EntryRoots` or the input kind changes the `buildKey`, because both change `Source`. The `source.sha256` field must also change.
 - Test G (required): a fake `IToolchainProbe` and a fake `IGeneratedHostBuildService` both receive the identical `compiler` string. The string is `request.CompilerExecutable` when set, and `"gcc"` otherwise. The test also covers `Available = false`, which must fail with `TOOLCHAIN_UNAVAILABLE` before staging and make no build call.
-- Test H (required): with `CPATH` (and each other listed name) present in the probe result, Skip is never taken, even when every hash matches.
+- Test H (required): the probe reports presence for `CPATH`, lowercase `cpath`, `LD_RUN_PATH`, `GNUTARGET`, and `GCC_COLORS`. Each name appears in the local history entry. None of them changes the build decision or the key.
 - Test I (required): a change in the linker version line alone changes the `buildKey`.
-- Test B (later): compare across entry points for the default options.
 
 ### 4.3 Binary identity (tier 2): not guaranteed, not yet measured
 
@@ -312,29 +334,30 @@ Experiment required before any tier-2 claim (run on one machine first, then two)
 - Runtime behavior of a standard artifact. It reads its input at run time (`src/PSXRecomp.Cli/RecompileCommand.cs:99`), so the same binary can behave differently with a different input file. CONFIRMED from the comment; behavior PREDICTED.
 - The runtime host. `dotnet publish` output is not in any identity (Section 2.5). Whether it is reproducible is UNVERIFIED.
 - Behavior across OS and compiler versions. Not guaranteed. The CI uses the runner's gcc (2.7).
+- Builds across C library, import library, header, specs, or driver configuration changes (Section 3.7). These are accepted limits, and the manifest does not record them.
+- Any build whose working directory or `PATH` resolves a different compiler (Section 3.7).
 - Confidentiality of the output directory. It holds game-derived code and data (2.3, 3.5). This design does not make it safe to share. It stays under the same rules as before.
 - Any run that uses an external BIOS (`src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs:629`). The BIOS is never part of the artifact, so the BIOS file is outside the guarantee. Only its provenance label is recorded (`src/PSXRecomp.Infrastructure/Standalone/RuntimeHostManifest.cs:60-68` labels such as `user-supplied`). The BIOS content is never recorded, hashed into a committed file, or included in a manifest.
 - Artifacts built with `guardStats` or `traceUnits`. These are measurement builds. They are not release builds, and the manifest must say so.
 
 ## 5. Build history
 
-Proposed: an append-only local log, one JSON object per build, with the timestamp, compiler path, step outcomes, and the `buildKey`. It is local-only and is never committed, consistent with `docs/development/artifact-policy.md:72-73`. Its location depends on #42 (Project / Workspace), which is not implemented. Until then, the log can live next to the output directory (`<outputDir>/build-history.jsonl`) and be treated as a diagnostic, not as state.
+Proposed: an append-only local log, one JSON object per build, with the timestamp, compiler path, step outcomes, the `buildKey`, and the presence-reported environment names. It is local-only and is never committed, consistent with `docs/development/artifact-policy.md:72-73`. Its location depends on #42 (Project / Workspace), which is not implemented. Until then, the log can live next to the output directory (`<outputDir>/build-history.jsonl`). It is a diagnostic record. Nothing reads it to decide whether to build.
 
 The workflow builds one `BuildHistoryEntry` (Domain, `[Domain]`, Section 7.2) and passes it to `IBuildHistoryLog.Append`. The entry carries the real paths as data: the compiler executable, the output directory, and the staging directory. The entry has no time field, because Domain forbids `DateTime.Now` and `DateTime.UtcNow` (`src/architecture.contract.json:25-26`; matrix Forbidden API table). The Infrastructure adapter adds only the timestamp when it writes the line. It does not add or change any other field.
 
 Open: whether history is per-output-directory or per-project. See Section 9.
 
-## 6. Clean, rebuild, and incremental policy (sketch)
+## 6. Clean and verify (no Skip in v1)
+
+**Build always runs.** In v1 the workflow runs the build on every request. There is no Skip path, and no record, hash, or environment check can cause a build to be skipped. A future Skip needs a separate design. That design must fingerprint every file the driver resolves, including the C runtime, import libraries, headers, specs, driver configuration, and the compiler binary, and it must be reviewed on its own. This document does not define it.
 
 - **Clean.** Remove exactly the files in the manifest's `files` list (Section 3.5): `<name>.c`, `<name>[.exe]`, and `<name>.o` for game builds. `build-manifest.json` is removed as well. It is named explicitly and not hashed, because it cannot list its own hash. The workflow promotes it in step 5 (Section 7.2). A file not in that list, and not the manifest, is never deleted. `artifact-input.txt` and `artifact-image.bin` are not in the list. The engine writes them (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:511-512`), and the engine is not migrated to the workflow (Section 7.2), so clean does not touch them. Their removal belongs to the engine migration.
-- **Rebuild.** Skip only when every condition holds: the manifest exists, its `buildKey` equals the computed key, its `binaryName` equals the requested name, `source.file` equals `<binaryName>.c`, `binary.file` equals `<binaryName>` or `<binaryName>.exe`, its driver version line, linker version line, and target triple equal the probed values, no extra compiler or linker argument is present, no compiler-affecting environment variable is set and the environment hash equals the value recorded by the last successful build in this output directory (Environment rule below), and each listed file's hash matches. Build otherwise. The name conditions matter because a key without them could skip a build under a name that is not present (Test C, Section 4.2).
+- **Verify.** Re-hash the listed files and compare with the manifest. This is a check that the output has not been changed since the build. It is not a build decision, and it never prevents a build. A mismatch is reported. It is not repaired by editing the manifest.
 
-**Coverage rule.** Skip is safe only if the key covers every input that changes `Source`, and the toolchain and environment identity are unchanged. A tracked limit is accepted only while it is stated. When a limit could have changed, the build must rebuild. Section 3.2 lists those inputs, and `source.sha256` covers the rest of `Source`. The toolchain identity is the driver and linker version lines, the target triple, and the environment-presence set, all in 3.2, together with the accepted limits named there (C library, `<driver>.cfg`). Skip avoids only the work inside `Build` (`src/PSXRecomp.Cli/RecompileCommand.cs:115`): the compiler and link steps (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:87`, `:105`) and the firmware intermediate removal. Everything earlier runs before the check: the load (`src/PSXRecomp.Cli/RecompileCommand.cs:39`), lowering (`:40`), and codegen (`:42`, `:86`, `:101`). For a CHD input, the load also runs the disc analysis. `CliInput.LoadChd` calls `RomAnalysisPipeline.RunFromChd` on the whole disc stream (`src/PSXRecomp.Cli/CliInput.cs:115`). That is typically the largest cost before Build (PREDICTED; not measured), so for CHD input the saving from Skip is smaller than for EXE input. The source is recomputed and hashed before the comparison in every case.
+**Extra arguments.** The manifest records extra arguments as given. Each build with an extra argument runs like any other build. Relative tokens such as `-Iinclude` resolve against the working directory, which is not keyed. That is an accepted limit (3.7). Release builds keep the working directory fixed.
 
-**Extra arguments (M1).** Skip is disabled whenever `ExtraCompilerArguments` or `ExtraLinkerArguments` is non-empty. Such a build always rebuilds. Relative tokens such as `-Iinclude` resolve against the working directory, and the key does not record that directory. Without this rule, a Skip could reuse a binary built from different headers.
-
-**Environment (MAJOR-3).** `RunToolchain` does not set or clear the environment (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:244-250`), so the child process inherits the parent's variables. Several of them change headers, libraries, or tools: `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `LIBRARY_PATH`, `COMPILER_PATH`, and `GCC_EXEC_PREFIX`. The probe returns the names of those that are set, and the key records the list of names only. Values are local paths and are never recorded. If the list is non-empty, Skip is disabled, as with extra arguments. The list is fixed in the workflow. It cannot cover every variable a toolchain might read, so the fixed list alone is not enough. The environment hash closes that gap. Skip also requires that the probed environment hash equal the one recorded by the last successful build in this output directory. Any change to any variable, name or value, then forces a rebuild. The hash is held in the local record only, not in the key or the manifest. Its cost is that a volatile variable causes a rebuild on every run. That cost is accepted (open question 16). This is the only incremental decision in v1. It does not touch analysis or codegen caching, which belongs to #43.
-- **Verify.** Re-hash the listed files and compare with the manifest. This is cheap and needs no compiler.
+**Build coverage.** The workflow's cost before the build (load, lowering, and codegen) runs on every request, as does the build itself. For a CHD input, the load also runs the disc analysis (`src/PSXRecomp.Cli/CliInput.cs:115`, `RomAnalysisPipeline.RunFromChd`). That cost is PREDICTED to be the largest before Build, and it is not measured.
 
 ## 7. Management layer that keeps the Build API
 
@@ -361,9 +384,9 @@ The goal is that every current caller compiles and behaves the same, and the new
 - `CodegenInputs(IReadOnlyList<uint> InitialGpr, IReadOnlyList<(uint Address, uint Value)> InitialMemory, IReadOnlyList<byte> ProgramImage)`. These are the arrays. They are only read by the hashing helper and are never written to the key or the manifest.
 - `BuildCodegenRecord(CodegenOptions Options, string InitialGprSha256, string InitialMemorySha256, string ProgramImageSha256)`. This is the record the key and the manifest use. It is produced by one pure Domain function, `BuildCodegenRecord.From(CodegenOptions options, CodegenInputs inputs)`, which hashes each array with SHA-256 over its little-endian bytes. The workflow calls it once, before the key is computed.
 - `BuildStagingArea(string DirectoryPath)`. It is string-only.
-- `BuildHistoryEntry`. It is string-only, except for an ordered list of strings. It has these fields: `BuildKey`, `Outcome`, `CompilerExecutable` (a real local path), `OutputDirectory` (real), `StagingDirectory` (real), `ProductRevision`, `EnvironmentSha256` (local only), and `Steps` (each element `"<step> <outcome> <exitCode>"`). It has no time field and no `FileInfo`, `DirectoryInfo`, or `DateTime` member.
-- `ToolchainIdentity(bool Available, string? DriverVersionLine, string? LinkerVersionLine, string? TargetTriple, IReadOnlyList<string> PresentEnvironmentNames, string EnvironmentSha256)`. `EnvironmentSha256` is the SHA-256 over the names and values of all variables in the process environment at build time. It is computed in Infrastructure and never leaves the local record (Section 3.7). The probe is in Infrastructure, because reading the environment is a host call (`Environment` is forbidden in Domain, `src/architecture.contract.json:22`). Only the names of the variables that are set are returned. Values are never returned.
-  - `Available = false` means the driver, or the linker it reports, could not be run. The workflow then fails before any staging area is created, with `TOOLCHAIN_UNAVAILABLE`. It never takes Skip in that case. This is the same status the adapter reports today (`GeneratedHostBuildStatus.ToolchainUnavailable`).
+- `BuildHistoryEntry`. It is string-only, except for an ordered list of strings. It has these fields: `BuildKey`, `Outcome`, `CompilerExecutable` (a real local path), `OutputDirectory` (real), `StagingDirectory` (real), `ProductRevision`, `PresentEnvironmentNames` (local only, a list of strings), and `Steps` (each element `"<step> <outcome> <exitCode>"`). It has no time field and no `FileInfo`, `DirectoryInfo`, or `DateTime` member.
+- `ToolchainIdentity(bool Available, string? DriverVersionLine, string? LinkerVersionLine, string? TargetTriple, IReadOnlyList<string> PresentEnvironmentNames)`. The probe is in Infrastructure, because reading the environment is a host call (`Environment` is forbidden in Domain, `src/architecture.contract.json:22`). Only the names of the variables that are set are returned. Values are never returned.
+  - `Available = false` means the driver, or the linker it reports, could not be run. The workflow then fails before any staging area is created, with `TOOLCHAIN_UNAVAILABLE`. This is the same status the adapter reports today (`GeneratedHostBuildStatus.ToolchainUnavailable`).
 
 **Domain ports** (new, `PSXRecomp.Core`, `[Domain]`):
 
@@ -371,30 +394,30 @@ The goal is that every current caller compiles and behaves the same, and the new
   - `BuildStagingArea CreateStaging(string outputDirectory)`
   - `string Sha256(BuildStagingArea area, string fileName)`
   - `void WriteText(BuildStagingArea area, string fileName, string text)`
-  - `string? ReadOutputText(string outputDirectory, string fileName)`, used to read the existing manifest
+  - `string? ReadOutputText(string outputDirectory, string fileName)`, used to read the existing manifest for Verify
   - `string Sha256Output(string outputDirectory, string fileName)`, used by Verify
   - `void Promote(BuildStagingArea area, string outputDirectory, IReadOnlyList<string> fileNames)`, which replaces only the listed files
   - `void Discard(BuildStagingArea area)`
-- `IToolchainProbe`: `ToolchainIdentity Probe(string compilerExecutable)`. `ToolchainIdentity` is defined below. Process execution happens only behind this port.
+- `IToolchainProbe`: `ToolchainIdentity Probe(string compilerExecutable)`. `ToolchainIdentity` is defined above. Process execution happens only behind this port.
 - `IBuildHistoryLog`: `void Append(BuildHistoryEntry entry)`. The entry has no time field. The adapter stamps the time.
 
-**Pure Domain code** (no port needed): the build key (SHA-256 over the canonical form of the Section 3.5 fields), the `BuildManifest` record and its canonical JSON text, and the decision logic of Section 6 (Verify and Rebuild, given hashes that the store returns).
+**Pure Domain code** (no port needed): the build key (SHA-256 over the canonical form of the Section 3.5 fields), the `BuildManifest` record and its canonical JSON text, and the Verify comparison of Section 6 (given hashes that the store returns).
 
 **Infrastructure implementations** (`PSXRecomp.Infrastructure`; every host call this design adds, namely `File`, `Directory`, `Process`, `Guid`, and the clock, is implemented here):
 
 - `FileBuildArtifactStore : IBuildArtifactStore`. The staging name uses a GUID, as `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:510` already does.
-- `ProcessToolchainProbe : IToolchainProbe`. It wraps `GeneratedHostBuildService.RunToolchain` and the stdout change in 3.4.
+- `ProcessToolchainProbe : IToolchainProbe`. It wraps `GeneratedHostBuildService.RunToolchain` and the stdout change in 3.4. It reads the environment, using ordinal ignore-case names, for the presence list in 3.7.
 - `FileBuildHistoryLog : IBuildHistoryLog`. It stamps the time.
 
-**Workflow.** `ArtifactBuildWorkflow` (Domain, `PSXRecomp.Core`) takes `IGeneratedHostBuildService`, `IBuildArtifactStore`, `IToolchainProbe`, and `IBuildHistoryLog` through its constructor. It runs these steps:
+**Workflow.** `ArtifactBuildWorkflow` (Domain, `PSXRecomp.Core`, `[Domain]`) takes `IGeneratedHostBuildService`, `IBuildArtifactStore`, `IToolchainProbe`, and `IBuildHistoryLog` through its constructor. It runs these steps:
 
-1. Resolve `compiler = request.CompilerExecutable ?? GccGeneratedHostRecipe.DefaultCompiler` once. Probe it through `IToolchainProbe.Probe(compiler)`, and compute the build key from the inputs in 3.2, including the probed driver version line, linker version line, target triple, and environment-presence set. If `Available` is false, fail with `TOOLCHAIN_UNAVAILABLE` before staging, and never take Skip (3.2).
-2. Read the existing manifest through `ReadOutputText`, and decide Skip, Rebuild, or Verify (Section 6).
-3. Create a staging area through `CreateStaging`. The workflow passes the staging directory string as `OutputDirectory`, `request.Source` as `Source`, `request.BinaryName`, the extra arguments, the `FirmwareDistribution` flag, and `CompilerExecutable: compiler` (the same string the probe received, from step 1) to `IGeneratedHostBuildService.Build`. Without the explicit `CompilerExecutable`, the adapter would fall back to its own default (`GeneratedHostBuildService.cs:74`) and could build with a different driver than the one probed. The workflow never opens or creates that directory itself. On failure, `Discard`.
+1. Resolve `compiler = request.CompilerExecutable ?? GccGeneratedHostRecipe.DefaultCompiler` once. Probe it through `IToolchainProbe.Probe(compiler)`, and compute the build key from the inputs in 3.2, including the probed driver version line, linker version line, and target triple. If `Available` is false, fail with `TOOLCHAIN_UNAVAILABLE` before staging. No staging area is created, and no build runs.
+2. If an existing manifest is present, run Verify on its listed files (Section 6). The result is reported. It does not decide whether the build runs.
+3. Always run the build. Create a staging area through `CreateStaging`. The workflow passes the staging directory string as `OutputDirectory`, `request.Source` as `Source`, `request.BinaryName`, the extra arguments, the `FirmwareDistribution` flag, and `CompilerExecutable: compiler` (the same string the probe received, from step 1) to `IGeneratedHostBuildService.Build`. Without the explicit `CompilerExecutable`, the adapter would fall back to its own default (`src/PSXRecomp.Infrastructure/GeneratedHostBuildService.cs:74`) and could build with a different driver than the one probed. The workflow never opens or creates that directory itself. On failure, `Discard`.
 4. Hash the source and the binary through `Sha256`. Build the `BuildManifest`, and write it with `WriteText`.
 5. `Promote` the artifact files and `build-manifest.json`, replacing only what the manifest lists. Append one entry to `IBuildHistoryLog`.
 
-**Composition root.** `PSXRecomp.Cli` is the composition root for the new port implementations. It alone constructs `FileBuildArtifactStore`, `ProcessToolchainProbe`, and `FileBuildHistoryLog`, and passes them to `ArtifactBuildWorkflow`. The claim covers only those new implementations. Other callers still construct `GeneratedHostBuildService` directly, as listed in 2.1 (`src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:77`, `src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:109`, `src/PSXRecomp.Cli/PackageCommand.cs:170`, constructor). The CLI may reference Infrastructure because it is classified as Infrastructure by namespace (`src/PSXRecomp.Cli/RecompileCommand.cs:7`, `docs/architecture-matrix.md:24`). ADR-017 point 3 governs the composition of Application-layer code. This design puts no Application code on the composition path, so that rule does not apply here. The CLI is Infrastructure-classified by namespace, so it may reference Infrastructure. Whether the analyzer agrees is open question 14.
+**Composition root.** `PSXRecomp.Cli` is the composition root for the new port implementations. It alone constructs `FileBuildArtifactStore`, `ProcessToolchainProbe`, and `FileBuildHistoryLog`, and passes them to `ArtifactBuildWorkflow`. The claim covers only those new implementations. Other callers still construct `GeneratedHostBuildService` directly, as listed in 2.1 (`src/PSXRecomp.Infrastructure/Standalone/LiveGameRunner.cs:77`, `src/PSXRecomp.Infrastructure/RecompiledArtifactLauncher.cs:109`, `src/PSXRecomp.Cli/PackageCommand.cs:170`, constructor). The CLI may reference Infrastructure because it is classified as Infrastructure by namespace (`src/PSXRecomp.Cli/RecompileCommand.cs:7`, `docs/architecture-matrix.md:24`). ADR-017 point 3 governs the composition of Application-layer code. This design puts no Application code on the composition path, so that rule does not apply here. Whether the analyzer agrees is open question 14.
 
 **Migration.** `RecompileCommand` (`src/PSXRecomp.Cli/RecompileCommand.cs:115-116`) moves to the workflow first, because it is the CLI surface (#15). The engine (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:563`, `:1281`) and `PackageCommand` (constructor `:170`, build call `:171-178`) keep calling the port directly until a later change. `DoctorCommand` moves its probe to `IToolchainProbe` (Section 3.4).
 
@@ -406,12 +429,12 @@ The goal is that every current caller compiles and behaves the same, and the new
 
 ## 8. Recommendation
 
-1. Add the build key, source hash, and binary hash now, computed by `ArtifactBuildWorkflow` (Domain) through the ports in 7.2, in a sidecar `build-manifest.json` (schema 1). Do not change generated C.
+1. Record the build key, source hash, and binary hash now, computed by `ArtifactBuildWorkflow` (Domain) through the ports in 7.2, in a sidecar `build-manifest.json` (schema 1). Do not change generated C. Record and verify; make no stability promise.
 2. Record codegen options and the generator version in the build key. This closes the largest gap (2.4).
 3. Add a `Stdout` field to `ToolchainResult` (3.4). Capture the compiler `--version` and target through `IToolchainProbe`, implemented in Infrastructure. Do not record local paths in the manifest.
-4. Promise tier 1 only (Section 4.2). Run the tier-2 experiment (4.3) before any binary-identity claim.
+4. Keep Build always-on in v1 (Section 6). Treat any future Skip as a separate design with a file fingerprint.
 5. Keep the existing Build API. Place the workflow in Domain over `IBuildArtifactStore`, `IToolchainProbe`, `IBuildHistoryLog`, and `IGeneratedHostBuildService`. Infrastructure implements the ports, and `PSXRecomp.Cli` composes them. Migrate `RecompileCommand` first.
-6. Keep history local-only and wait for #42 to decide its location.
+6. Keep history local-only and wait for #42 to decide its location. Run the tier-2 experiment (4.3) before any binary-identity claim.
 
 This sequence respects the issue's priority: it does not block the vertical slice, and it does not change the artifact bytes that the existing tests depend on.
 
@@ -431,5 +454,5 @@ This sequence respects the issue's priority: it does not block the vertical slic
 12. **Cleanup in source:** `src/PSXRecomp.Cli/RecompileCommand.cs:28-31` has a `<summary>` for "The standalone artifact binary name." with no member under it. It looks like a leftover. Not part of this design; noted for whoever edits that file.
 13. **GUI composition root:** the Studio is Application-layer and may not reference Infrastructure (ADR-017 point 3). Which host bootstrap constructs the GUI's Infrastructure adapters? The matrix recommends a dedicated Host/Bootstrap layer (`docs/architecture-matrix.md:210`). Not decided here.
 14. **Analyzer classification of the CLI:** the composition root in Section 7.2 assumes the analyzer treats `PSXRecomp.Cli` as Infrastructure by namespace (`src/PSXRecomp.Cli/RecompileCommand.cs:7`). UNVERIFIED until a build runs AARC on the new code.
-15. **Resolved (M1):** extra arguments that contain `/`, `\`, or `:` are rejected before any build (3.6), so no absolute path enters the key through them. Relative tokens such as `-Iinclude` are accepted, and any build with an extra argument always rebuilds and never Skips (Section 6). The rule also rejects non-path tokens containing `:`, such as `-Wl,--subsystem,windows:5.0` and `-DURL=http://...`. No production caller passes them, so that cost is accepted. 16. **Environment hash volatility:** the environment hash (3.7) covers every variable. A volatile variable forces a rebuild on each run. Is that cost acceptable, or should the hash be narrowed to a named list with its own review?
-Open: should a future toolchain kind (3.6) record the working directory instead of always rebuilding?
+15. **Resolved (M1), with one residual:** extra arguments that contain `/`, `\`, or `:` are rejected before any build (3.6), so no absolute path enters the key through them. Relative tokens such as `-Iinclude` are accepted, recorded as given, and resolve against the working directory, which is not keyed. The residual is accepted. Should a future toolchain kind (3.6) record the working directory instead?
+16. **Presence list maintenance:** who owns the fixed presence list in 3.7, and what reviews a change to it? Names outside the list are not reported.
