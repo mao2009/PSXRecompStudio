@@ -182,7 +182,7 @@ Outcome is kept separate from Evidence and Confidence. The values are:
 | `Pass` | Evidence exists for this binding and the scenario criteria were met. | Yes |
 | `Fail` | Evidence exists and criteria were not met. | No; may open a Known Issue |
 | `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:18-21`). | No |
-| `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:23-25`). | No; excluded from the denominator and reported |
+| `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:23-25`). | No; reported separately, never Pass or Fail |
 | `Cancelled` | A run was stopped by a cancellation request before a classified guest end (owner ruling; `TitleExecutionState.Cancelled`, `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:49`). | No; never Pass or Fail; reported as stopped, not as Blocked |
 | `NotRun` | Absence of evidence for this scenario and binding. | No |
 
@@ -222,7 +222,7 @@ Community results need a reporter class without a required agent identity. Propo
 
 ### 4.2 Evidence count
 
-Evidence Count is derived, never typed in. It counts `ScenarioResult` records with `Subject = RealTitle` and `Outcome = Pass` for a given `(TitleKey, Facet, ScenarioId, Binding)`. The count is over the distinct `EvidenceIds[]` entries (content hashes) those results reference, so a duplicate content hash is counted once. `EvidenceRecord` has no `Outcome` field; the Outcome lives on `ScenarioResult` (section 3.4). `SyntheticFixture` results are never counted. [PREDICTED]
+Evidence Count is derived, never typed in. One unit only: it is the number of **distinct `EvidenceIds[]` entries** (content hashes) referenced by `Subject = RealTitle` `ScenarioResult` records with `Outcome = Pass`, grouped by `(TitleKey, Facet, ScenarioId, ScenarioVersion, Binding)`. The count is never a count of result records. A result with several ids contributes each distinct id once, and two results that reference the same id contribute it once. Results with a different `ScenarioVersion` are a different group and are not summed. `EvidenceRecord` has no `Outcome` field; the Outcome lives on `ScenarioResult` (section 3.4). `SyntheticFixture` results are never counted. [PREDICTED]
 
 ### 4.3 Confidence
 
@@ -273,7 +273,7 @@ Proposed per-facet ladder (names are placeholders for owner decision, section 10
 Level 0      -> no Pass for the binding (the cell label comes from section 9.2, not from this level)
 Boot-Verified -> all required Boot scenarios Pass for the binding
 Playable     -> Boot-Verified and all required Gameplay scenarios Pass
-Stable       -> Playable and no open Known Issue of severity >= major on the binding
+Stable       -> Playable and no open Known Issue of severity >= major on the binding, where the Known Issue is eligible under section 6.1
 Highly-Verified -> Stable and Pass evidence from >= 2 reporter classes
 ```
 
@@ -290,16 +290,20 @@ Scenario catalog changes re-open Perfect for affected titles, because the catalo
 ```
 KnownIssue {
   Id
+  Subject                  // RealTitle | SyntheticFixture (section 3.4)
+  TitleKey                 // required for RealTitle; a SyntheticFixture KnownIssue has no TitleKey
   Facet, ScenarioId?       // optional scope
   Severity                 // blocker / major / minor (proposed)
   Status                   // open / workaround / fixed
   FirstSeenBinding
   FixedInBinding?
-  EvidenceIds[]
+  EvidenceIds[]            // only ids of Subject = RealTitle ScenarioResults (section 3.4)
 }
 ```
 
-Open issues cap the level they affect (section 5). `UnresolvedItem` (`src/PSXRecomp.Core/Analysis/Contracts/UnresolvedItem.cs:10`) is an analysis-side open-item type. It is not reused, because a Known Issue has a binding and a severity. [PREDICTED]
+Eligibility (owner ruling, applied as the section 3.4 Subject filter): only `Subject = RealTitle` Known Issues with a matching `TitleKey` can cap a level or appear in a real-title view. A Known Issue whose `EvidenceIds[]` reference no `RealTitle` result, or any `SyntheticFixture` result, is not eligible. A `SyntheticFixture` Known Issue never caps a real-title level, even when it carries a `TitleKey`. Missing or unknown `Subject` is rejected (fail closed). [PREDICTED]
+
+Open issues cap the level they affect (section 5), but only when eligible under the rule above. `UnresolvedItem` (`src/PSXRecomp.Core/Analysis/Contracts/UnresolvedItem.cs:10`) is an analysis-side open-item type. It is not reused, because a Known Issue has a binding and a severity. [PREDICTED]
 
 ### 6.2 Regression
 
@@ -363,6 +367,8 @@ Recommended split, mirroring `ProjectMetadataSerializer`, `IProjectMetadataStore
 
 The derivation function must take records and a binding and return the level set. It must be deterministic and free of clocks. Clocks enter only as recorded inputs. [PREDICTED]
 
+Derivation input rule (the Subject filter, section 3.4): every derivation in sections 4 to 6 and 9 receives all of its records through one filter. The filter keeps only `ScenarioResult` and `KnownIssue` records with `Subject = RealTitle`, a matching `TitleKey`, and a facet other than `None`. It rejects records with a missing or unknown `Subject` and reports them as invalid. A `SyntheticFixture` record never reaches a derivation, even when it carries a `TitleKey`. The filter is a single shared step, not a rule each derivation re-implements. [PREDICTED]
+
 ## 9. Studio presentation
 
 Per title: one row per binding in use, five facet columns, each cell showing its cell label from section 9.2 (the derived level, or one of the labels in rows 1 to 6). The binding selector is required, so no cell is shown without its binding. Known Issues and Regression badges sit next to the cell they affect. Unverified is styled as absence, not as a failure colour. [PREDICTED]
@@ -383,6 +389,8 @@ Each cell is one `(title, facet, binding)`. It is labelled by the first matching
 | 6 | Any `Cancelled` result on this binding, and no `Pass` | `Cancelled` (label wording pending Q15) | The run was stopped and its evidence is incomplete. |
 | 7 | At least one `Pass` on this binding | the derived level from section 5 | Level 0 when no ladder rung is met. |
 
+Row 4 is the only row without a "no Pass" condition, because a failed criterion on this binding must not be hidden behind a Pass of another scenario in the same cell. Blocked, Error, and Cancelled are not failures, so they show only when the cell has no Pass.
+
 `Unverified` is not a cell label on its own. The only cell label that contains it is `Unverified after change` (row 2), and that label needs a prior Pass on another binding. Level 0 in section 5 is also named `Unverified`, but it is a level, and the cell label comes from this table. A cell is never shown as `Unverified` or `Unverified after change` when its real state is `Unknown`, `Not run`, or `Cancelled`. [PREDICTED; follows the owner ruling]
 
 ### 9.1 Required #33 changes (owner ruling)
@@ -396,7 +404,7 @@ The owner approved these changes to the #33 design. Each one is recorded in the 
 
 Additional conditions from the same ruling:
 
-- SyntheticFixture results must never enter a real-title compatibility evaluation (section 5 input filter, section 3.4).
+- SyntheticFixture results must never enter a real-title compatibility evaluation (section 3.4 Subject rules; section 8 derivation input rule).
 - `Cancelled` must never count as Pass or Fail (section 3.5).
 - `Unknown`, `NotRun`, and `Cancelled` must remain distinct (section 3.5).
 - The identity and binding rules of the compatibility registry are kept unchanged (section 4).
