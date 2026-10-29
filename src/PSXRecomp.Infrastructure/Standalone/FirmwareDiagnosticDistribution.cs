@@ -92,8 +92,8 @@ public static class FirmwareDiagnosticDistribution
     /// <para>
     /// Operator notes: a failed build that cannot remove everything it created reports the staging directory it kept in the exception
     /// message. A process that is killed mid-build leaves its staging directory <c>.&lt;name&gt;.staging-&lt;guid&gt;</c> beside the output
-    /// name, and nothing deletes it automatically. The runtime-host publish writes into a private directory and each entry is moved into
-    /// <c>runtime/</c> with a refusing move; an entry a failed publish leaves in its private directory is kept, not removed. Remove a kept
+    /// name, and nothing deletes it automatically. The runtime-host publish writes into a private directory; each allow-listed file is copied
+    /// into <c>runtime/</c> with exclusive creation (nothing is moved). An allow-listed file a failed publish wrote is removed as this run's; an entry that is not on the allow-list is kept, not removed. Remove a kept
     /// staging directory by hand after checking it. Paths longer than about 247 characters are refused before any write, with the limit named.
     /// The build runs on Windows only; it is refused on other platforms before anything is created.
     /// </para>
