@@ -2,7 +2,7 @@
 
 Tracking: [#51](https://github.com/mao2009/PSXRecompStudio/issues/51). Related: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33) (Compatibility Registry), [#42](https://github.com/mao2009/PSXRecompStudio/issues/42) (Project/Workspace), [#44](https://github.com/mao2009/PSXRecompStudio/issues/44) (PS1 Hardware Runtime Architecture), [#46](https://github.com/mao2009/PSXRecompStudio/issues/46) (Recomp Artifact & Build Management), [#49](https://github.com/mao2009/PSXRecompStudio/issues/49) (Diagnostics & Recovery).
 
-Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `2e3ecad`. The compatibility registry input is `origin/batch2/w13-compat-registry-design` at `700633d` (`docs/design/issue-33-compat-registry.md`). It was read as an input. The four #33 changes in section 9 are approved by owner ruling (binding) but are not yet in the #33 text at `700633d`. At the last `ls-remote` check, W13 had not pushed an update, so the pin stays at `700633d` until it does.
+Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `2e3ecad`. The compatibility registry input is `origin/batch2/w13-compat-registry-design` at `441cd6a` (`docs/design/issue-33-compat-registry.md`). It was read as an input. The four #33 changes are approved by owner ruling and recorded in #33 at `441cd6a` (sections 2.1, 3.2, 3.4 and 9.1). This document pins #33 to `441cd6a`.
 
 ## 0. Labels and constraints
 
@@ -44,7 +44,7 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 
 ### 2.3 Gap in #33
 
-#33 section 2.1 (at `700633d`) lists `TitleExecutionState` values without `Cancelled`. This design adds the mapping in section 5.1. [CONFIRMED: `700633d` text vs. `TitleExecutionContract.cs:47-49`]
+At `441cd6a`, #33 section 2.1 listed `TitleExecutionState` values without `Cancelled`. At `441cd6a` the `Cancelled` row is recorded (section 2.1, section 9.1 item 4). Section 5.1 relies on it. [CONFIRMED: `441cd6a` text vs. `TitleExecutionContract.cs:47-49`]
 
 ## 3. Compatibility test model
 
@@ -56,7 +56,7 @@ ScenarioDefinition {
   Facet              // Boot | Gameplay | Save | Audio | Graphics | None   (None is an owner-approved #33 change, section 9)
   Tags[]             // Input | Runtime | Disc | ... (not facets; see below)
   Version            // bump when pass criteria change
-  Subject            // SyntheticFixture(id, sha256) | UserInput(discHash?, exeFingerprint?)
+  Subject            // RealTitle(discHash?, exeFingerprint?) | SyntheticFixture(id, sha256)   (#33 §3.4)
   Criteria[]         // observable assertions only
   Tier               // Smoke | Extended | Manual
   Requires[]         // e.g. "Rust native staticlib", "GPU backend present", "input bundle"
@@ -67,7 +67,7 @@ Rules:
 
 - A criterion must assert an observable contract: an outcome enum value, a guest PC, a register value, a TTY byte, a frame hash, a diagnostic code. "Did not throw" is not a criterion. [OBSERVED: capability matrix verification threshold]
 - A scenario that depends on a facet not yet implemented (for example, Audio output, `Not claimed` in `capabilities.md:78`) must declare `Tier = Manual` or be absent. It must not be listed as Pass. [PREDICTED]
-- **Facets versus tags.** The five #33 facet values are unchanged. The issue's extra areas (Input, Runtime stability, CD/Disc) are carried as `Tags`, and a scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. `None` is a new #33 value and is listed in section 9. It is excluded from level derivation (section 8). This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [OBSERVED: #33 Q14 at `700633d`]
+- **Facets versus tags.** The five #33 facet values are unchanged. The issue's extra areas (Input, Runtime stability, CD/Disc) are carried as `Tags`, and a scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. `None` is a new #33 value and is listed in section 9. It is excluded from level derivation (section 8). This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [OBSERVED: #33 Q14 at `441cd6a`]
 
 ## 4. Smoke-test set (synthetic fixtures)
 
@@ -128,15 +128,15 @@ The result record reuses the #33 types. It does not define a second evidence mod
 | `Producer` (tool, version, reporter class) | `EvidenceRecord.ProducedBy` (§4.1) and reporter class (§4.1.2) | reused |
 | `CapturedUnixSeconds` | `EvidenceRecord.CapturedUnixSeconds` (§4.1) | reused |
 | `ArtifactHash` | `EvidenceRecord.ArtifactHash` (§4.1) | reused |
-| `Subject` (kind plus fixture or user-input reference) | none | **new**; required by 5.4 |
+| `Subject` (`RealTitle` or `SyntheticFixture`) | `ScenarioResult.Subject` (#33 §3.4) | **changed**: added by owner ruling; required by 5.4 |
 | `ObservedFacts[]` (name/value pairs, e.g. guest PC, TTY byte, diagnostic code, stop reason) | none | **new**; needed for criteria and regression diffs (7.2) |
-| `RecordedAt` | `ScenarioResult.RecordedAt` (§3.4 in 700633d text) | reused |
+| `RecordedAt` | `ScenarioResult.RecordedAt` (§3.4 in 441cd6a text) | reused |
 
 No `Schema` string or separate `ResultId` is introduced. The schema identity is #33's `psxrecomp.compatibility-registry.v1`, and result identity follows #33's `EvidenceRecord.Id` content-hash scheme. [PREDICTED]
 
 ### 5.1 Outcome
 
-Outcome values follow #33 section 3.5, plus the owner-approved `Cancelled` value. `Unknown` is defined here and is not yet in #33. [OBSERVED: #33 at `700633d`]
+Outcome values follow #33 section 3.5 at `441cd6a`, which includes the owner-approved `Cancelled` row. `Unknown` is a derived title/facet state in #33, not a result outcome. [OBSERVED: #33 at `441cd6a`]
 
 | Outcome | Meaning | Maps from |
 |---|---|---|
@@ -145,8 +145,8 @@ Outcome values follow #33 section 3.5, plus the owner-approved `Cancelled` value
 | `Blocked` | Stopped at a known unsupported boundary. | `RecompiledArtifactOutcome.Blocked` (OBSERVED: #33 citing `RecompiledArtifactExitCode.cs:18-21`) |
 | `Error` | Harness or host failure, not a guest result. | `RecompiledArtifactOutcome.Failure` (OBSERVED) |
 | `NotRun` | No attempt, or attempt produced no evidence. | run planner |
-| `Cancelled` | Stopped by a cancellation request before a classified guest end. Distinct from `Blocked`, `NotRun`, `Unknown`, `Fail`. | `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`). The registry maps from the title-level state, not from `RecompiledArtifactOutcome`, which folds it into `Blocked` (`RecompiledArtifactExitCode.cs:59`). |
-| `Unknown` | An attempt produced a result whose state cannot be determined, for example a missing or unparseable outcome field. Distinct from `NotRun` (no attempt) and `Cancelled`. Never counts toward a level. | Defined here. The owner ruling names the state; its definition is PREDICTED and UNVERIFIED against #33 text. |
+| `Cancelled` | Stopped by a cancellation request before a classified guest end. Distinct from `Blocked`, `NotRun`, `Fail`. | `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`). The registry maps from the title-level state, not from `RecompiledArtifactOutcome`, which folds it into `Blocked` (`RecompiledArtifactExitCode.cs:59`). |
+Not an outcome: `Unknown` is a derived state for a title or facet with no records at all (#33 §3.5). A result is never `Unknown`, so the derivation in section 7 does not produce it.
 
 Stop reasons, which are carried in `ObservedFacts` and not in `Outcome`:
 
@@ -163,7 +163,7 @@ Rules:
 - `Blocked` is a diagnosable stop, not a defect. [OBSERVED: `capabilities.md:49`, per #33]
 - `Error` is excluded from the denominator and reported. An errored run cannot turn a Pass into a Fail. [PREDICTED]
 - `NotRun` is never shown as `Pass` or `Fail`. [PREDICTED]
-- `Cancelled` and `Unknown` are never `Pass` or `Fail`, and each is distinct from `NotRun` and from each other. This is an owner-approved condition for `Cancelled`. [PREDICTED for `Unknown`]
+- `Cancelled`, `NotRun` and `Unknown` are never rendered as `Pass` or `Fail`, and never rendered as each other (#33 §3.5, owner-ruled).
 
 ### 5.2 Evidence attachments
 
@@ -173,11 +173,11 @@ Rules:
 
 ### 5.3 Producer and reporter class
 
-Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`. [OBSERVED: #33 at `700633d`] Synthetic smoke runs are `Automated`. `AIPrediction` and `AnalyzerFinding` evidence can never produce a `Pass`. [OBSERVED: #33 section 4.1.1]
+Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`. [OBSERVED: #33 at `441cd6a`] Synthetic smoke runs are `Automated`. `AIPrediction` and `AnalyzerFinding` evidence can never produce a `Pass`. [OBSERVED: #33 section 4.1.1]
 
 ### 5.4 Synthetic subjects
 
-#33 section 3.1 keys `TitleEntry` by `ReleaseKey`, and section 3.4 requires `TitleKey` on `ScenarioResult` with no subject field. [OBSERVED: #33 at `700633d`] So #33 cannot tell a synthetic result from a title result. Two options:
+#33 section 3.1 keys `TitleEntry` by `ReleaseKey`. At `441cd6a`, section 3.4 required `TitleKey` with no subject field, so #33 could not tell a synthetic result from a title result. [OBSERVED: #33 at `700633d`] At `441cd6a` that is resolved by the owner-approved `Subject` field (§3.4). Two options (option (a) is the one the owner approved, and #33 §3.4 now has the field):
 
 - (a) Add a `Subject` field to #33 §3.4 (this design's preference).
 - (b) Use a reserved pseudo-`TitleKey` such as `synthetic:<fixtureId>`. Rejected: it overloads a key that #33 treats as a real title identity.
@@ -208,7 +208,7 @@ Let `R(s, b)` be the latest non-superseded result for scenario `s` on binding `b
 1. **Regression**: `R(s, A) = Pass` and `R(s, B)` is `Fail` or `Blocked`, for the same `Subject` and `ScenarioId`, where `B` is a later binding of the same title. [PREDICTED; mirrors #33 section 6.2]
 2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B) = NotRun` (or absent) while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. [PREDICTED]
 3. **Synthetic regression**: the same rule applies to synthetic subjects, but the result is labelled `synthetic` and never rolls up into a title level. A synthetic regression is the primary signal of the smoke tier. [PREDICTED]
-4. **Error and Unknown are not regressions**: `Error` or `Unknown` on B does not create a regression. `Error` creates a harness alert; `Unknown` is reported as an unclassified result. [PREDICTED]
+4. **Error is not a regression**: `Error` on B does not create a regression. It creates a harness alert. [PREDICTED]
 5. **Scenario version change**: if `ScenarioVersion` differs between A and B, the pair is not compared. The result is `Re-baselined`, and the old Pass is kept as history. [PREDICTED]
 6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is treated as `NotRun` for rule 2. Without this distinction, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [PREDICTED; the rule is needed so that `Cancelled` is not compared as `Blocked`]
 
@@ -223,7 +223,7 @@ A regression record names: scenario id and version, subject, both binding keys, 
 
 ## 8. Integration with the Compatibility Registry (#33)
 
-Each row names the #33 decision it depends on. If that decision changes, this section changes. All cited #33 text is at `700633d`.
+Each row names the #33 decision it depends on. If that decision changes, this section changes. All cited #33 text is at `441cd6a`.
 
 | Integration point | This design needs | #33 decision it depends on | Status |
 |---|---|---|---|
@@ -231,7 +231,7 @@ Each row names the #33 decision it depends on. If that decision changes, this se
 | Evidence record | `EvidenceRecord` with `Binding`, `ArtifactHash`, `ProducedBy` | §4.1 | proposal |
 | Reporter class | `Maintainer`, `Automated`, `Community` | §4.1.2 | proposal |
 | Binding | exact-match binding | §4.4 and #33 Q5 | proposal; exact match is the default |
-| Level derivation | synthetic results excluded from title levels; `TitleKey` optional for synthetic subjects; `Facet = None` excluded | §3.1 `TitleEntry` keyed by `ReleaseKey`; §3.4 `ScenarioResult.TitleKey` required, no subject field, five facets only. #33 has no subject kind. | **new requirements from this design**; #33 must add them (Q3, section 9) |
+| Level derivation | synthetic results excluded from title levels; `TitleKey` optional for synthetic subjects; `Facet = None` excluded | §3.1 `TitleEntry` keyed by `ReleaseKey`; §3.4 `ScenarioResult.TitleKey` required, no subject field, five facets only at `700633d`. At `441cd6a`, §3.4 has `Subject` and §3.2 has `None` (owner-approved). | **new requirements from this design**; #33 must add them (Q3, section 9) |
 | Facets | five facets (Boot, Gameplay, Save, Audio, Graphics) | §3.2 and #33 Q1 | proposal; the issue asks for more (section 3) |
 | Disc binding | a disc content hash | #33 Q3 and `DiscIdentity` gap | UNVERIFIED |
 | Build identity | a `BuildId` | #33 Q6 | UNVERIFIED |
@@ -247,21 +247,23 @@ Concrete boundaries:
 
 ## 9. Decisions this design depends on from #33
 
-If the following #33 decisions change, this design must be revisited. All six were checked against `700633d`, and each is present there:
+This section is the W15 dependency list for #33. W13 §9.1 refers to it. If the decisions below change, this design must be revisited. The six decisions were re-checked against `441cd6a` and each is present there. Only item 4 changed (`None` was added). The others are unchanged:
 
 1. Outcome vocabulary, with `NotRun` distinct from `Fail` (#33 §3.5).
 2. Exact binding equality, and no implicit carry-forward (#33 §4.4).
 3. Reporter classes without a required agent identity (#33 §4.1.2).
-4. The five-facet set (#33 §3.2; #33 Q1).
+4. The five-facet set plus `None` (#33 §3.2; #33 Q1). `None` is an owner-approved addition.
 5. Persistence as Option D, with the append-only log as v1 (#33 §7.2).
 6. Scenario catalog versioning as part of the derived key (#33 §5; #33 Q13).
 
-This design relies on these four requirements on #33. The owner has approved them (binding ruling), but #33 at `700633d` does not yet contain them. The wording below is PREDICTED until W13 updates #33.
+These four changes are owner-approved (binding ruling) and recorded in #33 at `441cd6a`, in the sections cited. The conditions are in section 9.1 of #33 and in the text below.
 
-1. A `Subject` field (kind plus fixture or user-input reference), so synthetic results can be excluded (section 5.4).
-2. `TitleKey` optional when `Subject` is `SyntheticFixture` (section 5, section 5.4). #33 §3.4 currently requires it.
-3. A `None` value on `Facet` for scenarios with no facet (section 3). #33 §3.2 lists five facets only.
-4. A `Cancelled` row in the execution-state table (section 2.3). #33 §2.1 has no `Cancelled` entry, which the `700633d` text confirms.
+1. A `Subject` field (`RealTitle` or `SyntheticFixture`) on every result, so synthetic results can be excluded (section 5.4). #33 §3.4 at `441cd6a`.
+2. `TitleKey` may be omitted when `Subject` is `SyntheticFixture`. Binding stays required. #33 §3.4 at `441cd6a`.
+3. A `None` value on `Facet`, for results not attributed to any facet (section 3). #33 §3.2 at `441cd6a`.
+4. A `Cancelled` row in the execution-state vocabulary, which is a registry Outcome and never Pass or Fail. #33 §2.1 and §3.5 at `441cd6a`.
+
+Conditions from the same ruling, all recorded in #33 §9.1 at `441cd6a`: synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as Pass or Fail; `Unknown`, `NotRun` and `Cancelled` stay distinct; the identity and binding rules of #33 section 4 are unchanged.
 
 ## 10. GUI and CLI viewing boundary (checklist item 7)
 
@@ -274,13 +276,13 @@ This design relies on these four requirements on #33. The owner has approved the
 
 - **Q1. Facets versus tags.** The issue lists Input, Runtime stability, CD/Disc, and Save/Load. This design carries Input, Runtime, and Disc as tags. The overlap with #33 Q1 (facet list) and #33 Q2 (CD-ROM and streaming) is the same question, so the answer is taken from #33. Owner decision. [OBSERVED: the issue list is from the summary in section 1]
 - **Q2. Build and binding identity for smoke runs.** Is the worktree commit plus native artifact hash acceptable as `BuildId` until #46 defines one? UNVERIFIED that #46 has a definition.
-- **Q3. Synthetic exclusion and related #33 fields.** #33 must add:
+- **Q3. Synthetic exclusion and related #33 fields.** These four changes are approved and recorded at `441cd6a` (section 9.1). This list is kept as the W15 dependency list (section 9):
   - a `Subject` field (section 5.4), and exclude synthetic subjects from title levels;
   - `TitleKey` optional when `Subject` is `SyntheticFixture` (section 5);
   - a `None` value on `Facet` (section 3);
-  - a `Cancelled` row in the execution-state table (section 2.3). #33 §2.1 has no `Cancelled` entry at `700633d`.
+  - a `Cancelled` row in the execution-state table (section 2.3). #33 §2.1 has no `Cancelled` entry at `441cd6a`.
 
-  All four are approved by owner ruling. The #33 text that records them is pending. Section 9 lists them, with the conditions.
+  All four are approved by owner ruling and recorded in #33 at `441cd6a`. Section 9 lists them, with the conditions.
 - **Q4. Disc hash in results.** The disc hash is needed for checklist item 3. Whether it is stored in shared records is the same question as #33 Q3. UNVERIFIED.
 - **Q5. Release gating.** Should a title-level regression ever block a release? Not decided. This draft only reports it.
 - **Q6. Smoke gate path set.** The exact path list for the required smoke tier (section 4.3) is UNVERIFIED and needs a check against the CI configuration, which was not read.
@@ -291,7 +293,7 @@ This design relies on these four requirements on #33. The owner has approved the
   It would not change the pinned SHA-256 or the generated bytes. The ID is not written into the EXE: `BuildExe` takes instruction words and header fields only (`GeneratedPsxExeFixtures.cs`, method `BuildExe`). [CONFIRMED for the BuildExe signature; the ID-usage list is OBSERVED from a grep not repeated here]. Owner decision.
 - **Q8. Timeout classification. Closed for the orchestrator path.** `RecompilerExecutionStatus.TimedOut` becomes `RuntimeFailure` and then `Failure`, which maps to `Error` (section 5.1). [CONFIRMED: `ExecutionOrchestrator.cs:162-170`, `RecompiledArtifactExitCode.cs:56`] Still UNVERIFIED: whether any caller reads `TimedOut` outside the orchestrator.
 - **Q9. Where smoke results live.** Local JSONL only, or also a committed snapshot of synthetic results? A committed snapshot would churn. Proposed: local only in v1. UNVERIFIED that CI can persist between runs.
-- **Q10. #33 review.** Section 9 depends on #33 at `700633d`. Any changes from #33's review must be reconciled here. #33 Q10 (feedback intake) is also open and is not used by this design.
+- **Q10. #33 review.** Section 9 depends on #33 at `441cd6a`. Any changes from #33's review must be reconciled here. #33 Q10 (feedback intake) is also open and is not used by this design.
 
 ## 12. Verification of this document
 
