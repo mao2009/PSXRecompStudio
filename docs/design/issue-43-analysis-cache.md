@@ -1,18 +1,18 @@
-# Issue #43: Incremental Analysis and Cache (design, r27)
+# Issue #43: Incremental Analysis and Cache (design, r28)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, and T-IDENT all hold. Until Rule C holds for a stage, that
   stage is uncacheable in every mode. An uncacheable stage is recomputed on every run, and no entry is
   written for it, in Verify mode as well (section 6.5). The hit path is not executed by any production run
   until Rule C holds, and no test may claim a production stage is cacheable (7.1, 7.3). V-ID is not implemented, so Rule C
-  cannot hold for any stage, and a matching gate file does not make a stage cacheable.
+  cannot hold for any stage, and a matching gate file does not make a stage cacheable. R-G1 (2.1) is also required: a candidate stage that consumes the image stream or `discImageSha256` stays uncacheable until the analysis consumes the buffer that the hash covers.
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r27. Addresses the review of `c26abdb` (r26): four findings, mapped in 12.19. The findings of `d336ff0` (r25) are in 12.18, `dc0ab13` (r24) in 12.17, `0a5bcff` (r23) in 12.16, `e3db1c8` (r22) in 12.15, `2311b62` (r21) in 12.14, `597e1aa` (r20) in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
+- Revision: r28. Addresses the review of `4b62055` (r27): seven findings, mapped in 12.20. The findings of `c26abdb` (r26) are in 12.19, `d336ff0` (r25) in 12.18, `dc0ab13` (r24) in 12.17, `0a5bcff` (r23) in 12.16, `e3db1c8` (r22) in 12.15, `2311b62` (r21) in 12.14, `597e1aa` (r20) in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
   `6f1494a` (r14) are in 12.7, `d11733c` (r13) in 12.6, `d1c41ac` (r12) in 12.5, `34845dd` (r11) in 12.4, and
   `f77183e` (r10) in 12.3. The direction of r9 to r15 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
-- Source identity: the reviewed head is `c26abdb`. The `src/` tree is identical through `c26abdb`, because this revision
+- Source identity: the reviewed head is `4b62055`. The `src/` tree is identical through `4b62055`, because this revision
   changes only the doc. It is also identical at `34845dd`, `d1c41ac`, `d11733c`, `e1afbba`, `6a871a5`, `5e658f5`, `882500e`, `f4b95ab`, `597e1aa`, and `2311b62`
   (`git diff --stat` is empty across them), so every check label in this document is `2311b62`. The grep for the seams and
   codes (7.3) finds none at `2311b62`, the same result as at `e1afbba` and `6a871a5`. SHAs in section 12 name the
@@ -78,38 +78,42 @@ stage uncacheable (3.4).
 
 ## 2. Entry points, stages, and inputs
 
-### 2.1 Entry points (all callers verified at base)
+### 2.1 Entry points (all callers enumerated by git grep at `4b62055`)
 
-The pipeline has three public entry points. Every production caller found in the tree is listed in the table. The
-test-project callers of both `RunFromChd` overloads are listed by file, line, and overload in the note after the table
-(`git grep` at `c26abdb`).
+The pipeline has three public entry points. Every caller of the two overloads found by `git grep` at `4b62055`, production and test, is listed in the note after the table. The
+table gives each overload's definition, stage coverage, and supplied identity.
 
 | Entry point | Definition | Callers (CONFIRMED) | Stages covered | Supplied identity |
 |---|---|---|---|---|
-| `RunFromChd(byte[] discImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:42-62`; `ValidateInput` at `:57` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:29` (inside `DiscImageAnalyzer.Analyze(byte[] chdBytes, string chdSha256, ...)`, `:26-29`). Test callers are not enumerated (UNVERIFIED, U7). | N1 to N15 except N13 (CHD path: N2 runs) | non-empty check only (`:194-198`) |
-| `RunFromChd(Stream chdStream, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:78-104` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:44` (inside `DiscImageAnalyzer.Analyze(Stream chdStream, string chdSha256, ...)`, `:41-44`). CLI: `src/PSXRecomp.Cli/CliInput.cs:115`. GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:117`. Tests: `src/PSXRecompStudio.Tests/RealRomProductionExecutionTests.cs:75`. Test driver: `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:122`. | N1 to N15 except N13 (N2 runs) | non-empty check only (`:93-98`) |
+| `RunFromChd(byte[] discImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:42-62`; `ValidateInput` at `:57` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:29` (inside `DiscImageAnalyzer.Analyze(byte[] chdBytes, string chdSha256, ...)`, `:26-29`). Test callers are listed in the note after the table (enumerated by `git grep` at `4b62055`). | N1 to N15 except N13 (CHD path: N2 runs) | non-empty check only (`:194-198`) |
+| `RunFromChd(Stream chdStream, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:78-104` | Core: `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:44` (inside `DiscImageAnalyzer.Analyze(Stream chdStream, string chdSha256, ...)`, `:41-44`). CLI: `src/PSXRecomp.Cli/CliInput.cs:115`. GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:117`. Tests: `src/PSXRecompStudio.Tests/RealRomProductionExecutionTests.cs:75`. Test driver: `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:122`. The other test callers are in the note after the table. | N1 to N15 except N13 (N2 runs) | non-empty check only (`:93-98`) |
 | `RunFromIsoImage(byte[] isoImageBytes, string discImageSha256, ...)` | `RomAnalysisPipeline.cs:142-164` | GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97` | N1, N3 to N15 except N13 (N2 is skipped: `RomAnalysisPipeline.cs:163`) | non-empty check only (`:194-198`, via `ValidateInput`) |
 
 Notes:
 
-- **CONFIRMED** Test-project callers of `RunFromChd` at `c26abdb` (`git grep`), by overload. Stream overload
-  (`RunFromChd(Stream, ...)`): `src/PSXRecomp.Tests/DiscImage/SyntheticChdReaderTests.cs:57` and `:73`;
-  `src/PSXRecomp.Tests/RealRomAnalysis/RomAnalysisPipelineTests.cs:158` (second call), `:159`, `:417`, `:429` (second call),
-  and `:430`; `src/PSXRecompStudio.Tests/RealRomProductionExecutionTests.cs:75`. Byte-array overload (`RunFromChd(byte[], ...)`):
-  `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:303`, `:312`, and `:347`;
-  `src/PSXRecomp.Tests/RealRomAnalysis/RomAnalysisPipelineTests.cs:124`, `:158` (first call), `:193`, `:385`, `:399`, `:400`,
-  and `:429` (first call). The argument types at `DiscImageHostileSizeTests.cs:303` and `:312` come from helpers whose
-  return types were not read (UNVERIFIED). `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:122` is the test driver in the table.
+- **CONFIRMED** Callers of `RunFromChd` at `4b62055`, from `git grep` over `src`, sorted by the type of the first argument.
+  Definitions, doc comments, and the internal wrapper `RomAnalysisPipeline.cs:62` are excluded. Stream overload
+  (`RunFromChd(Stream, ...)`): 3 production calls and 7 test calls. Production: `src/PSXRecomp.Cli/CliInput.cs:115`,
+  `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:44`, and `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:117`.
+  Test: `src/PSXRecomp.Tests/DiscImage/SyntheticChdReaderTests.cs:57` and `:73`;
+  `src/PSXRecomp.Tests/RealRomAnalysis/RomAnalysisPipelineTests.cs:159`, `:417`, and `:430`;
+  `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:122`; and `src/PSXRecompStudio.Tests/RealRomProductionExecutionTests.cs:75`.
+  Byte-array overload (`RunFromChd(byte[], ...)`): 1 production call and 10 test calls. Production:
+  `src/PSXRecomp.Core/DiscImage/DiscImageAnalyzer.cs:29`. Test: `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:303`,
+  `:312`, and `:347`; `src/PSXRecomp.Tests/RealRomAnalysis/RomAnalysisPipelineTests.cs:124`, `:158`, `:193`, `:385`, `:399`,
+  `:400`, and `:429`. The argument types were read at the call sites: `:303` and `:312` take the `byte[]` from
+  `BuildCompressedMapChd` and `BuildChd` (both return `byte[]`), `:347` takes the `byte[]` from `BuildHostileExtentChd`
+  (`DiscImageHostileSizeTests.cs:578`), and the `RomAnalysisPipelineTests.cs` calls take `GetBytes` results or `[]`.
 - **CONFIRMED** `DiscImageAnalyzer.Analyze` is a Core API that wraps the two `RunFromChd` overloads.
   Its callers are not in this table, because they are outside the pipeline's stage code.
 - **CONFIRMED** The CLI path hashes the file in one pass (`CliInput.cs:106-109`) and opens it again for the
   pipeline (`:113-115`). The two passes are not atomic. The test driver likewise hashes at `RealRomAnalyzer.cs:102-105` and runs at `:119-122`. The hash and the bytes the analysis consumes are two reads, so a file that changes between them makes the key describe bytes the analysis never saw. This is a known gap, **G1**. V-ID is proposed to close G1 (PROPOSED, UNVERIFIED): V-ID computes SHA-256 over the stream the analysis
   runs (4.3) and compares it with the supplied hash, so a file changed between the supplied-hash pass and the run gives a
-  mismatch, and the Input stage fails. V-ID's hash is one read, and the analysis reads the file again (`RomAnalysisPipeline.cs:117`, `ChdReader.Open(chdStream)`, and later reads). A replacement after V-ID's pass and before those reads makes the analysis consume bytes that V-ID did not hash, and Input passes with the key carrying the supplied hash. Closing G1 therefore needs the single-buffer requirement R-G1, not V-ID alone. The earlier
-  pass. Until V-ID exists, G1 is open, and Rule C (b) already keeps every stage uncacheable, so no stage can be cached while
+  mismatch, and the Input stage fails. V-ID's hash is one read, and the analysis reads the file again (`RomAnalysisPipeline.cs:117`, `ChdReader.Open(chdStream)`, and later reads). A replacement after V-ID's pass and before those reads makes the analysis consume bytes that V-ID did not hash, and Input passes with the key carrying the supplied hash. Closing G1 therefore needs the single-buffer requirement R-G1, not V-ID alone.
+  Until V-ID exists, G1 is open, and Rule C (b) already keeps every stage uncacheable, so no stage can be cached while
   G1 is open. **R-G1 (requirement, not run):** every candidate stage whose inputs come from the image stream or from
   `discImageSha256` (N7 to N12a) stays uncacheable until the analysis consumes the same buffer that the hash covers. That is
-  implemented and tested by T-IDENT-c (7.3). T-IDENT-b does not cover the replacement window.
+  a requirement, not implemented or run (T-IDENT-c, 7.3). T-IDENT-b does not cover the replacement window.
 - **CONFIRMED** The GUI's `discImageSha256` enters as a parameter of `AnalyzeAndExecuteFromDisc`
   (`RealRomTitleExecutionService.cs:110-117`). Its caller was not read (UNVERIFIED, U6).
 
@@ -678,7 +682,7 @@ differs from what the stage now computes would be used in Normal mode. That is t
   is compared with the cold payload byte for byte. A difference is `ANALYSIS_CACHE_VERIFY_MISMATCH` and a hard failure.
   The cold result is returned, never the entry.
 - **Normal mode** returns a valid entry as a hit. It is used for a stage only when Rule C (4.3) holds for that stage, the same condition as for Verify mode:
-  the U2 verdict is cacheable for the running MVID (9.3), V-ID is implemented, and T-IDENT passes. V-ID is not yet
+  the U2 verdict is cacheable for the running MVID (9.3), V-ID is implemented, R-G1 holds for the stage, and T-IDENT-a, T-IDENT-b, and T-IDENT-c pass. V-ID is not yet
   implemented, so no stage meets this condition today.
 - The default is set in `AnalysisCacheOptions` and is not optional.
 - **Production cannot reach the test seams.** A test that needs a cacheable verdict, or a fake code identity, injects it
@@ -724,7 +728,7 @@ Two fixture sets are used, and they must not overlap:
 **Gating.** The tests below need a stored entry or a cacheable verdict. Their precondition is Rule C (4.3) for the
 stage under test. They are **not run in production** before that precondition holds: T-COLD-WARM (hit assertions),
 T-DEP-INPUT, T-IDENT-b (until V-ID exists), T-IDENT-c (until R-G1 is implemented), T-IDENT2, T-STALE (Normal-mode part), T-DEP-DEAD (step b), T-CORRUPT, T-QUAR-FAIL, T-W6, T-MISSING,
-T-PARTIAL, T-DIFF-RUN (warm half), and T-GOLDEN. Before Rule C holds, a test-only verdict may exercise the mechanism.
+T-PARTIAL, T-DIFF-RUN (warm half), and T-GOLDEN. Before Rule C holds, a test-only verdict may exercise the mechanism. Rule C's condition (b) includes R-G1 (2.1) for any stage that consumes the image stream or `discImageSha256`, so T-IDENT-c gates those stages as well.
 Such a run proves the mechanism only. It does not count toward Rule C or any gate-file check, and it does not make a production stage
 cacheable. A test marked "needs seam" in the table cannot run at all until the named seam, code, or codec exists in the
 tree; none of those exists at `2311b62`.
@@ -752,7 +756,7 @@ tree; none of those exists at `2311b62`.
 | T-SHORT (5.2) | Short text segment | An executable whose text segment is shorter than its declared size passes `MIPS_DECODE` with exactly one failure at the first address past the segment, and no exception escapes. | Runs now |
 | T-PREFIX (5.1) | Prefix slice | N7 output sliced to `M` before N8 equals today's count-limited decode at `M`, including failures filtered by `A < entry + 4*M`. | Runs after R-0 (U1), and only if DEC-N7 is adopted |
 | T-DIFF-RUN | Differential on and off, end to end | Cold and warm runs with validations supplied and without, both byte for byte. N12d is never read from the cache. | Cold half runs now. Warm half runs after Rule C holds |
-| T-IDENT-a (4.3) | Hash agreement | The CLI and the test driver hash the same content to the same value. The CLI hashes at `src/PSXRecomp.Cli/CliInput.cs:106-109` and the driver at `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:102-105`; each run reads the file again (`CliInput.cs:113-115`, `RealRomAnalyzer.cs:119-122`). This test covers only agreement of the two hash steps on identical content. It does not cover a change between the hash pass and the run (gap G1, 2.1, which T-IDENT-b tests). The GUI does not hash: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:110-117` passes `discImageSha256` through to `RunFromChd`, and where that value originates is UNVERIFIED (U6, the caller is unread). **Part of Rule C (4.3), condition (c).** | Needs the CLI hash step callable from a test (UNVERIFIED whether it is; the driver's is in a test helper) |
+| T-IDENT-a (4.3) | Hash agreement | The CLI and the test driver hash the same content to the same value. The CLI hashes at `src/PSXRecomp.Cli/CliInput.cs:106-109` and the driver at `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:102-105`; each run reads the file again (`CliInput.cs:113-115`, `RealRomAnalyzer.cs:119-122`). This test covers only agreement of the two hash steps on identical content. It does not cover a change between the hash pass and the run (gap G1, 2.1; its replacement window is tested only by T-IDENT-c, a requirement, not run). The GUI does not hash: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:110-117` passes `discImageSha256` through to `RunFromChd`, and where that value originates is UNVERIFIED (U6, the caller is unread). **Part of Rule C (4.3), condition (c).** | Needs the CLI hash step callable from a test (UNVERIFIED whether it is; the driver's is in a test helper) |
 | T-IDENT-b (4.3) | Supplied hash differs from the computed hash | A supplied hash that differs from the computed hash fails the Input stage with a dedicated failure kind and no cache write. It covers only a file changed before V-ID's pass. A replacement between V-ID's pass and the analysis read is outside this test (T-IDENT-c). **Part of Rule C (4.3), condition (c).** | Needs V-ID implemented (not yet present: the pipeline checks only that the supplied hash is non-empty, `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:93-98`, `:194-198`) |
 | T-CODEC | Key encoder and payload codec | The key text of a fixed sample equals the committed text, and its SHA-256 equals the committed value. Member order is UTF-8 byte order. Floats are rejected. The codec round-trips each record and stage type, and is injective on the fixtures. | Needs the key encoder and payload codec of 3.7 (not yet present at `2311b62`) |
 | T-LF | Verbatim string lint (DEC-LF1) | Fails if a file on a dependency input path contains a multi-line verbatim string literal. | Static, runs now |
@@ -950,7 +954,7 @@ When none of these fails, the gate file's verdict is one input to Rule C. Rule C
 exists the stage stays uncacheable (4.3).
 
 **Invalidation.** Any change to Core changes the MVID, so every earlier gate file no longer matches, and every stage is
-uncacheable again. Re-enabling a stage requires Rule C (4.3) on the new MVID: (a) a U2 verdict for the stage from a run on the new MVID that is cacheable, with the conditions of the verdict rule (9.3); (b) V-ID implemented, a global condition as in Rule C (b); (c) T-IDENT passing. Re-running U2 on the new MVID produces (a). The gate file for the new MVID is then written as the store record of (a). It is a record, not a Rule C condition. The 9.4 criteria are part of (a). The earlier gate file is not deleted automatically. Its mismatch is the signal. Re-enabling is impossible while V-ID is
+uncacheable again. Re-enabling a stage requires Rule C (4.3) on the new MVID: (a) a U2 verdict for the stage from a run on the new MVID that is cacheable, with the conditions of the verdict rule (9.3); (b) V-ID implemented, a global condition as in Rule C (b), and R-G1 holds for the stage (the analysis consumes the buffer V-ID hashes; V-ID alone is not sufficient); (c) T-IDENT-a, T-IDENT-b, and T-IDENT-c passing. Re-running U2 on the new MVID produces (a). The gate file for the new MVID is then written as the store record of (a). It is a record, not a Rule C condition. The 9.4 criteria are part of (a). The earlier gate file is not deleted automatically. Its mismatch is the signal. Re-enabling is impossible while V-ID is
 unimplemented, so no stage can be re-enabled today.
 
 **Gate-file check on CI (non-blocking).** CI reports whether the committed gate file matches the build MVID. A mismatch is a warning and
@@ -993,12 +997,12 @@ the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rul
 - **U5.** Confirm `$(NETCoreSdkVersion)` and the generated-file mechanism of 3.8 (neither is present at `2311b62`; `git grep` finds no such target), and the build determinism
   that the MVID of 3.3 relies on.
 - **U6.** Read the caller of `AnalyzeAndExecuteFromDisc` (`RealRomTitleExecutionService.cs:110-117`), and decide the store root.
-- **U7.** Count the test call sites that pass a constant SHA (4.3, Migration), and the test callers of `RunFromChd(byte[])`
-  (2.1 lists only the Core caller).
+- **U7.** Count the test call sites that pass a constant SHA (4.3, Migration). The callers of `RunFromChd` are enumerated by `git grep` at `4b62055` in 2.1, so the caller list is closed; only the constant-SHA count remains open.
 - **U8.** Read `PathRedactor.cs` and the synthetic builder APIs before the tests are implemented.
 - **U9. Closed.** `ICdSectorSource.cs:11` (`CdDiscToc`) and `:56` (`ICdSectorSource`).
 - **U10.** Confirm which declared stage outputs embed `ArtifactJson` content (`RealRomCoverageDocument.cs:245`, `RecompilerContract.cs:1126`).
 - **V-ID.** Implement the identity verification of 4.3. One of the three conditions of Rule C (4.3), with U2 and T-IDENT.
+- **R-G1.** The single-buffer requirement of 2.1: the analysis consumes the buffer that V-ID (or any hash) covers. It is a requirement, not implemented or run, and it is needed for every candidate stage that consumes the image stream or `discImageSha256`. The owner is not assigned in this document; the coordinator assigns it, as for U2 (9.1).
 
 ## 11. Non-goals
 
@@ -1226,7 +1230,7 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 |---|---|---|---|
 | FF1 (MEDIUM) | §2.2 still labelled N7 to N11 "candidate", while §3.5 and §9.2 say a stage without its one-record function is not a candidate | Resolved in r26: the table labels N7 to N11 "candidate after R-0 (not a candidate today)", and the table legend says so. §3.5 and §9.2 say the same | 2.2 (legend and rows N7 to N11), 3.5, 9.2 |
 | FF2 (MEDIUM) | The N11 root in §9.2 said "a block, not a method, so U2 takes it as a region of that method", which reintroduced the block exemption | Resolved in r26: N11's unit is the one-record function that R-0 creates from the block. Until then N11 is not a candidate, and U2 has no unit for it. The region wording is removed | 9.2 (N11 root) |
-| FF3 (MEDIUM) | Condition (m) depended on the CLI and driver code outside Core and the MVID, and no evaluator was named. V-ID's coverage of G1 was unstated | Resolved in r26 by removing (m). Superseded in r27 by GG1: V-ID closing G1 is PROPOSED and UNVERIFIED, because V-ID's hash is one read and the analysis reads again. G1 is open until V-ID exists, and Rule C (b) keeps every stage uncacheable meanwhile. No separate evaluator or one-read change is needed. Rule C's condition range is (a) to (l) | 2.1 (G1), 9.3 (verdict rule), 4.3 (Rule C) |
+| FF3 (MEDIUM) | Condition (m) depended on the CLI and driver code outside Core and the MVID, and no evaluator was named. V-ID's coverage of G1 was unstated | Resolved in r26 by removing (m). Superseded in r27 by GG1: V-ID closing G1 is PROPOSED and UNVERIFIED, because V-ID's hash is one read and the analysis reads again. G1 is open until V-ID exists (superseded by GG1 in r27: G1 closes only with R-G1), and Rule C (b) keeps every stage uncacheable meanwhile. No separate evaluator or one-read change is needed. Rule C's condition range is (a) to (l) | 2.1 (G1), 9.3 (verdict rule), 4.3 (Rule C) |
 | FF4 (MEDIUM) | T-IDENT's Asserts column tested a supplied-hash mismatch, while its text said the row only checks hash agreement | Resolved in r26: T-IDENT is split into T-IDENT-a (hash agreement) and T-IDENT-b (a supplied hash that differs fails Input, including the G1 race). Rule C (c) cites both. The gating list names T-IDENT-b | 7.3 (T-IDENT-a, T-IDENT-b), 4.3 (Rule C (c)), 7.3 gating paragraph |
 | FF5 (LOW) | §3.4 said "This is the only rule", which conflicts with the grounds of §9.3 that are not reached items | Resolved in r26: "This is the reached-item rule", and §9.3 and Rule C add further grounds, for example V-ID not implemented | 3.4 (lead) |
 | FF6 (LOW) | DD1 described the block rules as current | Resolved in r26: DD1 is marked superseded by EE1 in r25 | 12.16 (DD1) |
@@ -1239,3 +1243,15 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | GG2 (MEDIUM) | "Every caller found in the tree is listed" was false: the test-project callers of the stream and byte overloads were missing | Resolved in r27: the claim is limited to production callers in the table, and the note after the table lists every test-project caller of both overloads by file, line, and overload (`git grep` at `c26abdb`) | 2.1 (table lead and note) |
 | GG3 (LOW) | The header named `dc0ab13` as the reviewed head, while the review in r26 was of `d336ff0` and the current review is of `c26abdb` | Resolved in r27: the header names `c26abdb` as the reviewed head, and the `src/` tree is identical through it | Header (Source identity) |
 | GG4 (LOW) | EE3 still cited condition (m) without the superseded note | Resolved in r27: EE3 carries the superseded note: (m) was removed in r26 (see FF3), and FF3 is superseded by GG1 | 12.17 (EE3) |
+
+### 12.20 Review of `4b62055` (r27)
+
+| ID | Finding | Status in r28 | Resolved in |
+|---|---|---|---|
+| HH1 (MEDIUM) | The stream-overload test list in GG2 was wrong: `RomAnalysisPipelineTests.cs:158` and `:429` are byte-array calls, and the driver call `RealRomAnalyzer.cs:122` was missing from the note | Resolved in r28: the note is the `git grep` result at `4b62055`, sorted by overload. Stream: 3 production and 7 test calls (6 in `src/PSXRecomp.Tests` plus 1 in `src/PSXRecompStudio.Tests`). Byte-array: 1 production and 10 test calls. Each file and line appears once | 2.1 (note) |
+| HH2 (MEDIUM) | The heading ("all callers verified"), the byte-array row ("not enumerated, UNVERIFIED, U7"), and U7 ("lists only the Core caller") contradicted the note | Resolved in r28: the heading says all callers are enumerated by `git grep` at `4b62055`; the byte-array row and the stream row point to the note; U7 is closed for the caller list, and only the constant-SHA count remains open | 2.1 (heading, rows, note), 10 (U7) |
+| HH3 (MEDIUM) | T-IDENT-a said G1's replacement gap was tested by T-IDENT-b, which covers only changes before V-ID's pass | Resolved in r28: T-IDENT-a says the replacement window is tested only by T-IDENT-c, a requirement that is not run | 7.3 (T-IDENT-a, T-IDENT-c) |
+| HH4 (MEDIUM) | "R-G1 is implemented and tested by T-IDENT-c" read as a claim that R-G1 exists | Resolved in r28: the sentence says R-G1 is a requirement, not implemented or run (T-IDENT-c) | 2.1 (R-G1) |
+| HH5 (MEDIUM) | R-G1 was missing from the re-enabling list, the status header, §7.1, §7.3 gating, and §10 open items, so V-ID alone could re-enable a stage | Resolved in r28: R-G1 is in the re-enabling list (condition (b)), the status header, §7.1 (Normal mode), the §7.3 gating paragraph, and §10 (a new open item R-G1, owner not assigned). Rule C (b) already included it | 9.3 (invalidation), header, 7.1, 7.3, 10 |
+| HH6 (LOW) | The dangling fragment "The earlier pass." in §2.1 | Resolved in r28: removed; the paragraph ends at the R-G1 statement | 2.1 (G1) |
+| HH7 (LOW) | FF3 said "G1 is open until V-ID exists", which conflicts with GG1 | Resolved in r28: FF3 carries the superseded marker: G1 closes only with R-G1 (GG1) | 12.19 (FF3) |
