@@ -1,39 +1,51 @@
 using FluentAssertions;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Runtime.CdRom;
+using PSXRecomp.Tests.RealRomAnalysis;
 
 namespace PSXRecomp.Tests.DiscImageTests;
 
 /// <summary>
-/// Issue #10: the 150-sector question, end to end through <see cref="CdRomDevice"/>. A synthetic 1000-sector BINARY file
-/// marks each file sector with its own index in its user data. The device's SetLoc takes an absolute MSF, computes
-/// LBA = frames - 150 (CdRomDevice.ConsumeSeekTarget) and passes that LBA to the source. The file index of a sector is its
-/// absolute frame count, because a BIN dump starts at 00:00:00 (an assumption; these fixtures are synthetic).
+/// Issue #10 owner ruling: the 150-sector offset, end to end. Synthetic fixtures only. Each sector carries a marker
+/// (its ISO sector number or file index in its user data), so a read proves which physical sector was returned.
+/// Conventions: LBA 0 = MSF 00:02:00; a file-origin source (raw image, BIN/CUE) maps LBA L to file index L + 150; a
+/// CHD stores the disc from LBA 0 (frame = LBA); the device converts SetLoc MSF to LBA once (minus 150).
 /// </summary>
-/// <remarks>
-/// Result at the time of writing: the BIN/CUE adapter (LBA = file index - 150) returns the disc-correct sector, and the
-/// raw source (LBA = file index) returns the sector 150 earlier. The raw test pins that current behaviour and is an
-/// open question for the owner. Nothing in the existing raw or CHD path is changed here.
-/// </remarks>
 [Test]
 public sealed class SectorLbaConventionTests
 {
     private const string Cue = "FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n";
-    private const int FileSectors = 1000;
+    private const int RawUserDataOffsetMode2 = 24;
+    private const int RawUserDataOffsetMode1 = 16;
+    private const int IsoSectorSize = 2048;
 
-    /// <summary>A BINARY file where file sector N carries N in its user data (bytes 16..19, little-endian).</summary>
-    private static byte[] MarkedBin()
+    /// <summary>A BINARY file where file sector N carries N in its user data (Mode 1 layout, bytes 16..19).</summary>
+    private static byte[] MarkedFileImage(int fileSectors)
     {
-        var bin = new byte[FileSectors * ICdSectorSource.RawSectorSize];
-        for (var n = 0; n < FileSectors; n++)
+        var bin = new byte[fileSectors * ICdSectorSource.RawSectorSize];
+        for (var n = 0; n < fileSectors; n++)
         {
             var offset = n * ICdSectorSource.RawSectorSize;
             bin[offset + 15] = 1; // Mode 1: user data begins at byte 16 of the raw sector
-            BitConverter.GetBytes((uint)n).CopyTo(bin, offset + 16);
+            BitConverter.GetBytes((uint)n).CopyTo(bin, offset + RawUserDataOffsetMode1);
         }
 
         return bin;
     }
+
+    /// <summary>An ISO-like image of 2048-byte sectors where ISO sector N carries N in its first four bytes.</summary>
+    private static byte[] MarkedIso(int sectors)
+    {
+        var iso = new byte[sectors * IsoSectorSize];
+        for (var n = 0; n < sectors; n++)
+        {
+            BitConverter.GetBytes((uint)n).CopyTo(iso, n * IsoSectorSize);
+        }
+
+        return iso;
+    }
+
+    private static uint Marker(ReadOnlySpan<byte> userData) => BitConverter.ToUInt32(userData[..4]);
 
     private static byte Bcd(int value) => (byte)((value / 10 << 4) | (value % 10));
 
@@ -70,7 +82,7 @@ public sealed class SectorLbaConventionTests
         return bytes.ToArray();
     }
 
-    /// <summary>SetLoc to an absolute frame count, ReadN one sector, and return the file-sector marker in its data.</summary>
+    /// <summary>SetLoc to an absolute MSF frame count, ReadN one sector, and return the marker in its 2048-byte payload.</summary>
     private static uint ReadMarkerAtAbsoluteFrames(ICdSectorSource source, int absoluteFrames)
     {
         var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), source);
@@ -82,13 +94,13 @@ public sealed class SectorLbaConventionTests
         TakeResponse(cd).Should().Equal(1, 0x22);
 
         cd.WriteRegister(3, 0x80); // BFRD: load the sector into the data FIFO.
-        var data = new byte[2048];
+        var data = new byte[IsoSectorSize];
         for (var i = 0; i < data.Length; i++)
         {
             data[i] = cd.ReadData();
         }
 
-        return BitConverter.ToUInt32(data, 0);
+        return Marker(data);
     }
 
     [Theory]
@@ -97,7 +109,7 @@ public sealed class SectorLbaConventionTests
     [InlineData(999)]
     public void BinCueAdapter_SetLocOfFileSector_ReturnsThatFileSector(int fileSector)
     {
-        var source = new BinCueCdSectorSource(Cue, MarkedBin());
+        var source = new BinCueCdSectorSource(Cue, MarkedFileImage(1000));
 
         // The file sector's absolute MSF is its frame count; the device reads LBA = frames - 150 and the adapter maps
         // that LBA back to file index LBA + 150.
@@ -105,22 +117,91 @@ public sealed class SectorLbaConventionTests
     }
 
     [Fact]
-    public void RawSource_SetLocOfFileSector200_ReturnsFileSector50_CurrentBehaviourPinnedForOwnerReview()
+    public void RawSource_SetLocOfFileSector200_ReturnsFileSector200()
     {
-        // The device passes LBA 50 (= 200 - 150) to RawCdSectorSource, which reads file index 50 directly. A BIN dump's
-        // file sector 200 is 00:02:50, so this is 150 sectors early. Pinned here as current behaviour; it flips
-        // when the raw path follows the LBA convention. Owner decision pending.
-        var source = new RawCdSectorSource(MarkedBin());
+        // The device passes LBA 50 (= 200 - 150); RawCdSectorSource maps LBA 50 to file index 200. Fixed in Issue #10 (was 50).
+        var source = new RawCdSectorSource(MarkedFileImage(1000));
 
-        ReadMarkerAtAbsoluteFrames(source, 200).Should().Be(50u);
+        ReadMarkerAtAbsoluteFrames(source, 200).Should().Be(200u);
+    }
+
+    [Fact]
+    public void Device_SetLocOfTheLeadIn_ReadsLbaZeroExactlyOnce()
+    {
+        // MSF 00:02:00 is LBA 0 = ISO sector 0. A double offset would read the lead-in or land past the data.
+        var source = new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(MarkedIso(10)));
+
+        ReadMarkerAtAbsoluteFrames(source, 150).Should().Be(0u);
+        ReadMarkerAtAbsoluteFrames(source, 151).Should().Be(1u);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(149)]
+    [InlineData(150)]
+    [InlineData(200)]
+    [InlineData(299)]
+    public void RawSource_Boundaries_ReturnTheIsoSectorOfTheSameLba(int lba)
+    {
+        var source = new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(MarkedIso(300)));
+        var raw = new byte[ICdSectorSource.RawSectorSize];
+
+        source.TryReadSector(lba, raw).Should().BeTrue();
+        Marker(raw.AsSpan(RawUserDataOffsetMode2)).Should().Be((uint)lba);
+    }
+
+    [Fact]
+    public void RawSource_LeadOutIsIsoSectorCount_AndOutOfRangeIsAbsent()
+    {
+        var source = new RawCdSectorSource(SyntheticDiscBuilder.Mode2Form1(MarkedIso(300)));
+        var raw = new byte[ICdSectorSource.RawSectorSize];
+
+        source.Toc.LeadOutLba.Should().Be(300);
+        source.TryReadSector(300, raw).Should().BeFalse();
+        source.TryReadSector(-1, raw).Should().BeFalse();
+    }
+
+    [Fact]
+    public void RawAndChd_AndBinCue_ReturnTheSameUserDataForEachLba()
+    {
+        // The same disc in three containers: a raw Mode 2 image from 00:00:00, a BIN/CUE of those bytes, and a CHD that
+        // stores frames from LBA 0. Each LBA must yield the same 2048 user-data bytes in all three.
+        var iso = MarkedIso(300);
+        var rawImage = SyntheticDiscBuilder.Mode2Form1(iso);
+        var raw = new RawCdSectorSource(rawImage);
+        var bin = new BinCueCdSectorSource(Cue, rawImage);
+        using var chd = ChdReader.Open(new MemoryStream(SyntheticChdBuilder.WrapInChd(iso)));
+        var cdChd = new ChdCdSectorSource(chd);
+
+        raw.Toc.LeadOutLba.Should().Be(300);
+        cdChd.Toc.LeadOutLba.Should().Be(300);
+        bin.Toc.LeadOutLba.Should().Be(300);
+
+        foreach (var lba in new[] { 0, 1, 149, 150, 200, 299 })
+        {
+            var rawSector = new byte[ICdSectorSource.RawSectorSize];
+            var chdSector = new byte[ICdSectorSource.RawSectorSize];
+            var binSector = new byte[ICdSectorSource.RawSectorSize];
+            raw.TryReadSector(lba, rawSector).Should().BeTrue();
+            cdChd.TryReadSector(lba, chdSector).Should().BeTrue();
+            bin.TryReadSector(lba, binSector).Should().BeTrue();
+
+            var rawUser = rawSector.AsSpan(RawUserDataOffsetMode2, IsoSectorSize).ToArray();
+            var chdUser = chdSector.AsSpan(RawUserDataOffsetMode1, IsoSectorSize).ToArray();
+            var binUser = binSector.AsSpan(RawUserDataOffsetMode2, IsoSectorSize).ToArray();
+            chdUser.Should().Equal(rawUser, $"CHD and raw disagree at LBA {lba}");
+            binUser.Should().Equal(rawUser, $"BIN/CUE and raw disagree at LBA {lba}");
+            Marker(rawUser).Should().Be((uint)lba);
+        }
     }
 
     [Fact]
     public void BinCueAdapter_TrackOneStartsAtLbaZero_AndLeadOutIsSectorCountMinus150()
     {
-        var source = new BinCueCdSectorSource(Cue, MarkedBin());
+        var source = new BinCueCdSectorSource(Cue, MarkedFileImage(1000));
 
         source.Toc.Tracks.Should().Equal(new CdTrack(1, 0, false));
-        source.Toc.LeadOutLba.Should().Be(FileSectors - 150);
+        source.Toc.LeadOutLba.Should().Be(1000 - 150);
     }
 }

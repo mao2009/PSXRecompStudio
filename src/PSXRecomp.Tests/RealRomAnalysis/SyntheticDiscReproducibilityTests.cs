@@ -17,7 +17,8 @@ public sealed class SyntheticDiscReproducibilityTests
 {
     // SHA-256 of SyntheticDiscBuilder.Bootable(GeneratedPsxExeFixtures.BiosPutCharMarker.Generate()).
     // Mirror this pin in scripts/demo/synthetic-disc.ps1.
-    private const string ExpectedSha256 = "4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27";
+    // Re-pinned for the 150-sector lead-in in Mode2Form1 (Issue #10 owner ruling); the previous value was 4f75a05f...
+    private const string ExpectedSha256 = "2f9773f517448647df7afba5616275f67fa3d25006e7ccde58b360f71e2a6043";
 
     private const int RawSector = ICdSectorSource.RawSectorSize;
     private const int Payload = Iso9660Reader.SectorSize;
@@ -60,7 +61,7 @@ public sealed class SyntheticDiscReproducibilityTests
         BitConverter.ToUInt32(exe, original.Length).Should().Be(0x1000FFFF);
         BitConverter.ToUInt32(exe, original.Length + 4).Should().Be(0);
         var disc = SyntheticDiscBuilder.Bootable(exe);
-        Sha256Hex(disc).Should().Be("bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03");
+        Sha256Hex(disc).Should().Be("ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606");
         var parsed = PsxExe.Load(Iso(new RawCdSectorSource(disc)).ReadFile(SyntheticDiscBuilder.ExeIsoName.Split(';')[0]), "synthetic");
         parsed.Header.TextSize.Should().Be(2048);
         parsed.TextSegment.Should().Equal(exe.AsSpan(0x800).ToArray());
@@ -113,7 +114,7 @@ public sealed class SyntheticDiscReproducibilityTests
         var disc = Disc();
         var source = new RawCdSectorSource(disc);
 
-        source.Toc.LeadOutLba.Should().Be(disc.Length / RawSector);
+        source.Toc.LeadOutLba.Should().Be(disc.Length / RawSector - CdSectorAddress.LeadInFrames);
         Field(disc, 16, 24 + 1, 5).Should().Be("CD001", "the primary volume descriptor"); // 0x10 sector
         Field(disc, SystemCnfSector, 24, 7).Should().Be("BOOT = ", "SYSTEM.CNF is the first extent");
         Field(disc, SystemCnfSector, 24, 40).Should().Contain(SyntheticDiscBuilder.BootPath);

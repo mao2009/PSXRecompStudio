@@ -23,10 +23,9 @@ namespace PSXRecomp.Core.DiscImage;
 /// TOC has no position for it. A multi-track sheet yields one <see cref="CdTrack"/> per TRACK, in file order.
 /// </remarks>
 /// <remarks>
-/// The existing raw and CHD sources (<see cref="RawCdSectorSource"/>, <see cref="ChdCdSectorSource"/>) index the image
-/// by the LBA itself, with no 150-sector offset. That does not match the convention above, and the device's SetLoc
-/// path then reads 150 sectors earlier than a BIN dump would. Those paths are unchanged in this step and are an open
-/// question for the owner.
+/// This source and <see cref="RawCdSectorSource"/> both store the image from file index 0 and apply the same
+/// 150-sector mapping, so a BIN dump and its raw image read the same physical sector for each LBA. The CHD source
+/// stores the disc from LBA 0 (see its remarks), which is the one open question for the owner.
 /// </remarks>
 /// <remarks>
 /// The image is referenced, not copied: the caller's <paramref name="bin"/> array must not be mutated while this source
@@ -40,7 +39,7 @@ namespace PSXRecomp.Core.DiscImage;
 public sealed class BinCueCdSectorSource : ICdSectorSource
 {
     /// <summary>Frames before LBA 0: LBA 0 is MSF 00:02:00, and the file index of LBA 0 is this value.</summary>
-    public const int LeadInFrames = 150;
+    public const int LeadInFrames = CdSectorAddress.LeadInFrames;
 
     private readonly ReadOnlyMemory<byte> _bin;
 
@@ -79,10 +78,10 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
     public CdDiscToc Toc { get; }
 
     /// <summary>Converts a file index (sector position from the start of the BINARY file) to an LBA.</summary>
-    public static int FileIndexToLba(int fileIndex) => fileIndex - LeadInFrames;
+    public static int FileIndexToLba(int fileIndex) => CdSectorAddress.FileIndexToLba(fileIndex);
 
     /// <summary>Converts an LBA (LBA 0 = MSF 00:02:00) to the file index of that sector in the BINARY file.</summary>
-    public static int LbaToFileIndex(int lba) => lba + LeadInFrames;
+    public static int LbaToFileIndex(int lba) => CdSectorAddress.LbaToFileIndex(lba);
 
     /// <summary>Reads the sector at LBA <paramref name="lba"/>, which is file index <c>lba + 150</c>.</summary>
     public bool TryReadSector(int lba, Span<byte> destination)

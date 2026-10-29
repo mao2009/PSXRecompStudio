@@ -8,6 +8,10 @@ namespace PSXRecomp.Core.DiscImage;
 /// frames are the disc's sectors from LBA 0, the layout of a single-data-track PlayStation disc.
 /// </summary>
 /// <remarks>
+/// LBA origin (Issue #10 owner ruling, pending verification): frame n is LBA n, with no 150-sector offset. This is the
+/// layout the existing analysis reads (<c>DiscImageAnalyzer.CreateIsoReader</c>, frame = ISO sector) and assumes that a
+/// CHD stores the disc from LBA 0 with the lead-in not stored. A CHD that stores the lead-in would read 150 sectors
+/// early through this source, and it cannot be checked here because no real CHD is used. UNVERIFIED for production CHDs.
 /// ponytail: the TOC is one data track over every frame; the CHD track metadata (CHT2) is not parsed, so a multi-track
 /// image reports its audio tracks as part of track 1. Parse the metadata when CD-DA titles need a real TOC.
 /// </remarks>
