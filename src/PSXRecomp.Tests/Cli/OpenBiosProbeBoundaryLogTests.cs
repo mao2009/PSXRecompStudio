@@ -42,9 +42,9 @@ public sealed class OpenBiosProbeBoundaryLogTests
     [Fact]
     public void FirstMismatch_Ignores_The_Engine_Label_And_Names_The_First_Differing_Field()
     {
-        var left = Parse(Line("interpreter", vram: "aa"), Line("interpreter", vram: "bb"));
-        var same = Parse(Line("host", vram: "aa"), Line("host", vram: "bb"));
-        var diverged = Parse(Line("host", vram: "aa"), Line("host", vram: "cc"));
+        var left = Parse(Line("interpreter", vram: "aa"), Line("interpreter", vram: "bb", vblank: 2));
+        var same = Parse(Line("host", vram: "aa"), Line("host", vram: "bb", vblank: 2));
+        var diverged = Parse(Line("host", vram: "aa"), Line("host", vram: "cc", vblank: 2));
 
         OpenBiosProbeBoundaryLog.FirstMismatch(left, same).Should().BeNull();
         OpenBiosProbeBoundaryLog.FirstMismatch(left, diverged).Should().Be((1, "vramSha256"));
@@ -128,6 +128,69 @@ public sealed class OpenBiosProbeBoundaryLogTests
         a.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"vblank\" must be a non-negative integer");
         b.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"cycles\" must be a non-negative integer");
         c.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"iStat\" must be *");
+    }
+
+    [Fact]
+    public void A_Hex_Field_With_A_Trailing_Newline_Is_Refused()
+    {
+        // The JSON escape \n is a real newline in the value. A "$" anchor would accept it; the pattern must end at \z.
+        var line = Line("interpreter", vram: "aa").Replace("\"iStat\":\"0x00000000\"", "\"iStat\":\"0x00000000\\n\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"iStat\" must be *");
+    }
+
+    [Fact]
+    public void A_Digest_With_A_Trailing_Newline_Is_Refused()
+    {
+        var line = Line("interpreter", vram: "aa").Replace("\"vramSha256\":\"" + Sha("aa") + "\"", "\"vramSha256\":\"" + Sha("aa") + "\\n\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"vramSha256\" must be 64 lowercase hex digits*");
+    }
+
+    [Fact]
+    public void A_Duplicate_Required_Key_Is_Refused_Not_Silently_Read_Once()
+    {
+        // JsonNode would keep one of two equal property names; the record must refuse the duplicate instead.
+        var line = Line("interpreter", vram: "aa").Replace("\"cycles\":0", "\"cycles\":0,\"cycles\":0", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: duplicate field \"cycles\"");
+    }
+
+    [Fact]
+    public void A_Duplicate_Unexpected_Key_Is_Refused()
+    {
+        // The record has no optional keys: every key is required, so an unexpected key is refused whether it repeats or not.
+        var line = Line("interpreter", vram: "aa").Replace("\"vramSha256\"", "\"extra\":1,\"extra\":2,\"vramSha256\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: duplicate field \"extra\"");
+    }
+
+    [Fact]
+    public void A_Huge_Integer_Beyond_UInt64_Is_Refused_With_A_Diagnostic()
+    {
+        var line = Line("interpreter", vram: "aa").Replace("\"vblank\":1", "\"vblank\":18446744073709551616", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: field \"vblank\" must be a non-negative integer");
+    }
+
+    [Fact]
+    public void VBlank_Above_Int_Range_Is_A_Valid_Boundary_And_Compares()
+    {
+        var left = Parse(Line("i", "aa", 3_000_000_000), Line("i", "bb", 3_000_000_001));
+        var right = Parse(Line("h", "aa", 3_000_000_000), Line("h", "cc", 3_000_000_001));
+
+        left[1].VBlank.Should().Be(3_000_000_001UL);
+        OpenBiosProbeBoundaryLog.FirstMismatch(left, right).Should().Be((1, "vramSha256"));
     }
 
     [Fact]

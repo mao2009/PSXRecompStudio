@@ -276,7 +276,11 @@ internal static class OpenBiosProbeCommand
             error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.Message}");
             return 1;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        // Every exception that opening or reading a path can raise is a refusal, not a crash: an empty or invalid path
+        // (ArgumentException, ArgumentNullException), an unsupported path (NotSupportedException), a missing file or
+        // directory (FileNotFoundException, DirectoryNotFoundException, both IOException), a path too long (PathTooLongException,
+        // an IOException), or a directory or other access refusal (UnauthorizedAccessException).
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException)
         {
             error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.GetType().Name}: {ex.Message}");
             return 1;

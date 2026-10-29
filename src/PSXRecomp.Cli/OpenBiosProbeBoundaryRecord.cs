@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using PSXRecomp.Architecture;
@@ -25,8 +26,9 @@ internal sealed record OpenBiosProbeBoundaryRecord(
     public static readonly IReadOnlyList<string> RequiredKeys =
         ["engine", "vblank", "cycles", "iStat", "iMask", "dicr", "gpuStat", "displayMode", "displayVramStart", "vramSha256"];
 
-    private static readonly Regex HexWord = new("^0x[0-9A-F]{8}$", RegexOptions.CultureInvariant);
-    private static readonly Regex Sha256Hex = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
+    // \z, not $: in .NET, $ also matches before a final newline, so "0x00000000\n" would otherwise be accepted.
+    private static readonly Regex HexWord = new(@"^0x[0-9A-F]{8}\z", RegexOptions.CultureInvariant);
+    private static readonly Regex Sha256Hex = new(@"^[0-9a-f]{64}\z", RegexOptions.CultureInvariant);
 
     /// <summary>The fields a comparison looks at, in the order the first difference is reported. The engine label is not one.</summary>
     public IReadOnlyList<(string Name, string Value)> ComparedFields() =>
@@ -48,6 +50,25 @@ internal sealed record OpenBiosProbeBoundaryRecord(
     /// </summary>
     public static OpenBiosProbeBoundaryRecord Parse(string line)
     {
+        // A document pass first: JsonNode would silently keep only one of two equal property names, so duplicates are refused here.
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var rootKind = document.RootElement.ValueKind;
+            if (rootKind != JsonValueKind.Object)
+                throw new BoundaryLogFormatException($"expected a JSON object, got {DescribeKind(rootKind)}");
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                    throw new BoundaryLogFormatException($"duplicate field \"{property.Name}\"");
+            }
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            throw new BoundaryLogFormatException($"not valid JSON ({ex.Message})");
+        }
+
         JsonNode? root;
         try
         {
@@ -107,6 +128,13 @@ internal sealed record OpenBiosProbeBoundaryRecord(
             return text;
         throw new BoundaryLogFormatException($"field \"{key}\" must be {expected}");
     }
+
+    private static string DescribeKind(JsonValueKind kind) => kind switch
+    {
+        JsonValueKind.Array => "a JSON array",
+        JsonValueKind.Object => "a JSON object",
+        _ => "a JSON scalar",
+    };
 
     private static string DescribeKind(JsonNode? node) => node switch
     {
