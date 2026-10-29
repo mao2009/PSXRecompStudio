@@ -1,4 +1,4 @@
-# Issue #43: Incremental Analysis and Cache (design, r21)
+# Issue #43: Incremental Analysis and Cache (design, r22)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, and T-IDENT all hold. Until Rule C holds for a stage, that
@@ -8,12 +8,12 @@
   cannot hold for any stage, and a matching U2 gate does not make a stage cacheable.
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r21. Addresses the review of `597e1aa` (r20): three findings, mapped in 12.13. The findings of `f4b95ab` (r19) are in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
+- Revision: r22. Addresses the review of `2311b62` (r21): six findings, mapped in 12.14. The findings of `597e1aa` (r20) are in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
   `6f1494a` (r14) are in 12.7, `d11733c` (r13) in 12.6, `d1c41ac` (r12) in 12.5, `34845dd` (r11) in 12.4, and
   `f77183e` (r10) in 12.3. The direction of r9 to r15 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
-- Source identity: the head checked in this revision is `597e1aa`. The `src/` tree is identical at `34845dd`, `d1c41ac`, `d11733c`, `e1afbba`, `6a871a5`, `5e658f5`, `882500e`, `f4b95ab`, and `597e1aa`
-  (`git diff --stat` is empty across them), so every check label in this document is `597e1aa`. The grep for the seams and
+- Source identity: the current head is `2311b62`, and the head checked in this revision is the same tree. The `src/` tree is identical at `34845dd`, `d1c41ac`, `d11733c`, `e1afbba`, `6a871a5`, `5e658f5`, `882500e`, `f4b95ab`, `597e1aa`, and `2311b62`
+  (`git diff --stat` is empty across them), so every check label in this document is `2311b62`. The grep for the seams and
   codes (7.3) finds none at `882500e`, the same result as at `e1afbba` and `6a871a5`. SHAs in section 12 name the
   reviewed heads, not check labels.
 
@@ -135,7 +135,7 @@ code-fingerprint identifier is used in the current design.
 `Differential = BuildDifferential(validations)` (`:185`). N12a is a function of `(report, fixture)` only.
 N12d is a function of the N12a result and `validations`, and it is never cached. The current body of `Analyze`
 (`src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:88-187`) contains `BuildDifferential` at `:185` (verified at
-`597e1aa`), so it cannot be the N12a unit as it stands. N12a is not a candidate, and its verdict is `uncacheable`, until U1
+`2311b62`), so it cannot be the N12a unit as it stands. N12a is not a candidate, and its verdict is `uncacheable`, until U1
 creates a classification unit that excludes `:185`.
 
 ### 2.3 Fixture identity and the driver
@@ -226,7 +226,7 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    APIs. Also reflection-based serialization: the generic method `ArtifactJson.Serialize<T>` calls
    `JsonSerializer.Serialize(document, CanonicalOptions)` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:54`),
    which reflects over `T` at run time. The cached payload codec must not reflect (3.7).
-   The sites below are a search result at `597e1aa`, not an exhaustive list. Condition (a) of 9.3 requires this search
+   The sites below are a search result at `2311b62`, not an exhaustive list. Condition (a) of 9.3 requires this search
    to be re-run before any verdict. Serialization by `JsonSerializer` over a generic or concrete type: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:54`,
    `src/PSXRecomp.Core/Diagnostics/DiagnosticJson.cs:32` and `:38` (`Deserialize<T>`), `src/PSXRecomp.Core/DiscImage/DiscImageAnalysisReport.cs:55`,
    `src/PSXRecomp.Core/DiscImage/FunctionDiscovery.cs:57`, and `src/PSXRecomp.Core/Project/ProjectMetadataSerializer.cs:65`. Attribute-based converters,
@@ -235,7 +235,7 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    `src/PSXRecomp.Core/DiscImage/RomAnalysisStageRecorder.cs:67`, in the exception overload of `Fail` (`:65`). The exception
    overload has ten call sites in Core, all in `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs`, each in
    one of these clauses, quoted exactly: `catch (FileNotFoundException ex)` (`:240` for `:242`, `:263` for `:265`), which has no filter, or `catch (Exception ex) when (IsClassifiableFailure(ex))` (`:122` for `:124`, `:223` for `:225`, `:245` for `:247`, `:268` for `:270`, `:298` for `:300`, `:357` for `:359`, `:383` for `:385`, `:435` for `:437`). The search covered every `Fail(` call in
-   `src/PSXRecomp.Core` at `597e1aa`:
+   `src/PSXRecomp.Core` at `2311b62`:
    `:124` (N2, CHD open), `:225` (N3, filesystem), `:242` and `:247` (N4, SYSTEM.CNF), `:265` and `:270` (N4, boot
    executable), `:300` (N5, EXE header), `:359` (N7, decode), `:385` (N8, basic blocks), and `:437` (N11, report). The
    N11 catch at `:435` belongs to the `try` at `:401`, which also contains the N9 call `FunctionDiscovery.Build` (`:404`)
@@ -245,7 +245,7 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    so no verdict depends on them. Within Core, the other `Fail` calls use the string overload (`:52`), which does not
    call `GetType`: `:95`, `:173`, `:190`, `:196`, `:277`, `:285`, `:307`, `:314`, `:325`, `:332`, `:342`, `:369`, and
    `:391`. The only route to `:67` is a call to the exception overload. The recorder type is referenced in Core only in
-   `RomAnalysisPipeline.cs`, `RomAnalysisOutcome.cs`, and its own file (grep at `597e1aa`, which includes
+   `RomAnalysisPipeline.cs`, `RomAnalysisOutcome.cs`, and its own file (grep at `2311b62`, which includes
    `src/PSXRecomp.Core/Cpu`; `R3000aDecoder.cs` references none of them). Other `Fail` methods, such as the one in
    `src/PSXRecomp.Core/Runtime/PrintfService.cs`, are unrelated. Each cache candidate's reach is decided by its
    unit in the table of 9.2, which gives one rule per stage. Under that table no unit contains a call to the exception
@@ -287,19 +287,19 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    evidence. This document defines no exception, so the sites at `:286` and `:333` make a stage uncacheable if it reaches them.
 9. **Environment.** `Environment.*` (variables, machine name, user, OS version, current directory), and platform
    identity: `OperatingSystem.Is*`, `RuntimeInformation.FrameworkDescription`, `RuntimeInformation.ProcessArchitecture`, `RuntimeInformation.IsOSPlatform`, and
-   `BitConverter.IsLittleEndian`. Core sites at `597e1aa`: `src/PSXRecomp.Core/FileIdentityInterop.cs:19`; `src/PSXRecomp.Core/LinuxFileStatInterop.cs:21`
+   `BitConverter.IsLittleEndian`. Core sites at `2311b62`: `src/PSXRecomp.Core/FileIdentityInterop.cs:19`; `src/PSXRecomp.Core/LinuxFileStatInterop.cs:21`
    (`IsLinux`, `IsLittleEndian`) and `:23` (`ProcessArchitecture`); `src/PSXRecomp.Core/MacOsFileStatInterop.cs:21`;
    `src/PSXRecomp.Core/NativeLibraryResolver.cs:102` and `:106` (`IsOSPlatform`, in `CurrentOs` at `:100`); `src/PSXRecomp.Core/ProcessTreeInterop.cs:18-20`.
    A direct-call check finds none of these types referenced from `src/PSXRecomp.Core/DiscImage`,
    `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs`, `src/PSXRecomp.Core/Recompiler/MipsToIrLowerer.cs`, or
-   `src/PSXRecomp.Core/Recompiler/RecompilerContract.cs`, or `src/PSXRecomp.Core/Cpu` (grep at `597e1aa`: no platform read there), so no
+   `src/PSXRecomp.Core/Recompiler/RecompilerContract.cs`, or `src/PSXRecomp.Core/Cpu` (grep at `2311b62`: no platform read there), so no
    stage body reaches them by a direct call. `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs` takes platform values as parameters and
    reads none. Build-time reads (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:19`) are not runtime reads. **Transitive reach from a cached stage
    is UNVERIFIED,** and U2 checks it (criterion 1 of 9.4). *Generic guard; acceptance criterion 1 of 9.*
 10. **Time.** `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.Now`, `Stopwatch` used in a value, time zone
     lookups. *Generic guard; acceptance criterion 1 of 9.*
 11. **File system.** `System.IO` reads, directory enumeration, file metadata, and path-based native calls. A file
-    read is an input and must be in the record as a value, not read implicitly. **Core sites at `597e1aa` that read
+    read is an input and must be in the record as a value, not read implicitly. **Core sites at `2311b62` that read
     file content or metadata.** The search covers `FileInfo`, `DirectoryInfo`, `File.`, `Directory.`, `FileStream`,
     `SafeFileHandle`, `stat`, `/proc`, `DllImport`, `LibraryImport`, and the native loader.
     - Content: `src/PSXRecomp.Core/DiscImage/ChdReader.cs:103` (`new FileStream`, in `ChdReader.Open(string)` at `:101`); `src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:286`
@@ -435,13 +435,12 @@ are not Core source.
   - The resolved versions are read from `obj/project.assets.json`. The read is by exact name and is done by the host,
     once per run, before any stage runs. The reads are done by the production key reader, an Infrastructure adapter
     created by the CLI or RuntimeHost composition code (8.1, `FileStageKeyInputReader`, a proposed name). It implements
-    `IStageCodeIdentity` by returning values. The stage closure performs no file access except the sites listed in 3.4
-    item 11, and none of them reads it (direct-call check at `597e1aa`; transitive reach is UNVERIFIED, and U2 checks it under
-    9.4 criterion 1), so it is not a Core read. The
+    `IStageCodeIdentity` by returning values. **Direct-call verified at `2311b62`, transitive reach UNVERIFIED (U2 checks it, 9.4 criterion 1):** the stage closure
+    performs no file access except the sites listed in 3.4 item 11, and none of those sites reads these inputs. The
     value enters the key as `dependencyIdentity`. The csproj pins direct packages only, and there is no lock file (CONFIRMED by listing).
 - **SDK version and runtime version.**
   - **PROPOSED, UNVERIFIED (U5).** No build target in this repository reads `$(NETCoreSdkVersion)` or writes a generated
-    source file. At `597e1aa`, `git grep` finds the name in no `.props`, `.targets`, or `.csproj` file. The only custom
+    source file. At `2311b62`, `git grep` finds the name in no `.props`, `.targets`, or `.csproj` file. The only custom
     targets are `BuildNative` (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:57`) and `IncludeNativeLibraryForTests`
     (`src/PSXRecomp.Tests/PSXRecomp.Tests.csproj:70`), which handle native artifacts. The mechanism to be built and
     verified under U5: a target reads `$(NETCoreSdkVersion)` and writes it into a generated source file in `obj/`,
@@ -450,7 +449,7 @@ are not Core source.
     field has no verified value and no verified source in the repository, so the key is **not yet established** for any
     stage.
   - At run time, the runtime version is read from `RuntimeInformation.FrameworkDescription` by the host, in the key
-    computation before any stage runs. No Core source reads it: at `597e1aa` `git grep` finds it only in
+    computation before any stage runs. No Core source reads it: at `2311b62` `git grep` finds it only in
     `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`, and `src/PSXRecompStudio`. A stage closure is Core-only (9.2),
     so the read is outside every closure and is not a reached item of 3.4. No exception is needed. If a Core stage ever
     reached it, item 9 would make that stage uncacheable, because item 9 names `RuntimeInformation.FrameworkDescription`
@@ -464,7 +463,7 @@ are not Core source.
   (`obj/project.assets.json`), the build-time analyzer identity (`Directory.Build.props`), the runtime version
   (`RuntimeInformation`), and the MVID of 3.3 (read from the running Core assembly). If any of them cannot be read, the
   stage is uncacheable, and the reported code follows the precedence rule of 9.3 (6.4, F5): an unreadable MVID gives
-  `ANALYSIS_CACHE_KEY_UNAVAILABLE` first; otherwise a missing, unreadable, or mismatched gate gives
+  `ANALYSIS_CACHE_KEY_UNAVAILABLE` first; otherwise a missing, unreadable, or mismatched gate file gives
   `ANALYSIS_CACHE_UNCACHEABLE`; otherwise an unreadable package file, `Directory.Build.props`, or runtime version gives
   `ANALYSIS_CACHE_KEY_UNAVAILABLE`. The SDK version and the target framework
   are not host-read. The SDK version reaches the key only through the MVID, and only if U5 confirms that mechanism (not yet
@@ -474,7 +473,7 @@ are not Core source.
   `.gitignore:5` (`obj/` is ignored, so it is build output and not committed) and `git ls-files`, which lists
   `Directory.Build.props` at the repository root. If the assumption holds, that build also has no gate file. Every run in it
   is therefore uncacheable and reports `ANALYSIS_CACHE_UNCACHEABLE` by the precedence rule of 9.3 (the MVID is readable, and the
-  missing gate is checked before any dependency input), so the missing dependency input is not reported. `ANALYSIS_CACHE_KEY_UNAVAILABLE` would appear only in a build that
+  missing gate file is checked before any dependency input), so the missing dependency input is not reported. `ANALYSIS_CACHE_KEY_UNAVAILABLE` would appear only in a build that
   ships a matching gate file but lacks a key input.
 
 ### 3.9 Decision: line endings
@@ -532,8 +531,8 @@ build is deterministic, which is UNVERIFIED until U5 confirms it (3.3).
   verdict is `cacheable` for the running Core MVID (9.3), which requires every condition (a) to (l) of the verdict rule in 9.3 (3.4 items 1 to 13 not reached, criteria 1 to 6 met);
   (b) V-ID is implemented; (c) T-IDENT passes (7.3). The rule
   applies to writes, Verify-mode comparison, and Normal-mode hits alike, because an entry keyed on an unverified
-  identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). A matching U2 gate is one
-  input only: V-ID is not implemented, so Rule C cannot hold, and every stage is uncacheable regardless of the gate. This
+  identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). A matching gate file is one
+  input only: V-ID is not implemented, so Rule C cannot hold, and every stage is uncacheable regardless of the gate file. This
   is the current proposal. Other sections restate it or refer to it.
 - **Migration.** `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:24` defines `Sha` as a literal that is
   not the hash of the bytes passed at `:347`. About 50 call sites exist in the test projects (9 in that file, 2 in
@@ -620,13 +619,13 @@ differs from what the stage now computes would be used in Normal mode. That is t
 - **F3. Uncacheable.** The stage is recomputed on every run, and the run reports `ANALYSIS_CACHE_UNCACHEABLE` once per
   stage. This is the code for every state in which no cacheable verdict exists: the default state before U2 runs (no gate
   file exists), a gate file that is missing, unreadable, or mismatched, and a stage whose verdict is uncacheable. Precedence
-  (9.3): this check comes second, after an unreadable MVID (which gives KEY_UNAVAILABLE), so a state without a matching gate reports this code even when a dependency input is also
+  (9.3): this check comes second, after an unreadable MVID (which gives KEY_UNAVAILABLE), so a state without a matching gate file reports this code even when a dependency input is also
   unreadable.
 - **F4. Partial failure.** If a stage fails, no entry is written for it or for any stage below it (W5).
 - **F5. Key input unavailable.** If any part of the key cannot be read (the package file, `Directory.Build.props`, the
   runtime version, or the MVID of 3.3), the stage is uncacheable. The run reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` when the MVID
-  cannot be read (precedence step 1 of 9.3, because no gate can be matched), and also when a gate file matches the running
-  MVID and a dependency input cannot be read (step 3). A missing, unreadable, or mismatched gate is F3 (step 2). The code means that a key
+  cannot be read (precedence step 1 of 9.3, because no gate file can be matched), and also when a gate file matches the running
+  MVID and a dependency input cannot be read (step 3). A missing, unreadable, or mismatched gate file is F3 (step 2). The code means that a key
   input is unreadable. It does not cover the gate file, which is reported under F3. The
   generated SDK file of 3.8 is PROPOSED (U5) and is not a host-read input. No constant is substituted.
 - **Codes.** Four codes are proposed: `ANALYSIS_CACHE_QUARANTINED`, `ANALYSIS_CACHE_UNCACHEABLE`,
@@ -642,11 +641,11 @@ differs from what the stage now computes would be used in Normal mode. That is t
 - **Consequence.** An uncacheable stage writes **no entry in any mode**, including Verify mode. Verify mode for an
   uncacheable stage recomputes and compares with nothing, because nothing was written. This closes the path in which
   an entry written in Verify mode is read later, after Normal mode is enabled.
-- **Entry count.** Until the gate passes, the number of entries written for every cached stage is 0. This is the check of T-COLD-WARM.
+- **Entry count.** Until Rule C holds for a stage, the number of entries written for every cached stage is 0. This is the check of T-COLD-WARM.
 
 ## 7. Modes, seams, and tests
 
-### 7.1 Modes, gates, and test-only seams
+### 7.1 Modes, seams, and test-only injection
 
 - **Default mode is Verify.** In Verify mode, a cacheable stage is recomputed cold. If an entry exists, its payload
   is compared with the cold payload byte for byte. A difference is `ANALYSIS_CACHE_VERIFY_MISMATCH` and a hard failure.
@@ -659,16 +658,17 @@ differs from what the stage now computes would be used in Normal mode. That is t
   through the Core port `IStageCodeIdentity`. The fake implementation lives in the test project. Production code may not
   reference test code (`docs/architecture-matrix.md:43`), so a production composition root cannot bind a test
   implementation. The production composition root binds the production implementation only. A verdict that comes from the
-  test project is never a gate and never marks a production stage cacheable.
+  test project is never a Rule C condition and never marks a production stage cacheable.
 
 Injection seams (Core types, public ports):
 
 - `IAnalysisCacheStore`: the store port (8.1). Tests pass an in-memory fake, which lives in the test project.
-- `IStageCodeIdentity`: returns `codeIdentity`, `dependencyIdentity`, and the stage's uncacheable verdict. It is the single
-  carrier of the verdict.
-  Production binds the gate-backed implementation (9.3). Tests bind a fake.
+- `IStageCodeIdentity`: returns, for each stage, the Rule C inputs as values: `codeIdentity`, `dependencyIdentity`, the U2 verdict for the stage (`cacheable` or `uncacheable`), the V-ID state, and the T-IDENT state. The port is the single
+  carrier of these inputs. A stage is cacheable only when all three conditions of Rule C hold (4.3). The port does not
+  decide that by itself.
+  Production binds the gate-file-backed implementation (9.3). Tests bind a fake.
 - `IStageInputRecorder`: wraps an input record and counts reads per field (3.6).
-- `AnalysisCacheOptions`: `Mode` (default `Verify`), the store, the code identity provider (the `IStageCodeIdentity` that carries the verdict), the recorder, and a
+- `AnalysisCacheOptions`: `Mode` (default `Verify`), the store, the code identity provider (the `IStageCodeIdentity` that carries the Rule C inputs), the recorder, and a
   diagnostics sink.
 
 ### 7.2 Test scope
@@ -698,20 +698,20 @@ Two fixture sets are used, and they must not overlap:
 stage under test. They are **not run in production** before that precondition holds: T-COLD-WARM (hit assertions),
 T-DEP-INPUT, T-IDENT (until V-ID exists), T-IDENT2, T-STALE (Normal-mode part), T-DEP-DEAD (step b), T-CORRUPT, T-QUAR-FAIL, T-W6, T-MISSING,
 T-PARTIAL, T-DIFF-RUN (warm half), and T-GOLDEN. Before Rule C holds, a test-only verdict may exercise the mechanism.
-Such a run proves the mechanism only. It does not count toward any gate, and it does not make a production stage
+Such a run proves the mechanism only. It does not count toward Rule C or any gate-file check, and it does not make a production stage
 cacheable. A test marked "needs seam" in the table cannot run at all until the named seam, code, or codec exists in the
-tree; none of those exists at `597e1aa`.
+tree; none of those exists at `2311b62`.
 
-| ID | Test | Asserts | Scope and gate |
+| ID | Test | Asserts | Scope and precondition |
 |---|---|---|---|
-| T-COLD-WARM | Cold and warm equality, and entry count | For each set-A fixture: run cold, store, run warm. **While a stage is uncacheable (the default), the test asserts that the number of entries written for it is 0 and the number of hits is 0**, and that the warm output equals the cold output byte for byte. Once Rule C holds for a stage, the test also asserts hits equal the number of cacheable units, and the warm payload equals the cold payload per stage. | Needs seams `IAnalysisCacheStore` and `AnalysisCacheOptions` (not yet present at `597e1aa`). Hit assertions run after Rule C holds |
+| T-COLD-WARM | Cold and warm equality, and entry count | For each set-A fixture: run cold, store, run warm. **While a stage is uncacheable (the default), the test asserts that the number of entries written for it is 0 and the number of hits is 0**, and that the warm output equals the cold output byte for byte. Once Rule C holds for a stage, the test also asserts hits equal the number of cacheable units, and the warm payload equals the cold payload per stage. | Needs seams `IAnalysisCacheStore` and `AnalysisCacheOptions` (not yet present at `2311b62`). Hit assertions run after Rule C holds |
 | T-DEP-INPUT | Changed record value is not reused | For each stage and each record field, on set-B fixtures, change that one value. The key differs, the entry is not reused, and the recomputed payload is stored under the new key. | **After Rule C holds for the stage.** Before that, not run in production |
 | T-DEP-CODE | Changed code identity is not reused | Substitute a changed `codeIdentity` in `IStageCodeIdentity` (test fake). The entry is not reused. | Test-only verdict; proves the mechanism, not any production cacheability |
 | T-DEP-DEAD (MAJOR-2 of r8, LOW-3 of r8) | Field removal is checked by value and by static verdict | For each field whose set-A reads are zero, and only for those: (a) the U2 static verdict must say "unread"; (b) on set-B fixtures, the baseline run with the **unchanged** record has key **K0** and stores payload **P0** under K0. The changed record's key is **K1**, and its cold result is **C1**. The field is accepted only if **C1 equals P0** byte for byte. A field that fails (a) or (b) stays in the record. | Step (b) reads a stored entry, so it runs **after Rule C holds for the stage**. (a) runs with U2 |
 | T-IDENT2 (C1 of r7) | Same executable, different disc identity | Two fixtures with the same boot executable bytes and different disc hashes (and, in a second case, a different boot path). The N11 keys differ, the second run does not reuse the first run's N11 entry, and the N11 payload contains its own disc hash and boot path. N12a is added to this test when U1 creates a candidate unit (3.5, 9.2). | **After Rule C holds for N11** (it observes reuse). The key difference alone can be checked before |
 | T-DIFF (MAJOR-1 of r7) | N12a is independent of validations | For a fixed `(report, fixture)`, vary `validations` (none, one run, two runs, different order). The N12a payload is byte-identical in every case. The document from N14 differs only in the `Differential` section. | Runs after U1 (N12a exists as a function) |
-| T-UNCACHE | Uncacheable stage writes nothing | For the default status (no gate file, F3), and with an uncacheable verdict injected through `IStageCodeIdentity`, each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Needs seams `AnalysisCacheOptions` and `IStageCodeIdentity`, and the code `ANALYSIS_CACHE_UNCACHEABLE` (none present at `597e1aa`) |
-| T-KEY-UNAVAIL (M8 of r8, MINOR-7 of r7) | Unreadable key input | Three cases, with a fake `IStageCodeIdentity`. (a) The MVID unreadable: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (precedence step 1 of 9.3). (b) A matching gate in the fake, and the package file, `Directory.Build.props`, or the runtime version unreadable, one at a time: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (step 3). (c) The same unreadable input with no matching gate: reports `ANALYSIS_CACHE_UNCACHEABLE` (step 2), which shows the order. In every case the stage is uncacheable, and no constant key is produced. | Needs seam `IStageCodeIdentity` (a fake in the test project) and the code `ANALYSIS_CACHE_KEY_UNAVAILABLE` (none present at `597e1aa`) |
+| T-UNCACHE | Uncacheable stage writes nothing | For the default status (no gate file, F3), and with an uncacheable U2 verdict injected through `IStageCodeIdentity` (7.1), each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Needs seams `AnalysisCacheOptions` and `IStageCodeIdentity`, and the code `ANALYSIS_CACHE_UNCACHEABLE` (none present at `2311b62`) |
+| T-KEY-UNAVAIL (M8 of r8, MINOR-7 of r7) | Unreadable key input | Three cases, with a fake `IStageCodeIdentity`. (a) The MVID unreadable: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (precedence step 1 of 9.3). (b) A matching gate file in the fake, and the package file, `Directory.Build.props`, or the runtime version unreadable, one at a time: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (step 3). (c) The same unreadable input with no matching gate file: reports `ANALYSIS_CACHE_UNCACHEABLE` (step 2), which shows the order. In every case the stage is uncacheable, and no constant key is produced. | Needs seam `IStageCodeIdentity` (a fake in the test project) and the code `ANALYSIS_CACHE_KEY_UNAVAILABLE` (none present at `2311b62`) |
 | T-READ | Record matches reads | Run each stage under the recorder on set-A fixtures. Every record field's read count is recorded. A zero-read field is listed as a flag for review (V6). It is not removed by this test. | Runs after U1 (records exist) |
 | T-STATIC (M2 of r8, MAJOR-1 of r7) | Static check of the record and the split | Each stage signature has one parameter. Its reached body reads nothing outside the record. The N12a closure does not reach `BuildDifferential`, `validations`, or `Differential`. | Static, U2 (9) |
 | T-CLOSURE-RT | Executed paths against the analysed closure | Run each candidate stage under an instrumented build that records executed methods and the environment, time, file, culture, and random APIs. Every executed Core method must be in the analysed closure, and no implicit-input API may execute. | Exercised paths only, current revision; instrumentation UNVERIFIED (9, criterion 5) |
@@ -725,7 +725,7 @@ tree; none of those exists at `597e1aa`.
 | T-PREFIX (5.1) | Prefix slice | N7 output sliced to `M` before N8 equals today's count-limited decode at `M`, including failures filtered by `A < entry + 4*M`. | Runs after R-0 (U1), and only if DEC-N7 is adopted |
 | T-DIFF-RUN | Differential on and off, end to end | Cold and warm runs with validations supplied and without, both byte for byte. N12d is never read from the cache. | Cold half runs now. Warm half runs after Rule C holds |
 | T-IDENT (4.3) | Identity verification | A supplied hash that differs from the computed hash fails the Input stage with a dedicated failure kind and no cache write. The CLI, the GUI, and the test driver, given the same bytes, compute the same verified hash. **Part of Rule C (4.3): this check gates writes, Verify mode, and Normal-mode hits alike.** | Runs after V-ID is implemented (not yet) |
-| T-CODEC | Key encoder and payload codec | The key text of a fixed sample equals the committed text, and its SHA-256 equals the committed value. Member order is UTF-8 byte order. Floats are rejected. The codec round-trips each record and stage type, and is injective on the fixtures. | Needs the key encoder and payload codec of 3.7 (not yet present at `597e1aa`) |
+| T-CODEC | Key encoder and payload codec | The key text of a fixed sample equals the committed text, and its SHA-256 equals the committed value. Member order is UTF-8 byte order. Floats are rejected. The codec round-trips each record and stage type, and is injective on the fixtures. | Needs the key encoder and payload codec of 3.7 (not yet present at `2311b62`) |
 | T-LF | Verbatim string lint (DEC-LF1) | Fails if a file on a dependency input path contains a multi-line verbatim string literal. | Static, runs now |
 | T-GOLDEN | Cross-revision regression | Committed golden payloads, produced from synthetic fixtures at an earlier revision, are compared with a cold recompute. Each cacheable stage must have at least 4 compared entries (one per fixture), so the check cannot pass with zero comparisons. An intentional payload change requires regenerating the goldens with the named command `regenerate-analysis-goldens`, and the golden diff is reviewed. Location: `src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGolden/`, one `<unit>/<fixtureId>.golden.json` per pair (proposal). | **Crosses revisions.** Runs once a stage is cacheable |
 
@@ -756,9 +756,8 @@ Resolution:
 - Infrastructure, key reader (the layer for the reads of 3.8): `FileStageKeyInputReader` (a proposed name), marked
   `[Infrastructure]`. It reads `obj/project.assets.json`, `Directory.Build.props`, the gate file of 9.3, the runtime
   version, and the running MVID (the read of 9.3), and returns values for `IStageCodeIdentity`. The CLI or RuntimeHost composition code creates it (see the layer note below). Core defines only the
-  port `IStageCodeIdentity`. The stage closure performs no file access except the sites listed in 3.4 item 11, and none
-  of those reads these inputs (direct-call check at `597e1aa`; transitive reach is UNVERIFIED, and U2 checks it under 9.4
-  criterion 1).
+  port `IStageCodeIdentity`. **Direct-call verified at `2311b62`, transitive reach UNVERIFIED (U2 checks it, 9.4 criterion 1):** the stage closure
+  performs no file access except the sites listed in 3.4 item 11, and none of those sites reads these inputs.
 - **Layer note (AARC002).** The creator is in an Infrastructure-layer project: `src/PSXRecomp.Cli` (namespace
   `PSXRecomp.Infrastructure.Cli`) or `src/PSXRecomp.RuntimeHost` (namespace `PSXRecomp.Infrastructure.RuntimeHost`).
   `src/architecture.contract.json` classifies those namespaces as Infrastructure, so the reference needs no `AARC002`
@@ -788,9 +787,9 @@ Resolution:
   only when its key matches the digests of the artifacts it was computed from, the prompt or template revision, the model
   identifier, and the model settings. Whether it uses `EvidenceType.AIPrediction` is decided in its own ADR.
 
-## 9. U2: the reachability gate, as a standalone task
+## 9. U2: the reachability analysis, as a standalone task
 
-U2 is the analysis that can make a stage cacheable. This section specifies it as a task. It has **not been run**. It is
+U2 is one of the three conditions of Rule C (4.3). V-ID and T-IDENT are the other two. This section specifies it as a task. It has **not been run**. It is
 not implemented by this design, and no production code changes with it.
 
 ### 9.1 Dependencies, owner, and tools
@@ -823,13 +822,13 @@ not implemented by this design, and no production code changes with it.
     which calls the private static `Classify` (`:196`) at `:107` and sets `Differential` from `BuildDifferential` at `:185`.
     Because `:185` is inside this method, the body is **not** a valid N12a unit. N12a is uncacheable until U1 creates a
     classification unit that excludes `:185`.
-    No whole-analysis classification root exists at `597e1aa`. The classification in `Analyze` is a loop over the decoded instructions (`:104-107`), and `Classify` (`:196`) decides one instruction, so it is not the N12a root. A whole-analysis classification function is a **proposal**, and U1 must create it before U2 can
+    No whole-analysis classification root exists at `2311b62`. The classification in `Analyze` is a loop over the decoded instructions (`:104-107`), and `Classify` (`:196`) decides one instruction, so it is not the N12a root. A whole-analysis classification function is a **proposal**, and U1 must create it before U2 can
     take it as a root.
 - The static reference graph of Core, from the semantic model.
 
 **Unit per stage (one rule per stage).** A method-level unit is the named method and everything it calls. A block-level
 unit is the statements of the named `try` block, excluding its `catch` clauses, which belong to the pipeline driver and
-are not cached. Locations are at `597e1aa`.
+are not cached. Locations are at `2311b62`.
 
 | Stage | Cache candidate | Unit and rule | Location | Calls the exception overload of `Fail` inside the unit? |
 |---|---|---|---|---|
@@ -847,7 +846,7 @@ are not cached. Locations are at `597e1aa`.
 | N12a classification | no, uncacheable until U1 | method `Analyze` as it stands contains `BuildDifferential` at `:185`, so it is not a unit; none exists yet | `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:88-187` (`:185` inside) | no |
 | N12d, N14, N15 | no | not cached | | |
 
-### 9.3 Output, storage, and the gate
+### 9.3 Output, storage, and the gate file
 
 **Output.** For each root:
 
@@ -858,7 +857,7 @@ are not cached. Locations are at `597e1aa`.
 - The runtime report of T-CLOSURE-RT: the executed symbols, and any that the static analysis did not reach.
 
 **Storage.** The output is one JSON file per Core MVID, written by the U2 tool into
-`src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGate/<mvid>.json` (proposal). Its fields: `mvid`, `commit`,
+`src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGateFile/<mvid>.json` (proposal). Its fields: `mvid`, `commit`,
 `toolVersion`, the per-stage verdicts, the field verdicts, the scan summary, the runtime summary, and the result of each
 acceptance criterion.
 
@@ -866,7 +865,7 @@ acceptance criterion.
 stage (criterion 4 of 9.4). A reached item of 3.4 items 1 to 13 makes the stage uncacheable; there is no exception in
 this document. U2 is a function of the Core source at the commit under review: two runs on the same MVID must reach the
 same verdict, so its output must not depend on fixtures, run order, or the host (determinism of the U2 tool is not yet
-checked). Executed paths establish no condition. Criterion 5 (T-CLOSURE-RT) is a gate that must pass. It is not
+checked). Executed paths establish no condition. Criterion 5 (T-CLOSURE-RT) is a required condition that must pass. It is not
 an establishment of a condition, because it runs only the paths a fixture executes, and an item reached on an unexecuted
 path still counts. If any condition cannot be established, the
 verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and the condition (9.3 output).
@@ -896,32 +895,32 @@ verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and 
   `loach.PureSharp`. Established by criterion 3.
 - (k) Criteria 1 to 3 are complete for the stage, so that items 8 to 10, 12, and 13 are decided, and the output is
   recorded with the running MVID (criterion 6).
-- (l) Criteria 4 and 5 of 9.4 pass for the stage. Criterion 5 is a gate: it does not establish any of (a) to (k).
+- (l) Criteria 4 and 5 of 9.4 pass for the stage. Criterion 5 is a required condition: it does not establish any of (a) to (k).
 
-**Binding to the MVID.** The gate is read by the **host** (composition root or CLI). Core's file reads are listed in
-3.4 item 11, and the gate read is not one of them. The host compares the file's `mvid` with the MVID of the running Core assembly. Core does not expose it, and no
-MVID read exists in `src/` at `597e1aa` (`git grep` for `ModuleVersionId`, `MetadataVersion`, and `MVID` finds none outside
+**Binding to the MVID.** The gate file is read by the **host** (composition root or CLI). Core's file reads are listed in
+3.4 item 11, and the gate-file read is not one of them. The host compares the file's `mvid` with the MVID of the running Core assembly. Core does not expose it, and no
+MVID read exists in `src/` at `2311b62` (`git grep` for `ModuleVersionId`, `MetadataVersion`, and `MVID` finds none outside
 tests). **UNVERIFIED:** the read is not yet written. The host would take it from the loaded assembly's module (for example
 `ManifestModule.ModuleVersionId`), which is a reflection call that item 1 forbids inside a stage closure. The call sits in
 the host's composition root (8.1), outside every stage closure, so item 1 does not apply to it. U5 confirms the MVID. If they are equal and the stage's U2 verdict is `cacheable`, the host passes that verdict into
-`IStageCodeIdentity` as a value (the single carrier of the verdict; `AnalysisCacheOptions` holds that port). The gate's
+`IStageCodeIdentity` as a value (the single carrier of the Rule C inputs, 7.1; `AnalysisCacheOptions` holds that port). The gate file's
 verdict is one input to Rule C (4.3), not the whole rule. A stage is cacheable only when Rule C holds in full: the U2
-verdict, V-ID, and T-IDENT. V-ID is not implemented, so until it exists every stage is uncacheable, whether or not a gate matches. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
+verdict, V-ID, and T-IDENT. V-ID is not implemented, so until it exists every stage is uncacheable, whether or not a gate file matches. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
 uncacheable and reports `ANALYSIS_CACHE_UNCACHEABLE` (F3). In the default state no gate file exists, so the same code applies.
 **Precedence (one code per state).** The checks run in this order, and the first failure decides the code.
-1. The running MVID cannot be read. Report `ANALYSIS_CACHE_KEY_UNAVAILABLE`, because no gate can be matched without it.
+1. The running MVID cannot be read. Report `ANALYSIS_CACHE_KEY_UNAVAILABLE`, because no gate file can be matched without it.
 2. The gate file is missing, unreadable, or its `mvid` differs from the running MVID. Report `ANALYSIS_CACHE_UNCACHEABLE`
    (F3), even when a dependency input is also unreadable.
-3. The gate matches, and a dependency input (the package file, `Directory.Build.props`, or the runtime version) cannot be
+3. The gate file matches, and a dependency input (the package file, `Directory.Build.props`, or the runtime version) cannot be
    read. Report `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
-When none of these fails, the gate's verdict is one input to Rule C. Rule C also needs V-ID and T-IDENT, so until V-ID
+When none of these fails, the gate file's verdict is one input to Rule C. Rule C also needs V-ID and T-IDENT, so until V-ID
 exists the stage stays uncacheable (4.3).
 
 **Invalidation.** Any change to Core changes the MVID, so every earlier gate file no longer matches, and every stage is
 uncacheable again. Re-enabling a stage requires: re-running U2 on the new MVID, committing the new gate file, and passing
 the acceptance criteria for that stage. The earlier gate file is not deleted automatically. Its mismatch is the signal.
 
-**Gate on CI (non-blocking).** CI reports whether the committed gate matches the build MVID. A mismatch is a warning and
+**Gate-file check on CI (non-blocking).** CI reports whether the committed gate file matches the build MVID. A mismatch is a warning and
 keeps stages uncacheable. It is not a build failure, because an uncacheable stage is safe.
 
 ### 9.4 Acceptance criteria
@@ -944,17 +943,17 @@ keeps stages uncacheable. It is not a build failure, because an uncacheable stag
 6. **Recording.** The output is produced for the commit under review and recorded with its MVID, in the file of 9.3.
 
 Criteria 4 and 5 are conditions of the U2 verdict (9.3), and Rule C (4.3) adds V-ID and T-IDENT. Until Rule C holds,
-the stage stays uncacheable (6.5). There is one gate, and it is Rule C.
+the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rule C.
 
 ## 10. Open items (UNVERIFIED unless stated)
 
 - **U1.** Extract each stage into a function that takes one record, and split `Analyze` (1.2, 2.2). Behavior-preserving,
   UNVERIFIED. Prerequisite of N12a in U2 (9.1).
-- **U2.** The gate of section 9. A blocker for every stage.
+- **U2.** The verdict procedure of section 9. A blocker for every stage.
 - **U3.** Move the artifact writer and the persistence out of the test project, and enumerate the project fields that reach
   analysis (8.1, 1.3). Needs an ADR.
 - **U4.** Measure cold N7 over the full text segment (5.1).
-- **U5.** Confirm `$(NETCoreSdkVersion)` and the generated-file mechanism of 3.8 (neither is present at `597e1aa`; `git grep` finds no such target), and the build determinism
+- **U5.** Confirm `$(NETCoreSdkVersion)` and the generated-file mechanism of 3.8 (neither is present at `2311b62`; `git grep` finds no such target), and the build determinism
   that the MVID of 3.3 relies on.
 - **U6.** Read the caller of `AnalyzeAndExecuteFromDisc` (`RealRomTitleExecutionService.cs:110-117`), and decide the store root.
 - **U7.** Count the test call sites that pass a constant SHA (4.3, Migration), and the test callers of `RunFromChd(byte[])`
@@ -1082,7 +1081,7 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | ID | Finding | Status in r16 | Resolved in |
 |---|---|---|---|
 | V1 (MAJOR) | Item 7 read literally made every stage uncacheable, because each 9.2 root is a static member: N8, N9, and N10 are static methods, N7 is a private static method, and N11 is a block inside the private static method `RunFromIsoSectorReader`. Corrected in r17 (W1) | Resolved in r16: item 7 is split into (i) static mutable state, which makes a stage uncacheable when reached, and (ii) static methods and read-only values, which do not by themselves. The test is stated for each reached member. Condition (g) and 9.2 agree. Whether N8 and N9 are cacheable under this rule is UNVERIFIED and left to U2 | 3.4 item 7, 9.2 (roots), 9.3 condition (g) |
-| V2 (MEDIUM) | The installed-build state (no gate file, and key inputs unreadable) had two codes, and "one code per state" had no precedence rule | Resolved in r16: precedence rule added. The gate check comes first, so a state without a matching gate reports `ANALYSIS_CACHE_UNCACHEABLE`. `ANALYSIS_CACHE_KEY_UNAVAILABLE` only when the gate matches and a key input is unreadable. Stated in 3.8, F3, F5, and 9.3 | 3.8 (failure rule, installed build), F3, F5, 9.3 (binding and precedence). Order as corrected in r17 (W3): an unreadable MVID gives KEY_UNAVAILABLE first, then a missing or mismatched gate gives UNCACHEABLE, then an unreadable dependency input with a matching gate gives KEY_UNAVAILABLE |
+| V2 (MEDIUM) | The installed-build state (no gate file, and key inputs unreadable) had two codes, and "one code per state" had no precedence rule | Resolved in r16: precedence rule added. The gate check comes first, so a state without a matching gate reports `ANALYSIS_CACHE_UNCACHEABLE`. `ANALYSIS_CACHE_KEY_UNAVAILABLE` only when the gate matches and a key input is unreadable. Stated in 3.8, F3, F5, and 9.3 | 3.8 (failure rule, installed build), F3, F5, 9.3 (binding and precedence). Order as corrected in r17 (W3): an unreadable MVID gives KEY_UNAVAILABLE first, then a missing or mismatched gate file gives UNCACHEABLE, then an unreadable dependency input with a matching gate gives KEY_UNAVAILABLE |
 | V3 (MEDIUM) | T-COLD-WARM, T-UNCACHE, T-KEY-UNAVAIL, and T-CODEC were marked "Runs now", but their seams, codec, and codes do not exist in `src/` | Resolved in r16: each is relabelled "needs" with the seam, code, or codec it needs, and 7.3 says such a test cannot run until the named item exists | 7.3 (table cells and gating paragraph) |
 | V4 (LOW) | The list of locations of the fingerprint identifier omitted the U5 row | Resolved in r16: the 2.2 paragraph names all six lines, which the grep count confirms | 2.2 |
 | V5 (LOW) | Item 9 did not name `RuntimeInformation.FrameworkDescription`, so 3.8 relied on the words "platform identity" | Resolved in r16: item 9 names it, and 3.8 cites item 9 for it | 3.4 item 9, 3.8 (run-time version bullet) |
@@ -1093,7 +1092,7 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 |---|---|---|---|
 | W1 (MEDIUM) | Item 7 and 9.2 said every root is a public static method. N7 is `private static` (`RomAnalysisPipeline.cs:501-502`), and N11 is a block inside the `private static` `RunFromIsoSectorReader` (`:206`, block at `:400-444`) | Resolved in r17: 9.2 and item 7 name the visibility of each root, and state that a root can be a method or a block. U2 must resolve private members and blocks, not only public methods. V1 of 12.8 is corrected | 9.2 (roots), 3.4 item 7, 12.8 V1 |
 | W2 (MEDIUM) | The class at `BiosCallRecognition.cs:130` was named `BiosCallRecognition`; it is `BiosCallRecognizer`, and its call site is `RomAnalysisPipeline.cs:432` | Resolved in r17: the class name is corrected in 9.2 and item 7, and the call site is named | 9.2 (N10), 3.4 item 7 |
-| W3 (MEDIUM) | An unreadable MVID was reported as KEY_UNAVAILABLE, but the precedence rule needed a matching gate, so T-KEY-UNAVAIL could not pass as written | Resolved in r17: the order is explicit in 9.3, 3.8, F3, F5, and 12.8. Step 1: an unreadable MVID gives KEY_UNAVAILABLE. Step 2: a missing, unreadable, or mismatched gate gives UNCACHEABLE. Step 3: an unreadable dependency input with a matching gate gives KEY_UNAVAILABLE. T-KEY-UNAVAIL states its three cases | 9.3 (precedence), 3.8, F3, F5, T-KEY-UNAVAIL, 12.8 V2 |
+| W3 (MEDIUM) | An unreadable MVID was reported as KEY_UNAVAILABLE, but the precedence rule needed a matching gate, so T-KEY-UNAVAIL could not pass as written | Resolved in r17: the order is explicit in 9.3, 3.8, F3, F5, and 12.8. Step 1: an unreadable MVID gives KEY_UNAVAILABLE. Step 2: a missing, unreadable, or mismatched gate file gives UNCACHEABLE. Step 3: an unreadable dependency input with a matching gate gives KEY_UNAVAILABLE. T-KEY-UNAVAIL states its three cases | 9.3 (precedence), 3.8, F3, F5, T-KEY-UNAVAIL, 12.8 V2 |
 | W4 (LOW) | The seam and codec absence was cited at `e1afbba`, and the header said `d11733c` was the current head | Resolved in r17: check labels are `6a871a5`, the header names `6a871a5` as the current head, and the seam grep is stated as unchanged | Header (Source identity), 7.3, 7.3 table |
 | W5 (LOW) | The N12a root cited `RealRomCoverageAnalyzer.cs:88`, the whole `Analyze` method, as "the classification function split out of `Analyze`", which does not exist | Resolved in r17: the root is the body of `Analyze` (`RealRomCoverageAnalyzer.cs:88-187`). The split is a proposal that U1 must make | 9.2 (N12a) |
 
@@ -1133,6 +1132,17 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 
 | ID | Finding | Status in r21 | Resolved in |
 |---|---|---|---|
-| AA1 (MEDIUM) | §9.3 said a matching gate made the stage cacheable and that "the gate's verdict applies", but Rule C also needs V-ID and T-IDENT, and V-ID is not implemented. A gate-backed reader would have given Normal-mode hits without V-ID | Resolved in r21: the gate's verdict is one input to Rule C. A stage is cacheable only when Rule C holds in full (U2 verdict, V-ID, T-IDENT). V-ID is not implemented, so every stage is uncacheable whether or not a gate matches. The header, 4.3, 7.1, and 9.3 say so | 9.3 (binding and precedence), header, 4.3 (Rule C), 7.1 (Normal mode) |
-| AA2 (LOW) | The statement that the stage closure performs no file access except the 3.4 item 11 sites, and reads none of the key inputs, was stated as fact. The check was direct-call only | Resolved in r21: §3.8 and §8.1 carry the same wording, with "direct-call check at `f4b95ab`; transitive reach is UNVERIFIED, and U2 checks it under 9.4 criterion 1" | 3.8 (run-time reads), 8.1 (reader) |
+| AA1 (MEDIUM) | §9.3 said a matching gate made the stage cacheable and that "the gate's verdict applies", but Rule C also needs V-ID and T-IDENT, and V-ID is not implemented. A gate-backed reader would have given Normal-mode hits without V-ID | Resolved in r21: the gate file's verdict is one input to Rule C. A stage is cacheable only when Rule C holds in full (U2 verdict, V-ID, T-IDENT). V-ID is not implemented, so every stage is uncacheable whether or not a gate file matches. The header, 4.3, 7.1, and 9.3 say so | 9.3 (binding and precedence), header, 4.3 (Rule C), 7.1 (Normal mode) |
+| AA2 (LOW) | The statement that the stage closure performs no file access except the 3.4 item 11 sites, and reads none of the key inputs, was stated as fact. The check was direct-call only | Resolved in r21: §3.8 and §8.1 carry the same wording, with "direct-call check at `597e1aa`; transitive reach is UNVERIFIED, and U2 checks it under 9.4 criterion 1" | 3.8 (run-time reads), 8.1 (reader) |
 | AA3 (LOW) | T-IDENT2 asserted that the N11 and N12a keys differ, but N12a is not a candidate until U1 | Resolved in r21: the assertion covers N11 only, and T-IDENT2 is extended to N12a when U1 creates a candidate unit. Its gate is Rule C for N11 | 7.3 (T-IDENT2) |
+
+### 12.14 Review of `2311b62` (r21)
+
+| ID | Finding | Status in r22 | Resolved in |
+|---|---|---|---|
+| BB1 (MEDIUM) | §2 (U2 framing) said U2 "can make a stage cacheable", which is the framing r21 meant to remove | Resolved in r22: U2 is one of the three conditions of Rule C, with V-ID and T-IDENT as the other two | 9 (U2 framing) |
+| BB2 (LOW) | AA2 said §3.8 and §8.1 carry the check at `f4b95ab`, but both say `597e1aa` | Resolved in r22: the AA2 row names `597e1aa` | 12.13 (AA2) |
+| BB3 (LOW) | The §3.8 and §8.1 file-access sentences used different wording | Resolved in r22: both carry the same sentence, labelled direct-call verified at `597e1aa`, with transitive reach UNVERIFIED | 3.8 (run-time reads), 8.1 (key reader) |
+| BB4 (LOW) | `IStageCodeIdentity` was said to return "the stage's uncacheable verdict", while §9.3 passes the U2 cacheable verdict and T-UNCACHE injects an uncacheable one | Resolved in r22: the port returns the Rule C inputs for each stage (`codeIdentity`, `dependencyIdentity`, the U2 verdict, the V-ID state, and the T-IDENT state). A stage is cacheable only when all three conditions hold. §7.1, §9.3, and T-UNCACHE match this | 7.1 (IStageCodeIdentity, AnalysisCacheOptions), 9.3 (binding), 7.3 (T-UNCACHE) |
+| BB5 (LOW) | "gate" meant both the gate file and Rule C | Resolved in r22: "gate file" is used for the file in §3.8, 8.1, 9.3, F3, F5, and T-COLD-WARM. "Rule C" is used for the cacheability decision. Criterion 5 is "a required condition", and "There is one cacheability rule, and it is Rule C" | 7.1, 7.3, 9.3, 9.4 criterion 5 and its condition (l), 4.3 |
+| BB6 (LOW) | The source-identity header named `597e1aa` as the head checked, and did not name `2311b62` | Resolved in r22: the header names `2311b62` as the current head, and the identical-tree statement covers it | Header (Source identity) |
