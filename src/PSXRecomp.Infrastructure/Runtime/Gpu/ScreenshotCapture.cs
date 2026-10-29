@@ -25,6 +25,7 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly string? _guestPcTiming;
     private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
+    private ulong? _lastSavedVblank;
     private bool _disposed;
 
     /// <summary>The output directory for screenshots.</summary>
@@ -123,17 +124,18 @@ public sealed class ScreenshotCapture : IDisposable
     }
 
     /// <summary>
-    /// Saves every target that is due at <paramref name="vblank"/>, in schedule order. A target is due once the counter
-    /// has reached it and it was not captured yet. A skipped-over target is therefore captured on the first check past
-    /// it, even when a later target is hit exactly (regression: the exact-match branch returned before the skipped target
-    /// was considered). A target whose PNG could not be written is not counted or consumed, so the next check retries it.
+    /// Saves at most one due target per check, in schedule order. A target is due once the counter has reached it and it
+    /// was not captured yet, so a skipped-over target is captured on a check past it, even when a later target is hit
+    /// exactly (regression: the exact-match branch returned before the skipped target was considered). All saved frames
+    /// read the GPU at the same instant, so a second save from the same VBlank would repeat the picture: after a save,
+    /// the next save needs a later VBlank. A target whose PNG could not be written is not counted or consumed, so a later
+    /// check retries it (each attempt counts as a write failure).
     /// </summary>
     private bool CaptureDueTargets(ulong vblank)
     {
-        if (_disposed)
+        if (_disposed || _lastSavedVblank == vblank)
             return false;
 
-        var capturedAny = false;
         foreach (var targetVblank in _targetVblanks)
         {
             if (targetVblank > vblank || _screenshotsTaken >= _maxScreenshots)
@@ -146,9 +148,10 @@ public sealed class ScreenshotCapture : IDisposable
                 continue; // nothing saved: this target is not counted or consumed
             _capturedVblanks.Add(targetVblank);
             _screenshotsTaken++;
-            capturedAny = true;
+            _lastSavedVblank = vblank;
+            return true;
         }
-        return capturedAny;
+        return false;
     }
 
     /// <summary>
@@ -236,7 +239,10 @@ public sealed class ScreenshotCapture : IDisposable
         return true;
     }
 
-    /// <summary>Number of frames whose PNG could not be written (not in the manifest, not counted).</summary>
+    /// <summary>
+    /// Number of failed PNG write attempts (not in the manifest, not counted). A target whose write failed stays due and
+    /// is retried on a later check, so one target can add more than one attempt here.
+    /// </summary>
     public int WriteFailures { get; private set; }
 
     /// <summary>Message of the most recent PNG write failure, or null.</summary>

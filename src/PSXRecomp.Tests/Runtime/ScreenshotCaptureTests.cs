@@ -405,22 +405,33 @@ public sealed class ScreenshotCaptureTests : IDisposable
     }
 
     [Fact]
-    public void SkippedTarget_IsCapturedWhenALaterTargetIsHitExactly()
+    public void SkippedTarget_IsSavedOnALaterCheckFromALaterPicture()
     {
-        // Targets 2 and 3. The counter jumps 0 -> 3 (skipping target 2) and then stays on 3: the exact hit on 3 must not
-        // hide the still-due target 2 (regression: the exact-match branch returned before the skipped target was considered).
+        // Targets 2 and 3. The counter jumps 0 -> 3 (skipping target 2) and then stays on 3. Target 2 is saved at VBlank 3.
+        // Target 3 is due at the same VBlank but would repeat that picture, so it waits for a check at a later VBlank.
         using var dir = new TempDirectory();
         var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 2, startVblank: 2);
 
         _scheduler.AdvanceExact(3ul * DeviceScheduler.VblankIntervalCycles);
-        capture.TryCapture();
-        capture.TryCapture();
+        capture.TryCapture().Should().BeTrue("the skipped-over target 2 is saved on the first check past it");
+        capture.TryCapture().Should().BeFalse("a second save from the same VBlank would repeat the same picture");
+        capture.ScreenshotsTaken.Should().Be(1);
 
-        capture.ScreenshotsTaken.Should().Be(2, "both targets were due at VBlank 3");
+        _scheduler.AdvanceExact(DeviceScheduler.VblankIntervalCycles); // VBlank 4: a later picture
+        capture.TryCapture().Should().BeTrue("target 3 is saved from the later picture");
         capture.AllTargetsSaved.Should().BeTrue();
+
+        capture.WriteManifest("goal_reached", _scheduler.VblankCount, TimeSpan.Zero, null, null, goalReached: true);
         #pragma warning disable AARC003
-        File.Exists(Path.Combine(dir.FullPath, "persona_vblank_0002.png")).Should().BeTrue();
-        File.Exists(Path.Combine(dir.FullPath, "persona_vblank_0003.png")).Should().BeTrue();
+        var frames = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir.FullPath, "manifest.json")))
+            .RootElement.GetProperty("frames");
         #pragma warning restore AARC003
+        frames.GetArrayLength().Should().Be(2);
+        frames[0].GetProperty("targetVblank").GetUInt64().Should().Be(2);
+        frames[0].GetProperty("capturedVblank").GetUInt64().Should().Be(3);
+        frames[1].GetProperty("targetVblank").GetUInt64().Should().Be(3);
+        frames[1].GetProperty("capturedVblank").GetUInt64().Should().Be(4);
+        frames[0].GetProperty("capturedVblank").GetUInt64().Should()
+            .NotBe(frames[1].GetProperty("capturedVblank").GetUInt64(), "two saved PNGs must come from different pictures");
     }
 }
