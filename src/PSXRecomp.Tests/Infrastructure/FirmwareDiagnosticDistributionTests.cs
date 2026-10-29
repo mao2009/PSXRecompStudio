@@ -1409,30 +1409,6 @@ public sealed class FirmwareDiagnosticDistributionTests
     }
 
     [SkippableFact]
-    public void MoveNewDirectory_SourceIsALink_IsRefusedAndNothingIsMoved()
-    {
-        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
-
-        // A publish directory entry that is a junction is refused before the move: a link is never moved into the measurement.
-        using var dir = new TempDirectory();
-        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
-        area.Open("measure");
-        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-        using var bystander = new TempDirectory();
-        var source = Path.Combine(publish, "child");
-        using var link = JunctionFixture.Create(dir, source, bystander.FullPath);
-        var destination = Path.Combine(area.Root, "runtime-child");
-
-        var act = () => area.MoveNewDirectory(source, destination);
-
-        act.Should().Throw<IOException>().WithMessage("*A link was found*", "the link is refused before the move");
-#pragma warning disable AARC003 // Justified: these lines call Directory.Exists (fixture check); they read the test's own temporary directory to show the link stayed at its source and nothing was moved.
-        Directory.Exists(destination).Should().BeFalse("nothing is moved to the destination");
-        Directory.Exists(source).Should().BeTrue("the link is still at its source");
-#pragma warning restore AARC003
-    }
-
-    [SkippableFact]
     public void MoveNew_SourceIsALink_IsRefusedBeforeTheMove()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
@@ -1452,92 +1428,6 @@ public sealed class FirmwareDiagnosticDistributionTests
         act.Should().Throw<IOException>().WithMessage("*A link was found*", "the link is refused before the move");
 #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (fixture check); it reads the test's own temporary directory to show nothing was moved.
         Directory.Exists(destination).Should().BeFalse("nothing is moved to the destination");
-#pragma warning restore AARC003
-    }
-
-    [SkippableFact]
-    public void MoveNew_PublishReplacedByAJunctionToAThirdPartyDirectory_MovesNothingAndTheThirdPartyFileSurvives()
-    {
-        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
-
-        // Reviewer scenario: the publish directory is renamed aside and replaced by a junction to a third-party directory. The move must not
-        // move the third-party file into the staging area and adopt it, and cleanup must not delete it.
-        using var dir = new TempDirectory();
-        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
-        area.Open("measure");
-        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-        File.WriteAllText(Path.Combine(publish, "keep.txt"), "published");
-        area.AdoptPublished(publish);
-        var victim = dir.CreateSubdirectory("victim");
-        File.WriteAllText(Path.Combine(victim, "keep.txt"), "third party");
-#pragma warning disable AARC003 // Justified: this line calls Directory.Move (temp file); it renames the test's own publish directory inside its temporary directory, to simulate a replacement.
-        Directory.Move(publish, publish + "-aside");
-#pragma warning restore AARC003
-        using var junction = JunctionFixture.Create(dir, publish, victim);
-        var destination = Path.Combine(area.Root, "keep.txt");
-
-        var act = () => area.MoveNew(Path.Combine(publish, "keep.txt"), destination);
-
-        act.Should().Throw<IOException>("the source's parent chain holds a link, so nothing is moved");
-        File.Exists(destination).Should().BeFalse("the third-party file is not moved into the staging area");
-        File.ReadAllText(Path.Combine(victim, "keep.txt")).Should().Be("third party");
-        area.Discard();
-#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a file the test wrote in its own temporary directory, to show cleanup left it.
-        File.ReadAllText(Path.Combine(victim, "keep.txt")).Should().Be("third party", "cleanup does not delete a third-party file");
-#pragma warning restore AARC003
-    }
-
-    [SkippableFact]
-    public void MoveNew_ThirdPartyNameBoundToTheSameFile_IsRefusedByTheChainCheck()
-    {
-        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
-
-        // The identity check alone would accept this case: the third-party name is a hard link to the recorded file, so its identity matches.
-        // Only the parent-chain check refuses it, because the parent is a junction.
-        using var dir = new TempDirectory();
-        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
-        area.Open("measure");
-        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-        File.WriteAllText(Path.Combine(publish, "keep.txt"), "published");
-        area.AdoptPublished(publish);
-        var aside = publish + "-aside";
-#pragma warning disable AARC003 // Justified: this line calls Directory.Move (temp file); it renames the test's own publish directory inside its temporary directory, to simulate a replacement.
-        Directory.Move(publish, aside);
-#pragma warning restore AARC003
-        var victim = dir.CreateSubdirectory("victim");
-        FirmwareDiagnosticDistribution.LinkDiscInPlace(Path.Combine(aside, "keep.txt"), Path.Combine(victim, "keep.txt"));
-        using var junction = JunctionFixture.Create(dir, publish, victim);
-        var destination = Path.Combine(area.Root, "keep.txt");
-
-        var act = () => area.MoveNew(Path.Combine(publish, "keep.txt"), destination);
-
-        act.Should().Throw<IOException>("the parent chain is a link, so the recorded file is not moved through it");
-        File.Exists(destination).Should().BeFalse("nothing is moved into the staging area");
-#pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show the third-party name was left in place.
-        File.Exists(Path.Combine(victim, "keep.txt")).Should().BeTrue("the third-party name is left where it was");
-#pragma warning restore AARC003
-    }
-
-    [SkippableFact]
-    public void MoveNew_AdoptedPublishedFile_MovesAndIsOwnedByCleanup()
-    {
-        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
-
-        // A file the publish step wrote is adopted before the move; the move succeeds, and the moved file is owned, so cleanup removes it.
-        using var dir = new TempDirectory();
-        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
-        area.Open("measure");
-        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-        File.WriteAllText(Path.Combine(publish, "keep.txt"), "published");
-        area.AdoptPublished(publish);
-        var destination = Path.Combine(area.Root, "keep.txt");
-
-        area.MoveNew(Path.Combine(publish, "keep.txt"), destination);
-
-        File.ReadAllText(destination).Should().Be("published");
-        area.Discard();
-#pragma warning disable AARC003 // Justified: this line calls File.Exists (fixture check); it reads the test's own temporary directory to show cleanup removed the owned file.
-        File.Exists(destination).Should().BeFalse("the adopted file is owned, so cleanup removes it");
 #pragma warning restore AARC003
     }
 
@@ -1565,35 +1455,326 @@ public sealed class FirmwareDiagnosticDistributionTests
         area.Residuals.Should().ContainSingle(residual => residual.Contains("not created or adopted"), "the refusal is reported as a residual");
     }
 
+    // The publish step is replaced by a stub that writes the files a publish would write, so the publish path runs without a toolchain.
+    private static Action<string> PublishStub(params string[] names) => directory =>
+    {
+        foreach (var name in names)
+        {
+            #pragma warning disable AARC003 // Justified: this line calls File.WriteAllText (test fixture I/O); it writes only the test's own temporary directory, to assert the outcome of the build.
+            File.WriteAllText(Path.Combine(directory, name), "published " + name);
+            #pragma warning restore AARC003
+        }
+    };
+
+    private static Action<string> AllowListPublish() => PublishStub(FirmwareDiagnosticDistribution.RuntimePublishAllowList(true));
+
+    private static FirmwareDiagnosticRequest PublishRequest(TempDirectory dir, string output)
+    {
+        dir.WriteFile("prebuilt/measure.exe", "artifact bytes"u8.ToArray());
+        return ValidRequest(dir, output, roots: "0xBFC00000\n", artifactSource: dir.Combine("prebuilt", "measure.exe"));
+    }
+
     [SkippableFact]
-    public void MoveNewDirectory_PublishReplacedByAJunctionToAThirdPartyDirectory_MovesNothing()
+    public void Build_UnownedFileInsideStaging_IsNotPublishedOrDeleted()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
 
-        // The same chain check on the directory move: the adopted subdirectory's parent is a junction to a third-party directory.
+        // Another process places a file in the staging area after it is created. The commit refuses the staging area, so the file is never
+        // published, and cleanup does not delete it.
         using var dir = new TempDirectory();
-        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
-        area.Open("measure");
-        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-        var sub = area.CreateDirectory(Path.Combine(publish, "sub"));
-        File.WriteAllText(Path.Combine(sub, "keep.txt"), "published");
-        area.AdoptPublished(publish);
-        var victim = dir.CreateSubdirectory("victim");
-        dir.CreateSubdirectory(Path.Combine("victim", "sub"));
-        File.WriteAllText(Path.Combine(victim, "sub", "keep.txt"), "third party");
-        Directory.Move(publish, publish + "-aside");
-        using var junction = JunctionFixture.Create(dir, publish, victim);
-        var destination = Path.Combine(area.Root, "sub");
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        const string foreign = "placed by another process in the staging area";
 
-        var act = () => area.MoveNewDirectory(Path.Combine(publish, "sub"), destination);
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "provision")
+            {
+                File.WriteAllText(Path.Combine(Path.GetDirectoryName(path)!, "foreign.txt"), foreign);
+            }
+        }, compiler: null, publisher: AllowListPublish());
 
-        act.Should().Throw<IOException>("the parent chain holds a link, so nothing is moved");
-#pragma warning disable AARC003 // Justified: this line calls Directory.Exists (fixture check); it reads the test's own temporary directory to show nothing was moved.
-        Directory.Exists(destination).Should().BeFalse();
-#pragma warning restore AARC003
-#pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (fixture read); it reads a file the test wrote in its own temporary directory, to show the third-party file is unchanged.
-        File.ReadAllText(Path.Combine(victim, "sub", "keep.txt")).Should().Be("third party");
-#pragma warning restore AARC003
+        act.Should().Throw<IOException>().WithMessage("*foreign.txt*", "the unowned entry is named, and nothing is published");
+        Directory.Exists(output).Should().BeFalse("the staging area holding an unowned entry is never published");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (test fixture I/O); it lists only the test's own temporary directory, to assert the outcome of the build.
+        var staging = Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Single();
+        #pragma warning restore AARC003
+        #pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture I/O); it reads only the test's own temporary directory, to assert the outcome of the build.
+        File.ReadAllText(Path.Combine(staging, "foreign.txt")).Should().Be(foreign, "an unowned file is never deleted");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_UnownedFileInThePublishDestination_IsNotOverwritten()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A file another process placed at a name the publish would copy into runtime/ is never overwritten: the copy creates a new file.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        const string foreign = "someone else's core library";
+        string? runtime = null;
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "provision")
+            {
+                runtime = path;
+                File.WriteAllText(Path.Combine(path, "PSXRecomp.Core.dll"), foreign);
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        act.Should().Throw<IOException>();
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture I/O); it checks only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(output).Should().BeFalse("nothing is published");
+        #pragma warning restore AARC003
+        #pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture I/O); it reads only the test's own temporary directory, to assert the outcome of the build.
+        File.ReadAllText(Path.Combine(runtime!, "PSXRecomp.Core.dll")).Should().Be(foreign, "the file another process placed is never overwritten");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_PublishLinkNamedAsAListedFile_IsRefusedAndTheTargetIsNeverRead()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A junction in the publish output, named as a listed file, points at a directory outside the staging area. It is refused before any
+        // copy, and the file behind it is neither copied nor changed.
+        using var dir = new TempDirectory();
+        using var bystander = new TempDirectory();
+        bystander.WriteFile("PSXRecomp.Core.dll", "outside the staging area"u8.ToArray());
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        JunctionFixture? link = null;
+
+        try
+        {
+            var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: publishDir =>
+            {
+                link = JunctionFixture.Create(dir, Path.Combine(publishDir, "PSXRecomp.Core.dll"), bystander.FullPath);
+            });
+
+            act.Should().Throw<IOException>().WithMessage("*A link was found in the publish output*");
+            #pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture I/O); it reads only the test's own temporary directory, to assert the outcome of the build.
+            File.ReadAllText(Path.Combine(bystander.FullPath, "PSXRecomp.Core.dll")).Should().Be("outside the staging area");
+            #pragma warning restore AARC003
+            #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture I/O); it checks only the test's own temporary directory, to assert the outcome of the build.
+            Directory.Exists(output).Should().BeFalse();
+            #pragma warning restore AARC003
+        }
+        finally
+        {
+            link?.Dispose();
+        }
+    }
+
+    [SkippableFact]
+    public void Build_FailureDuringAWrite_RemovesOnlyTheOwnedOutput()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The second listed file's copy fails. The files already copied, the publish output's listed files and the directories are removed,
+        // because this build created them. Nothing is published.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "file" && Path.GetFileName(path) == "PSXRecomp.Infrastructure.dll")
+            {
+                throw new InvalidOperationException("the write failed");
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("the write failed");
+        Directory.Exists(output).Should().BeFalse("a failed build publishes nothing");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (test fixture I/O); it lists only the test's own temporary directory, to assert the outcome of the build.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("the staging area the build created is removed");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_FailureAtTheCommit_PublishesNothing()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, _) =>
+        {
+            if (phase == "commit")
+            {
+                throw new InvalidOperationException("the commit failed");
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("the commit failed");
+        Directory.Exists(output).Should().BeFalse("the rename never ran, so nothing is published");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (test fixture I/O); it lists only the test's own temporary directory, to assert the outcome of the build.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("the staging area is removed");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_ExistingPublishedOutput_IsPreservedOnFailure()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A good output appears at the output name between the last write and the commit. The commit refuses it: the earlier output is not
+        // replaced, and the failed build publishes nothing.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        const string earlier = "earlier good output";
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, _) =>
+        {
+            if (phase == "commit")
+            {
+                Directory.CreateDirectory(output);
+                File.WriteAllText(Path.Combine(output, "previous.txt"), earlier);
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        act.Should().Throw<IOException>();
+        #pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture I/O); it reads only the test's own temporary directory, to assert the outcome of the build.
+        File.ReadAllText(Path.Combine(output, "previous.txt")).Should().Be(earlier, "the existing output is not replaced or changed");
+        #pragma warning restore AARC003
+        Directory.GetFileSystemEntries(output).Select(Path.GetFileName).Should().BeEquivalentTo(["previous.txt"]);
+        #pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (test fixture I/O); it lists only the test's own temporary directory, to assert the outcome of the build.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("the failed build leaves no staging area");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_ExtraEntryNotOnTheAllowList_IsRefused()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The publish output holds an entry that is not on the allow-list. The step is refused before anything is copied.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        var names = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true).Append("extra.dll").ToArray();
+        var copied = new List<string>();
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "file")
+            {
+                copied.Add(Path.GetFileName(path));
+            }
+        }, compiler: null, publisher: PublishStub(names));
+
+        act.Should().Throw<IOException>().WithMessage("*not on the allow-list*extra.dll*");
+        copied.Should().NotContain("extra.dll", "an entry that is not on the list is never copied");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture I/O); it checks only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(output).Should().BeFalse();
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_NormalGeneration_CopiesTheAllowListAndPublishesOnlyIt()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: AllowListPublish());
+
+        Directory.Exists(output).Should().BeTrue("the completed measurement is published");
+        foreach (var name in FirmwareDiagnosticDistribution.RuntimePublishAllowList(true))
+        {
+            File.ReadAllText(Path.Combine(output, "runtime", name)).Should().Be("published " + name, "each listed file is copied with its bytes");
+        }
+
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture I/O); it checks only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(Path.Combine(output, "runtime", "publish")).Should().BeFalse("the publish directory is removed once it is emptied");
+        #pragma warning restore AARC003
+        #pragma warning disable AARC003 // Justified: this line calls File.Exists (test fixture I/O); it checks only the test's own temporary directory, to assert the outcome of the build.
+        File.Exists(build.HostPath).Should().BeTrue();
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_FailureAfterAnOwnedCopy_CleanupRemovesOnlyOwnedEntries()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // An unowned file is placed in the staging area, and a later copy fails. Cleanup removes the copies and the publish output files this
+        // build created, and leaves the unowned file where it is.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        string? staging = null;
+        const string foreign = "not this build's";
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "staged")
+            {
+                staging = path;
+                File.WriteAllText(Path.Combine(path, "foreign.txt"), foreign);
+            }
+
+            if (phase == "file" && Path.GetFileName(path) == "PSXRecomp.Infrastructure.dll")
+            {
+                throw new InvalidOperationException("the write failed");
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        act.Should().Throw<IOException>().WithMessage("*was kept at*");
+        Directory.Exists(output).Should().BeFalse();
+        #pragma warning disable AARC003 // Justified: this line calls Directory.GetFileSystemEntries (test fixture I/O); it lists only the test's own temporary directory, to assert the outcome of the build.
+        Directory.GetFileSystemEntries(staging!).Select(Path.GetFileName).Should().BeEquivalentTo(["foreign.txt"],
+        #pragma warning restore AARC003
+            "the owned copies and publish output files are removed, and the unowned file is kept");
+        #pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture I/O); it reads only the test's own temporary directory, to assert the outcome of the build.
+        File.ReadAllText(Path.Combine(staging!, "foreign.txt")).Should().Be(foreign);
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_PublishedFiles_AreCopiedNotMoved()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Regression for the move-and-adopt path: the publish output is still in place when its files are copied. A move would have removed them
+        // from the publish directory first.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        var listed = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true);
+        var seenWhileCopied = false;
+        var sourcesPresent = false;
+
+        FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "publish-copied")
+            {
+                seenWhileCopied = true;
+                #pragma warning disable AARC003 // Justified: this line calls File.Exists (test fixture I/O); it checks only the test's own temporary directory, to assert the outcome of the build.
+                sourcesPresent = listed.All(name => File.Exists(Path.Combine(path, name)));
+                #pragma warning restore AARC003
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        seenWhileCopied.Should().BeTrue("the copy step reached the point after its copies");
+        sourcesPresent.Should().BeTrue("each listed source is still in the publish directory when the copies are made, so nothing was moved");
+    }
+
+    [Fact]
+    public void StagingArea_HasNoMoveAndAdoptPublishPath()
+    {
+        // Regression: the move-and-adopt publish path (adopting each publish entry and moving it into runtime/) must not return.
+        typeof(FirmwareDiagnosticDistribution.StagingArea).GetMethod("AdoptPublished").Should().BeNull("publish output is copied, never adopted");
+        typeof(FirmwareDiagnosticDistribution.StagingArea).GetMethod("MoveNewDirectory").Should().BeNull("a publish directory is never moved");
     }
 
     [SkippableFact]

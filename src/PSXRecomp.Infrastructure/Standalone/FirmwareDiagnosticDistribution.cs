@@ -108,8 +108,12 @@ public static class FirmwareDiagnosticDistribution
         => Build(request, windows, observe, compiler: null);
 
     /// <param name="compiler">The toolchain executable for the generated artifact; null uses the default compiler. Tests pass a stub.</param>
+    /// <param name="publisher">
+    /// Publishes the Runtime host into the directory it is given (the publish step). Null runs <c>dotnet publish</c>. Tests pass a stub that
+    /// writes the files the publish would write, so the publish path is exercised without a toolchain.
+    /// </param>
     internal static FirmwareDiagnosticBuild Build(
-        FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe, string? compiler)
+        FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe, string? compiler, Action<string>? publisher = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         RequireSha256(request.RomSha256, nameof(request.RomSha256));
@@ -235,7 +239,7 @@ public static class FirmwareDiagnosticDistribution
                 artifactSource = "reused:" + Path.GetFileName(request.ArtifactSourcePath);
             }
 
-            var hostSource = ProvisionOrCopyHost(area, runtimeDir, request, windows, observe);
+            var hostSource = ProvisionOrCopyHost(area, runtimeDir, request, windows, observe, publisher ?? PublishRuntimeHost);
 
             var boot = new FirmwareBootManifest(
                 FirmwareBootManifest.CurrentSchemaVersion,
@@ -287,7 +291,9 @@ public static class FirmwareDiagnosticDistribution
             area.WriteNewFile(Path.Combine(staging, IdentityFileName),
                 identity.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine);
 
-            // Only a completely written measurement is published; the rename refuses a name that is taken by now.
+            // Only a completely written measurement is published. The commit checks that every entry in the staging area is one this build created,
+            // then renames the directory; the rename refuses a name that is taken by now (nothing is replaced).
+            observe?.Invoke("commit", staging); // SEAM: another process acts here, between the last write and the rename
             area.Commit();
             return new FirmwareDiagnosticBuild(
                 outputDir, area.Rebase(artifactPath), area.Rebase(hostPath), area.Rebase(manifestPath), digests);
@@ -640,40 +646,48 @@ public static class FirmwareDiagnosticDistribution
         return area.MoveNew(Path.Combine(staging, Path.GetFileName(build.Artifact!.BinaryPath)), Path.Combine(staging, artifactFile));
     }
 
+    /// <summary>
+    /// The files the framework-dependent Runtime host publish writes, by exact name (the allow-list). A publish output entry that is not on
+    /// this list is refused, and a listed name that the publish did not write is refused as an incomplete publish.
+    /// </summary>
+    internal static string[] RuntimePublishAllowList(bool windows) =>
+    [
+        RuntimeHostLayout.HostFileName(windows),
+        RuntimeHostLayout.HostBinaryName + ".dll",
+        RuntimeHostLayout.HostBinaryName + ".deps.json",
+        RuntimeHostLayout.HostBinaryName + ".runtimeconfig.json",
+        "PSXRecomp.Core.dll",
+        "PSXRecomp.Infrastructure.dll",
+        "SharpCompress.dll",
+    ];
+
+    /// <summary>The publish step: the Runtime host is published into the directory given, framework-dependent, without debug symbols.</summary>
+    private static void PublishRuntimeHost(string publishDir)
+    {
+        try
+        {
+            RuntimeHostBuildService.ProvisionRuntimeHost(publishDir, selfContained: false, firmwareDistribution: true);
+        }
+        catch (RuntimeHostBuildService.RuntimeHostProvisionFailed exception)
+        {
+            throw new InvalidOperationException(exception.Message, exception);
+        }
+    }
+
     private static string ProvisionOrCopyHost(
-        StagingArea area, string runtimeDir, FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe)
+        StagingArea area, string runtimeDir, FirmwareDiagnosticRequest request, bool windows, Action<string, string>? observe,
+        Action<string> publisher)
     {
         observe?.Invoke("provision", runtimeDir);
         if (request.HostSourceDirectory is null)
         {
-            // The publish writes a set of files whose names are not known in advance. It writes into a private directory this build
-            // created, and each published entry is then moved into runtime/. A move refuses an existing name, so a file another
-            // process placed in runtime/ is never overwritten; the publish directory is removed only when it has been emptied.
-            // The directory is named "publish", the same length as "runtime", so a published entry's path inside it is exactly as long as its
-            // destination under runtime/. The staging root is unique per build, so the fixed name cannot collide.
+            // The publish writes into a private directory this build creates ("publish", the same length as "runtime", so an entry's path
+            // inside it is as long as its destination). Nothing is moved out of it and nothing in it is adopted: the allow-listed files are
+            // copied into runtime/ with exclusive creation, so each copy is one this build created and tracks from its creation. The
+            // directory is then emptied (the copies' sources are removed only while they are still the files that were checked) and removed.
             var publishDir = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-            try
-            {
-                RuntimeHostBuildService.ProvisionRuntimeHost(publishDir, selfContained: false, firmwareDistribution: true);
-            }
-            catch (RuntimeHostBuildService.RuntimeHostProvisionFailed exception)
-            {
-                throw new InvalidOperationException(exception.Message, exception);
-            }
-
-            // What the publish wrote is recorded as this build's own before anything is moved; each entry is checked again before its move.
-            area.AdoptPublished(publishDir);
-            foreach (var file in Directory.EnumerateFiles(publishDir))
-            {
-                area.MoveNew(file, Path.Combine(runtimeDir, Path.GetFileName(file)));
-            }
-
-            foreach (var directory in Directory.EnumerateDirectories(publishDir))
-            {
-                area.MoveNewDirectory(directory, Path.Combine(runtimeDir, Path.GetFileName(directory)));
-            }
-
-            area.ReleaseEmptyDirectory(publishDir);
+            publisher(publishDir);
+            area.CopyPublishedHost(publishDir, runtimeDir, RuntimePublishAllowList(windows));
             return "provisioned";
         }
 
@@ -951,6 +965,10 @@ public static class FirmwareDiagnosticDistribution
         private readonly Dictionary<string, EntryIdentity?> _owned = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _reserved = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _residuals = [];   // entries cleanup found and left in place, each with its reason
+        // The allow-listed files the publish step wrote into its publish directory, each with the identity checked before it was copied.
+        // They are removed by cleanup only while they are still that file (see RemovePublishSources). They are not owned entries: nothing
+        // is moved from them and nothing is adopted into the owned set.
+        private readonly Dictionary<string, EntryIdentity> _publishSources = new(StringComparer.OrdinalIgnoreCase);
         private EntryIdentity? _rootIdentity;
         private string? _root;
 
@@ -1239,44 +1257,6 @@ public static class FirmwareDiagnosticDistribution
             }
         }
 
-        /// <summary>Moves a directory this build created to a name this build chooses. Directory.Move refuses an existing destination on Windows.</summary>
-        public void MoveNewDirectory(string source, string destination)
-        {
-            RequireRealChain(destination);
-            RequireWithinPathLimit(destination);
-            RequireTreeWithinPathLimit(source, destination);
-            RefuseExisting(destination);
-            var recorded = RequireMovableSource(source);
-            RequireNoLinksBelowPublish(source); // a link already in the tree is refused before anything is moved
-            Directory.Move(source, destination);
-
-            // The entries this build owns under the directory move with it, with the identities they already had (a rename keeps the file
-            // index). This runs before any check below, so the moved tree's records stay with it and cleanup still owns them if a check fails.
-            var prefix = source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            foreach (var nested in _owned.Keys.Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
-            {
-                var identity = _owned[nested];
-                var reserved = _reserved.Remove(nested);
-                _owned.Remove(nested);
-                var moved = destination + nested.Substring(prefix.Length - 1); // the separator and the rest of the path
-                _owned[moved] = identity;
-                if (reserved)
-                {
-                    _reserved.Add(moved);
-                }
-            }
-
-            _owned.Remove(source);
-            if (recorded is { } expected)
-            {
-                RequireMovedAsChecked(expected, destination);
-            }
-
-            // A link created in the window before the move is moved with the tree; the scan after the move finds it and fails the build.
-            RequireNoLinksBelowPublish(destination);
-            _owned[destination] = recorded ?? IdentityOfPath(destination);
-        }
-
         /// <summary>
         /// Removes a directory this build created once it has been emptied by moves. Fails if anything is left in it, since that entry
         /// was not moved and the directory is not removed with its content.
@@ -1306,63 +1286,6 @@ public static class FirmwareDiagnosticDistribution
             _owned.Remove(path);
         }
 
-        /// <summary>
-        /// Records every entry the publish step wrote under <paramref name="directory"/> as this build's own, with the identity read now, so
-        /// that <see cref="RequireMovableSource"/> can check each one before it is moved. A link found during the walk fails the step.
-        /// </summary>
-        public void AdoptPublished(string directory)
-        {
-            RequireRealChain(directory);
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
-            {
-                if (IsReparsePoint(entry))
-                {
-                    throw new IOException($"A link was found in the published output; the measurement is not written: {entry}");
-                }
-
-                Own(entry);
-                if (Directory.Exists(entry))
-                {
-                    AdoptPublished(entry);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Refuses a link anywhere below a publish directory. It is called before a directory move and again after it, so a link is found
-        /// whether it existed before the move or was created in the window before the move. A link found is recorded as a residual.
-        /// </summary>
-        private void RequireNoLinksBelowPublish(string directory)
-        {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
-            {
-                if (IsReparsePoint(entry))
-                {
-                    Residual(entry, "a link is inside a publish directory, so it is not treated as this build's");
-                    throw new IOException($"A link was found inside a publish directory; the measurement is not written: {entry}");
-                }
-
-                if (Directory.Exists(entry))
-                {
-                    RequireNoLinksBelowPublish(entry);
-                }
-            }
-        }
-
-        /// <summary>Checks the destination path of every entry nested under a directory that is about to be moved, before the move.</summary>
-        private void RequireTreeWithinPathLimit(string source, string destination)
-        {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(source))
-            {
-                var target = Path.Combine(destination, Path.GetFileName(entry));
-                RequireWithinPathLimit(target);
-                if (Directory.Exists(entry) && !IsReparsePoint(entry))
-                {
-                    RequireTreeWithinPathLimit(entry, target);
-                }
-            }
-        }
-
         private static void RefuseExisting(string path)
         {
             if (Path.Exists(path) || IsReparsePoint(path))
@@ -1386,8 +1309,8 @@ public static class FirmwareDiagnosticDistribution
                     "A generated artifact needs the output path at most 161 characters (its reserved toolchain name is the output path plus 86 characters), " +
                     "and the output path plus the file-name length at most 198 characters (the artifact's .c name is that sum plus 49). " +
                     "Checked before each write: the paths this build names itself, and each copied host or artifact file name. " +
-                    "Not checked before dotnet publish writes them: the names the runtime-host publish chooses. Each of those is checked when it is " +
-                    "moved into runtime/, nested entries included, and its path in the publish directory has the same length as that destination.");
+                    "Not checked before dotnet publish writes them: the names the runtime-host publish chooses. Each allow-listed name is checked when it is " +
+                    "copied into runtime/, and its path in the publish directory has the same length as that destination.");
             }
         }
 
@@ -1419,13 +1342,131 @@ public static class FirmwareDiagnosticDistribution
         public string Rebase(string path) => Path.Combine(_outputDir, Path.GetRelativePath(Root, path));
 
         /// <summary>
-        /// Renames the finished staging directory to the output name. Directory.Move refuses a name that is taken. Residual gap: the check
-        /// just before the rename is not atomic with it. A same-user process that swaps the staging directory for a link in that interval
-        /// can make the rename move the link. This is narrowed to no I/O between the check and the rename, and it is not closed.
+        /// Copies the Runtime host's publish output into <paramref name="runtimeDir"/>, and nothing else. The publish output must hold exactly
+        /// the allow-listed files: a link, a directory, an entry that is not on the list, or an entry whose path is not the canonical path of
+        /// its name under the publish directory refuses the step, and so does a listed file the publish did not write. This is checked before
+        /// anything is copied. Each listed file is copied with exclusive creation (<see cref="CopyNewFile"/>), so each copy is tracked from its
+        /// creation. Nothing is moved, and nothing is adopted. Afterwards the listed source files are removed, each only while it is still the
+        /// file that was checked, and the publish directory is removed only when it is empty.
+        /// </summary>
+        public void CopyPublishedHost(string publishDir, string runtimeDir, IReadOnlyList<string> allowList)
+        {
+            RequireRealChain(publishDir);
+            var publishFull = Path.GetFullPath(publishDir);
+            var allowed = new HashSet<string>(allowList, StringComparer.Ordinal);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(publishFull))
+            {
+                var name = Path.GetFileName(entry);
+                if (IsReparsePoint(entry))
+                {
+                    throw new IOException($"A link was found in the publish output, so the measurement is not written: {entry}");
+                }
+
+                if (Directory.Exists(entry) || !allowed.Contains(name)
+                    || !string.Equals(Path.GetFullPath(entry), Path.Combine(publishFull, name), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new IOException($"The publish output holds an entry that is not on the allow-list, so the measurement is not written: {entry}");
+                }
+            }
+
+            var sources = new List<string>(allowList.Count);
+            foreach (var name in allowList)
+            {
+                var source = Path.Combine(publishFull, name);
+                if (!File.Exists(source))
+                {
+                    throw new IOException($"The publish output is incomplete ({name} is missing), so the measurement is not written.");
+                }
+
+                _publishSources[source] = IdentityOfPath(source)
+                    ?? throw new IOException($"The identity of publish output {name} cannot be read, so the measurement is not written.");
+                sources.Add(source);
+            }
+
+            foreach (var source in sources)
+            {
+                CopyNewFile(source, Path.Combine(runtimeDir, Path.GetFileName(source)));
+            }
+
+            _observe?.Invoke("publish-copied", publishFull); // SEAM: the copies exist and the publish output is still in place
+            RemovePublishSources();
+            ReleaseEmptyDirectory(publishDir);
+        }
+
+        /// <summary>
+        /// Removes the publish output files this build checked, each only while it is still the file that was checked. A file that cannot be
+        /// removed, or whose parent chain holds a link, is recorded as a residual and left in place. The publish directory is then not empty,
+        /// so its release refuses.
+        /// </summary>
+        private void RemovePublishSources()
+        {
+            foreach (var (path, identity) in _publishSources.ToList())
+            {
+                if (LinkBelowRoot(path))
+                {
+                    Residual(path, "a link is on its way to it, so it is not followed and not removed");
+                }
+                else
+                {
+                    RemoveOwned(path, identity, reserved: false);
+                }
+            }
+
+            _publishSources.Clear();
+        }
+
+        /// <summary>
+        /// Refuses to publish a staging area that holds an entry this build did not create. An entry is one this build created when it is
+        /// recorded as owned and, where an identity was recorded, it is still that entry and not a link. Every entry under the staging root is
+        /// checked, so an unowned file that another process placed in the staging area is never published, and is recorded as a residual.
+        /// </summary>
+        private void RequireOnlyOwnedEntries()
+        {
+            var unowned = new List<string>();
+            CollectUnowned(Root, unowned);
+            if (unowned.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var entry in unowned)
+            {
+                Residual(entry, "it was not created by this build, so it is not published");
+            }
+
+            throw new IOException("The staging area holds entries this build did not create, so the measurement is not published: " + string.Join("; ", unowned));
+        }
+
+        private void CollectUnowned(string directory, List<string> unowned)
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                var owned = _owned.TryGetValue(entry, out var recorded) && !IsReparsePoint(entry)
+                    && (_reserved.Contains(entry) || (recorded is { } expected && IdentityOfPath(entry) == expected));
+                if (!owned)
+                {
+                    unowned.Add(entry);
+                    continue;
+                }
+
+                if (Directory.Exists(entry))
+                {
+                    CollectUnowned(entry, unowned);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Renames the finished staging directory to the output name, after <see cref="RequireOnlyOwnedEntries"/>. The output is claimed by
+        /// that rename: Directory.Move refuses a name that is taken, so an existing output directory, or a file or link at the output
+        /// path, is never replaced, and no file in an existing output is overwritten. The rename is a single directory rename within one
+        /// parent directory. Residual gap: the ownership check is not atomic with the rename; a same-user process can swap an entry for a
+        /// link in the interval between them (matrix rule 6, residual (i)).
         /// </summary>
         public void Commit()
         {
             RequireRealDirectory();
+            RequireOnlyOwnedEntries();
             Directory.Move(Root, _outputDir);
         }
 
@@ -1440,6 +1481,7 @@ public static class FirmwareDiagnosticDistribution
             {
                 if (IsRealDirectory(_root))
                 {
+                    RemovePublishSources();
                     foreach (var path in _owned.Keys.OrderByDescending(p => p.Length).ToList())
                     {
                         if (LinkBelowRoot(path))
