@@ -14,7 +14,7 @@ Every claim carries one of four labels:
 - **OBSERVED**: stated by an existing doc, issue text, or the GitHub API response. Not re-run in this work.
 - **PREDICTED**: a design expectation this document proposes. Not yet true.
 - **INFERRED**: a conclusion drawn from code or docs, not measured.
-- **UNVERIFIED**: not checked, or checkable only by running the system.
+- **UNVERIFIED**: not checked, or checkable only by running the system or a test that does not yet exist.
 
 ### 0.1 Issue #45 body (verbatim, from the public API `body` field)
 
@@ -49,6 +49,8 @@ Every claim carries one of four labels:
 
 **Assignees and state (GitHub API, checked for this revision):** #45 open, 0 assignees. #457 closed, 0 assignees. #49 closed, 0 assignees. #763 open, 0 assignees. #773 open, 0 assignees. #40 open, 0 assignees. #42 open, 0 assignees. #739 open. #44 closed. #786 is a pull request (closed). **OBSERVED.** No issue in this list records an owner.
 
+**Owner ruling (binding, recorded in this revision):** the full register dump is removed from the shareable diagnostic output. GPR and COP0 full dumps are local-diagnostic only and never appear in a shareable document. Section 7 implements this.
+
 ## 1. Inventory of existing trace and diagnostics code
 
 ### 1.1 Shared diagnostic contract (Domain, `PSXRecomp.Core.Diagnostics`)
@@ -78,6 +80,7 @@ Every claim carries one of four labels:
 | `inputSha256` is declared at `:52`, and assigned only inside `if (arguments.Report)` (`:54`, value at `:58` from `resolved.Sha256`) | `RunCommand.cs:52-58` | CONFIRMED |
 | The diagnostic bundle is written only inside `if (arguments.Report)` (`:86`); `inputSha256` is passed to `WriteDiagnosticBundle` at `:93` | `RunCommand.cs:86-93` | CONFIRMED |
 | `ExecutionDiagnosticLog` (projects diagnostics onto a small allow-list of context keys, max 256 entries) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:12`, allow-lists `:17-30` | CONFIRMED |
+| `ExecutionDiagnosticLog` allows the `opcode` context key (`DiagnosticContextKeys.InstructionOpcode`) as a `uint`. A value under this key is a raw instruction word, so the existing shareable log already admits one. | `ExecutionDiagnosticLog.cs:28`; key defined at `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:38` | CONFIRMED |
 | `ExecutionDiagnosticBundleWriter` writes exactly four entries: `report.json`, `environment.json`, `diagnostics.log`, `issue.md` (name constants); canonical timestamps | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:16`, entry-name constants `:18-21` | CONFIRMED |
 
 ### 1.3 Runtime host diagnostic (`#763`, open)
@@ -134,21 +137,24 @@ Every claim carries one of four labels:
 | `BiosContentDiagnostic` record: counts and provenance text, no bytes | `BiosAddressGuard.cs:81` | CONFIRMED |
 | Standalone report "never names an input" (code comment cites "Issue #786 B1"; #786 is a pull request, so the comment's label is a mislabel) | `src/PSXRecomp.RuntimeHost/Program.cs:197` | OBSERVED (comment) |
 
-### 1.8 OpenBIOS probe output (exposes raw words)
+### 1.8 OpenBIOS probe output (exposes raw words and full register dumps)
 
 | Element | Location | Label |
 |---|---|---|
 | `BuildStop` builds `lastFetches` (`Hex(e.Pc):Hex(e.Word)`, last 16) and `lastTransfers` (last 16, includes `From.Word`) from the engine trace ring | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1004-1014` | CONFIRMED |
+| `BuildStop` also emits `pc`, `sr`, `cause`, `epc`, `badVAddr`, and a full `gpr[32]` array | `OpenBiosProbeCommand.cs:1010-1012` | CONFIRMED |
 | `BuildStop` is called with the interpreter engine's `FinalSnapshot` | `OpenBiosProbeCommand.cs:361` | CONFIRMED |
-| The `--json` document is the anonymous object with `kind = "openbios-probe"`; the same object holds `stop`, `captured`, and `gte` | `OpenBiosProbeCommand.cs:421` (`kind`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`) | CONFIRMED |
-| `captured` is an object built at the capture PC, with `word = ReadGuestWord(pc)` (a raw instruction word), `pc`, `gpr[32]`, and `lastTransfers` (PCs only) | `OpenBiosProbeCommand.cs:344-350`; `word` at `:346` | CONFIRMED |
+| The `--json` document is the anonymous object with `kind = "openbios-probe"`; the same object holds `stop`, `captured`, `gte`, `milestones`, `frame`, and `sha256` | `OpenBiosProbeCommand.cs:421` (`kind`), `:423` (`sha256 = hash`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`) | CONFIRMED |
+| `captured` is an object built at the capture PC, with `word = ReadGuestWord(pc)` (a raw instruction word), `pc`, `gpr[32]`, and `lastTransfers` (PCs only) | `OpenBiosProbeCommand.cs:344-350`; `word` at `:346`; `gpr` at `:347` | CONFIRMED |
 | `gte.lastUnsupportedCommand` is `observed.Gte.LastUnsupportedCommand`, set by `ExecuteCommand` to `command & 0x01FF_FFFF`: the 25-bit COP2 command field of the instruction that failed | `OpenBiosProbeCommand.cs:435`; `src/PSXRecomp.Core/Runtime/Gte/GteRegisterBank.cs:106`, `:115` | CONFIRMED |
 | `gte.commandsExecuted` is a count | `OpenBiosProbeCommand.cs:435` | CONFIRMED |
-| `--dump-ram <path>` writes the raw 2 MiB main RAM (KSEG0 `0x80000000`, `RamBytes`) to a file named by the user, not into the `--json` document | `OpenBiosProbeCommand.cs:81` (option), `:337-342` (write) | CONFIRMED |
+| `milestones.firstUnexpectedException` is an `OpenBiosUnexpectedException(ExcCode, Epc, BadVAddr, Cause, AtFetch)` record | `OpenBiosBootMonitor.cs:40`; the probe reads it at `OpenBiosProbeCommand.cs:808` | CONFIRMED (record); the JSON shape of `milestones` is UNVERIFIED (serialised from `OpenBiosBootReport`, not read as a schema) |
+| `frame.sha256` is a digest of the displayed frame; `frame` also carries `width`, `height`, `nonZeroPixels` | `OpenBiosProbeCommand.cs:437` | CONFIRMED |
+| `--dump-ram <path>` writes the raw 2 MiB main RAM (KSEG0 `0x80000000`, `RamBytes`) to a file named by the user, not into the `--json` document. It requires `--capture-at` | `OpenBiosProbeCommand.cs:81` (option), `:172` (requirement), `:337-342` (write) | CONFIRMED |
 | The `--dump-ram` file is not part of the `#457` bundle, whose four entries are fixed (`ExecutionDiagnosticBundleWriter.cs:18-21`) and do not include a RAM file | `ExecutionDiagnosticBundleWriter.cs:18-21` | CONFIRMED |
+| The probe `--capture-at <hex-pc>` option (`OpenBiosProbeCommand.cs:59-67`) | `OpenBiosProbeCommand.cs:59-67` | CONFIRMED |
 | The probe loads a 512 KiB OpenBIOS ROM and boots the firmware, so the interpreter fetches are expected to include BIOS-range PCs | `OpenBiosProbeCommand.cs:201-207` (ROM load); the boot design | CONFIRMED (ROM load); PREDICTED (BIOS-range fetches) |
-| Whether any raw word in `lastFetches`, `lastTransfers`, `captured.word`, or `gte.lastUnsupportedCommand` comes from the BIOS range | not checked (no probe run, no captured `--json` output inspected) | UNVERIFIED |
-| The register and COP0 fields are CPU state, not memory words; see section 7, Exposure 4 | `OpenBiosProbeCommand.cs:1011` (`sr`, `cause`, `epc`, `badVAddr`), `:1012` (`gpr`), `:433` (`captured.gpr`), `:805-808` (`firstUnexpectedException`) | CONFIRMED (locations); the JSON shape of `milestones` is UNVERIFIED (serialised from `OpenBiosBootReport`, not read as a schema) |
+| Whether any value in the `--json` output lies in the BIOS range | not checked (no probe run, no captured `--json` output inspected) | UNVERIFIED |
 
 ### 1.9 Identity hashes already in use
 
@@ -188,12 +194,12 @@ Envelope (every record):
 
 Record families:
 
-| Family | `kind` values | Core fields | Source of truth |
-|---|---|---|---|
-| PC / control | `unit`, `handoff`, `fallback`, `transfer`, `stop` | `pc`, `next`, `retired`, `termination`, `status` | Extends existing unit-trace kinds (`unit-trace.md`) |
-| Register state | `checkpoint` | `pc`, `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc`, `globalRetired` | `CpuCheckpoint` (`CpuCheckpoint.cs:17`) |
-| MMIO | `mmio` | `physAddr`, `width`, `isWrite`, `value`?, `pc`? | `HostMmioAccess` (`MixedFallback.cs:161`) |
-| Runtime event | `event` | `device` (`gpu`, `spu`, `cdrom`, `dma`, `timer`, `irq`, `bios`), `name`, `code`?, `data`? | New; BIOS call identity exists (`BiosCallIdentity` in `src/PSXRecomp.Core/Runtime/BiosCallIdentity.cs`, used by `BiosServiceResult.cs:152`) |
+| Family | `kind` values | Core fields | Source of truth | Shareable? |
+|---|---|---|---|---|
+| PC / control | `unit`, `handoff`, `fallback`, `transfer`, `stop` | `pc`, `next`, `retired`, `termination`, `status` | Extends existing unit-trace kinds (`unit-trace.md`) | PCs and classifications only (section 7.2) |
+| Register state | `checkpoint` | `pc`, `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc`, `globalRetired` | `CpuCheckpoint` (`CpuCheckpoint.cs:17`) | Local-only (owner ruling) |
+| MMIO | `mmio` | `physAddr`, `width`, `isWrite`, `value`?, `pc`? | `HostMmioAccess` (`MixedFallback.cs:161`) | `value` local-only; the rest per section 7.2 |
+| Runtime event | `event` | `device` (`gpu`, `spu`, `cdrom`, `dma`, `timer`, `irq`, `bios`), `name`, `code`?, `data`? | New; BIOS call identity exists (`BiosCallIdentity` in `src/PSXRecomp.Core/Runtime/BiosCallIdentity.cs`, used by `BiosServiceResult.cs:152`) | `data` local-only; `name` and `code` per section 7.2 |
 
 `BiosServiceResult.cs:152` is a use of `BiosCallIdentity` in `BiosDiagnostic`, not its definition. **CONFIRMED.**
 
@@ -203,7 +209,6 @@ Field rules:
 
 - Addresses are `uint` and written as hex strings in JSON, matching the existing unit trace. **OBSERVED.**
 - No record carries a host path, user name, or wall-clock time by default. Time is opt-in (section 5).
-- `value` on an MMIO record is off by default (section 7).
 
 ## 3. Trace event schema
 
@@ -290,47 +295,85 @@ Measurements required before default levels are chosen: wall time and output byt
 
 - A crash produces a `stop` record with the `Diagnostic` code and `session`, then the existing bundle is written with the trace files beside `report.json`. **PREDICTED.**
 - A killed run leaves an unterminated trace. The existing rule (last partial line discarded, join `Partial`) covers this. **OBSERVED** (`unit-trace.md`, "No end line").
-- The `#457` bundle is the shareable unit. Trace files join it only after the redaction in section 7. **PREDICTED.**
+- The `#457` bundle is the shareable unit. Trace files join it only after the allowlist projection in section 7.2. **PREDICTED.**
 
-## 7. Safety boundary: BIOS and ROM raw data
+## 7. Safety boundary: shareable output, local output, and the register dump ruling
 
-Current state, by location:
+### 7.1 Current state, by location
 
-- Unit trace records contain CPU registers and PCs, not memory bytes. **OBSERVED** (`unit-trace.md`, "Record schema"). `CpuCheckpoint` has no memory field (`CpuCheckpoint.cs:17-25`). **CONFIRMED.**
+- Unit trace records contain CPU registers and PCs, not memory bytes. **OBSERVED** (`unit-trace.md`, "Record schema"). `CpuCheckpoint` has no memory field (`CpuCheckpoint.cs:17-25`), but it does carry `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc` (section 1.4). **CONFIRMED.**
 - `ExecutionDiagnosticReport` has no field for input payloads, RAM, save data, or paths. **CONFIRMED** (`ExecutionDiagnosticReport.cs:8-10`).
+- The existing shareable diagnostic log admits an `opcode` key, which is a raw instruction word (`ExecutionDiagnosticLog.cs:28`). **CONFIRMED.** This is an existing shareable-output path, not a trace path, and the allowlist in section 7.2 removes it.
 - BIOS content diagnostic reports counts and provenance only. **CONFIRMED** (`BiosAddressGuard.cs:81`).
 - **Exposure 1 (CONFIRMED):** `LoadedCodeMismatchDiagnostics` writes `windowAot` and `windowRam` (5 words each, around the first mismatch) into JSON (`LoadedCodeMismatchDiagnostics.cs:296-297`). These are instruction words from the loaded image and from guest RAM. The comment calls this bounded sampling. Bounded is not the same as redacted. Whether this output is ever published is **UNVERIFIED.**
-- **Exposure 2 (CONFIRMED): four raw instruction-derived fields in the OpenBIOS probe `--json` output.** Each is produced from guest instruction data:
-  1. `stop.lastFetches`, each `Hex(e.Pc):Hex(e.Word)` (`OpenBiosProbeCommand.cs:1013`): raw instruction words, with PCs.
-  2. `stop.lastTransfers`, each including `From.Word` (`:1014`): raw instruction words.
-  3. `captured.word`, `ReadGuestWord(pc)` at the capture PC (`:346`, written at `:433`): a raw instruction word.
-  4. `gte.lastUnsupportedCommand` (`:435`): not a memory word, but the 25-bit COP2 command field taken from the failing instruction (`command & 0x01FF_FFFF`, `GteRegisterBank.cs:115`). It discloses part of an instruction encoding, so it is treated as an instruction-derived field here.
+- **Exposure 2 (CONFIRMED): raw instruction words in the OpenBIOS probe `--json` output:**
+  1. `stop.lastFetches` (`OpenBiosProbeCommand.cs:1013`);
+  2. `stop.lastTransfers`, including `From.Word` (`:1014`);
+  3. `captured.word` (`:346`, written at `:433`);
+  4. `gte.lastUnsupportedCommand` (`:435`), the 25-bit COP2 command field of the failing instruction (`GteRegisterBank.cs:115`).
 
-  **Whether any of these fields comes from the BIOS range** (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `BiosAddressGuard.cs:103`) **is UNVERIFIED.** The probe boots OpenBIOS, so BIOS-range fetches are PREDICTED. Any such entry would publish raw BIOS instruction data in the `--json` output. The concrete test is in Q11.
-- **Exposure 3 (CONFIRMED, local-only by construction):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`OpenBiosProbeCommand.cs:337-342`). It is not written into the `--json` document, and it is not part of the four-entry `#457` bundle (`ExecutionDiagnosticBundleWriter.cs:18-21`). Main RAM (KSEG0 `0x80000000`) is not the BIOS range. The file is still raw guest memory, so it must not be attached to any share-ready artifact. The code comment already says "local diagnostic output only". **Outside the share-ready boundary: yes, by construction. CONFIRMED.**
-- **Exposure 4 (CPU state, decision made):** the register and COP0 fields below are CPU state, not memory words. **Decision: they do not count as raw words and are not removed.** They are listed so the boundary is explicit:
-  - `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`OpenBiosProbeCommand.cs:1010-1012`);
-  - `captured.gpr` (`:347`);
-  - `milestones.firstUnexpectedException` with `epc`, `badVAddr`, and `cause`, from `OpenBiosUnexpectedException(ExcCode, Epc, BadVAddr, Cause, AtFetch)` (`OpenBiosBootMonitor.cs:40`; the probe reads it at `OpenBiosProbeCommand.cs:808`).
+  Whether any of these comes from the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `BiosAddressGuard.cs:103`) is **UNVERIFIED.** The probe boots OpenBIOS, so BIOS-range fetches are PREDICTED.
+- **Exposure 3 (CONFIRMED, local-only by construction):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`OpenBiosProbeCommand.cs:337-342`). It is not in the `--json` document and not in the four-entry `#457` bundle (`ExecutionDiagnosticBundleWriter.cs:18-21`). It is raw guest memory and stays local.
+- **Exposure 4 (CONFIRMED, owner ruling):** full register dumps. `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`OpenBiosProbeCommand.cs:1010-1012`); `captured.gpr` (`:347`); the native and fallback checkpoint `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc` (section 1.4); and `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (section 1.8). **Ruling: the full GPR and COP0 dumps are local-diagnostic only and never appear in a shareable document.** The ruling is binding. Section 7.2 excludes them.
 
-  These values are addresses and register contents. A value such as `epc` or `badVAddr` can lie in the BIOS range, and that is an address, not BIOS data. Q11 checks whether those addresses point into the BIOS range. **CONFIRMED** (locations); the JSON shape of `milestones` is **UNVERIFIED** (serialised from `OpenBiosBootReport`, not read as a schema).
+### 7.2 Shareable output is an explicit allowlist
 
-Proposed boundary (PREDICTED):
+**Rule.** A field is shareable only if it appears in this allowlist. A field not listed is excluded. Adding a field requires editing this list, and the required test (section 7.4) enforces the list. **PREDICTED.**
 
-1. Trace schema v1 has no field for memory bytes. A `value` field on `mmio` is allowed only in a local-only trace level, never in the share-ready bundle.
-2. The share-ready bundle (`#457`) includes only trace records with no `value` and no word arrays. `windowAot`, `windowRam`, `stop.lastFetches`, `stop.lastTransfers`, `captured.word`, and `gte.lastUnsupportedCommand` are removed from the share-ready form, or reduced to a hash of the window or fetch list instead of printed values. The `--json` form of the OpenBIOS probe is treated the same way when it is shared. The CPU-state fields of Exposure 4 are not removed.
-3. BIOS bytes never enter any trace or report. Only existing `BiosContentDiagnostic` counts and hashes may appear. `BiosAddressGuard` is the enforcement point. Exposures 2 and 4 must be checked against this rule first (Q11).
-4. ROM and disc bytes never enter a trace. Identity is by hash only (`loaded-code-identity.md`, "The hash is not runtime proof" and the hash-for-identity rule).
-5. `--dump-ram` output stays local. It is never added to a bundle or attached to a report. **PREDICTED.**
-6. A writer-side test enforces (1) to (4): a trace written at L2 must contain no field outside the allow-list, and no hex run of 8 or more words that matches a loaded image window. **PREDICTED** (test does not exist).
+Each allowed class has one rule:
+
+| Class | Rule | Allowed fields (from the existing output) |
+|---|---|---|
+| PC (guest address) | 32-bit unsigned, written as `0x` plus 8 hex digits. It names where execution was, not what the bytes were. | `stop.pc`; `captured.pc`; `guestPc` (top level); `captured.lastTransfers` (PC-to-PC pairs only, no words); `stop.lastTransfers` after removing `From.Word` (see excluded list); `ExecutionDiagnosticLog` `guestPc` and `guestAddress` context keys; `ExecutionDiagnosticReport.GuestPc` |
+| Classification code | A value from a closed enum or a registered `DiagnosticCode` (`^[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)*$`, `DiagnosticCode.cs`). Never free text. | `diagnosticCode`; `executionState`; `kind`; `backend`; `termination` (trace records); `status` (trace records); `ExecutionDiagnosticReport.State`; `bootVerified`, `kernelBooted`, `titleStarted` (booleans, treated as classifications) |
+| Count | Non-negative integer. | `segmentsRetired`; `gte.commandsExecuted`; `retired` (trace records); `comparedWords`, `rejections`, `fullMatches`, `versionCount` (`LoadedCodeMismatchDiagnostics`, `ToJsonNode`); `frame.nonZeroPixels` (`OpenBiosProbeCommand.cs:437`) |
+| Digest of a whole artifact | SHA-256, bare lowercase 64-character hex (section 4 encoding). Digests of partial windows, or of RAM regions, are not allowed. | `sha256` (`OpenBiosProbeCommand.cs:423`, the firmware digest; whether a firmware digest is acceptable to share is Q12); `frame.sha256` (`:437`, a digest of the displayed frame); `inputSha256`; `artifactSha256`; `windowAot`/`windowRam` replaced by a digest of the whole loaded image, not of the window |
+| Duration | Milliseconds as a number, rounded to a fixed precision in the writer. Wall clock is not written as a timestamp. | `RuntimeHostRunMetrics.WallMilliseconds`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds` (`RuntimeHostDiagnostic.cs:146-150`) |
+| Identifier | Session ID (section 4), 32-hex GUID. | `session` (new per-record field, section 2) |
+
+Fields that are not in the allowlist, and therefore excluded from every shareable document, are listed in section 7.3.
+
+### 7.3 Excluded fields (shareable output must not contain these)
+
+| Excluded class | Fields | Why |
+|---|---|---|
+| General registers (owner ruling) | `stop.gpr`; `captured.gpr`; `gpr[32]` in every `checkpoint` record; `gpr` in the native `unit` state and fallback `entry`/`exit` objects (`unit-trace.md`) | Full register dump. Local-diagnostic only (owner ruling). |
+| COP0 state (owner ruling) | `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr`; `sr`, `cause`, `epc` in every `checkpoint` record and fallback state; `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` | COP0 full state. Local-diagnostic only (owner ruling). |
+| HI/LO (register dump) | `hi`, `lo` in checkpoint and state objects | Part of the register dump; excluded as a register dump, not as COP0. **PREDICTED** classification of HI/LO as register dump, pending a decision if the owner wants them shareable. |
+| Raw instruction words | `captured.word`; `stop.lastFetches` (each `Hex(e.Word)`); `stop.lastTransfers` (`From.Word`); `gte.lastUnsupportedCommand`; `ExecutionDiagnosticLog` `opcode` context key (`ExecutionDiagnosticLog.cs:28`); `mmio.value`; any `word` field | Instruction encoding from guest memory. Excluded from shareable output. |
+| RAM contents | `windowAot`; `windowRam`; `--dump-ram` file; any memory bytes; any hex run of words | Raw loaded-image and guest-RAM words. |
+| Loaded-image identity beyond digests | any per-word list | Covered by the digest rule. |
+| `milestones` fields not yet read | the whole `milestones` object, until its JSON shape is read and each field is classified | Shape is UNVERIFIED (section 1.8). Excluded by default under the allowlist. |
+| Host and environment | `environment.json` contents beyond the existing projection; host paths; user names; `runId`-based host data | Existing bundle rule (`#457`); host identity is not a trace field. |
+| Trace-only values | `t` timestamps (section 2, default null); `skipped` counters are allowed as counts | Timestamps are opt-in and excluded from share-ready bundles (Q10). |
+
+### 7.4 Local/share boundary (rule)
+
+1. **Shareable output** is produced only by a single writer, the shareable projection, which builds a document from the allowlist in section 7.2 and nothing else. A document is shareable only when this projection built it. **PREDICTED.**
+2. **Local output** is any other output: the `--json` document of the OpenBIOS probe as it exists today, `--dump-ram`, `windowAot`/`windowRam`, and every `checkpoint` record. Local output may contain any field, including the excluded classes of section 7.3. **CONFIRMED** (these outputs exist and contain those fields today).
+3. A local output must not be attached to a bundle, a report, or an issue. The `#457` bundle writer accepts only shareable-projection documents. **PREDICTED** (the writer change does not exist; today the bundle writer takes typed records and does not check provenance).
+4. **A local-only classification is not a guarantee of non-leakage.** Calling an output "local" is a label. It stops leakage only if the shareable projection is tested to emit nothing outside the allowlist, and the bundle writer is tested to refuse non-projection input. Until the test in section 7.5 exists, the leakage guarantee is **UNVERIFIED**.
+
+### 7.5 Required test
+
+**Required test:** `ShareableOutputAllowlistTests.Shareable_writer_emits_no_excluded_field`, in `src/PSXRecomp.Tests/Diagnostics/`. **PREDICTED** (the test does not exist; **UNVERIFIED**).
+
+The test must:
+
+- run the shareable projection over fixtures that contain every excluded field of section 7.3 (a synthetic `stop`, `captured`, `gte`, `checkpoint`, `windowAot`/`windowRam`, and `milestones` object);
+- walk the resulting JSON recursively and fail if any key or value matches an excluded name from section 7.3, or any hex run of 8 or more consecutive 32-bit words;
+- fail if any key in the output is not in the section 7.2 allowlist;
+- be paired with a second test, `ShareableOutputAllowlistTests.Bundle_writer_refuses_local_output`, which asserts the bundle writer rejects a document not built by the projection.
+
+Until both tests pass, the leakage guarantee in section 7.4 stays **UNVERIFIED**.
 
 ## 8. Recommendation
 
 1. Adopt the unit-trace envelope (`v`, `seq`, `kind`, session) as trace schema v1, and add `stream`, `mmio`, and `event` kinds. Do not invent a second format. **PREDICTED** (rationale: the existing joiner, tests, and parsers already implement the rules).
 2. Make `session` the single run identity for trace purposes. Retire `runId` (`RuntimeHost/Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them only as aliases. **PREDICTED.**
 3. Reuse the existing `inputSha256` and `ArtifactIdentity` hashes, both as bare lowercase hex; add no new artifact ID field (section 4). **PREDICTED.**
-4. Ship L1 (boundary) first. Its cost is near zero and reuses existing records. Add L2 and sampling only after the measurement in section 5 exists. **PREDICTED.**
-5. Fix the share-ready redaction gap (Exposures 1 and 2 in section 7) before any trace or bundle is shared. The gap is **CONFIRMED**; the fix is **PREDICTED.**
+4. Build the shareable projection (section 7.2) and the two required tests (section 7.5) before any trace or bundle is shared. Remove `opcode` from `ExecutionDiagnosticLog`'s allowlist as part of that work. **PREDICTED.**
+5. Ship L1 (boundary) first. Its cost is near zero and reuses existing records. Add L2 and sampling only after the measurement in section 5 exists. **PREDICTED.**
 
 ## 9. Open questions and the decision each needs
 
@@ -341,20 +384,24 @@ Ownership note: the GitHub API shows no assignee on any issue read for this docu
 | Q1 | Is `session` a new optional field in `report.json` (schema bump to `v2`) or an optional addition within `v1`? | Repository owner (mao2009) | #457 is closed, so the report schema has no open tracking issue. Open item for this decision: #45. | CONFIRMED that v1 has no session field; OBSERVED (#457 closed) |
 | Q2 | Retire the standalone `runId` (`Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them as aliases? | Repository owner (mao2009) | #763 (open) and #773 (open) | CONFIRMED both exist and both are written |
 | Q3 | For packaged artifacts (section 4.1), which identities does the trace header carry? Candidates: the native artifact executable hash, the `runtime/artifact-image.bin` sidecar hash (the image the host runs), the `runtime/runtime-host.json` hash, and `inputSha256` (only on the `run --report` path, `RunCommand.cs:54-58`). Should `inputSha256` be produced for packaged runs at all? | Repository owner (mao2009) | #739 (open; ADR-027 status Accepted, Issue #739) | OBSERVED (ADR-027:52, :62-66, :70-71, :128-175); CONFIRMED (`RunCommand.cs:54-58`) |
-| Q4 | Are `windowAot`/`windowRam` in the loaded-code report removed, reduced to hashes, or kept only in a local-only level? | Repository owner (mao2009) | #773 (open). The fix PR (#786) is closed. | CONFIRMED the words are written |
+| Q4 | Are `windowAot`/`windowRam` in the loaded-code report removed, reduced to hashes, or kept only in a local-only level? Under section 7.2 they are excluded from shareable output. The remaining question is whether the local file keeps them. | Repository owner (mao2009) | #773 (open). The fix PR (#786) is closed. | CONFIRMED the words are written |
 | Q5 | Which trace level is the default for `PSXRecomp.RuntimeHost --diagnostics`? | Repository owner (mao2009) | #763 (open) | OBSERVED that the flag is off by default |
 | Q6 | Is MMIO `value` ever allowed outside a local-only trace? Design position: no. | Repository owner (mao2009) | #45 (open). #457 is closed. | PREDICTED position |
 | Q7 | Are GPU, SPU, CD, and DMA events in trace schema v1, or added in a later version? The #45 body lists them under "対象" (Scope) (section 0.1). | Repository owner (mao2009) | #45 (open) | OBSERVED (#45 body, section 0.1) |
 | Q8 | What is the acceptable overhead budget for L2, for example percent of wall time on one standard run? | Repository owner (mao2009) | #45 (open; completion criterion "Performance overheadとsampling方針を定義") | UNVERIFIED (no budget in repo found in this work) |
 | Q9 | Should the Studio GUI and CLI read the same JSON Lines files, or a joined summary only? | Repository owner (mao2009) | #45 (open; completion criterion "GUI/CLIで共通利用できる形式を定義"); #40 and #42 (both open) | OBSERVED (#45 body); UNVERIFIED (GUI code not searched) |
 | Q10 | May trace timestamps appear in share-ready bundles, given the determinism rule in `docs/architecture/diagnostics.md` section 5? | Repository owner (mao2009) | #49 is closed, so the diagnostics contract has no open tracking issue. Open item for this decision: #45. | CONFIRMED that the current contract excludes time; OBSERVED (#49 closed) |
-| Q11 | Do any of the four raw-derived fields of Exposure 2 (`stop.lastFetches`, `stop.lastTransfers`, `captured.word`, `gte.lastUnsupportedCommand`) come from the BIOS range, and do any of the CPU-state addresses of Exposure 4 (`epc`, `badVAddr`, `captured.pc`, `stop.pc`) point into it? If so, must those values be removed from `--json` output? **Concrete action:** run `openbios-probe <openbios.bin> --json --capture-at <hex-pc>` (the option is `--capture-at`, `OpenBiosProbeCommand.cs:59-67`; `--dump-ram` requires it, `:172`), then for each raw word in the output, test its source address against `0x1FC00000`-`0x1FC7FFFF` (physical, after masking the segment bits). For `lastFetches` and `lastTransfers`, the PC in each entry is the address to test; for `captured.word`, the capture PC; for `gte.lastUnsupportedCommand`, the output does not record the instruction's address, so the action must also record the PC of the failing COP2 instruction, or the field is classified as untestable. | Repository owner (mao2009) | #45 (open) | UNVERIFIED (not checked by running the probe) |
+| Q11 | Does any value in the shareable output lie in the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical)? The shareable output under section 7.2 contains PCs, so the check is on those. **Concrete action:** run `openbios-probe <openbios.bin> --json --capture-at <hex-pc>` (`OpenBiosProbeCommand.cs:59-67`; `--dump-ram` also requires `--capture-at`, `:172`), then, for each PC-class value in the output, mask the segment bits and test it against `0x1FC00000`-`0x1FC7FFFF`. Record the result in the test log of the required test, not in this document. If any PC-class value is in range, decide whether a BIOS-range PC may appear in a shareable document. Raw words are not part of the shareable output (section 7.3), so they are not tested for this purpose. | Repository owner (mao2009) | #45 (open) | UNVERIFIED (not checked by running the probe) |
+| Q12 | Is a SHA-256 of the firmware file (`sha256` at `OpenBiosProbeCommand.cs:423`) acceptable in a shareable document? It identifies the user's BIOS image but carries no BIOS bytes. | Repository owner (mao2009) | #45 (open) | OBSERVED (field exists); PREDICTED position: allowed as a digest, pending the decision |
+| Q13 | Are HI and LO (section 7.3) to be shareable? The owner ruling covers GPR and COP0; this document classifies HI and LO as part of the register dump and excludes them. | Repository owner (mao2009) | #45 (open) | PREDICTED classification; the ruling does not name HI/LO |
 
 ## 10. Limits of this document
 
 - This is a design only. No code, test, or schema file was changed.
 - Overhead numbers are not measured.
+- The leakage guarantee in section 7.4 is **UNVERIFIED** until the tests in section 7.5 exist and pass.
 - The `RunCommand` bundle gate was traced (section 1.2). No other path into the bundle was traced.
 - GUI code was not searched exhaustively.
 - The `--dump-ram` file's contents were not inspected; its content class is taken from the code (`observed.ReadGuestWord` over KSEG0 main RAM), not from a produced file.
-- The JSON shape of `milestones` was not read as a schema.
+- The JSON shape of `milestones` was not read as a schema. It is excluded by default until it is.
+- The Q11 check was not run. No result is stated in this document.
