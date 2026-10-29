@@ -38,7 +38,8 @@ public sealed record FirmwareDiagnosticBuild(
     string ArtifactPath,
     string HostPath,
     string ManifestPath,
-    IReadOnlyDictionary<string, string> InputDigests);
+    IReadOnlyDictionary<string, string> InputDigests,
+    IReadOnlyList<string>? Residuals = null);
 
 /// <summary>
 /// Developer-only measurement path for the firmware-booted run (Issue #846). It reuses the product's AOT plan, host dispatch
@@ -295,8 +296,10 @@ public static class FirmwareDiagnosticDistribution
             // then renames the directory; the rename refuses a name that is taken by now (nothing is replaced).
             observe?.Invoke("commit", staging); // SEAM: another process acts here, between the last write and the rename
             area.Commit();
+            // Residuals are reported on the result, so an entry that cleanup left in place (for example, a record step that failed) is visible to the operator
+            // even when the measurement itself succeeded.
             return new FirmwareDiagnosticBuild(
-                outputDir, area.Rebase(artifactPath), area.Rebase(hostPath), area.Rebase(manifestPath), digests);
+                outputDir, area.Rebase(artifactPath), area.Rebase(hostPath), area.Rebase(manifestPath), digests, area.Residuals.ToArray());
         }
         catch (Exception exception)
         {
@@ -1216,6 +1219,12 @@ public static class FirmwareDiagnosticDistribution
             RefuseExisting(destination);
             var recorded = RequireMovableSource(source);
 
+            // MoveNew is for the toolchain's reserved names only. A publish output, or any other owned file, is copied, never moved (owner ruling 1-3).
+            if (!_reserved.Contains(source))
+            {
+                throw new IOException($"MoveNew moves reserved toolchain names only; this owned file is not moved into the measurement: {source}");
+            }
+
             // The source's identity is read immediately before the move and the destination's immediately after it. The destination is adopted
             // only when the two reads match (and, for a recorded entry, the source still matches its record). A reserved name has no record, so
             // the read before the move is the only identity available for it; that is why the post-move read is compared.
@@ -1392,6 +1401,7 @@ public static class FirmwareDiagnosticDistribution
         /// </summary>
         public void RecordPublishOutput(string publishDir, IReadOnlyList<string> allowList)
         {
+            _observe?.Invoke("record", publishDir); // SEAM: a failure here (the record or its enumeration) is the one the record path must survive
             var publishFull = Path.GetFullPath(publishDir);
             if (!Directory.Exists(publishFull) || IsReparsePoint(publishFull))
             {

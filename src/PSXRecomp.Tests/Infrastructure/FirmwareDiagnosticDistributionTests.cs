@@ -1948,6 +1948,80 @@ public sealed class FirmwareDiagnosticDistributionTests
         #pragma warning restore AARC003
     }
 
+    [SkippableFact]
+    public void MoveNew_OwnedPublishFile_IsRefusedBecauseMoveNewIsForReservedNamesOnly()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Owner ruling 1-3: MoveNew moves reserved toolchain names only. An owned publish file is copied, never moved, so a move of one is refused.
+        using var dir = new TempDirectory();
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), null);
+        area.Open("measure");
+        var publish = area.CreateDirectory(Path.Combine(area.Root, "publish"));
+        var source = Path.Combine(publish, "PSXRecomp.Core.dll");
+        area.WriteNewFile(source, "published");
+        var destination = Path.Combine(area.Root, "PSXRecomp.Core.dll");
+
+        var act = () => area.MoveNew(source, destination);
+
+        act.Should().Throw<IOException>().WithMessage("*reserved toolchain names only*");
+        File.Exists(source).Should().BeTrue("the owned publish file is not moved");
+        #pragma warning disable AARC003 // Justified: this line calls File.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        File.Exists(destination).Should().BeFalse("nothing is adopted at the destination");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_RecordStepFailsOnASuccessfulPublish_IsReportedOnTheBuildResult()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The record step fails (deterministic: the "record" seam throws), but the publish is complete and the measurement succeeds. The residual is
+        // reported on the result, so an operator sees it.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, _) =>
+        {
+            if (phase == "record")
+            {
+                throw new IOException("simulated record failure");
+            }
+        }, compiler: null, publisher: AllowListPublish());
+
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(output).Should().BeTrue("the measurement completed");
+        #pragma warning restore AARC003
+        build.Residuals.Should().ContainSingle(residual => residual.Contains("could not be recorded for cleanup"),
+            "the record failure is reported on the build result");
+    }
+
+    [SkippableFact]
+    public void Build_RecordFailureOnAFailedPublish_KeepsThePublisherExceptionAsTheCause()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Both the record step and its enumeration are reached through the "record" seam. The seam throws UnauthorizedAccessException (an enumeration
+        // failure). The publisher's exception is the primary one: the build's failure keeps it as the cause and says the record failed.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, _) =>
+        {
+            if (phase == "record")
+            {
+                throw new UnauthorizedAccessException("simulated enumeration failure");
+            }
+        }, compiler: null, publisher: _ => throw new InvalidOperationException("the publish failed"));
+
+        var thrown = act.Should().Throw<IOException>().Which;
+        thrown.InnerException.Should().BeOfType<InvalidOperationException>("the publisher's exception is kept as the cause");
+        thrown.InnerException!.Message.Should().Be("the publish failed");
+        thrown.Message.Should().Contain("could not be recorded for cleanup", "the record failure is named in the failure");
+    }
+
     /// <summary>True when a dotnet executable is on the PATH of this process (the real publish needs it; without it the test is skipped with its reason).</summary>
     private static bool DotnetOnPath() =>
         #pragma warning disable AARC003 // Justified: this line calls Environment.GetEnvironmentVariable (test fixture check); it reads only the test's own environment or temporary directory, to assert the outcome of the build.

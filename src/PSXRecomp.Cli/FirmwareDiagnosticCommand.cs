@@ -127,6 +127,11 @@ internal static class FirmwareDiagnosticCommand
                 DirectDiscReference: directDisc);
             var build = FirmwareDiagnosticDistribution.Build(request, RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             output.WriteLine($"firmware-diagnostic built: {build.Root}");
+            foreach (var residual in build.Residuals ?? [])
+            {
+                // A residual is an entry cleanup left in place (not removed, not published). It is shown so the operator can check it.
+                output.WriteLine($"firmware-diagnostic residual: {residual}");
+            }
             if (!run)
             {
                 return 0;
