@@ -113,6 +113,7 @@ public sealed class PadCardIrqBackendParityTests
         host.DiagnosticCode.Should().Be(interpreter.DiagnosticCode, Describe(host));
         // The B0:5B auto-ack value is RAM-derived and is kept out of public diagnostics (commit 6f4be29): the detail names the setting by its
         // class only, so the test asserts that the value is absent rather than present.
-        Detail(host).Should().Be(Detail(interpreter)).And.Contain("priority 2 PadCardIrq").And.Contain("outside 0 and 1").And.NotContain("auto-ack is 0x");
+        Detail(host).Should().Be(Detail(interpreter)).And.Contain("priority 2 PadCardIrq").And.Contain("outside 0 and 1").And.NotContain("auto-ack is 0x")
+            .And.NotContain("0x2", "the B0:5B auto-ack value is RAM-derived and withheld from public diagnostics (commit 6f4be29)");
     }
 }
