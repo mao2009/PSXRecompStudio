@@ -1,6 +1,6 @@
 # Compatibility Registry: per-title verification state (Issue #33)
 
-Tracking: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33). Related: [#16](https://github.com/mao2009/PSXRecompStudio/issues/16) (Structured Logging), [#22](https://github.com/mao2009/PSXRecompStudio/issues/22) (Memory Card interoperability), [#23](https://github.com/mao2009/PSXRecompStudio/issues/23) (Feedback Loop).
+Tracking: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33). Related: [#16](https://github.com/mao2009/PSXRecompStudio/issues/16) (Structured Logging), [#22](https://github.com/mao2009/PSXRecompStudio/issues/22) (Memory Card interoperability), [#23](https://github.com/mao2009/PSXRecompStudio/issues/23) (review-finding feedback process per `docs/development/quality-stack.md`; the community-feedback reading is UNVERIFIED, see Q10).
 
 Status: **design only**. No code, schema file, ADR, or shared doc is changed by this document. Code evidence is taken from the worktree base `origin/main` at `2e3ecad`.
 
@@ -40,7 +40,7 @@ Title identity:
 - `Region` enum with `Unknown = 0`, `Japan`, `NorthAmerica`, `Europe`, `Asia`, `Korea`, `Australia`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Region.cs:10-32`]
 - `Revision` is `(Level, BuildYear, BuildMonth)` with `CanonicalKey` `Level.YYYY.MM`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Revision.cs:10-37`]
 - A SHA-256 hex helper exists for artifacts. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:72-75`]
-- Disc image SHA-256 appears only in artifact fixture identity. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`, `:39`]
+- Disc image SHA-256 is recorded in artifact fixture identity. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`, `:39`] A `discHash` diagnostics key is declared, with no writer found in `src` at `2e3ecad`. Its value and algorithm are UNVERIFIED. [CONFIRMED for the declaration: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`]
 
 Evidence and confidence (Analysis contracts):
 
@@ -62,15 +62,16 @@ Execution outcomes:
 
 Environment:
 
-- `ExecutionEnvironmentReport` records `OsPlatform`, `OsVersion`, `OsArchitecture`, process architecture, .NET version, runtime identifier, compiler version, and target architecture. Schema string `psxrecomp.execution-environment.v1`. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:4`, `:7`, `:10-17`, `:38-40`]
+- `ExecutionEnvironmentReport` records `OsPlatform`, `OsVersion`, `OsArchitecture`, process architecture, .NET version, runtime identifier, compiler version, and target architecture. Schema string `psxrecomp.execution-environment.v1`. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:11` (record), `:14` (`CurrentSchema`), `:16` (private constructor), `:38-40` (OS properties)]
 - No GPU field exists in `src/PSXRecomp.Core/Diagnostics`. A search for `gpu`/`GPU` in that folder returned no environment field. [CONFIRMED: grep over `src/PSXRecomp.Core/Diagnostics`]
-- No `RecompBuildId` or `RuntimeVersion` identifier exists in `src/PSXRecomp.Core`. The only `BuildIdentity` hits are `ArtifactFixtureIdentity` construction in the analysis artifact builder, not a recomp build id. Only `GeneratedHostBuildStatus` and similar status enums exist for build results. [CONFIRMED: grep for `BuildId|RuntimeVersion|DiscHash|GameId|ReleaseId` in `src/PSXRecomp.Core` returned `DeterministicArtifactBuilder.cs:86,162,165`, `ExecutionDiagnosticLog.cs:20`, `DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:12`]
-- A disc hash key already exists in the diagnostics context: `DiagnosticContextKeys.DiscHash = "discHash"`, and `ExecutionDiagnosticLog` lists it among its context keys. This is a diagnostics key, not a title-registry field. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
+- No `RecompBuildId` or `RuntimeVersion` identifier was found in `src/PSXRecomp.Core`. The only `BuildIdentity` hits are the analysis artifact builder's fixture identity, not a recomp build id. [CONFIRMED: grep for `BuildId|RuntimeVersion|DiscHash|GameId|ReleaseId` in `src/PSXRecomp.Core` returned `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/DeterministicArtifactBuilder.cs:86,162,165`, `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`, `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`]
+- A `discHash` diagnostics key is declared (`DiagnosticContextKeys.DiscHash = "discHash"`) and listed in `ExecutionDiagnosticLog`. No writer was found in `src` at `2e3ecad`, and the value and algorithm are UNVERIFIED. This is a diagnostics key, not a title-registry field. [CONFIRMED for the declaration and listing: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
 
 Persistence precedent:
 
 - `ProjectMetadataSerializer` is a pure static contract: validate, canonically encode to bytes, decode from bytes, with no host I/O, so it can be reused by GUI, CLI, or MCP. [CONFIRMED: `src/PSXRecomp.Core/Project/ProjectMetadataSerializer.cs:7-15`, `:37-43`]
 - Host I/O is behind `IProjectMetadataStore`. [CONFIRMED: `src/PSXRecomp.Core/Project/IProjectMetadataStore.cs:18`]
+- The file-backed implementation is `FileProjectMetadataStore`. [CONFIRMED that the file exists: `src/PSXRecomp.Infrastructure/FileProjectMetadataStore.cs`; its members were not reviewed line by line]
 - Schema versioning precedent: `AnalysisArtifact.CurrentVersion = 1`, `FunctionDiscoveryArtifact.CurrentSchemaVersion = 1`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/AnalysisArtifact.cs:17`; `src/PSXRecomp.Core/DiscImage/FunctionDiscovery.cs:40`]
 
 Status documents:
@@ -79,13 +80,13 @@ Status documents:
 - The matrix has a "Not claimed" state and a verification threshold requiring an executable test that asserts an observable contract, not only absence of a crash. [CONFIRMED: `docs/status/capabilities.md:40`, `:55-60`]
 - GPU is `Partial` and Audio (SPU) is `Partial` with audio output `Not claimed`. [CONFIRMED: `docs/status/capabilities.md:77-78`]
 - SIO0 is `Partial`, with real controller integration not claimed. [CONFIRMED: `docs/status/capabilities.md:79`]
-- Memory card storage support is `Verified` (bounded). [CONFIRMED: `docs/status/capabilities.md:80`]
+- Memory card storage support is `Verified`, with no qualifier in the row. [CONFIRMED: `docs/status/capabilities.md:80`]
 - The Persona title-screen gate is `Blocked`, with a measured stop at `OUTER_BUDGET_EXHAUSTED`. [CONFIRMED: `docs/status/capabilities.md:87`]
 - The memory-card runtime doc says an unverified compatibility claim must not be added. [OBSERVED: `docs/runtime/memory-card.md:279-281`]
 
 ### 2.2 What does not exist
 
-- No Compatibility Registry, record type, or compatibility store exists in `src`. [CONFIRMED: grep for `Compatib|Registry` across `src` returned only unrelated hits such as `BiosHle` registry and translation registry.]
+- No Compatibility Registry, record type, or compatibility store exists in `src`. [CONFIRMED: grep for `Compatib|Registry` across `src` returned only unrelated hits, such as the BIOS HLE registry and `SaveLockRegistry`.]
 - No ADR covers compatibility. ADRs run `001` to `027`. [CONFIRMED: `docs/adr/` listing]
 - The Studio project has no compatibility view. Its only "evidence" term is `HasFrameEvidence`, meaning a frame capture. [CONFIRMED: `src/PSXRecompStudio/Services/TitleExecutionService.cs:22`, `:97`, `:133`]
 
@@ -122,7 +123,7 @@ Five facets, each evaluated on its own ladder:
 | Facet | Question it answers | Notes |
 |---|---|---|
 | Boot | Does the title reach its first stable screen through the Runtime path? | Maps to the Persona-style gate in `capabilities.md:87`. |
-| Gameplay | Can a scripted input path reach and play a defined level or state? | Requires input evidence (#22/#23 dependency). |
+| Gameplay | Can a scripted input path reach and play a defined level or state? | Requires an input-evidence source (see Q10). |
 | Save | Can the title write and read its save through the memory-card model? | Storage format is `Verified` (`capabilities.md:80`); title-level save is separate. |
 | Audio | Is audio produced and does playback stay in sync? | SPU audio output is `Not claimed` (`capabilities.md:78`), so this facet is `Unverified` by default. |
 | Graphics | Does frame output match a defined reference for a scenario? | GPU is `Partial` (`capabilities.md:77`). |
@@ -321,7 +322,7 @@ Option D, staged:
 
 Format rules, based on existing precedent:
 
-- Schema identity string `psxrecomp.compatibility-registry.v1`, following `ExecutionEnvironmentReport.CurrentSchema` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:7`). [PREDICTED]
+- Schema identity string `psxrecomp.compatibility-registry.v1`, following `ExecutionEnvironmentReport.CurrentSchema` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:14`). [PREDICTED]
 - Canonical UTF-8 JSON through the same encoder as project metadata (`ProjectMetadataSerializer.cs:37-43`), so identical input yields identical bytes. [PREDICTED]
 - Store raw records. Store derived levels only in the snapshot, and only with the scenario catalog version and a recomputation check in tests. [PREDICTED]
 - Never store game data, ROM/BIOS bytes, or paths into a user's game library. The `Source` field is a bundle id. The repository's legal boundary against embedding such data is stated in its project docs [OBSERVED: README and `docs/project-mission.md`, not re-read for this design]. The field rule itself is [PREDICTED].
@@ -332,7 +333,7 @@ Local writes must be append-only and tolerate a partial last line, because a cra
 
 ## 8. API boundary
 
-Recommended split, mirroring `ProjectMetadataSerializer` and `IProjectMetadataStore` (section 2.1):
+Recommended split, mirroring `ProjectMetadataSerializer`, `IProjectMetadataStore`, and its file-backed implementation `FileProjectMetadataStore` (section 2.1):
 
 1. **Core, pure**: record types, outcome and level derivation, scenario catalog, canonical encode/decode. No file or network I/O. [PREDICTED]
 2. **Core, interface**: `ICompatibilityStore` for append, read, and snapshot. [PREDICTED]
@@ -350,14 +351,14 @@ Per title: one row per binding in use, five facet columns, each cell showing the
 
 - **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
 - **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
-- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has none today (`DiscIdentity.cs:10-14`), but `DiagnosticContextKeys.DiscHash` already carries one in diagnostics (`DiagnosticContextEntry.cs:47`). Whether that value is ever published is UNVERIFIED. A decision is needed before v1.1.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`DiagnosticContextEntry.cs:47`), but no writer was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A decision is needed before v1.1.
 - **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
 - **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
 - **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
 - **Q7. Runtime version.** No `RuntimeVersion` identifier was found in `src`. Is the Runtime version the assembly version, a git commit, or a new constant? UNVERIFIED.
 - **Q8. GPU identity.** Environment reporting has no GPU field. Is GPU backend and driver recorded in the environment report, or only in the Studio? Changing `ExecutionEnvironmentReport` is a schema change (`psxrecomp.execution-environment.v1`) and needs care.
 - **Q9. Reporter identity.** Community results need a reporter class (4.1.2) without an agent identity. Whether to collect any personal identity is a privacy decision. This draft collects none.
-- **Q10. Feedback intake.** #23 owns the intake path. The registry only defines the record. Confirm that boundary.
+- **Q10. Feedback intake.** In the repository, #23 is the review-finding feedback process: it converts recurring review findings into durable prevention [CONFIRMED: `docs/development/quality-stack.md:162`, `:192`]. Reading #23 as the community feedback intake for this registry is UNVERIFIED. The registry only defines the record, and the intake path needs an owner ruling.
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
 - **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
