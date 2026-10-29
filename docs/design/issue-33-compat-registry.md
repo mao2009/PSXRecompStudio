@@ -1,0 +1,369 @@
+# Compatibility Registry: per-title verification state (Issue #33)
+
+Tracking: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33). Related: [#16](https://github.com/mao2009/PSXRecompStudio/issues/16) (Structured Logging), [#22](https://github.com/mao2009/PSXRecompStudio/issues/22) (Memory Card interoperability), [#23](https://github.com/mao2009/PSXRecompStudio/issues/23) (Feedback Loop).
+
+Status: **design only**. No code, schema file, ADR, or shared doc is changed by this document. Code evidence is taken from the worktree base `origin/main` at `2e3ecad`.
+
+## Labels
+
+- **CONFIRMED**: the cited file and line were read in this worktree and say what is claimed.
+- **OBSERVED**: stated in a repository document, README, or commit message. The underlying behavior was not re-checked in code or run.
+- **PREDICTED**: a consequence of the proposed design. Not implemented, not measured.
+- **UNVERIFIED**: not checked. Treat as an open item.
+
+Hard constraints for this document and for the registry: it records verification outcomes, not game data. It contains no BIOS, ROM, disc image bytes, or copyrighted asset content. Titles are named by placeholders (`Title A`) except where an existing repository identifier is quoted.
+
+## 1. Problem and scope
+
+The issue asks for a registry that records, per title, how far verification has reached, for which build and runtime, with what evidence, and with what confidence. It must separate "started" from "played through", separate unverified from successful, and survive Runtime, OS, and GPU changes without silently inheriting an old result.
+
+In scope:
+
+- Per-title data model for five facets: Boot, Gameplay, Save, Audio, Graphics. Each is evaluated separately.
+- Evidence versus Confidence.
+- Binding of results to Build, Runtime, OS, and GPU.
+- Representation of unverified items separately from successes.
+- Persistence format and API boundary, with a recommendation.
+
+Out of scope: the community feedback intake UI, the Adaptive Feedback Policy, moderation, and any network service. These are listed as open questions only.
+
+## 2. Current state of the repository
+
+### 2.1 What exists
+
+Title identity:
+
+- `TitleIdentity` holds `Serial`, `TitleName`, `Region`, `Revision`, and derives `CanonicalKey` from them. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/TitleIdentity.cs:10-21`]
+- `DiscIdentity` holds `Serial`, `Region`, `Revision`, `DiscIndex`, and an optional `LayoutHint`. It has no disc content hash field. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`]
+- `ExecutableIdentity` holds `FileName`, load/entry addresses, `Size`, and `FileHashHex`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/ExecutableIdentity.cs:10-15`]
+- `BootExecutableFingerprint` is SHA-1 over the executable identity. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/BootExecutableFingerprint.cs:13-18`]
+- `Region` enum with `Unknown = 0`, `Japan`, `NorthAmerica`, `Europe`, `Asia`, `Korea`, `Australia`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Region.cs:10-32`]
+- `Revision` is `(Level, BuildYear, BuildMonth)` with `CanonicalKey` `Level.YYYY.MM`. [CONFIRMED: `src/PSXRecomp.Core/TitleIdentity/Revision.cs:10-37`]
+- A SHA-256 hex helper exists for artifacts. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:72-75`]
+- Disc image SHA-256 appears only in artifact fixture identity. [CONFIRMED: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs:24`, `:39`]
+
+Evidence and confidence (Analysis contracts):
+
+- `EvidenceReference` has a content-hash `Id` built with `StableToken.Hash`, plus `Type`, `Source`, `Description`, and optional captured time. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/EvidenceReference.cs:11-17`, `:23-31`]
+- `EvidenceType` values: `ManualObservation`, `Screenshot`, `Disassembly`, `Trace`, `RuntimeObservation`, `AnalyzerFinding`, `AIPrediction`, `Reference`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:9-18`]
+- `Confidence` is `(Level, Rationale, Score)` with `Score` in `[0, 1]`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/Confidence.cs:11-17`]
+- `ConfidenceLevel`: `Unspecified`, `Low`, `Medium`, `High`, `Certain`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/ConfidenceLevel.cs:9-15`]
+- `ValidationStatus`: `Unverified`, `PendingHumanReview`, `Accepted`, `Rejected`, `Superseded`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/ValidationStatus.cs:9-15`]
+- `AnalysisArtifact` already carries `TitleId`, `RegionCode`, `Status` (default `Unverified`), `Confidence`, `Provenance`, and `EvidenceReferences`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/AnalysisArtifact.cs:27`, `:29`, `:33`, `:35`, `:37`, `:43`]
+- `Provenance` has `ToolName`, `ToolVersion`, `AgentId` (required non-empty), and optional `HumanReviewer`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/Provenance.cs:9-19`]
+- `UnresolvedItem` exists for open items. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/UnresolvedItem.cs:10`]
+- A separate `DiagnosticEvidenceKind` enum classifies diagnostic pointers and is documented as distinct from the Analysis `EvidenceType`. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/DiagnosticEvidenceReference.cs:7-10`, `:15-37`]
+
+Execution outcomes:
+
+- `RecompiledArtifactOutcome`: `Success`, `Blocked`, `Failure`. [CONFIRMED: `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:13-26`]
+- `TitleExecutionState` is the full-fidelity state. `Completed` means "the guest reached a classified, legitimate end", not gameplay completion. Other values: `Returned`, `RuntimeHandoff`, `BudgetExhausted`, `UnsupportedTransfer`, `RuntimeFailure`, `InvalidState`. [CONFIRMED: `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:15-45`]
+- `RecompilerExecutionStatus` includes `TimedOut`. [CONFIRMED: `src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:14-29`]
+
+Environment:
+
+- `ExecutionEnvironmentReport` records `OsPlatform`, `OsVersion`, `OsArchitecture`, process architecture, .NET version, runtime identifier, compiler version, and target architecture. Schema string `psxrecomp.execution-environment.v1`. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:4`, `:7`, `:10-17`, `:38-40`]
+- No GPU field exists in `src/PSXRecomp.Core/Diagnostics`. A search for `gpu`/`GPU` in that folder returned no environment field. [CONFIRMED: grep over `src/PSXRecomp.Core/Diagnostics`]
+- No `RecompBuildId` or `RuntimeVersion` identifier exists in `src/PSXRecomp.Core`. The only `BuildIdentity` hits are `ArtifactFixtureIdentity` construction in the analysis artifact builder, not a recomp build id. Only `GeneratedHostBuildStatus` and similar status enums exist for build results. [CONFIRMED: grep for `BuildId|RuntimeVersion|DiscHash|GameId|ReleaseId` in `src/PSXRecomp.Core` returned `DeterministicArtifactBuilder.cs:86,162,165`, `ExecutionDiagnosticLog.cs:20`, `DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:12`]
+- A disc hash key already exists in the diagnostics context: `DiagnosticContextKeys.DiscHash = "discHash"`, and `ExecutionDiagnosticLog` lists it among its context keys. This is a diagnostics key, not a title-registry field. [CONFIRMED: `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`]
+
+Persistence precedent:
+
+- `ProjectMetadataSerializer` is a pure static contract: validate, canonically encode to bytes, decode from bytes, with no host I/O, so it can be reused by GUI, CLI, or MCP. [CONFIRMED: `src/PSXRecomp.Core/Project/ProjectMetadataSerializer.cs:7-15`, `:37-43`]
+- Host I/O is behind `IProjectMetadataStore`. [CONFIRMED: `src/PSXRecomp.Core/Project/IProjectMetadataStore.cs:18`]
+- Schema versioning precedent: `AnalysisArtifact.CurrentVersion = 1`, `FunctionDiscoveryArtifact.CurrentSchemaVersion = 1`. [CONFIRMED: `src/PSXRecomp.Core/Analysis/Contracts/AnalysisArtifact.cs:17`; `src/PSXRecomp.Core/DiscImage/FunctionDiscovery.cs:40`]
+
+Status documents:
+
+- The capability matrix states that a `Verified` row "does **not** imply complete PlayStation title compatibility". [CONFIRMED: `docs/status/capabilities.md:28`]
+- The matrix has a "Not claimed" state and a verification threshold requiring an executable test that asserts an observable contract, not only absence of a crash. [CONFIRMED: `docs/status/capabilities.md:40`, `:55-60`]
+- GPU is `Partial` and Audio (SPU) is `Partial` with audio output `Not claimed`. [CONFIRMED: `docs/status/capabilities.md:77-78`]
+- SIO0 is `Partial`, with real controller integration not claimed. [CONFIRMED: `docs/status/capabilities.md:79`]
+- Memory card storage support is `Verified` (bounded). [CONFIRMED: `docs/status/capabilities.md:80`]
+- The Persona title-screen gate is `Blocked`, with a measured stop at `OUTER_BUDGET_EXHAUSTED`. [CONFIRMED: `docs/status/capabilities.md:87`]
+- The memory-card runtime doc says an unverified compatibility claim must not be added. [OBSERVED: `docs/runtime/memory-card.md:279-281`]
+
+### 2.2 What does not exist
+
+- No Compatibility Registry, record type, or compatibility store exists in `src`. [CONFIRMED: grep for `Compatib|Registry` across `src` returned only unrelated hits such as `BiosHle` registry and translation registry.]
+- No ADR covers compatibility. ADRs run `001` to `027`. [CONFIRMED: `docs/adr/` listing]
+- The Studio project has no compatibility view. Its only "evidence" term is `HasFrameEvidence`, meaning a frame capture. [CONFIRMED: `src/PSXRecompStudio/Services/TitleExecutionService.cs:22`, `:97`, `:133`]
+
+### 2.3 Collision risks found in existing code
+
+1. `ConfidenceLevel.Certain` (`src/PSXRecomp.Core/Analysis/Contracts/ConfidenceLevel.cs:15`) reads like "Perfect". The registry must not reuse it as a title level.
+2. `TitleExecutionState.Completed` (`src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:18`) and `RecompiledArtifactOutcome.Success` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:15-16`) both mean a run-level terminal state. Neither means "played to the end". A UI that maps `Success` to "Playable" would be wrong. [PREDICTED: this is a naming risk, not a current bug]
+3. `Provenance.AgentId` is required (`src/PSXRecomp.Core/Analysis/Contracts/Provenance.cs:15-19`). A community reporter has no agent identity, so `Provenance` cannot describe a user-submitted result without a synthetic id. [CONFIRMED for the constraint; PREDICTED for the impact]
+4. `DiscIdentity` has no content hash (`src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`). Disc-level binding therefore cannot be keyed on content today. [CONFIRMED]
+
+## 3. Data model
+
+Naming: `ReleaseKey` is `(Serial, Region, Revision)`. `DiscKey` is `ReleaseKey + DiscIndex`. These are derived from the existing `CanonicalKey` pattern but exclude `TitleName`, which is free text. [PREDICTED]
+
+The registry is a set of **records**. Each record is one `(Title, Facet, Scenario, Binding)` cell. Levels are not stored as the source of truth; they are derived from records (section 5).
+
+### 3.1 Title
+
+```
+TitleEntry {
+  ReleaseKey          // (Serial, Region, Revision)
+  DiscKeys[]          // one per disc; each carries an optional content SHA-256 (new field)
+  ExecutableFingerprint? // ExecutableIdentity.FileHashHex or BootExecutableFingerprint, if known
+  DisplayName         // presentation only, never a key
+}
+```
+
+A content hash on the disc is a new field. [PREDICTED] Whether to store disc hashes in a public file is an open question (section 10).
+
+### 3.2 Facet
+
+Five facets, each evaluated on its own ladder:
+
+| Facet | Question it answers | Notes |
+|---|---|---|
+| Boot | Does the title reach its first stable screen through the Runtime path? | Maps to the Persona-style gate in `capabilities.md:87`. |
+| Gameplay | Can a scripted input path reach and play a defined level or state? | Requires input evidence (#22/#23 dependency). |
+| Save | Can the title write and read its save through the memory-card model? | Storage format is `Verified` (`capabilities.md:80`); title-level save is separate. |
+| Audio | Is audio produced and does playback stay in sync? | SPU audio output is `Not claimed` (`capabilities.md:78`), so this facet is `Unverified` by default. |
+| Graphics | Does frame output match a defined reference for a scenario? | GPU is `Partial` (`capabilities.md:77`). |
+
+CD-ROM streaming and load-from-disc behaviour are not a sixth facet here. They are scenarios under Gameplay and Save. [PREDICTED; see open question Q2]
+
+Facets are never averaged. A title's displayed summary is the minimum across facets, with unverified facets shown explicitly.
+
+### 3.3 Scenario
+
+A scenario is a versioned, repository-owned definition, not free text:
+
+```
+ScenarioDefinition {
+  Id                  // e.g. "boot.first-stable-screen"
+  Facet
+  Version             // bump when the pass criteria change
+  Criteria            // observable assertions (per capabilities.md:57-60)
+  RequiredInputs[]    // e.g. "no input", "scripted pad sequence"
+}
+```
+
+Pass criteria must be observable, for example a frame snapshot match or a guest state marker. "Did not crash" is not a Pass. [CONFIRMED that the repository requires this for Verified rows: `docs/status/capabilities.md:57-60`] [PREDICTED for scenarios]
+
+### 3.4 Result (per scenario per binding)
+
+```
+ScenarioResult {
+  TitleKey, Facet, ScenarioId, ScenarioVersion
+  Binding             // section 4
+  Outcome             // see 3.5
+  EvidenceIds[]       // references into the evidence store
+  RecordedAt          // input, not a derived value
+}
+```
+
+### 3.5 Outcome vocabulary
+
+Outcome is kept separate from Evidence and Confidence. The values are:
+
+| Outcome | Meaning | Counts toward a level |
+|---|---|---|
+| `Pass` | Evidence exists for this binding and the scenario criteria were met. | Yes |
+| `Fail` | Evidence exists and criteria were not met. | No; may open a Known Issue |
+| `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`RecompiledArtifactExitCode.cs:18-21`). | No |
+| `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`RecompiledArtifactExitCode.cs:23-25`). | No; excluded from the denominator and reported |
+| `NotRun` | Absence of evidence. | No |
+
+`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. A facet with no `Pass` for the current binding is `Unverified`. [PREDICTED]
+
+`Blocked` is not a defect. It is a diagnosable stop, consistent with `docs/status/capabilities.md` "Measured blocker" language. [OBSERVED: `docs/status/capabilities.md:49`]
+
+## 4. Evidence, Confidence, and Binding
+
+### 4.1 Evidence
+
+An Evidence record is an immutable observation:
+
+```
+EvidenceRecord {
+  Id                  // content hash, same scheme as EvidenceReference.Create (EvidenceReference.cs:23-31)
+  Type                // see 4.1.1
+  Source              // bundle or report identifier, never a path to game data
+  ProducedBy          // tool name and version; reporter class (see 4.1.2)
+  CapturedUnixSeconds
+  Binding             // the exact binding it was produced under
+  ArtifactHash        // SHA-256 of the captured log/frame/report, not the artifact content itself
+}
+```
+
+#### 4.1.1 Evidence type
+
+The existing `EvidenceType` (`EvidenceType.cs:9-18`) is reused for the observation kind: `Screenshot`, `Trace`, `RuntimeObservation`, `ManualObservation`. `AIPrediction` and `AnalyzerFinding` must never satisfy a registry Pass. [PREDICTED] `DiagnosticEvidenceKind` is not reused, to keep the separation its own doc describes (`DiagnosticEvidenceReference.cs:7-10`). [CONFIRMED]
+
+#### 4.1.2 Reporter class
+
+Community results need a reporter class without a required agent identity. Proposed values: `Maintainer`, `Automated` (repository CI or local harness run), `Community` (user-submitted, unverified by maintainers). [PREDICTED]
+
+### 4.2 Evidence count
+
+Evidence Count is derived, never typed in. It is the number of distinct `EvidenceRecord` ids with `Outcome = Pass` for a given `(TitleKey, Facet, ScenarioId, Binding)`. Duplicates by content hash are counted once. [PREDICTED]
+
+### 4.3 Confidence
+
+Confidence is a separate axis: how much the registry trusts the **derived** state. It is not a rating of the game.
+
+```
+DerivedConfidence {
+  Level               // reuse ConfidenceLevel values except Certain
+  Rationale           // generated text listing the evidence basis
+  Score?              // omitted; ordinal levels only
+}
+```
+
+- Use `Confidence` (`Confidence.cs:11-17`) as the carrier, with `Rationale` mandatory.
+- Do not use `ConfidenceLevel.Certain`. Permitted values for the registry are `Unspecified`, `Low`, `Medium`, `High`. [PREDICTED]
+- Do not use the numeric `Score`. A numeric score invites false precision and a "Perfect = 1.0" reading. [PREDICTED]
+- Confidence is computed from: number of distinct Pass evidence records, number of distinct reporter classes, recency relative to the binding's last change, and whether any Fail or Blocked record exists for the same binding. [PREDICTED]
+
+Evidence and Confidence are different things. A single maintainer-recorded Pass with a full trace can have higher Confidence than ten Community Passes on mismatched bindings.
+
+### 4.4 Binding
+
+A binding is the environment a result is valid for:
+
+```
+Binding {
+  BuildId             // new: recomp build identifier (no equivalent exists, section 2.1)
+  RuntimeVersion      // new: Runtime version (no equivalent exists)
+  Os                  // ExecutionEnvironmentReport.OsPlatform, OsVersion, OsArchitecture (ExecutionEnvironmentReport.cs:38-40)
+  Gpu                 // new: backend name and driver version (absent from ExecutionEnvironmentReport)
+  DotNet, RuntimeIdentifier   // from ExecutionEnvironmentReport
+}
+```
+
+Binding equality is exact by default. Two bindings are the same only if all of `BuildId`, `RuntimeVersion`, `Os`, `Gpu` match. [PREDICTED]
+
+Carry-forward is never implicit. When a new `BuildId` or `RuntimeVersion` appears, the previous Pass is retained as history, and the current binding starts at `NotRun` for that scenario. A carry-forward is allowed only as an explicit, labelled `Inherited` state with the source binding shown, and it never counts toward a level. [PREDICTED]
+
+Why this matters: the issue requires that a "Perfect" title still detects regressions after Runtime, OS, or GPU change. A binding-scoped design gives that detection; an implicit carry-forward would hide it. [OBSERVED: issue #33 "Perfect後もRuntime/OS/GPU等の変更によるRegressionを検出可能にする"]
+
+## 5. Level derivation
+
+Levels are derived per facet and then per title. They are not written by hand.
+
+Proposed per-facet ladder (names are placeholders for owner decision, section 10 Q4):
+
+```
+Unverified   -> no Pass for the binding
+Boot-Verified -> all required Boot scenarios Pass for the binding
+Playable     -> Boot-Verified and all required Gameplay scenarios Pass
+Stable       -> Playable and no open Known Issue of severity >= major on the binding
+Highly-Verified -> Stable and Pass evidence from >= 2 reporter classes
+```
+
+A title-level label is the **minimum** over facets in the chosen binding. A title with Boot Verified and Save Unverified is shown as `Boot-Verified` with Save `Unverified`, never as "Playable". [PREDICTED]
+
+"Perfect" is not a rung. It is defined as: every required scenario for every facet is `Pass` on the stated binding, with at least the Highly-Verified evidence threshold, and no open Known Issue. The label means "passes the currently defined scenario set", and it is versioned by the scenario catalog version. This answers the issue's point that Perfect is not absolute completeness. [PREDICTED; the issue leaves names open]
+
+Scenario catalog changes re-open Perfect for affected titles, because the catalog version is part of the derived key. [PREDICTED]
+
+## 6. Known Issues and Regression
+
+### 6.1 Known Issue
+
+```
+KnownIssue {
+  Id
+  Facet, ScenarioId?       // optional scope
+  Severity                 // blocker / major / minor (proposed)
+  Status                   // open / workaround / fixed
+  FirstSeenBinding
+  FixedInBinding?
+  EvidenceIds[]
+}
+```
+
+Open issues cap the level they affect (section 5). `UnresolvedItem` (`src/PSXRecomp.Core/Analysis/Contracts/UnresolvedItem.cs:10`) is an analysis-side open-item type. It is not reused, because a Known Issue has a binding and a severity. [PREDICTED]
+
+### 6.2 Regression
+
+A Regression is derived, not stored by hand:
+
+- A scenario has `Pass` on binding A, and `Fail` or `Blocked` on a later binding B for the same title, facet, and scenario.
+- Or a scenario has `Pass` on binding A and no evidence on B while the title's binding changed. This is reported as `Unverified after change`, not as a regression.
+
+The derived record names both bindings and both evidence ids. [PREDICTED]
+
+## 7. Persistence
+
+### 7.1 Options
+
+**Option A. Repository-tracked JSON, one file per title release.**
+- Pros: reviewable through PRs; reproducible in CI; matches how the capability matrix is maintained.
+- Cons: every community result would enter public Git history, which requires a curation path; disc hashes and reporter data become public; high PR churn.
+
+**Option B. Per-user local store in the Studio data directory, plus export bundles.**
+- Pros: private by default; no network dependency; no curation burden.
+- Cons: no shared state; a user sees only their own evidence.
+
+**Option C. Central HTTP service.**
+- Pros: community aggregation.
+- Cons: needs authentication, moderation, and a hosting decision; out of scope for #33 and requires a separate ADR. [PREDICTED]
+
+**Option D. Hybrid: local append-only evidence log, plus a curated repository snapshot that is imported only through an explicit maintainer step.**
+- Pros: private evidence stays local; the public snapshot is small, reviewable, and derived; no service needed for v1.
+- Cons: two stores to keep consistent; an import step to design.
+
+### 7.2 Recommendation
+
+Option D, staged:
+
+1. v1: local append-only evidence log (JSON Lines, one record per line, each record content-hashed) and a derived read model. Studio shows it read-only.
+2. v1.1: a curated snapshot file in the repository (`docs/status/` or a `config/` path, owner decision), generated from maintainer-accepted evidence only. Diff-friendly, sorted, canonical JSON.
+3. Central service: deferred. Not part of #33.
+
+Format rules, based on existing precedent:
+
+- Schema identity string `psxrecomp.compatibility-registry.v1`, following `ExecutionEnvironmentReport.CurrentSchema` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:7`). [PREDICTED]
+- Canonical UTF-8 JSON through the same encoder as project metadata (`ProjectMetadataSerializer.cs:37-43`), so identical input yields identical bytes. [PREDICTED]
+- Store raw records. Store derived levels only in the snapshot, and only with the scenario catalog version and a recomputation check in tests. [PREDICTED]
+- Never store game data, ROM/BIOS bytes, or paths into a user's game library. The `Source` field is a bundle id. The repository's legal boundary against embedding such data is stated in its project docs [OBSERVED: README and `docs/project-mission.md`, not re-read for this design]. The field rule itself is [PREDICTED].
+
+### 7.3 Local storage constraints
+
+Local writes must be append-only and tolerate a partial last line, because a crashed run must not corrupt earlier evidence. [PREDICTED] Existing store boundary: `IProjectMetadataStore` (`src/PSXRecomp.Core/Project/IProjectMetadataStore.cs:18`) shows the intended split. [CONFIRMED]
+
+## 8. API boundary
+
+Recommended split, mirroring `ProjectMetadataSerializer` and `IProjectMetadataStore` (section 2.1):
+
+1. **Core, pure**: record types, outcome and level derivation, scenario catalog, canonical encode/decode. No file or network I/O. [PREDICTED]
+2. **Core, interface**: `ICompatibilityStore` for append, read, and snapshot. [PREDICTED]
+3. **Infrastructure**: file-backed implementation of `ICompatibilityStore`. [PREDICTED]
+4. **Studio**: read-only view model over the derived read model. No write path in v1. [PREDICTED]
+5. **CLI** (optional, later): `compat` subcommands for import and export. Not required for #33. [PREDICTED]
+
+The derivation function must take records and a binding and return the level set. It must be deterministic and free of clocks. Clocks enter only as recorded inputs. [PREDICTED]
+
+## 9. Studio presentation
+
+Per title: one row per binding in use, five facet columns, each cell showing the derived level or `Unverified`. The binding selector is required, so no cell is shown without its binding. Known Issues and Regression badges sit next to the cell they affect. Unverified is styled as absence, not as a failure colour. [PREDICTED]
+
+## 10. Open questions
+
+- **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
+- **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has none today (`DiscIdentity.cs:10-14`), but `DiagnosticContextKeys.DiscHash` already carries one in diagnostics (`DiagnosticContextEntry.cs:47`). Whether that value is ever published is UNVERIFIED. A decision is needed before v1.1.
+- **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
+- **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
+- **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
+- **Q7. Runtime version.** No `RuntimeVersion` identifier was found in `src`. Is the Runtime version the assembly version, a git commit, or a new constant? UNVERIFIED.
+- **Q8. GPU identity.** Environment reporting has no GPU field. Is GPU backend and driver recorded in the environment report, or only in the Studio? Changing `ExecutionEnvironmentReport` is a schema change (`psxrecomp.execution-environment.v1`) and needs care.
+- **Q9. Reporter identity.** Community results need a reporter class (4.1.2) without an agent identity. Whether to collect any personal identity is a privacy decision. This draft collects none.
+- **Q10. Feedback intake.** #23 owns the intake path. The registry only defines the record. Confirm that boundary.
+- **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
+- **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
+- **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
+
+## 11. Verification of this document
+
+- Design only. No build or test was run. [CONFIRMED by this change: docs only]
+- No ROM, BIOS, or disc image was read or referenced by content. [CONFIRMED by process]
+- Every code citation in sections 2 to 4 was read in the worktree at `2e3ecad` or confirmed by a search whose result is stated. Section 7 and later rely on PREDICTED labels for proposals.
