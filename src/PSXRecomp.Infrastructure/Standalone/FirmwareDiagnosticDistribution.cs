@@ -648,7 +648,9 @@ public static class FirmwareDiagnosticDistribution
 
     /// <summary>
     /// The files the framework-dependent Runtime host publish writes, by exact name (the allow-list). A publish output entry that is not on
-    /// this list is refused, and a listed name that the publish did not write is refused as an incomplete publish.
+    /// this list is refused, and a listed name that the publish did not write is refused as an incomplete publish. The native library name is
+    /// the NativeLibName of PSXRecomp.Core.csproj; a real publish of the host produces it (checked by a test that reads the csproj files and by
+    /// the end-to-end publish test). A dependency change needs this list updated by hand (matrix rule 6, amendment (c)).
     /// </summary>
     internal static string[] RuntimePublishAllowList(bool windows) =>
     [
@@ -658,8 +660,12 @@ public static class FirmwareDiagnosticDistribution
         RuntimeHostLayout.HostBinaryName + ".runtimeconfig.json",
         "PSXRecomp.Core.dll",
         "PSXRecomp.Infrastructure.dll",
+        RuntimeNativeLibraryName(windows),
         "SharpCompress.dll",
     ];
+
+    /// <summary>The native library the Runtime host loads, by platform (the NativeLibName values of PSXRecomp.Core.csproj).</summary>
+    internal static string RuntimeNativeLibraryName(bool windows) => windows ? "PSXRecomp.Native.dll" : "libPSXRecomp.Native.so";
 
     /// <summary>The publish step: the Runtime host is published into the directory given, framework-dependent, without debug symbols.</summary>
     private static void PublishRuntimeHost(string publishDir)
@@ -686,7 +692,16 @@ public static class FirmwareDiagnosticDistribution
             // copied into runtime/ with exclusive creation, so each copy is one this build created and tracks from its creation. The
             // directory is then emptied (the copies' sources are removed only while they are still the files that were checked) and removed.
             var publishDir = area.CreateDirectory(Path.Combine(area.Root, "publish"));
-            publisher(publishDir);
+            try
+            {
+                publisher(publishDir);
+            }
+            finally
+            {
+                // Whether the publish succeeded or failed, the allow-listed files it wrote are recorded as this run's, so a failure removes them.
+                area.RecordPublishOutput(publishDir, RuntimePublishAllowList(windows));
+            }
+
             area.CopyPublishedHost(publishDir, runtimeDir, RuntimePublishAllowList(windows));
             return "provisioned";
         }
@@ -1204,10 +1219,11 @@ public static class FirmwareDiagnosticDistribution
         }
 
         /// <summary>
-        /// Checks a source before it is moved. Its parent chain must be real directories up to the staging root (a link anywhere on the
-        /// way fails closed). It must be an entry this build created or adopted (a source that is not owned is never moved and then
-        /// adopted). Its identity must still match the one recorded for it. A reserved name has no recorded identity; it is moved only
-        /// while it is not a link. Returns the recorded identity, or null for a reserved name. A refusal is recorded as a residual.
+        /// Checks a source before the toolchain's reserved names are moved (the only remaining use of a move: the publish output is copied, never
+        /// moved). Its parent chain must be real directories up to the staging root (a link anywhere on the way fails closed). It must be an entry
+        /// this build created (a source that is not owned is never moved, and its destination is never recorded as owned). Its identity must still
+        /// match the one recorded for it. A reserved name has no recorded identity; it is moved only while it is not a link. Returns the recorded
+        /// identity, or null for a reserved name. A refusal is recorded as a residual.
         /// </summary>
         private EntryIdentity? RequireMovableSource(string source)
         {
@@ -1258,8 +1274,8 @@ public static class FirmwareDiagnosticDistribution
         }
 
         /// <summary>
-        /// Removes a directory this build created once it has been emptied by moves. Fails if anything is left in it, since that entry
-        /// was not moved and the directory is not removed with its content.
+        /// Removes a directory this build created (the publish directory, once the allow-listed copies are done) when it is empty. It is deleted
+        /// only while its identity recorded at creation still matches. Anything still in it is not removed with it: the call fails instead.
         /// </summary>
         public void ReleaseEmptyDirectory(string path)
         {
@@ -1342,10 +1358,68 @@ public static class FirmwareDiagnosticDistribution
         public string Rebase(string path) => Path.Combine(_outputDir, Path.GetRelativePath(Root, path));
 
         /// <summary>
+        /// Records the allow-listed files a publish wrote into <paramref name="publishDir"/> as this run's, each with its identity, so that a
+        /// failed publish (or a refused step) removes them on cleanup. An entry that is not on the list is never recorded, so it is never removed.
+        /// </summary>
+        public void RecordPublishOutput(string publishDir, IReadOnlyList<string> allowList)
+        {
+            var publishFull = Path.GetFullPath(publishDir);
+            if (!Directory.Exists(publishFull) || IsReparsePoint(publishFull))
+            {
+                return;
+            }
+
+            var allowed = new HashSet<string>(allowList, StringComparer.Ordinal);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(publishFull))
+            {
+                if (!allowed.Contains(Path.GetFileName(entry)) || IsReparsePoint(entry) || Directory.Exists(entry))
+                {
+                    continue;
+                }
+
+                if (IdentityOfPath(entry) is { } identity)
+                {
+                    _publishSources[entry] = identity;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Copies one publish output file with exclusive creation. The link count is read from the same open handle the copy reads from, and a
+        /// count above one refuses the file before the destination is created (the same guarantee as <see cref="CopyHostFile"/>).
+        /// </summary>
+        private void CopyPublishedFile(string source, string destination)
+        {
+            _observe?.Invoke("file", destination); // SEAM: another process acts here, before the open and the count
+            RequireRealChain(destination);
+            using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            uint links;
+            try
+            {
+                links = HardLinkCountOf(input.SafeFileHandle);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidDataException(
+                    $"The hard-link count of the publish output {source} could not be read, so it is not copied. Guarantee: no publish output whose link count is unknown is copied.",
+                    exception);
+            }
+
+            if (links > 1)
+            {
+                throw new InvalidDataException(
+                    $"The publish output {source} has {links} hard links, and it is not copied, because its bytes may come from another entry. Guarantee: no publish output with more than one link is copied.");
+            }
+
+            using var output = CreateNewFile(destination);
+            input.CopyTo(output);
+        }
+
+        /// <summary>
         /// Copies the Runtime host's publish output into <paramref name="runtimeDir"/>, and nothing else. The publish output must hold exactly
         /// the allow-listed files: a link, a directory, an entry that is not on the list, or an entry whose path is not the canonical path of
         /// its name under the publish directory refuses the step, and so does a listed file the publish did not write. This is checked before
-        /// anything is copied. Each listed file is copied with exclusive creation (<see cref="CopyNewFile"/>), so each copy is tracked from its
+        /// anything is copied. Each listed file is copied with exclusive creation (<see cref="CopyPublishedFile"/>), so each copy is tracked from its
         /// creation. Nothing is moved, and nothing is adopted. Afterwards the listed source files are removed, each only while it is still the
         /// file that was checked, and the publish directory is removed only when it is empty.
         /// </summary>
@@ -1367,6 +1441,9 @@ public static class FirmwareDiagnosticDistribution
                 {
                     throw new IOException($"The publish output holds an entry that is not on the allow-list, so the measurement is not written: {entry}");
                 }
+
+                // Every publish entry is checked for a second hard link before anything is copied: a link would make its bytes come from another name.
+                RequireSingleHardLink(entry);
             }
 
             var sources = new List<string>(allowList.Count);
@@ -1385,7 +1462,7 @@ public static class FirmwareDiagnosticDistribution
 
             foreach (var source in sources)
             {
-                CopyNewFile(source, Path.Combine(runtimeDir, Path.GetFileName(source)));
+                CopyPublishedFile(source, Path.Combine(runtimeDir, Path.GetFileName(source)));
             }
 
             _observe?.Invoke("publish-copied", publishFull); // SEAM: the copies exist and the publish output is still in place

@@ -1777,6 +1777,180 @@ public sealed class FirmwareDiagnosticDistributionTests
         typeof(FirmwareDiagnosticDistribution.StagingArea).GetMethod("MoveNewDirectory").Should().BeNull("a publish directory is never moved");
     }
 
+    /// <summary>
+    /// The allow-list must equal the set the project files declare for the framework-dependent host publish: the host's own files, the assembly of
+    /// each project it references (transitively), each runtime package reference (not PrivateAssets=all), and the native library named by the
+    /// Windows NativeLibName of PSXRecomp.Core.csproj. This test reads the project files; it does not run a publish. The real publish is checked
+    /// by Build_RealRuntimeHostPublish_PublishesExactlyTheAllowList.
+    /// </summary>
+    [Fact]
+    public void RuntimePublishAllowList_MatchesTheSetTheProjectFilesDeclareForThePublish()
+    {
+        var root = FindRepositoryRoot();
+        var expected = new HashSet<string>(StringComparer.Ordinal)
+        {
+            RuntimeHostLayout.HostFileName(true),
+            RuntimeHostLayout.HostBinaryName + ".dll",
+            RuntimeHostLayout.HostBinaryName + ".deps.json",
+            RuntimeHostLayout.HostBinaryName + ".runtimeconfig.json",
+        };
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Visit(string projectPath)
+        {
+            var full = Path.GetFullPath(projectPath);
+            if (!visited.Add(full))
+            {
+                return;
+            }
+
+            var xml = System.Xml.Linq.XDocument.Load(full);
+            var assembly = xml.Descendants("AssemblyName").Select(static e => e.Value.Trim()).FirstOrDefault()
+                ?? Path.GetFileNameWithoutExtension(full);
+            expected.Add(assembly + ".dll");
+            foreach (var reference in xml.Descendants("ProjectReference"))
+            {
+                Visit(Path.Combine(Path.GetDirectoryName(full)!, reference.Attribute("Include")!.Value));
+            }
+
+            foreach (var package in xml.Descendants("PackageReference"))
+            {
+                if (!string.Equals(package.Attribute("PrivateAssets")?.Value, "all", StringComparison.OrdinalIgnoreCase))
+                {
+                    expected.Add(package.Attribute("Include")!.Value + ".dll");
+                }
+            }
+
+            if (assembly == "PSXRecomp.Core")
+            {
+                var windowsNative = xml.Descendants("NativeLibName")
+                    .First(static e => e.Attribute("Condition")?.Value.Contains("Windows_NT", StringComparison.Ordinal) == true).Value.Trim();
+                expected.Add(windowsNative);
+            }
+        }
+
+        Visit(Path.Combine(root, "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj"));
+
+        FirmwareDiagnosticDistribution.RuntimePublishAllowList(true).Should().BeEquivalentTo(expected,
+            "a dependency or native library the publish produces must be on the allow-list, or the real publish is refused");
+    }
+
+    [SkippableFact]
+    public void Build_RealRuntimeHostPublish_PublishesExactlyTheAllowList()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The real framework-dependent publish of the Runtime host (no stub). The output must pass the allow-list, and the listed files are copied.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+
+        var build = FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: null);
+
+        var runtime = Path.Combine(output, "runtime");
+        var allowList = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true);
+        foreach (var name in allowList)
+        {
+            File.Exists(Path.Combine(runtime, name)).Should().BeTrue($"the real publish produced {name}, which is copied into runtime/");
+        }
+
+        var topLevelPublished = Directory.GetFiles(runtime)
+            .Select(Path.GetFileName)
+            .Where(static name => name!.EndsWith(".dll", StringComparison.Ordinal) || name.EndsWith(".exe", StringComparison.Ordinal)
+                || name.EndsWith(".deps.json", StringComparison.Ordinal) || name.EndsWith(".runtimeconfig.json", StringComparison.Ordinal))
+            .ToArray();
+        topLevelPublished.Should().BeEquivalentTo(allowList, "the runtime holds exactly the published files the allow-list names");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(Path.Combine(runtime, "publish")).Should().BeFalse();
+        #pragma warning restore AARC003
+        #pragma warning disable AARC003 // Justified: this line calls File.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        File.Exists(build.HostPath).Should().BeTrue();
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_PublishOutputWithASecondHardLink_IsRefusedBeforeAnyCopy()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // A publish entry that has a second hard link is refused before any copy: its bytes could come from another name.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        var listed = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true).Where(static name => name != "SharpCompress.dll").ToArray();
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: publishDir =>
+        {
+            PublishStub(listed)(publishDir);
+            FirmwareDiagnosticDistribution.LinkDiscInPlace(Path.Combine(publishDir, "PSXRecomp.Core.dll"), Path.Combine(publishDir, "SharpCompress.dll"));
+        });
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*hard link*", "a publish entry with a second link is not copied");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(output).Should().BeFalse("nothing is published");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_FailingPublish_RemovesOnlyTheOwnedPublishOutput()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The publish writes the allow-listed files and then fails. Cleanup removes those files and the publish directory, because this run created
+        // them, and nothing is published.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        var listed = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true);
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: publishDir =>
+        {
+            PublishStub(listed)(publishDir);
+            throw new InvalidOperationException("the publish failed");
+        });
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("the publish failed");
+        Directory.Exists(output).Should().BeFalse("a failed publish publishes nothing");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.GetDirectories (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Should().BeEmpty("the owned publish output is removed with the staging area");
+        #pragma warning restore AARC003
+    }
+
+    [SkippableFact]
+    public void Build_ExtraPublishEntry_RemovesTheOwnedFilesAndKeepsTheUnlistedEntry()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // The publish output holds an entry that is not on the list. The allow-listed files are this run's and are removed; the unlisted entry
+        // is not this run's and is kept.
+        using var dir = new TempDirectory();
+        var output = dir.Combine("measure");
+        var request = PublishRequest(dir, output);
+        var listed = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true).Append("extra.dll").ToArray();
+
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: PublishStub(listed));
+
+        act.Should().Throw<IOException>().WithMessage("*not on the allow-list*extra.dll*");
+        var staging = Directory.GetDirectories(dir.FullPath, ".measure.staging-*").Single();
+        Directory.GetFileSystemEntries(Path.Combine(staging, "publish")).Select(Path.GetFileName).Should().BeEquivalentTo(["extra.dll"],
+            "the allow-listed files are removed as owned; the unlisted entry is kept");
+        #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        Directory.Exists(output).Should().BeFalse();
+        #pragma warning restore AARC003
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        #pragma warning disable AARC003 // Justified: this line calls File.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "src", "PSXRecomp.RuntimeHost", "PSXRecomp.RuntimeHost.csproj")))
+        #pragma warning restore AARC003
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName ?? throw new InvalidOperationException("the repository root was not found from the test output directory");
+    }
+
     [SkippableFact]
     public void Measure_WaitLoopThrows_TheLaunchedHostIsKilled()
     {
