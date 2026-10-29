@@ -57,7 +57,8 @@ Evidence and confidence (Analysis contracts):
 Execution outcomes:
 
 - `RecompiledArtifactOutcome`: `Success`, `Blocked`, `Failure`. [CONFIRMED: `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:13-26`]
-- `TitleExecutionState` is the full-fidelity state. `Completed` means "the guest reached a classified, legitimate end", not gameplay completion. Other values: `Returned`, `RuntimeHandoff`, `BudgetExhausted`, `UnsupportedTransfer`, `RuntimeFailure`, `InvalidState`. [CONFIRMED: `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:15-45`]
+- `TitleExecutionState` is the full-fidelity state. `Completed` means "the guest reached a classified, legitimate end", not gameplay completion. Other values: `Returned`, `RuntimeHandoff`, `BudgetExhausted`, `UnsupportedTransfer`, `RuntimeFailure`, `InvalidState`, and `Cancelled` (stopped by a cancellation request before a classified end; "never Completed"). [CONFIRMED: `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:15-49`]
+- `RecompiledArtifactExitCode.Classify` maps `Cancelled` to `RecompiledArtifactOutcome.Blocked`. [CONFIRMED: `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:59`] The registry does not inherit this mapping: `Cancelled` is its own Outcome and is never Pass, Fail, or Blocked (section 3.5).
 - `RecompilerExecutionStatus` includes `TimedOut`. [CONFIRMED: `src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:14-29`]
 
 Environment:
@@ -128,9 +129,11 @@ Five facets, each evaluated on its own ladder:
 | Audio | Is audio produced and does playback stay in sync? | SPU audio output is `Not claimed` (`capabilities.md:78`), so this facet is `Unverified` by default. |
 | Graphics | Does frame output match a defined reference for a scenario? | GPU is `Partial` (`capabilities.md:77`). |
 
+`None` (owner ruling) is a sentinel for a result that is not attributed to any facet, for example a SyntheticFixture result. `Facet.None` never satisfies a level rung and is never shown as a facet column (section 9).
+
 CD-ROM streaming and load-from-disc behaviour are not a sixth facet here. They are scenarios under Gameplay and Save. [PREDICTED; see open question Q2]
 
-Facets are never averaged. A title's displayed summary is the minimum across facets, with unverified facets shown explicitly.
+Facets are never averaged. A title's displayed summary is the minimum across facets, with unverified facets shown explicitly. Only `Subject = RealTitle` results with a real `TitleKey` and a facet other than `None` enter this derivation. [PREDICTED; the Subject filter follows the owner ruling]
 
 ### 3.3 Scenario
 
@@ -152,13 +155,22 @@ Pass criteria must be observable, for example a frame snapshot match or a guest 
 
 ```
 ScenarioResult {
-  TitleKey, Facet, ScenarioId, ScenarioVersion
-  Binding             // section 4
+  Subject             // RealTitle | SyntheticFixture (owner ruling)
+  TitleKey?           // required when Subject = RealTitle; may be omitted when Subject = SyntheticFixture
+  Facet               // one of the five facets, or None (3.2)
+  ScenarioId, ScenarioVersion
+  Binding             // section 4; required for every Subject, identity and binding rules unchanged
   Outcome             // see 3.5
   EvidenceIds[]       // references into the evidence store
   RecordedAt          // input, not a derived value
 }
 ```
+
+Subject rules (owner ruling):
+
+- `SyntheticFixture` results must never enter a real-title compatibility evaluation. Section 5 derivation takes only `Subject = RealTitle` records. This is enforced by the derivation input filter, not by convention.
+- `TitleKey` may be omitted only for `SyntheticFixture`. For `RealTitle` it is mandatory.
+- Binding is required for both Subjects. The identity and binding rules in section 4 do not change.
 
 ### 3.5 Outcome vocabulary
 
@@ -170,9 +182,20 @@ Outcome is kept separate from Evidence and Confidence. The values are:
 | `Fail` | Evidence exists and criteria were not met. | No; may open a Known Issue |
 | `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`RecompiledArtifactExitCode.cs:18-21`). | No |
 | `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`RecompiledArtifactExitCode.cs:23-25`). | No; excluded from the denominator and reported |
-| `NotRun` | Absence of evidence. | No |
+| `Cancelled` | A run was stopped by a cancellation request before a classified guest end (owner ruling; `TitleExecutionState.Cancelled`, `TitleExecutionContract.cs:49`). | No; never Pass or Fail; reported as stopped, not as Blocked |
+| `NotRun` | Absence of evidence for this scenario and binding. | No |
 
-`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. A facet with no `Pass` for the current binding is `Unverified`. [PREDICTED]
+`Cancelled` is not `Blocked`, even though `RecompiledArtifactExitCode.Classify` maps it to `Blocked` (`RecompiledArtifactExitCode.cs:59`). The registry keeps it distinct.
+
+Derived states, not Outcomes. The owner ruling requires these three to stay distinct:
+
+| State | Where it applies | Meaning |
+|---|---|---|
+| `Unknown` | Title or facet, derived | The registry holds no record at all for the title or facet, so nothing can be said. |
+| `NotRun` | Scenario and binding | Records exist for the title, but none for this scenario and binding. |
+| `Cancelled` | Result | A run exists and was stopped before a classified end. Its evidence is incomplete. |
+
+`NotRun` is never rendered as `Fail`, and it is never rendered as `Pass`. A facet with no `Pass` for the current binding is `Unverified`. `Unknown`, `NotRun`, and `Cancelled` are never rendered as each other, and none of them is rendered as `Pass` or `Fail`. [PREDICTED for the three derived states; the non-equivalence rule is owner-ruled]
 
 `Blocked` is not a defect. It is a diagnosable stop, consistent with `docs/status/capabilities.md` "Measured blocker" language. [OBSERVED: `docs/status/capabilities.md:49`]
 
@@ -347,11 +370,29 @@ The derivation function must take records and a binding and return the level set
 
 Per title: one row per binding in use, five facet columns, each cell showing the derived level or `Unverified`. The binding selector is required, so no cell is shown without its binding. Known Issues and Regression badges sit next to the cell they affect. Unverified is styled as absence, not as a failure colour. [PREDICTED]
 
+SyntheticFixture results are never shown in a real-title view. They may appear only in a separate, labelled fixture view. `Facet.None` is never a column. [PREDICTED; follows the owner ruling]
+
+### 9.1 Required #33 changes (owner ruling)
+
+The owner approved these changes to the #33 design. Each one is recorded in the sections cited:
+
+1. Add a `Subject` field to every result (`RealTitle` or `SyntheticFixture`). See section 3.4.
+2. When `Subject = SyntheticFixture`, `TitleKey` may be omitted. Binding stays required. See section 3.4.
+3. Add `Facet.None`. See section 3.2.
+4. Add a `Cancelled` row to the execution-state vocabulary. See sections 2.1 and 3.5.
+
+Additional conditions from the same ruling:
+
+- SyntheticFixture results must never enter a real-title compatibility evaluation (section 5 input filter, section 3.4).
+- `Cancelled` must never count as Pass or Fail (section 3.5).
+- `Unknown`, `NotRun`, and `Cancelled` must remain distinct (section 3.5).
+- The identity and binding rules of the compatibility registry are kept unchanged (section 4).
+
 ## 10. Open questions
 
 - **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
 - **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
-- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is persisted in the firmware boot manifest (`FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision. A decision is needed before v1.1.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is persisted in the firmware boot manifest (`FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision. Under the owner ruling, a `SyntheticFixture` result has no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
 - **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
 - **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
 - **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
