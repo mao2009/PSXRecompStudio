@@ -104,7 +104,7 @@ Selection:
 
 Mapping to facets: `smoke.boot.*` uses `Facet = Boot`. `smoke.runtime.*` uses `Facet = None` with `Tags = [Runtime]`, so it does not count toward Boot. A classified stop (`unresolved-jump`) is a Runtime result. `smoke.parse.*` and `smoke.native.*` are infrastructure checks and produce no Compatibility result.
 
-Important: `smoke.boot.synthetic-putchar` proves that the recompiler/runtime path works on a synthetic program. It does **not** prove that any title boots. Its `SubjectKind` is `SyntheticFixture`, and it never enters a real-title evaluation (section 5). [PREDICTED]
+Important: `smoke.boot.synthetic-putchar` proves that the recompiler/runtime path works on a synthetic program. It does **not** prove that any title boots. Its `Subject` is `SyntheticFixture`, and it never enters a real-title evaluation (section 5). [PREDICTED]
 
 ### 4.2 Synthetic-fixture growth rules
 
