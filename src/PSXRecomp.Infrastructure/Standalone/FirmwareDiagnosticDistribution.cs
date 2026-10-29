@@ -660,12 +660,17 @@ public static class FirmwareDiagnosticDistribution
         RuntimeHostLayout.HostBinaryName + ".runtimeconfig.json",
         "PSXRecomp.Core.dll",
         "PSXRecomp.Infrastructure.dll",
-        RuntimeNativeLibraryName(windows),
+        RuntimeNativeLibraryName,
         "SharpCompress.dll",
     ];
 
     /// <summary>The native library the Runtime host loads, by platform (the NativeLibName values of PSXRecomp.Core.csproj).</summary>
-    internal static string RuntimeNativeLibraryName(bool windows) => windows ? "PSXRecomp.Native.dll" : "libPSXRecomp.Native.so";
+    /// <remarks>
+    /// The name is hard-coded: it is not derived from the csproj at run time. The drift test
+    /// (RuntimePublishAllowList_MatchesTheSetTheProjectFilesDeclareForThePublish) is the only check against NativeLibName in PSXRecomp.Core.csproj.
+    /// Windows is the only supported host: Build refuses every other platform before any output is created, so no other name is used here.
+    /// </remarks>
+    internal const string RuntimeNativeLibraryName = "PSXRecomp.Native.dll";
 
     /// <summary>The publish step: the Runtime host is published into the directory given, framework-dependent, without debug symbols.</summary>
     private static void PublishRuntimeHost(string publishDir)
@@ -696,12 +701,17 @@ public static class FirmwareDiagnosticDistribution
             {
                 publisher(publishDir);
             }
-            finally
+            catch
             {
-                // Whether the publish succeeded or failed, the allow-listed files it wrote are recorded as this run's, so a failure removes them.
-                area.RecordPublishOutput(publishDir, RuntimePublishAllowList(windows));
+                // A failed publish records the allow-listed files it wrote as this run's, so cleanup removes them. The publisher's exception stays the
+                // primary one and is rethrown unchanged; a failure to record is a residual, never a replacement for that exception.
+                area.TryRecordPublishOutput(publishDir, RuntimePublishAllowList(windows));
+                throw;
             }
 
+            // A refusal of the output after a successful publish (an unlisted entry, a second link) also leaves the allow-listed files recorded, so the
+            // cleanup that the refusal triggers removes them. The record is repeated by the copy step, which keeps each source's checked identity.
+            area.TryRecordPublishOutput(publishDir, RuntimePublishAllowList(windows));
             area.CopyPublishedHost(publishDir, runtimeDir, RuntimePublishAllowList(windows));
             return "provisioned";
         }
@@ -1205,16 +1215,31 @@ public static class FirmwareDiagnosticDistribution
             RequireWithinPathLimit(destination);
             RefuseExisting(destination);
             var recorded = RequireMovableSource(source);
-            File.Move(source, destination);
-            if (recorded is { } expected)
+
+            // The source's identity is read immediately before the move and the destination's immediately after it. The destination is adopted
+            // only when the two reads match (and, for a recorded entry, the source still matches its record). A reserved name has no record, so
+            // the read before the move is the only identity available for it; that is why the post-move read is compared.
+            var before = IdentityOfPath(source) ?? throw new IOException(
+                $"The identity of a toolchain output cannot be read, so it is not moved into the measurement: {source}");
+            if (recorded is { } expected && before != expected)
             {
-                RequireMovedAsChecked(expected, destination);
+                Residual(source, "it is not the entry recorded for it (it was replaced), so it is not moved");
+                throw new IOException($"A file this build created was replaced, so it is not moved into the measurement: {source}");
             }
 
-            // The destination is adopted only because the source was owned: its record moves with the entry.
+            File.Move(source, destination);
+            _observe?.Invoke("moved", destination); // SEAM: another process acts here, between the move and the identity read
+
+            if (IdentityOfPath(destination) != before)
+            {
+                Residual(destination, "it is not the entry that was moved (it was replaced between the move and its check), so it is not adopted");
+                throw new IOException($"A file changed between its move and its check, so the measurement is not written: {destination}");
+            }
+
+            // The destination is adopted only because the source was owned, and only with the identity both reads agree on.
             _owned.Remove(source);
             _reserved.Remove(source);
-            _owned[destination] = recorded ?? IdentityOfPath(destination);
+            _owned[destination] = before;
             return destination;
         }
 
@@ -1260,18 +1285,6 @@ public static class FirmwareDiagnosticDistribution
             return recorded;
         }
 
-        /// <summary>
-        /// Fails closed when the entry at the destination is not the entry whose identity was read before the move (it was replaced between
-        /// the check and the move). The entry stays where it is and is recorded as a residual, since cleanup cannot prove it is this build's.
-        /// </summary>
-        private void RequireMovedAsChecked(EntryIdentity before, string destination)
-        {
-            if (IdentityOfPath(destination) != before)
-            {
-                Residual(destination, "it is not the entry that was checked before the move (it was replaced in between), so it is not treated as this build's");
-                throw new IOException($"A publish entry changed between its check and its move, so the measurement is not written: {destination}");
-            }
-        }
 
         /// <summary>
         /// Removes a directory this build created (the publish directory, once the allow-listed copies are done) when it is empty. It is deleted
@@ -1356,6 +1369,22 @@ public static class FirmwareDiagnosticDistribution
 
         /// <summary>The path <paramref name="path"/> has inside the published output.</summary>
         public string Rebase(string path) => Path.Combine(_outputDir, Path.GetRelativePath(Root, path));
+
+        /// <summary>
+        /// The failure-path form of <see cref="RecordPublishOutput"/>: it never throws (an I/O failure while recording is recorded as a residual),
+        /// so it cannot replace the publish exception that is being rethrown.
+        /// </summary>
+        public void TryRecordPublishOutput(string publishDir, IReadOnlyList<string> allowList)
+        {
+            try
+            {
+                RecordPublishOutput(publishDir, allowList);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Residual(publishDir, $"the publish output could not be recorded for cleanup, so it is left in place ({exception.Message})");
+            }
+        }
 
         /// <summary>
         /// Records the allow-listed files a publish wrote into <paramref name="publishDir"/> as this run's, each with its identity, so that a

@@ -1781,7 +1781,8 @@ public sealed class FirmwareDiagnosticDistributionTests
     /// The allow-list must equal the set the project files declare for the framework-dependent host publish: the host's own files, the assembly of
     /// each project it references (transitively), each runtime package reference (not PrivateAssets=all), and the native library named by the
     /// Windows NativeLibName of PSXRecomp.Core.csproj. This test reads the project files; it does not run a publish. The real publish is checked
-    /// by Build_RealRuntimeHostPublish_PublishesExactlyTheAllowList.
+    /// by Build_RealRuntimeHostPublish_PublishesExactlyTheAllowList. The native name is hard-coded in production (RuntimeNativeLibraryName), not
+    /// derived from the csproj: this test is the only check against NativeLibName, so a change to the csproj must update the constant as well.
     /// </summary>
     [Fact]
     public void RuntimePublishAllowList_MatchesTheSetTheProjectFilesDeclareForThePublish()
@@ -1838,6 +1839,7 @@ public sealed class FirmwareDiagnosticDistributionTests
     public void Build_RealRuntimeHostPublish_PublishesExactlyTheAllowList()
     {
         Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+        Skip.IfNot(DotnetOnPath(), "the dotnet toolchain is not on PATH, so the real Runtime host publish cannot run here (NOT RUN)");
 
         // The real framework-dependent publish of the Runtime host (no stub). The output must pass the allow-list, and the listed files are copied.
         using var dir = new TempDirectory();
@@ -1878,13 +1880,21 @@ public sealed class FirmwareDiagnosticDistributionTests
         var request = PublishRequest(dir, output);
         var listed = FirmwareDiagnosticDistribution.RuntimePublishAllowList(true).Where(static name => name != "SharpCompress.dll").ToArray();
 
-        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: null, compiler: null, publisher: publishDir =>
+        var observedFiles = new List<string>();
+        var act = () => FirmwareDiagnosticDistribution.Build(request, windows: true, observe: (phase, path) =>
+        {
+            if (phase == "file")
+            {
+                observedFiles.Add(Path.GetFileName(path));
+            }
+        }, compiler: null, publisher: publishDir =>
         {
             PublishStub(listed)(publishDir);
             FirmwareDiagnosticDistribution.LinkDiscInPlace(Path.Combine(publishDir, "PSXRecomp.Core.dll"), Path.Combine(publishDir, "SharpCompress.dll"));
         });
 
         act.Should().Throw<InvalidDataException>().WithMessage("*hard link*", "a publish entry with a second link is not copied");
+        observedFiles.Should().NotContain(listed, "no publish output file reaches runtime/: the second link is refused before any copy");
         #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
         Directory.Exists(output).Should().BeFalse("nothing is published");
         #pragma warning restore AARC003
@@ -1936,6 +1946,49 @@ public sealed class FirmwareDiagnosticDistributionTests
         #pragma warning disable AARC003 // Justified: this line calls Directory.Exists (test fixture check); it reads only the test's own temporary directory, to assert the outcome of the build.
         Directory.Exists(output).Should().BeFalse();
         #pragma warning restore AARC003
+    }
+
+    /// <summary>True when a dotnet executable is on the PATH of this process (the real publish needs it; without it the test is skipped with its reason).</summary>
+    private static bool DotnetOnPath() =>
+        #pragma warning disable AARC003 // Justified: this line calls Environment.GetEnvironmentVariable (test fixture check); it reads only the test's own environment or temporary directory, to assert the outcome of the build.
+        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator)
+        #pragma warning restore AARC003
+            #pragma warning disable AARC003 // Justified: this line calls File.Exists (test fixture check); it reads only the test's own environment or temporary directory, to assert the outcome of the build.
+            .Any(static directory => !string.IsNullOrEmpty(directory) && File.Exists(Path.Combine(directory, "dotnet.exe")));
+            #pragma warning restore AARC003
+
+    [SkippableFact]
+    public void MoveNew_ReservedDestinationReplacedBetweenTheMoveAndTheCheck_IsNotAdoptedAndIsReported()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), WindowsOnlyReason);
+
+        // Deterministic through the seam: the "moved" phase runs between the move and the post-move identity read. The seam replaces the moved file
+        // with another file (a same-user process). The replacement must not be adopted, and the failure is reported as a residual.
+        using var dir = new TempDirectory();
+        const string foreign = "placed by another process after the move";
+        var area = new FirmwareDiagnosticDistribution.StagingArea(dir.Combine("measure"), (phase, path) =>
+        {
+            if (phase == "moved")
+            {
+                File.Delete(path);
+                File.WriteAllText(path, foreign);
+            }
+        });
+        area.Open("measure");
+        var source = Path.Combine(area.Root, "toolchain-output");
+        area.Reserve(source);
+        File.WriteAllText(source, "artifact bytes");
+        var destination = Path.Combine(area.Root, "measure.exe");
+
+        var act = () => area.MoveNew(source, destination);
+
+        act.Should().Throw<IOException>().WithMessage("*changed between its move and its check*",
+            "the replacement is refused, so the build fails");
+        #pragma warning disable AARC003 // Justified: this line calls File.ReadAllText (test fixture check); it reads only the test's own environment or temporary directory, to assert the outcome of the build.
+        File.ReadAllText(destination).Should().Be(foreign, "the replacement is left where it is and is never treated as this build's");
+        #pragma warning restore AARC003
+        area.Residuals.Should().ContainSingle(residual => residual.Contains("measure.exe") && residual.Contains("not adopted"),
+            "the replacement is reported as a residual");
     }
 
     private static string FindRepositoryRoot()
