@@ -25,7 +25,6 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly string? _guestPcTiming;
     private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
-    private ulong _lastVblank = 0;
     private bool _disposed;
 
     /// <summary>The output directory for screenshots.</summary>
@@ -94,42 +93,7 @@ public sealed class ScreenshotCapture : IDisposable
 
         var currentVblank = _scheduler.VblankCount;
         
-        // Check for exact match first
-        var targetIndex = _targetVblanks.BinarySearch(currentVblank);
-        if (targetIndex >= 0)
-        {
-            if (_capturedVblanks.Contains(currentVblank))
-                return false; // Already captured this VBlank (duplicate notification)
-
-            if (!CaptureAndSave(currentVblank, currentVblank))
-            {
-                _lastVblank = currentVblank; // unsaved target is dropped, not retried (not counted, not consumed)
-                return false;
-            }
-            _capturedVblanks.Add(currentVblank);
-            _screenshotsTaken++;
-            _lastVblank = currentVblank;
-            return true;
-        }
-
-        // Also check if we've passed any target VBlanks since last check
-        // This handles cases where VBlank counter jumps over target values
-        foreach (var targetVblank in _targetVblanks)
-        {
-            if (targetVblank <= currentVblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
-            {
-                // A3: the frame is the picture at the actual VBlank; the target is only the schedule it was due for.
-                if (!CaptureAndSave(targetVblank, currentVblank))
-                    continue; // nothing saved: this target is not counted or consumed
-                _capturedVblanks.Add(targetVblank);
-                _screenshotsTaken++;
-                _lastVblank = targetVblank;
-                return true;
-            }
-        }
-
-        _lastVblank = currentVblank;
-        return false;
+        return CaptureDueTargets(currentVblank);
     }
 
     /// <summary>
@@ -155,40 +119,36 @@ public sealed class ScreenshotCapture : IDisposable
         if (_disposed || _screenshotsTaken >= _maxScreenshots)
             return false;
 
-        // Check for exact match first
-        var targetIndex = _targetVblanks.BinarySearch(vblank);
-        if (targetIndex >= 0)
-        {
-            if (_capturedVblanks.Contains(vblank))
-                return false; // Already captured this VBlank
+        return CaptureDueTargets(vblank);
+    }
 
-            if (!CaptureAndSave(vblank, vblank))
-            {
-                _lastVblank = vblank; // unsaved target is dropped, not retried (not counted, not consumed)
-                return false;
-            }
-            _capturedVblanks.Add(vblank);
-            _screenshotsTaken++;
-            _lastVblank = vblank;
-            return true;
-        }
+    /// <summary>
+    /// Saves every target that is due at <paramref name="vblank"/>, in schedule order. A target is due once the counter
+    /// has reached it and it was not captured yet. A skipped-over target is therefore captured on the first check past
+    /// it, even when a later target is hit exactly (regression: the exact-match branch returned before the skipped target
+    /// was considered). A target whose PNG could not be written is not counted or consumed, so the next check retries it.
+    /// </summary>
+    private bool CaptureDueTargets(ulong vblank)
+    {
+        if (_disposed)
+            return false;
 
-        // Also check if we've passed any target VBlanks since last check
+        var capturedAny = false;
         foreach (var targetVblank in _targetVblanks)
         {
-            if (targetVblank <= vblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
-            {
-                if (!CaptureAndSave(targetVblank, vblank))
-                    continue; // nothing saved: this target is not counted or consumed
-                _capturedVblanks.Add(targetVblank);
-                _screenshotsTaken++;
-                _lastVblank = targetVblank;
-                return true;
-            }
-        }
+            if (targetVblank > vblank || _screenshotsTaken >= _maxScreenshots)
+                break;
+            if (_capturedVblanks.Contains(targetVblank))
+                continue;
 
-        _lastVblank = vblank;
-        return false;
+            // A3: the frame is the picture at the actual VBlank; the target is only the schedule it was due for.
+            if (!CaptureAndSave(targetVblank, vblank))
+                continue; // nothing saved: this target is not counted or consumed
+            _capturedVblanks.Add(targetVblank);
+            _screenshotsTaken++;
+            capturedAny = true;
+        }
+        return capturedAny;
     }
 
     /// <summary>

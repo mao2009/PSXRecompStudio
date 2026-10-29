@@ -403,4 +403,24 @@ public sealed class ScreenshotCaptureTests : IDisposable
         var text = System.Text.Encoding.Latin1.GetString(png);
         text.Should().Contain("targetVblank").And.Contain("capturedVblank", "PNG metadata repeats the manifest split");
     }
+
+    [Fact]
+    public void SkippedTarget_IsCapturedWhenALaterTargetIsHitExactly()
+    {
+        // Targets 2 and 3. The counter jumps 0 -> 3 (skipping target 2) and then stays on 3: the exact hit on 3 must not
+        // hide the still-due target 2 (regression: the exact-match branch returned before the skipped target was considered).
+        using var dir = new TempDirectory();
+        var capture = new ScreenshotCapture(_gpu, _scheduler, dir.FullPath, interval: 1, maxScreenshots: 2, startVblank: 2);
+
+        _scheduler.AdvanceExact(3ul * DeviceScheduler.VblankIntervalCycles);
+        capture.TryCapture();
+        capture.TryCapture();
+
+        capture.ScreenshotsTaken.Should().Be(2, "both targets were due at VBlank 3");
+        capture.AllTargetsSaved.Should().BeTrue();
+        #pragma warning disable AARC003
+        File.Exists(Path.Combine(dir.FullPath, "persona_vblank_0002.png")).Should().BeTrue();
+        File.Exists(Path.Combine(dir.FullPath, "persona_vblank_0003.png")).Should().BeTrue();
+        #pragma warning restore AARC003
+    }
 }
