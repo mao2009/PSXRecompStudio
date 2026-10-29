@@ -20,15 +20,15 @@ Short answers:
 1. **0x80030C44 is inside the OpenBIOS shell image, not inside the game image.** CONFIRMED (`src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:50`, `:53`; `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:40-48`). The shell occupies `0x80030000` to `0x800450C0` (shell image plus bss, per the comment at `OpenBiosBootMonitor.cs:52`). The offset of the address in the shell is `0xC44`.
 2. **Whether the boot EXE covers `0x80030C44` is UNVERIFIED.** The entry is `0x80010000` (OBSERVED, `docs/runtime/openbios-firmware-backend.md:136`, `:196`). A text region starting at `0x80010000` reaches `0x80030C44` only if its declared size is at least `0x20C45` bytes (`0x80030C44 - 0x80010000 + 1`). The Persona header's text size is not in the repository.
 3. **The writer is not identified.** Static analysis narrows it to a short list (section 4). Identifying the writing PC and the time needs a run with a watch on that word (section 5), which is design only here.
-4. **A "not matched" verdict at this PC does not prove an overwrite.** The accounting labels any RAM PC without an AOT block as `ram-no-code-image` (`src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:55-66`), whether or not a version was ever registered for it. CONFIRMED by code; the consequence is PREDICTED to be the common case here.
+4. **A "not matched" verdict at this PC does not prove an overwrite.** The accounting labels any RAM PC without an AOT block as `ram-no-code-image` (`src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:55-64`), whether or not a version was ever registered for it. CONFIRMED by code; the consequence is PREDICTED to be the common case here.
 
 ## 1. Boot EXE load range
 
 ### 1.1 How the boot EXE gets into RAM in the OpenBIOS path
 
-- The host does not load the boot EXE into RAM in the OpenBIOS engine. `OpenBiosBootBackend.CreateEngine` builds an `InterpreterTitleExecutionEngine` over the ROM words at `0xBFC00000` and does not pass `guestFirmware` (`src/PSXRecomp.Core/Execution/OpenBiosFirmware.cs:68-80`). The host-side RAM writes in `InterpreterTitleExecutionEngine` (`src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:186-193` for `guestFirmware`, `:371-377` for the title path) are not reached in this path. CONFIRMED.
-- OpenBIOS itself loads the EXE: its CD driver reads the disc through `CdRomDevice`, and DMA3 writes the data into RAM. `exec` then jumps to the entry. OBSERVED (`docs/runtime/openbios-firmware-backend.md:133-137`: "loads the boot EXE named by `SYSTEM.CNF` through CD reads and DMA3, and `gameMainThunk` → `exec` enters the executable's entry `0x80010000`"). The ADR says the same at `docs/adr/026-aot-ram-placed-code.md:10`. CONFIRMED as a design statement.
-- The host models the DMA3 transfer in `CdRomDmaTransfer.TryTransfer` (`src/PSXRecomp.Core/Dma/CdRomDmaTransfer.cs:80-137`). It writes `words = BCR` 32-bit words starting at `MADR & AddressMask` through `IMemoryBus.Write`, one word per iteration (`:118-128`), with no PC in the record. CONFIRMED.
+- The host does not load the boot EXE into RAM in the OpenBIOS engine. `OpenBiosBootBackend.CreateEngine` builds an `InterpreterTitleExecutionEngine` over the ROM words at `0xBFC00000` and does not pass `guestFirmware` (`src/PSXRecomp.Core/Execution/OpenBiosFirmware.cs:68-80`). The host-side RAM writes in `InterpreterTitleExecutionEngine` are not reached in this path: the `guestFirmware` writes (`src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:186-193`) are gated by a flag the OpenBIOS `CreateEngine` does not pass (CONFIRMED via `OpenBiosFirmware.cs:73-80`), and the title-path writes (`:371-377`) sit inside `Load()`, gated by `_ownsDevices`. No `Load` call on the OpenBIOS path was found (partial trace; UNVERIFIED that none exists elsewhere).
+- OpenBIOS itself loads the EXE: its CD driver reads the disc through `CdRomDevice`, and DMA3 writes the data into RAM. `exec` then jumps to the entry. CONFIRMED as a design statement (`docs/runtime/openbios-firmware-backend.md:133-137`: "loads the boot EXE named by `SYSTEM.CNF` through CD reads and DMA3, and `gameMainThunk` → `exec` enters the executable's entry `0x80010000`"; the ADR says the same at `docs/adr/026-aot-ram-placed-code.md:10`). The measurement in that paragraph is OBSERVED: about 192M instructions to reach the entry with the synthetic disc (`openbios-firmware-backend.md:136`); it is not a measurement of the Persona disc.
+- The host models the DMA3 transfer in `CdRomDmaTransfer.TryTransfer` (`src/PSXRecomp.Core/Dma/CdRomDmaTransfer.cs:80-137`). The word count is `BCR & 0xFFFF`, and a count of 0 means 0x10000 words (`CdRomDmaTransfer.cs:101-103`). It writes that many 32-bit words starting at `MADR & AddressMask` through `IMemoryBus.Write`, one word per iteration (loop at `:118-126`), with no PC in the record. CONFIRMED.
 - The memory bus routes RAM writes to the native core RAM (`src/PSXRecomp.Core/Dma/MemoryBus.cs:139-152`, `WriteRam` at `:184-190`). CONFIRMED.
 
 ### 1.2 The header fields that define the range
@@ -76,9 +76,9 @@ Consequences:
 
 ## 3. What "overwritten" can and cannot mean in this code
 
-- **Mismatch versus absence.** The loaded-code table keys versions by entry PC and exact words (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs:5-11`; the table keyed by `EntryPc` is in ADR-026 `:27-28`). A PC with no version is `ram-no-code-image` (`OpenBiosProbeAccounting.cs:55-66`). So the handoff report at `0x80030C44` cannot distinguish "RAM changed under a registered version" from "no version was ever registered here". CONFIRMED by code.
+- **Mismatch versus absence.** The loaded-code table keys versions by entry PC and exact words (`src/PSXRecomp.Core/Recompiler/LoadedCodeTable.cs:5-11`; the table keyed by `EntryPc` is in ADR-026 `:27-28`). A PC with no version is `ram-no-code-image` (`OpenBiosProbeAccounting.cs:55-64`). So the handoff report at `0x80030C44` cannot distinguish "RAM changed under a registered version" from "no version was ever registered here". CONFIRMED by code.
 - **The expected value.** The issue speaks of an expected value. No artifact in the repository records the expected word at `0x80030C44` for this disc. The shell's words are ROM bytes (not reproduced here) copied by the kernel. UNVERIFIED which source the expectation came from (ROM copy, a manifest `roots`/`images` entry, or an earlier run).
-- **Refusal behaviour (must not change).** A version whose words do not match RAM is refused and falls back; `LoadedCodeTable` selection and the guard compare the words (`docs/runtime/loaded-code-identity.md` section 2, rows 4 and 6). Issue #807 forbids adopting roots over a mismatch. This analysis does not touch that guard or the root planner (`src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:179`, owned by PR #849 and #773).
+- **Refusal behaviour (must not change).** A version whose words do not match RAM is refused and falls back; `LoadedCodeTable` selection and the guard compare the words (`docs/runtime/loaded-code-identity.md` section 2, rows 4 and 6). The issue body (read from the public GitHub API, not from the repository) says not to adopt roots over a mismatch; UNVERIFIED as a repository fact. This analysis does not touch that guard or the root planner (`src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:179`). Its ownership by PR #849 and #773 is UNVERIFIED: `gh` is not authenticated, so the PRs were not checked.
 
 ## 4. Candidate writers
 
@@ -86,7 +86,7 @@ Each candidate lists the writer, the PC that would be reported, the time window,
 
 ### 4.1 OpenBIOS kernel shell copy (ROM to shell range)
 
-- Mechanism: the kernel copies the shell image into `0x80030000` before it calls the shell (`OpenBiosBootMonitor.cs:49`; ADR-026 `:10`). The copy is CPU stores.
+- Mechanism: the kernel copies the shell image into `0x80030000` before it calls the shell (`OpenBiosBootMonitor.cs:49`; ADR-026 `:10`). PREDICTED: the copy is done by CPU stores (an inference; the routine is not read).
 - PC: kernel code (ROM `0xBFC...` or the copied kernel in RAM below `0x10000`). Not in the shell range.
 - Time: before the first fetch of `0x80030000` (`OpenBiosBootMonitor.cs:90`, `_shell` set), i.e. before `ShellEntered`.
 - Predicts: a write that is complete before shell entry, and no later write from kernel PCs unless the kernel re-copies.
@@ -119,7 +119,7 @@ Each candidate lists the writer, the PC that would be reported, the time window,
 - Mechanism: a store from the executable (for example a stray pointer, or a data write into the wrong range) after `TitleStarted`.
 - PC: `0x80010000` and above, outside the shell range.
 - Time: after the entry.
-- Status: PREDICTED possible. Note that the title detector does not see stores into the shell range (1.3, `OpenBiosBootMonitor.cs:86`), so a title store is only visible through a store-level trace.
+- Status: PREDICTED possible. Note that the title detector does not see stores into the shell range (section 2, `OpenBiosBootMonitor.cs:86`), so a title store is only visible through a store-level trace.
 
 ### 4.6 Host-side resynchronisation in the artifact path (not OpenBIOS)
 
@@ -145,12 +145,12 @@ No code is changed here. The following is the design to be implemented after thi
 ### 5.1 Time base
 
 - The fetch index: `OpenBiosBootMonitor` counts fetches (`_fetches`, `OpenBiosBootMonitor.cs:70`). Its milestones (`ResetVectorFetched`, `KernelRunningFromRam`, `ShellEntered`, `TitleStarted`) are already reported.
-- The guest cycle count (`ProbeGuestState`, compared per checkpoint; see `openbios-firmware-backend.md:639`). The fetch index and the cycle count differ by interrupt entries (the doc gives cycles = fetches + interrupt entries, `openbios-firmware-backend.md:634`). Use both. The device capture includes `guest_cycles` (`openbios-firmware-backend.md:639`).
+- The guest cycle count (`ProbeGuestState`, compared per checkpoint; see `openbios-firmware-backend.md:639`). The fetch index and the cycle count differ by interrupt entries. The relation, from the row at `openbios-firmware-backend.md:634` (fetch 268,665,641 = cycles 268,664,967 + 674 interrupt entries), is fetches = cycles + interrupt entries, so cycles = fetches − interrupt entries. Use both. The device capture includes `guest_cycles` (`openbios-firmware-backend.md:639`).
 
 ### 5.2 Attributing a CPU store
 
 - The CPU core is native (`src/PSXRecomp.Core/NativeInterop.cs`, `PSXCoreWrapper.ReadMemory32` at `src/PSXRecomp.Core/PSXCoreWrapper.cs:639`). A store hook therefore belongs in the native core's memory write path, not in managed code. The native source location is UNVERIFIED for this repository layout.
-- Managed-side alternative (design option A): the interpreter calls `FetchObserver` once per fetch (`src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:282`, `:679`). Reading the watched word there (`PSXCoreWrapper.cs:639`) at each fetch gives the first fetch after a change. The writer is the instruction retired just before that fetch. Cost: one P/Invoke per fetch, so it must be bounded (for example by a stop PC or a fetch window). Exceptions and delay slots make "the previous PC" ambiguous; record the previous two PCs and the CAUSE/BD bit.
+- Managed-side alternative (design option A): the interpreter calls `FetchObserver` once per fetch in the step loop, before `_core.Step()` (`src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:679`; `:282` is only the property declaration). Reading the watched word there (`PSXCoreWrapper.cs:639`) at each fetch gives the first fetch after a change. The writer is the instruction retired just before that fetch. Cost: one P/Invoke per fetch, so it must be bounded (for example by a stop PC or a fetch window). Exceptions and delay slots make "the previous PC" ambiguous; record the previous two PCs and the CAUSE/BD bit.
 - Design option B (cheaper, DMA only): log in `CdRomDmaTransfer.TryTransfer` (`CdRomDmaTransfer.cs:80`) the `MADR`, `BCR`, the transfer end, and the last fetched PC. This answers 4.2 directly.
 
 ### 5.3 Record format (proposed)
@@ -164,7 +164,7 @@ For each change of the watched word at `0x80030C44` (physical `0x00030C44`): fet
 
 ## 6. How dynamic code loading relates
 
-- The contract already separates code identity from RAM words. A loaded overlay or a legitimate switch is a new version at a PC, with its own words (ADR-026 `:27-29`; `LoadedCodeTable`). The guard then selects the version whose words match RAM, and refuses the rest (`docs/runtime/loaded-code-identity.md` section 2). CONFIRMED.
+- The contract already separates code identity from RAM words. A loaded overlay or a legitimate switch is a new version at a PC, with its own words (ADR-026 `:29-30`; `LoadedCodeTable`). The guard then selects the version whose words match RAM, and refuses the rest (`docs/runtime/loaded-code-identity.md` section 2). CONFIRMED.
 - Therefore a legitimate code switch at `0x80030C44` is not an error by itself. It appears as a RAM mismatch for the old version, and the correct behaviour is a refusal followed by fallback or by the matching version. The mismatch record (`LoadedCodeMismatchDiagnostics`, #773 Phase B) exists to show that.
 - To tell a legitimate overlay write from a bug, the record in 5.3 needs the writer's source: a DMA of an overlay sector (`dma3`), a copy routine in a known loader PC, or a stray store. A DMA3 write from a loader that is also the disc's EXE load is the normal case for a boot EXE (4.2), not an overwrite of the shell, unless the range overlaps the shell (the 1.3 threshold).
 - No change to the adoption guard is proposed. An overwrite must be explained by its writer; it may not be ignored by adopting roots.
@@ -184,4 +184,4 @@ For each change of the watched word at `0x80030C44` (physical `0x00030C44`): fet
 1. Read the Persona header (local, addresses only) and check the 1.3 threshold.
 2. Run the existing probe with a stop PC or fetch window and log the value at `0x80030C44` at `ShellEntered` and `TitleStarted` (no code change: the probe already reports these milestones).
 3. If the value changes, add the attribution of 5.2 (option A for a bounded window, option B for DMA) as a diagnostic, after review. It must stay observation only.
-4. Only after 1 to 3 pick the candidate of section 4 and decide whether anything in the loaded-code path needs to change. The root planner and the adoption guard are out of scope (PR #849, #773).
+4. Only after 1 to 3 pick the candidate of section 4 and decide whether anything in the loaded-code path needs to change. The root planner and the adoption guard are out of scope (PR #849 and #773 ownership: UNVERIFIED, `gh` not authenticated).
