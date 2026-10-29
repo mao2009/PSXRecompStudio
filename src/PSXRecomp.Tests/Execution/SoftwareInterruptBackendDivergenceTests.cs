@@ -3,6 +3,7 @@ using FluentAssertions;
 using PSXRecomp.Core;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Runtime;
+using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
 using static PSXRecomp.Tests.Infrastructure.MixedFallbackTestSupport;
 
@@ -22,6 +23,7 @@ public sealed class SoftwareInterruptBackendDivergenceTests
     private const uint ReturnPc = Entry + 0x20u; // the Nop right after the JR and its delay slot, inside the image
     private const uint SrIec_Im0 = 0x0000_0101u;
     private const uint CauseIp0 = 0x0000_0100u;
+    private const uint StraightReturnPc = Entry + 0x1Cu; // StraightProgram: the Nop after the MTC0 SR
 
     private static (PsxDeviceGraph Graph, InterpreterTitleExecutionEngine Engine) Attached(uint[] words)
     {
@@ -47,6 +49,22 @@ public sealed class SoftwareInterruptBackendDivergenceTests
         code.Emit(Li(T0, sr));
         code.Emit(Jr(Ra), Mtc0(T0, 12)); // the delay slot enables the interrupt after the return decision's inputs are set
         code.Emit(Nop, Nop, Nop, Nop);
+        return Image(code);
+    }
+
+    /// <summary>
+    /// Whole-program form of <see cref="Program"/> for the artifact-only runs: the MTC0 SR is followed by a fall-through
+    /// to <see cref="StraightReturnPc"/> (statically reachable, so the artifact compiles it), and the program ends with
+    /// a jump to zero. The INT is the next fetch at <see cref="StraightReturnPc"/> on both backends.
+    /// </summary>
+    private static uint[] StraightProgram(uint cause, uint sr)
+    {
+        var code = new Block(Entry);
+        code.Emit(Li(T0, cause));
+        code.Emit(Mtc0(T0, 13), Nop);
+        code.Emit(Li(T0, sr));
+        code.Emit(Mtc0(T0, 12));
+        code.Emit(Nop, Jr(Zero), Nop); // StraightReturnPc is the Nop; the jump to zero is the program's end
         return Image(code);
     }
 
@@ -104,5 +122,40 @@ public sealed class SoftwareInterruptBackendDivergenceTests
         outcome.State.Pc.Should().Be(0x80000080u, "the INT entered the general exception vector (BEV=0)");
         outcome.State.Epc.Should().Be(ReturnPc, "EPC is the instruction the INT preempted: the same PC mixed execution resumes at");
         outcome.RetiredInstructions.Should().Be(8, "li(2), mtc0, nop, li(2), JR and its slot all retire, then the INT preempts the fetch at ReturnPc");
+    }
+
+    [Theory]
+    [InlineData(0x0000_0100u, 0x0000_0100u)] // IP0 pending, IM0 set, IEc clear: not takeable
+    [InlineData(0x0000_0100u, 0x0000_0001u)] // IP0 pending, IEc set, IM0 clear: masked
+    [InlineData(0u, 0x0000_0101u)]           // nothing pending
+    public void Artifact_AndInterpreterAlone_CompleteWhenNoSoftwareInterruptIsTakeable(uint cause, uint sr)
+    {
+        var words = StraightProgram(cause, sr);
+        using var dir = new TempDirectory();
+
+        var artifact = RunArtifact(words, dir, null).Result;
+        var interpreter = RunInterpreter(words);
+
+        artifact.State.Should().Be(TitleExecutionState.Completed, artifact.DiagnosticMessage);
+        interpreter.State.Should().Be(TitleExecutionState.Completed, interpreter.DiagnosticMessage);
+    }
+
+    [Fact]
+    public void Artifact_AndInterpreterAlone_StopOnATakeableSoftwareInterrupt_WithTheSameRuntimeFailure()
+    {
+        var words = StraightProgram(CauseIp0, SrIec_Im0);
+        using var dir = new TempDirectory();
+
+        // Issue #728: the artifact used to resume past this INT silently; it now takes the same entry and stops, as the
+        // interpreter alone does (docs/cpu/exceptions.md: a software interrupt is a Runtime failure).
+        var artifact = RunArtifact(words, dir, null).Result;
+        var interpreter = RunInterpreter(words);
+
+        foreach (var (name, result) in new[] { ("artifact", artifact), ("interpreter", interpreter) })
+        {
+            result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{name}: {result.DiagnosticMessage}");
+            result.DiagnosticCode.Should().Be("CPU_EXCEPTION", $"{name}: {result.DiagnosticMessage}");
+            result.FinalSnapshot?.PC.Should().Be(0x8000_0080u, $"{name}: the INT entered the general exception vector (BEV=0)");
+        }
     }
 }

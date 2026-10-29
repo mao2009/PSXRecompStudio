@@ -740,6 +740,14 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // With a complete guest BIOS, *all* architectural exceptions (including
                 // SYSCALL, BREAK and address faults) must reach firmware-owned vectors.
                 // The legacy HLE slice still fails on non-IRQ exceptions exactly as before.
+                // Issue #728: a software interrupt is a Runtime failure on every backend (docs/cpu/exceptions.md), even with a
+                // Runtime attached: no handler model serves it, and the artifact's boundary stops on it too.
+                if (_core.ExceptionCode == InterruptExcode && !TookHardwareInterrupt())
+                {
+                    termination = RecompilerIrTerminationReason.Exception;
+                    break;
+                }
+
                 if (!TookHardwareInterrupt() && !_allowRuntimeRamExecution)
                 {
                     termination = RecompilerIrTerminationReason.Exception;
