@@ -1,4 +1,4 @@
-# Issue #43: Incremental Analysis and Cache (design, r14)
+# Issue #43: Incremental Analysis and Cache (design, r15)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, and T-IDENT all hold. Until Rule C holds for a stage, that
@@ -7,8 +7,9 @@
   until Rule C holds, and no test may claim a production stage is cacheable (7.1, 7.3).
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r14. Addresses the review of `d11733c` (r13): seven findings, mapped in 12.6. The findings of `d1c41ac` (r12) are in 12.5, and the findings of
-  `34845dd` (r11) are in 12.4, and those of `f77183e` (r10) are in 12.3. The direction of r9 to r12 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
+- Revision: r15. Addresses the review of `6f1494a` (r14): seven findings, mapped in 12.7. The findings of
+  `d11733c` (r13) are in 12.6, `d1c41ac` (r12) in 12.5, `34845dd` (r11) in 12.4, and `f77183e` (r10) in 12.3.
+  The direction of r9 to r14 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
 - Source identity: the current head is `d11733c`. The `src/` tree is identical at `34845dd`, `d1c41ac`, and `d11733c`
   (`git diff --stat` is empty), so every check label in this document is `d11733c`. SHAs in section 12 name the
@@ -123,7 +124,7 @@ Every "N1 to N15" range in this document means the stages in this table, without
 
 **Replaced design (`analyzerFingerprint`).** The identifier `analyzerFingerprint` is absent from the code tree at
 `f95bbae` and at `684b573` (zero matches tree-wide in each). It appears in revision `c8299d4` (12 matches tree-wide, all in `docs/design/issue-43-analysis-cache.md`; none in code).
-In the current document it occurs in this paragraph (2.2), in the F4 row of 12.3, in the R4 row of 12.4, and in the S2 row of 12.5. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
+In the current document it occurs in this paragraph (2.2), in the F4 row of 12.3, in the R4 row of 12.4, in the S2 row of 12.5, and in the T2 row of 12.6. Its per-stage successor, the fingerprint sets of `684b573`, is withdrawn as well. This section describes a
 replaced design. The N7 to N15 closure replaces the fingerprint: the whole Core MVID (3.3) gives the code identity,
 and the reachability closure of each stage (3.4, 9) decides whether that stage may use the cache at all. No
 code-fingerprint identifier is used in the current design.
@@ -186,7 +187,9 @@ digest(R) = SHA-256( codecBytes(R) )
 - **Decision DEC-CODE.** `codeIdentity` is the metadata version identifier (MVID) of `PSXRecomp.Core`,
   with its full name. If the build is deterministic (UNVERIFIED, U5), the MVID is a content-derived identifier of the
   compiled output. It changes whenever the IL or the metadata of Core changes. Determinism is UNVERIFIED (U5).
-- **Rule.** A change anywhere in Core changes `codeIdentity` and invalidates every cached stage. This is
+- **Rule.** If the build is deterministic (UNVERIFIED, U5), a change anywhere in Core changes `codeIdentity` and invalidates
+  every cached stage. A non-deterministic build gives a new MVID on every build, which invalidates every entry and gives
+  no reuse across builds (U5). This is
   accepted: accuracy beats performance (owner ruling).
 - **Why not a source-file closure digest.** A closure of source files cannot see a binding change outside
   it. The compiled assembly does. A closure is used only to scope the implicit-input scan (3.4).
@@ -219,43 +222,45 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
    `JsonSerializer.Serialize(document, CanonicalOptions)` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:54`),
    which reflects over `T` at run time. The cached payload codec must not reflect (3.7).
    The sites below are a search result at `d11733c`, not an exhaustive list. Condition (a) of 9.3 requires this search
-   to be re-run before any verdict. Serialization by `JsonSerializer` over a generic or concrete type: `ArtifactJson.cs:54`,
-   `Diagnostics/DiagnosticJson.cs:32` and `:38` (`Deserialize<T>`), `DiscImage/DiscImageAnalysisReport.cs:55`,
-   `DiscImage/FunctionDiscovery.cs:57`, and `Project/ProjectMetadataSerializer.cs:65`. Attribute-based converters,
-   `[JsonConverter(typeof(...))]`, on the Diagnostic types (for example `Diagnostics/DiagnosticCategory.cs:19`), which
+   to be re-run before any verdict. Serialization by `JsonSerializer` over a generic or concrete type: `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:54`,
+   `src/PSXRecomp.Core/Diagnostics/DiagnosticJson.cs:32` and `:38` (`Deserialize<T>`), `src/PSXRecomp.Core/DiscImage/DiscImageAnalysisReport.cs:55`,
+   `src/PSXRecomp.Core/DiscImage/FunctionDiscovery.cs:57`, and `src/PSXRecomp.Core/Project/ProjectMetadataSerializer.cs:65`. Attribute-based converters,
+   `[JsonConverter(typeof(...))]`, on the Diagnostic types (for example `src/PSXRecomp.Core/Diagnostics/DiagnosticCategory.cs:19`), which
    the serializer resolves by reflection. Other reflection-based calls: `exception.GetType().Name` at
-   `DiscImage/RomAnalysisStageRecorder.cs:67`, in the exception overload of `Fail` (`:65`). The pipeline calls that
-   overload from its catch blocks (`RomAnalysisPipeline.cs:124`, `:225`, `:247`), so the `GetType` call is statically
+   `src/PSXRecomp.Core/DiscImage/RomAnalysisStageRecorder.cs:67`, in the exception overload of `Fail` (`:65`). The pipeline calls that
+   overload from its catch blocks (`src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:124`, `:225`, `:247`), so the `GetType` call is statically
    reached from the stage code. U2 must confirm that path. `Enum.IsDefined(typeof(...))` and `Enum.TryParse` at
-   `Recompiler/ObservedRootPlanner.cs:340`; `Enum.ToObject`, `Type.GetTypeCode`, and `Enum.GetUnderlyingType` at
-   `Runtime/Input/InputBindingMap.cs:135` and `:139`; and `typeof(NativeLibraryResolver).Assembly` at
-   `NativeLibraryResolver.cs:49`. The reach of these last sites is not yet checked.
+   `src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:340`; `Enum.ToObject`, `Type.GetTypeCode`, and `Enum.GetUnderlyingType` at
+   `src/PSXRecomp.Core/Runtime/Input/InputBindingMap.cs:135` and `:139`; and `typeof(NativeLibraryResolver).Assembly` at
+   `src/PSXRecomp.Core/NativeLibraryResolver.cs:49`. The reach of these last sites is not yet checked.
 2. **Dynamic code.** `dynamic`, expression-tree compilation, or runtime code generation. *Generic guard; the
    search is acceptance criterion 1 of 9.*
-3. **Native calls.** P/Invoke, `LibraryImport`, or any call through `NativeInterop.cs` (root of Core).
+3. **Native calls.** P/Invoke, `LibraryImport`, or any call through `src/PSXRecomp.Core/NativeInterop.cs` (root of Core).
 4. **Delegates from outside.** A delegate or function value not declared in the input record.
 5. **Interface or virtual dispatch with implementations outside Core.** Class hierarchy analysis over Core
    gives the implementation set. If any implementation lies outside Core, the set is unknown. This covers Rule NC.
 6. **Generic instantiation with a type argument outside Core.**
-7. **Static initialization and static mutable state.** Static initializers are part of the Core identity.
-   `BiosJumpTables` (`src/PSXRecomp.Core/Runtime/BiosJumpTables.cs:50`) is a static class, and
-   `ArtifactJson.CanonicalOptions` (`ArtifactJson.cs:34`) is a static field. A static initializer or field read
-   by the stage is uncacheable if it reads any implicit input in items 8 to 12. A static field written after
-   initialization is uncacheable unless the write is proven to occur only before the first stage run.
+7. **Static initialization and static mutable state.** A reached static initializer, or a reached read or write of a
+   static field, makes the stage uncacheable under the same rule as the other items. `BiosJumpTables`
+   (`src/PSXRecomp.Core/Runtime/BiosJumpTables.cs:50`) is a static class, and `ArtifactJson.CanonicalOptions`
+   (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:34`) is a static field. Under this rule any reached
+   static member makes the stage uncacheable, including static read-only tables. This is conservative, and this document
+   defines no exception to it.
 8. **Culture.** Any reached API whose result depends on `CultureInfo.CurrentCulture` or `CurrentUICulture`.
    The pipeline's formatting is not uniform: some sites use `string.Create(CultureInfo.InvariantCulture, ...)`
-   (for example `RomAnalysisPipeline.cs:100-101`), while others interpolate without it (`:286` and `:333`).
+   (for example `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:100-101`), while others interpolate without it (`:286` and `:333`).
    Any reached culture-sensitive site makes the stage uncacheable. U2 lists each reached site with its file and line as
    evidence. This document defines no exception, so the sites at `:286` and `:333` make a stage uncacheable if it reaches them.
 9. **Environment.** `Environment.*` (variables, machine name, user, OS version, current directory), and platform
    identity: `OperatingSystem.Is*`, `RuntimeInformation.ProcessArchitecture`, `RuntimeInformation.IsOSPlatform`, and
-   `BitConverter.IsLittleEndian`. Core sites at `d11733c`: `FileIdentityInterop.cs:19`; `LinuxFileStatInterop.cs:21`
-   (`IsLinux`, `IsLittleEndian`) and `:23` (`ProcessArchitecture`); `MacOsFileStatInterop.cs:21`;
-   `NativeLibraryResolver.cs:102` and `:106` (`IsOSPlatform`, in `CurrentOs` at `:100`); `ProcessTreeInterop.cs:18-20`.
+   `BitConverter.IsLittleEndian`. Core sites at `d11733c`: `src/PSXRecomp.Core/FileIdentityInterop.cs:19`; `src/PSXRecomp.Core/LinuxFileStatInterop.cs:21`
+   (`IsLinux`, `IsLittleEndian`) and `:23` (`ProcessArchitecture`); `src/PSXRecomp.Core/MacOsFileStatInterop.cs:21`;
+   `src/PSXRecomp.Core/NativeLibraryResolver.cs:102` and `:106` (`IsOSPlatform`, in `CurrentOs` at `:100`); `src/PSXRecomp.Core/ProcessTreeInterop.cs:18-20`.
    A direct-call check finds none of these types referenced from `src/PSXRecomp.Core/DiscImage`,
-   `Recompiler/RealRomCoverageAnalyzer.cs`, `Recompiler/MipsToIrLowerer.cs`, or `Recompiler/RecompilerContract.cs`, so no
-   stage body reaches them by a direct call. `ExecutionEnvironmentReport.cs` takes platform values as parameters and
-   reads none. Build-time reads (`PSXRecomp.Core.csproj:19`) are not runtime reads. **Transitive reach from a cached stage
+   `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs`, `src/PSXRecomp.Core/Recompiler/MipsToIrLowerer.cs`, or
+   `src/PSXRecomp.Core/Recompiler/RecompilerContract.cs`, so no
+   stage body reaches them by a direct call. `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs` takes platform values as parameters and
+   reads none. Build-time reads (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:19`) are not runtime reads. **Transitive reach from a cached stage
    is UNVERIFIED,** and U2 checks it (criterion 1 of 9.4). *Generic guard; acceptance criterion 1 of 9.*
 10. **Time.** `DateTime.Now`, `DateTime.UtcNow`, `DateTimeOffset.Now`, `Stopwatch` used in a value, time zone
     lookups. *Generic guard; acceptance criterion 1 of 9.*
@@ -263,30 +268,30 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
     read is an input and must be in the record as a value, not read implicitly. **Core sites at `d11733c` that read
     file content or metadata.** The search covers `FileInfo`, `DirectoryInfo`, `File.`, `Directory.`, `FileStream`,
     `SafeFileHandle`, `stat`, `/proc`, `DllImport`, `LibraryImport`, and the native loader.
-    - Content: `ChdReader.cs:103` (`new FileStream`, in `ChdReader.Open(string)` at `:101`); `LoadImageManifest.cs:286`
+    - Content: `src/PSXRecomp.Core/DiscImage/ChdReader.cs:103` (`new FileStream`, in `ChdReader.Open(string)` at `:101`); `src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:286`
       (`Directives`), `:341` (`ParseExeImage`), `:512` (`ReadStrictRootsFile`), `:557` (`ReadRootsFile`), `:561`
-      (`ReadRoots`); `ProcessTreeInterop.cs:101` (`File.ReadAllText` of `/proc/<pid>/stat`) and `:91`
+      (`ReadRoots`); `src/PSXRecomp.Core/ProcessTreeInterop.cs:101` (`File.ReadAllText` of `/proc/<pid>/stat`) and `:91`
       (`Directory.EnumerateDirectories("/proc")`, a listing).
-    - Metadata: `LoadImageManifest.cs:62` (`new FileInfo(path).Length`, in `Read` at `:55`);
-      `FileIdentityInterop.cs:21` (`GetFileInformationByHandle` on a `SafeFileHandle`, in `TryGetIdentity` at `:15`);
-      `LinuxFileStatInterop.cs:34` (`stat(path, ...)`, in `Stat` at `:19`); `MacOsFileStatInterop.cs:27` and `:33`
+    - Metadata: `src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:62` (`new FileInfo(path).Length`, in `Read` at `:55`);
+      `src/PSXRecomp.Core/FileIdentityInterop.cs:21` (`GetFileInformationByHandle` on a `SafeFileHandle`, in `TryGetIdentity` at `:15`);
+      `src/PSXRecomp.Core/LinuxFileStatInterop.cs:34` (`stat(path, ...)`, in `Stat` at `:19`); `src/PSXRecomp.Core/MacOsFileStatInterop.cs:27` and `:33`
       (`stat$INODE64` and `stat`, in `Stat` at `:19`).
-    - Native loader, two separate events in `NativeLibraryResolver.cs`. (a) Module load: the `[ModuleInitializer]`
+    - Native loader, two separate events in `src/PSXRecomp.Core/NativeLibraryResolver.cs`. (a) Module load: the `[ModuleInitializer]`
       (`:46-50`) runs when the module loads, and it only registers the resolver (`SetDllImportResolver` at `:49`).
       (b) First binding: the runtime calls `Resolve` (`:52`) when it first binds a P/Invoke into the assembly, and
       `Resolve` tries the `PSXRecomp.Native` library file in `AppContext.BaseDirectory` (`:60`). The runtime then caches
       the bound handle (runtime behavior, not tested here). The native calls are also item 3.
-    - Not file access, listed under item 9: `LoadImageManifest.cs:67` (`Path.GetFullPath`, which reads the current
+    - Not file access, listed under item 9: `src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:67` (`Path.GetFullPath`, which reads the current
       directory for a relative path).
-    - Not Core file access: the `fopen`, `/proc`, and `readlink` text in `RecompiledArtifactCodeGen.cs` and
-      `RecompilerHostCodeGen.cs` is emitted C inside raw string literals. `LoadImageManifest.cs:101` and `:404` read the
+    - Not Core file access: the `fopen`, `/proc`, and `readlink` text in `src/PSXRecomp.Core/Recompiler/RecompiledArtifactCodeGen.cs` and
+      `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs` is emitted C inside raw string literals. `src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:101` and `:404` read the
       disc through an injected `ICdSectorSource`, not by opening a path.
 
     Direct-call check at this SHA: `ChdReader.Open(string)` has no Core caller. The `LoadImageManifest` readers are
     called only from `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`, and tests. `TryReadParentIds` is called only
     from `src/PSXRecomp.Infrastructure` and tests. The identity and stat sites are called only from
     `src/PSXRecomp.Infrastructure/Standalone/FileSystemIdentityProbe.cs` (`:67`, `:68`, `:142`) and tests. The pipeline
-    uses the stream overload (`RomAnalysisPipeline.cs:117`), which opens no file. **Transitive reachability from a cached
+    uses the stream overload (`src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:117`), which opens no file. **Transitive reachability from a cached
     stage is UNVERIFIED.** A listed site that a stage reaches makes it uncacheable (9.3, condition (i)). No stage may be
     cached on the claim that its closure reads no file until U2 checks it.
 12. **Randomness.** `Random`, `RandomNumberGenerator`, `Guid.NewGuid`, and hash codes of reference types.
@@ -295,7 +300,7 @@ stage is recomputed on every run, and no entry is written for it in any mode (6.
     The architecture attribute source is compiled into Core (3.8). Any other package is outside the list, and a
     closure that reaches one is uncacheable. The packages named in 3.8 are outside the list: `SharpCompress`
     0.50.4 (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:25`, used by `src/PSXRecomp.Core/DiscImage/ChdCdCodec.cs:3`)
-    and `loach.PureSharp` 0.1.6 (`PSXRecomp.Core.csproj:24`, `PrivateAssets="all"`). Whether a stage reaches
+    and `loach.PureSharp` 0.1.6 (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:24`, `PrivateAssets="all"`). Whether a stage reaches
     `loach.PureSharp` is UNVERIFIED (acceptance criterion 3 of 9).
 
 Items 8 to 12 are the implicit inputs of the BCL. The design does not assume the BCL is fixed.
@@ -404,9 +409,11 @@ are not Core source.
   - **Key status.** The SDK-version field of `dependencyIdentity` depends on this mechanism. Until U5 confirms it, that
     field has no verified value and no verified source in the repository, so the key is **not yet established** for any
     stage.
-  - At run time, the runtime version is read from `RuntimeInformation.FrameworkDescription`. This is an explicit
-    exception to item 9 of 3.4: an identity string read as a dependency identity, not an environment value that
-    affects a result.
+  - At run time, the runtime version is read from `RuntimeInformation.FrameworkDescription` by the host, in the key
+    computation before any stage runs. No Core source reads it: at `d11733c` `git grep` finds it only in
+    `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`, and `src/PSXRecompStudio`. A stage closure is Core-only (9.2),
+    so the read is outside every closure and is not a reached item of 3.4. No exception is needed. If a Core stage ever
+    reached it, item 9 would make that stage uncacheable.
 - **Target framework.** `TargetFramework` is `net10.0` (`PSXRecomp.Core.csproj:3`).
 - **Architecture attribute source.** `src/Architecture/PSXRecompArchitectureAttributes.cs` is a **source file**, not a
   separate assembly. `Directory.Build.props:22-24` links it into every project whose `CompileArchitectureAttributes` is
@@ -557,13 +564,14 @@ differs from what the stage now computes would be used in Normal mode. That is t
   `ANALYSIS_CACHE_QUARANTINED` with `quarantineFailed = true`. Other keys are in separate directories and are not
   affected. The entry is not deleted automatically.
 - **F2. Missing.** A miss. The stage is recomputed. No diagnostic is reported.
-- **F3. Uncacheable.** The stage is recomputed on every run, and the run reports `ANALYSIS_CACHE_UNCACHEABLE` once per stage.
+- **F3. Uncacheable.** The stage is recomputed on every run, and the run reports `ANALYSIS_CACHE_UNCACHEABLE` once per
+  stage. This is the code for every state in which no cacheable verdict exists: the default state before U2 runs (no gate
+  file exists), a gate file that is missing, unreadable, or mismatched, and a stage whose verdict is uncacheable.
 - **F4. Partial failure.** If a stage fails, no entry is written for it or for any stage below it (W5).
 - **F5. Key input unavailable.** If any part of the key cannot be read (the package file, `Directory.Build.props`, the
-  runtime version, or the MVID of 3.3), or the gate file of 9.3 is missing, unreadable, or its `mvid` differs from the
-  running MVID, the stage is uncacheable and the run reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`. The code means that the
-  cache cannot establish the key, or the authority for the stage, from its inputs. The generated SDK file of 3.8 is
-  PROPOSED (U5) and is not a host-read input. No constant is substituted.
+  runtime version, or the MVID of 3.3), the stage is uncacheable and the run reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
+  The code means that a key input is unreadable. It does not cover the gate file, which is reported under F3. The
+  generated SDK file of 3.8 is PROPOSED (U5) and is not a host-read input. No constant is substituted.
 - **Codes.** Four codes are proposed: `ANALYSIS_CACHE_QUARANTINED`, `ANALYSIS_CACHE_UNCACHEABLE`,
   `ANALYSIS_CACHE_KEY_UNAVAILABLE`, and `ANALYSIS_CACHE_VERIFY_MISMATCH`. None is registered today. Under
   `docs/adr/019-diagnostics-and-recovery-contract.md` a code is a validated `SCREAMING_SNAKE` identity. The existing
@@ -642,7 +650,7 @@ cacheable.
 | T-DEP-DEAD (MAJOR-2 of r8, LOW-3 of r8) | Field removal is checked by value and by static verdict | For each field whose set-A reads are zero, and only for those: (a) the U2 static verdict must say "unread"; (b) on set-B fixtures, the baseline run with the **unchanged** record has key **K0** and stores payload **P0** under K0. The changed record's key is **K1**, and its cold result is **C1**. The field is accepted only if **C1 equals P0** byte for byte. A field that fails (a) or (b) stays in the record. | Step (b) reads a stored entry, so it runs **after Rule C holds for the stage**. (a) runs with U2 |
 | T-IDENT2 (C1 of r7) | Same executable, different disc identity | Two fixtures with the same boot executable bytes and different disc hashes (and, in a second case, a different boot path). The N11 and N12a keys differ, the second run does not reuse the first run's entry, and each payload contains its own disc hash and boot path. | **After Rule C holds for N11 and N12a** (it observes reuse). The key difference alone can be checked before |
 | T-DIFF (MAJOR-1 of r7) | N12a is independent of validations | For a fixed `(report, fixture)`, vary `validations` (none, one run, two runs, different order). The N12a payload is byte-identical in every case. The document from N14 differs only in the `Differential` section. | Runs after U1 (N12a exists as a function) |
-| T-UNCACHE | Uncacheable stage writes nothing | For the default status, and with an injected uncacheable verdict, each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Runs now |
+| T-UNCACHE | Uncacheable stage writes nothing | For the default status (no gate file, F3), and with an injected uncacheable verdict, each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Runs now |
 | T-KEY-UNAVAIL (M8 of r8, MINOR-7 of r7) | Unreadable key input | Make the package file, `Directory.Build.props`, the runtime version, or the MVID unreadable in a fake, one at a time. The stage is uncacheable and reports `ANALYSIS_CACHE_KEY_UNAVAILABLE`. No constant key is produced. | Runs now (fake inputs) |
 | T-READ | Record matches reads | Run each stage under the recorder on set-A fixtures. Every record field's read count is recorded. A zero-read field is listed as a flag for review (V6). It is not removed by this test. | Runs after U1 (records exist) |
 | T-STATIC (M2 of r8, MAJOR-1 of r7) | Static check of the record and the split | Each stage signature has one parameter. Its reached body reads nothing outside the record. The N12a closure does not reach `BuildDifferential`, `validations`, or `Differential`. | Static, U2 (9) |
@@ -758,23 +766,24 @@ an establishment of a condition, because it runs only the paths a fixture execut
 path still counts. If any condition cannot be established, the
 verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and the condition (9.3 output).
 
-- (a) 3.4 item 1, reflection, including `ArtifactJson.Serialize<T>` (`ArtifactJson.cs:54`): none reached. Established
-  by a static search of the closure for reflection and reflection-based serialization (criterion 1).
+- (a) 3.4 item 1, reflection, including `ArtifactJson.Serialize<T>` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:54`):
+  none reached. Established by the criterion 1 search for reflection and reflection-based serialization.
 - (b) 3.4 item 2, dynamic code: none reached. Established by the criterion 1 search.
-- (c) 3.4 item 3, native calls (every `DllImport` and `LibraryImport` in the closure, including `NativeInterop.cs` and
-  the loader of `NativeLibraryResolver.cs`): none reached. Established by a static search of native declarations and
-  the closure's call graph.
-- (d) 3.4 item 4, delegates or function values not declared in the record: none reached. Established by a static scan
-  of delegate and lambda creation sites in the closure, each matched to a record field.
-- (e) 3.4 item 5, interface or virtual dispatch with an implementation outside Core: none. Established by class
-  hierarchy analysis over Core, with every implementation inside Core.
-- (f) 3.4 item 6, generic instantiation with a type argument outside Core: none. Established by a static scan of the
-  constructed generic types and methods in the closure.
-- (g) 3.4 item 7, static initializers and static state: none reads an input of items 8 to 12, and no static field is
-  written after its first stage run. Established by a static scan of the static members in the closure.
-- (h) 3.4 items 8 to 10 and 12, culture, environment, time, and randomness: none reached (criteria 1 and 2). Any reached
-  site makes the stage uncacheable, and this document defines no exception (3.4 lead). Environment includes the
-  current-directory read at `LoadImageManifest.cs:67`.
+- (c) 3.4 item 3, native calls (every `DllImport` and `LibraryImport` in the closure, including `src/PSXRecomp.Core/NativeInterop.cs`
+  and the loader in `src/PSXRecomp.Core/NativeLibraryResolver.cs`): none reached. Established by the criterion 1 search
+  for native declarations and calls.
+- (d) 3.4 item 4, delegates or function values not declared in the record: none reached. Established by the criterion 1
+  search of delegate and lambda creation sites, each matched to a record field.
+- (e) 3.4 item 5, interface or virtual dispatch with an implementation outside Core: none. Established by criterion 3,
+  class hierarchy analysis over Core, with every implementation inside Core.
+- (f) 3.4 item 6, generic instantiation with a type argument outside Core: none. Established by the criterion 1 search of
+  the constructed generic types and methods in the closure.
+- (g) 3.4 item 7, static initializers and static state: none reached. Established by the criterion 1 search of static
+  members in the closure.
+- (h) 3.4 items 8 to 10 and 12, culture, environment, time, and randomness: none reached. Culture is established by
+  criterion 2, and environment, time, and randomness by criterion 1. Any reached site makes the stage uncacheable, and this
+  document defines no exception (3.4 lead). Environment includes the current-directory read at
+  `src/PSXRecomp.Core/Recompiler/LoadImageManifest.cs:67`.
 - (i) 3.4 item 11, file system: no site listed in item 11 is reached. Established by the criterion 1 search over the
   listed sites, with reachability from the closure.
 - (j) 3.4 item 13, unresolved symbols or assemblies outside the allow-list: none reached, including `SharpCompress` and
@@ -787,7 +796,7 @@ verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and 
 3.4 item 11, and the gate read is not one of them. The host compares the file's `mvid` with the MVID of the running Core assembly, which Core exposes as a
 value. If they are equal, the stage's verdict is `cacheable`, and Rule C (4.3) holds for the stage, the host passes the verdict into
 `AnalysisCacheOptions` as a value. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
-uncacheable and reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (6.4, F5).
+uncacheable and reports `ANALYSIS_CACHE_UNCACHEABLE` (F3). In the default state no gate file exists, so the same code applies.
 
 **Invalidation.** Any change to Core changes the MVID, so every earlier gate file no longer matches, and every stage is
 uncacheable again. Re-enabling a stage requires: re-running U2 on the new MVID, committing the new gate file, and passing
@@ -798,13 +807,17 @@ keeps stages uncacheable. It is not a build failure, because an uncacheable stag
 
 ### 9.4 Acceptance criteria
 
-1. **Guards and searches.** Guards 2, 9, 10, and 12 of 3.4, and the platform-identity reads listed in item 9, are searched for in the reached code, and each search and its
-   result is recorded. A guard with no occurrence in the reached code is recorded as such. A guard with a reached
-   occurrence makes the stage uncacheable (3.4 lead).
+1. **Searches over the closure (items 1, 2 to 4, 6, 7, 9 to 12 of 3.4).** For each stage, search the reached code for the
+   forms each item names: reflection and reflection-based serialization (item 1), dynamic code (item 2), native
+   declarations and calls (item 3), delegate and lambda creation sites (item 4), constructed generic types (item 6),
+   static members (item 7), environment and platform reads (item 9), time (item 10), file-system sites (item 11), and
+   randomness (item 12). Each search and its result is recorded. A search with no reached occurrence is recorded as such.
+   A reached occurrence makes the stage uncacheable (3.4 lead).
 2. **Culture.** Each reached culture-sensitive site is listed with its file and line, and makes the stage uncacheable
-   (3.4 item 8). In particular `RomAnalysisPipeline.cs:286` and `:333`.
-3. **Packages.** The reachability of `SharpCompress` (`ChdCdCodec.cs:3`) and of `loach.PureSharp`
-   (`PSXRecomp.Core.csproj:24`) is determined for each stage and recorded.
+   (3.4 item 8). In particular `src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:286` and `:333`.
+3. **Class hierarchy and packages (items 5 and 13).** Class hierarchy analysis over Core gives the implementation set for
+   item 5. The reachability of `SharpCompress` (`src/PSXRecomp.Core/DiscImage/ChdCdCodec.cs:3`), of `loach.PureSharp`
+   (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:24`), and of any unresolved symbol is determined for each stage and recorded.
 4. **Static closure (the proof).** T-STATIC passes for each stage that the output marks cacheable. This criterion is the
    static proof of the closure for that stage.
 5. **Executed paths.** T-CLOSURE-RT passes for each cacheable stage. It covers **executed paths only**. It is a consistency
@@ -932,3 +945,15 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | T5 (LOW) | R3 omitted `dependencyIdentity`, which the key formula includes | Resolved in r14: R3 includes it | R3, 3.2 |
 | T6 (LOW) | Unverified statements were written as fact: the build determinism (3.3), the line-ending independence of the MVID (3.9), and the generated SDK file in F5 | Resolved in r14: each is qualified as UNVERIFIED (U5) or PROPOSED | 3.3, 3.9, F5 |
 | T7 (LOW) | The loader wording mixed module load with first binding | Resolved in r14: the two events are stated separately, and S4 says that the first-binding statement is the one tested | 3.4 item 11, 12.5 S4 |
+
+### 12.7 Review of `6f1494a` (r14)
+
+| ID | Finding | Status in r15 | Resolved in |
+|---|---|---|---|
+| U1 (MAJOR) | The runtime-version read (`RuntimeInformation.FrameworkDescription`) was called "an explicit exception to item 9", while the document defines no exception | Resolved in r15: the exception is removed. `git grep` at `d11733c` finds the read only in `src/PSXRecomp.Cli`, `src/PSXRecomp.Infrastructure`, and `src/PSXRecompStudio`, none in Core. The host reads it outside every Core-only stage closure, so it is not a reached item and the single rule holds | 3.8 (run-time version bullet) |
+| U2 (MEDIUM) | Criteria did not cover the items cited for them: item 1, item 3, and item 11 were cited to criterion 1, which covered only guards 2, 9, 10, 12 and the platform reads | Resolved in r15: criterion 1 now covers the searches for items 1, 2, 3, 4, 6, 7, 9, 10, 11, and 12; criterion 2 covers item 8; criterion 3 covers items 5 and 13. Each condition (a) to (j) cites the criterion that covers its item | 9.3 (conditions (a) to (j)), 9.4 criteria 1 to 3 |
+| U3 (MEDIUM) | The default state (no gate file, U2 not run) was reported with two codes: `ANALYSIS_CACHE_UNCACHEABLE` (F3, T-UNCACHE) and `ANALYSIS_CACHE_KEY_UNAVAILABLE` (F5, 9.3) | Resolved in r15: one code per state. The default state, and any gate file that is missing, unreadable, or mismatched, report `ANALYSIS_CACHE_UNCACHEABLE` (F3). `ANALYSIS_CACHE_KEY_UNAVAILABLE` is reserved for an unreadable key input. This supersedes T4 of 12.6, which had put the gate file under the key code | F3, F5, 9.3 (binding), T-UNCACHE |
+| U4 (LOW) | Item 7 had an escape ("unless the write is proven to occur only before the first stage run") and was limited to items 8 to 12, which departs from the single rule | Resolved in r15: item 7 is under the same rule as the other items (a reached static initializer, read, or write makes the stage uncacheable), with the conservative consequence stated. Condition (g) matches | 3.4 item 7, 9.3 condition (g) |
+| U5 (LOW) | The T2 row of 12.6 contains the identifier `analyzerFingerprint`, and the 2.2 list did not name it | Resolved in r15: the 2.2 list names the T2 row | 2.2 |
+| U6 (LOW) | "A change anywhere in Core changes `codeIdentity`" was unqualified, while the MVID is content-derived only if the build is deterministic (U5) | Resolved in r15: the rule is qualified by the determinism condition (UNVERIFIED, U5), and the non-deterministic case is stated | 3.3 (DEC-CODE rule) |
+| U7 (LOW) | Citations in 3.4 items and the verdict conditions used bare file names | Resolved in r15: they use full `src/` paths, and the partial forms in item 9 are also full paths | 3.4 items 1 to 13, 9.3 conditions |
