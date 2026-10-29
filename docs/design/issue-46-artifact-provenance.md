@@ -102,7 +102,7 @@ Note: the name `Manifest` is already used for three different things (`RuntimeHo
 
 ## 3. Artifact identity and manifest
 
-**Status at this SHA.** Sections 3.1 to 3.9 describe a proposed design. None of the following exists at this SHA: the workflow, the ports, `BuildManifestWriter`, the rejection code `PATH_ARGUMENT_NOT_ALLOWED`, the probe and its presence list, the carrier `runtime/build-manifest.json`, and the host checks. `git grep` finds no `ArtifactBuildWorkflow`, `BuildManifestWriter`, `PATH_ARGUMENT_NOT_ALLOWED`, or `IToolchainProbe` in `src`. Each statement in these sections that describes them is a requirement for Issue A or Issue B, or a proposed design element, not a description of current code. Where a current code location is cited, it is cited as the current state.
+**Status at this SHA.** Sections 3.1 to 3.10 and 7.2 to 7.4 describe a proposed design and the required state, not the current code. None of the following exists at this SHA: the workflow, the ports (including `Size`), `BuildManifestWriter`, the rejection code `PATH_ARGUMENT_NOT_ALLOWED`, the probe and its presence list, the input-kind helper, the shareable product-revision reader, the carrier `runtime/build-manifest.json`, and the host checks. `git grep` finds no `ArtifactBuildWorkflow`, `BuildManifestWriter`, `PATH_ARGUMENT_NOT_ALLOWED`, or `IToolchainProbe` in `src`. Each statement in these sections that describes them is a requirement for Issue A or Issue B, or a proposed design element, not a description of current code. Where a current code location is cited, it is cited as the current state.
 
 **Scope (owner ruling, Q16 Option A).** This section defines the identity of the game binary and the host binary, and of the generated source they come from. These binaries are outside Runtime Configuration (issue #48, W12). W12 adopts Q16 Option A, so runtime configuration does not own their identity, and this design does. Runtime configuration (for example input paths, the BIOS location, or runtime flags) is not part of this key. The only runtime input recorded here is a name, listed under `runtimeInputs` in 3.5, and that name is recorded only as a dependency.
 
@@ -169,7 +169,7 @@ Proposed file: `build-manifest.json`, schema version 1. It must have one locatio
 Deterministic fields (no timestamps, no local paths):
 
 ```text
-schemaVersion, buildKey, binaryName,   // binaryName: the requested bare name, also a key input (3.2)
+schemaVersion, buildKey, binaryName,   // buildKey: nullable in v1 until Issue C (3.10; W12 dependency). binaryName: the requested bare name, also a key input (3.2)
 entryRoots: [ uint ],                  // decimal, in order; keyed (3.2)
 extraArguments: { compiler: bool, linker: bool, values: [ string ] }   // as given; values are path-free (3.6)
 input:      { kind, sha256 }                    // kind: "exe" | "chd"; hash only
@@ -180,19 +180,19 @@ codegen:    {
   directLaunchHostRelativePath, // string or null
   windowedLaunch,               // { hostBinaryName, argumentRelativePath, waitLimitMs } or null
   budget, initialPc, initialHi, initialLo, imageLoadAddress,
-  initialGprSha256,             // hash over the GPR words
-  initialMemorySha256,          // hash over the (address, value) pairs
-  programImageInputSha256,      // hash over the program image bytes passed to codegen (key input, pre-build; NOT the H3 digest, see 3.8)
+  initialGprSha256,             // hash over the GPR words; nullable in v1 until Issue C
+  initialMemorySha256,          // hash over the (address, value) pairs; nullable in v1 until Issue C
+  programImageInputSha256,      // hash over the program image bytes passed to codegen (key input, pre-build; NOT the H3 digest, see 3.8); nullable in v1 until Issue C
   generatorVersion
 }
-loadedCode: [ { name, kind, loadAddress, wordCount, sourceSha256 } ]   // explanation only, not keyed (3.2)
+loadedCode: [ { name, kind, loadAddress, wordCount, sourceSha256 } ]   // explanation only, not keyed (3.2); nullable in v1 until Issue C
 source:     { file, sha256, sizeBytes }     // file: "<name>.c", a bare file name
 binary:     { file, sha256, sizeBytes }     // file: "<name>" or "<name>.exe", as produced
 files:      [ "<name>.c", "<name>[.exe]", "<name>.o" (game builds only) ]   // bare names, what the commit moves into place
-toolchain:  { compilerVersionLine, linkerVersionLine, targetTriple, recipeTokens }   // path-free, see 3.6
+toolchain:  { compilerVersionLine, linkerVersionLine, targetTriple, recipeTokens }   // path-free, see 3.6; nullable in v1 until Issue C
 packaged:   { imageSidecar: { file, sha256, sizeBytes } }   // HLE packages only; absent for firmware packages; H3 digest, read by the packaged host; NOT in buildKey; see 3.8. H2 is binary.sha256 above.
 runtimeInputs: [ { name, kind, requiredBy, sha256? } ]   // names and hashes only, never the BIOS or ROM content
-productRevision: "<InformationalVersion>"       // informational, not part of buildKey
+productRevision: "<InformationalVersion>"       // informational, not part of buildKey; nullable if the attribute is absent
 ```
 
 The `initialGpr`, `initialMemory`, and program-image values are hashed and never listed in the manifest. The manifest records their hashes only, the same way the project manifest already stores the input SHA-256 (`src/PSXRecomp.Core/Project/ProjectManifestDocument.cs:29`). The C source and `artifact-image.bin` still contain the game-derived data they always did (Section 2.3).
@@ -331,15 +331,15 @@ This subsection records the final rules. Where an earlier paragraph in 3.8 diffe
 
 **Issue A (writer). Owner: issue #46 (W14).**
 - Title: `build-manifest.json を書き出し、パッケージ済み digest の運搬先にする`
-- Scope: packaged carriers only, at `runtime/build-manifest.json`. The writer is `BuildManifestWriter` and its caller code in `PackageCommand` (HLE) and `FirmwareDistribution` (firmware). It writes H2 to `binary.sha256`, and H3 to `packaged.imageSidecar.sha256` (HLE only). The order is the one in 3.8. This issue covers the carrier write; a `BuildManifest` record built by the caller (a pure Domain record constructor, part of this issue) from the values that 3.10 assigns to Issue A; the `IBuildArtifactStore` methods `CreateStaging`, `WriteText`, `Sha256`, `Size`, `Commit`, and `Discard`; the `IBuildArtifactStore` parameter of `FirmwareDistributionBuilder.Build`; and HLE staging. It does not cover the workflow, the probe, the factory, the recipe constant, the build key, the codegen digest helper, or the generator version. Those are Issue C (7.4). Until Issue C lands, Issue A writes the fields that 3.10 assigns to Issue C as `null`. Issue A does not claim production values for them. Out of scope: the non-packaged carrier and Migration Part 1 (`RecompileCommand`, Issue D).
+- Scope: packaged carriers only, at `runtime/build-manifest.json`. The writer is `BuildManifestWriter` and its caller code in `PackageCommand` (HLE) and `FirmwareDistribution` (firmware). It writes H2 to `binary.sha256`, and H3 to `packaged.imageSidecar.sha256` (HLE only). The order is the one in 3.8. This issue covers the carrier write; a `BuildManifest` record built by the caller (a pure Domain record constructor, part of this issue) from the values that 3.10 assigns to Issue A; the `IBuildArtifactStore` methods `CreateStaging`, `WriteText`, `Sha256`, `Size`, `Commit`, and `Discard`; the `IBuildArtifactStore` parameter of `FirmwareDistributionBuilder.Build`; and HLE staging. It also covers two helper changes that 3.10 needs: the `.chd`/`.exe` input-kind rule, extracted from `src/PSXRecomp.Cli/CliInput.cs:44-46` into a helper shared by `CliInput` and the caller; and a shareable product-revision reader in place of the private `GetProductRevision` (`src/PSXRecomp.Cli/RunCommand.cs:212-215`). It does not cover the workflow, the probe, the factory, the recipe constant, the build key, the codegen digest helper, or the generator version. Those are Issue C (7.4). Until Issue C lands, Issue A writes the fields that 3.10 assigns to Issue C as `null`. Issue A does not claim production values for them. Out of scope: the non-packaged carrier and Migration Part 1 (`RecompileCommand`, Issue D).
 - Acceptance criteria:
   - (a) HLE packaged build: `runtime/build-manifest.json` exists. Its `binary.sha256` equals the SHA-256 of the staged artifact bytes that the commit moves into place. Its `packaged.imageSidecar.sha256` equals the SHA-256 of the `artifact-image.bin` file as written. Blocked on open question 8, with the same wording as (i): the commit replaces an existing output directory.
   - (b) A firmware package writes the carrier with `binary.sha256` and no `packaged` block. Not blocked: the firmware path already commits this way (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:487`).
   - (c) The program-image bytes passed to codegen equal the sidecar bytes. A test computes SHA-256 over the `ProgramImageBytes` array that `PackageCommand` passes to codegen (`src/PSXRecomp.Cli/PackageCommand.cs:155`), and compares it with H3 read from the written `artifact-image.bin`. This uses Issue A's own hash, not the Issue C codegen hash, so it is satisfiable within Issue A.
   - (d) The manifest is written exactly once per build.
-  - (e) The writer writes every value its caller supplies unchanged. It writes `null` for the Issue C fields listed in 3.10 until Issue C supplies them. No digest is an input to any field.
+  - (e) The writer writes every value its caller supplies unchanged. It writes `null` for the nullable keys listed in 3.5 (schema v1) that belong to Issue C, until Issue C supplies them. No digest is an input to any field.
   - (f) `PackageCommand` (HLE) and `FirmwareDistribution` write the carrier through `BuildManifestWriter` and `IBuildArtifactStore`, with a `BuildManifest` record that the caller builds. They do not use `ArtifactBuildWorkflow`, which is Issue C. An HLE package has a `packaged` block. A firmware package has no `packaged` block.
-  - (g) Carrier format, checked by the writer and by a test: `schemaVersion` is 1; each digest is 64 lowercase hexadecimal characters; `binary.file` equals the file name the artifact is written under; `packaged.imageSidecar.file` equals `artifact-image.bin` (`RuntimeHostLayout.ImageFileName`).
+  - (g) Carrier format, checked by the writer and by a test: `schemaVersion` is 1; each non-null digest is 64 lowercase hexadecimal characters, and `null` is accepted only for the nullable keys of 3.5; `binary.file` equals the file name the artifact is written under; `packaged.imageSidecar.file` equals `artifact-image.bin` (`RuntimeHostLayout.ImageFileName`).
   - (h) Mode and strict parsing, checked by the writer's test. The carrier mode agrees with the distribution mode, which W12 defines as `FirmwareRuntimeLauncher.IsFirmwareDistribution` (presence of `firmware-boot.json`, `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:599-600`). A firmware distribution carries no `packaged` block, and an HLE package carries one. The writer's output is read back by a strict parser that rejects unknown keys at any level (W12 3.3), a missing required field, a `packaged` block in a firmware carrier, and a missing `packaged` block in an HLE carrier. The carrier does not decide the mode. The host check itself is Issue B.
   - (i) HLE packaging has the staging property of 3.8: its build, runtime provisioning, sidecar, `runtime-host.json`, README, and carrier all go into a staging directory, and that directory is committed with `CommitStaging` (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:518-530`). Blocked on open question 8. This changes behaviour: a commit replaces an existing output directory. Criterion (i) must not be implemented until the owner decides open question 8 (for example, a pre-check that refuses a non-empty output directory).
   - (j) Every packaged file (runtime provisioning, the HLE sidecar, `runtime-host.json`, the README, and the carrier) is written into the staging area by the packaging caller before one commit, in the order of 3.8. The caller issues the commit through `IBuildArtifactStore.Commit`. Blocked on open question 8, as (i).
@@ -363,7 +363,11 @@ This subsection records the final rules. Where an earlier paragraph in 3.8 diffe
 
 ### 3.10 Field owners and sources of the carrier
 
-Each field of the carrier has one owner. Owner A means Issue A (the packaging caller computes or reads it). Owner C means Issue C (proposed; the workflow or a Domain helper computes it). Under Issue A, every C field is written as `null` until Issue C supplies it. The host does not read any C field: W12 section 3.4 requires only `binary.file`, `binary.sha256`, and, for HLE, `packaged.imageSidecar.file` and `packaged.imageSidecar.sha256`. The strict parser of 3.9 (h) therefore accepts `null` for a C field.
+**Status.** This table is the required state for Issue A and Issue C. It does not describe the current writer, which does not exist at this SHA (see the status note at the start of section 3).
+
+**Nullable keys and the W12 dependency.** Schema v1 (3.5) marks the Issue C keys as nullable. The W12 reader does not accept them today. W12 section 3.4 (`docs/design/issue-48-runtime-config.md` at `3ad951c`, line 305) rejects a digest that is not 64 lowercase hexadecimal characters and rejects unknown keys at any level, and it says nothing about `null`. Accepting these carriers therefore needs a W12 change: the nullable keys of 3.5 must be allowed to be `null`, and the digest rule must apply only to non-null digests. This is a W12 dependency and is not yet made. Until it is, a carrier with these `null` keys is rejected by the W12 reader. Issue A does not claim that the host accepts them.
+
+Each field of the carrier has one owner. Owner A means Issue A (the packaging caller computes or reads it). Owner C means Issue C (proposed; the workflow or a Domain helper computes it). Under Issue A, every C field is written as `null` until Issue C supplies it. The host does not read any C field. W12 section 3.4 requires the host to check only `binary.file`, `binary.sha256`, and, for HLE, `packaged.imageSidecar.file` and `packaged.imageSidecar.sha256`. That reading does not make the reader accept `null` for a C field, which needs the W12 change above.
 
 | Field | Owner | Source | Production value under Issue A |
 |---|---|---|---|
@@ -386,7 +390,7 @@ Each field of the carrier has one owner. Owner A means Issue A (the packaging ca
 | `packaged.imageSidecar.file` | A | `RuntimeHostLayout.ImageFileName` (`src/PSXRecomp.Infrastructure/Standalone/RuntimeHostLayout.cs:45`) | yes (HLE only) |
 | `packaged.imageSidecar.sha256`, `sizeBytes` | A | the caller reads the staged sidecar (HLE only) | yes |
 | `runtimeInputs` | A (packaged); D (standard artifact) | packaged: `{ name: "PSXRECOMP_BIOS_ROM", kind: "environment", requiredBy: "externalBios" }` when the codegen sets `externalBios` (firmware: `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:416`), otherwise empty; standard artifact: the input entry, Issue D | yes for packaged |
-| `productRevision` | A | the caller reads the `AssemblyInformationalVersionAttribute` of the Cli assembly. The existing helper `GetProductRevision` (`src/PSXRecomp.Cli/RunCommand.cs:212-215`) is private, so the caller reads the same attribute itself, or Issue A makes the helper shared | yes; `null` if the attribute is absent |
+| `productRevision` | A | the caller reads the `AssemblyInformationalVersionAttribute` of the Cli assembly through a shareable reader that Issue A adds in place of the private `GetProductRevision` (`src/PSXRecomp.Cli/RunCommand.cs:212-215`), a scope item of Issue A | yes; `null` if the attribute is absent |
 
 ## 4. Reproducibility: scope and limits (no guarantee)
 
@@ -470,6 +474,8 @@ The goal is that every current caller compiles and behaves the same, and the new
 
 ### 7.2 Domain ports, the workflow, and the composition root
 
+**Status.** This section and sections 7.3 and 7.4 describe the required ports, records, and ownership. None of them exists at this SHA (see the status note at the start of section 3).
+
 **Why the workflow lives in Domain (PSXRecomp.Core).** `PSXRecomp.Cli` is classified as Infrastructure, because its namespace is `PSXRecomp.Infrastructure.Cli` (`src/PSXRecomp.Cli/RecompileCommand.cs:7`, Infrastructure namespace root in `src/architecture.contract.json:5`). The contract forbids Infrastructure from depending on Application (`src/architecture.contract.json:13`). So the CLI cannot reference an Application project such as `PSXRecompStudio`. A workflow shared by CLI and GUI must therefore be a Domain service that takes ports, and the GUI (Application) may call it too (Application to Domain is allowed, ADR-017 and matrix dependency table).
 
 **Layer declaration.** The contract requires a layer declaration (`src/architecture.contract.json:58`, `"required": true`). Every new Domain type and port in this section carries `[Domain]`, as `src/PSXRecomp.Core/Recompiler/GeneratedHostBuild.cs:47` does for the existing port. The new types live in `PSXRecomp.Core` and use no host call, no `DateTime`, and no `Guid`.
@@ -493,6 +499,7 @@ The goal is that every current caller compiles and behaves the same, and the new
 - `IBuildArtifactStore`: the only way the workflow touches files.
   - `BuildStagingArea CreateStaging(string outputDirectory)`
   - `string Sha256(BuildStagingArea area, string fileName)`
+  - `long Size(BuildStagingArea area, string fileName)`, the byte length of a staged file. Proposed; used for `sizeBytes` in 3.10, and part of Issue A's scope.
   - `void WriteText(BuildStagingArea area, string fileName, string text)`
   - `string? ReadOutputText(string outputDirectory, string fileName)`, used to read the existing manifest for Verify
   - `string Sha256Output(string outputDirectory, string fileName)`, used by Verify
