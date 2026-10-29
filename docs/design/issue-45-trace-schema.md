@@ -19,7 +19,8 @@ Every claim carries one of four labels:
 Two more terms are used throughout:
 
 - **Local** output: any writer that is not the shareable projection (section 7.4). Local output may contain any field.
-- **Share-candidate** output: a field or document that would pass the allowlist (section 7.2) if it were produced by the shareable projection. A share-candidate is not shareable until the projection emits it. **PREDICTED** (design term).
+- **Share-candidate** output: a field that would pass the allowlist (section 7.2) if the shareable projection emitted it. A share-candidate is not shareable until the projection emits it. **PREDICTED** (design term).
+- **Default-deny**: a field that is not shareable until a named decision or a named read is made. Unread shapes are default-deny (Q16).
 
 ### 0.1 Issue #45 body (verbatim, from the public API `body` field)
 
@@ -86,7 +87,7 @@ Two more terms are used throughout:
 | `inputSha256` is declared at `:52`, and assigned only inside `if (arguments.Report)` (`:54`, value at `:58` from `resolved.Sha256`) | `RunCommand.cs:52-58` | CONFIRMED |
 | The diagnostic bundle is written only inside `if (arguments.Report)` (`:86`); `inputSha256` is passed to `WriteDiagnosticBundle` at `:93` | `RunCommand.cs:86-93` | CONFIRMED |
 | The CLI passes an empty diagnostics array to the bundle writer, so the CLI bundle's `diagnostics.log` has no entries | `RunCommand.cs:197-201` (`Array.Empty<Diagnostic>()` at `:201`) | CONFIRMED |
-| `ExecutionDiagnosticLog` (projects diagnostics onto an allow-list of context keys, max 256 entries) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:12`, allow-list `:17-30` | CONFIRMED |
+| `ExecutionDiagnosticLog` (projects diagnostics onto an allow-list of context keys, max 256 entries) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:12`, allow-list `:17-30`, filter `:78-79` | CONFIRMED |
 | `ExecutionDiagnosticLog` allows the `opcode` key (`DiagnosticContextKeys.InstructionOpcode`) as a `uint`. A value under this key is a raw instruction word. | `ExecutionDiagnosticLog.cs:28` | CONFIRMED |
 | `ExecutionDiagnosticBundleWriter.Write` serialises `report` (`:51`), `environment` whole (`:52`), and `diagnosticLog` from `FormatTail` (`:53`), and writes four entries (name constants `:18-21`) | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:16`, `:51-53`, `:18-21` | CONFIRMED |
 | `issue.md` is formatted from `report` by `ExecutionIssueMarkdown.Format` (it prints the artifact identity and input hash) | `ExecutionDiagnosticBundleWriter.cs:54`; `ExecutionIssueMarkdown.cs:36` | CONFIRMED (call); the full issue.md text was not read |
@@ -147,48 +148,79 @@ Two more terms are used throughout:
 | `BiosContentDiagnostic` record: counts and provenance text, no bytes | `BiosAddressGuard.cs:81` | CONFIRMED |
 | Standalone report "never names an input". The code comment cites "Issue #786 B1"; #786 is a pull request, so the label in the comment is a mislabel. | `src/PSXRecomp.RuntimeHost/Program.cs:197` | OBSERVED (comment) |
 
-### 1.8 OpenBIOS probe: all output writers
+### 1.8 OpenBIOS probe: writers inventoried
 
-The probe (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs`) has more than one writer. Every writer below is inventoried. Each is classified in section 7.6.
+The probe is `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs`, with helpers in `OpenBiosProbeDifferential.cs`, `OpenBiosProbeAccounting.cs`, `OpenBiosProbeMdecLog.cs`, and `OpenBiosProbeBoundaryLog.cs`.
 
-**W1. Interpreter probe `--json` document (the anonymous object, `kind = "openbios-probe"`).**
+**Completeness claim.** The writers below were found by searching the probe sources for output calls (`WriteLine`, `WriteAllText`, `WriteAllBytes`, `WriteAtomically`, `StreamWriter`, and `output.Write`). The search found W1 to W13. **Whether this list is exhaustive is UNVERIFIED**: no tool proved that every output call was found. The required test (section 7.5) must also check that the writer list matches the code.
+
+**W1. Interpreter probe `--json` document.** Written directly at `:419` inside the `if (json)` branch, not through the common writer.
 
 | Element | Location | Label |
 |---|---|---|
-| The object's `kind`, `backend`, `sha256`, `bootVerified`, `kernelBooted`, `milestones`, `titleStarted`, `executionState`, `guestPc`, `diagnosticCode`, `segmentsRetired`, `stop`, `captured`, `gte`, `frame` fields | `OpenBiosProbeCommand.cs:421` (`kind`), `:423` (`sha256 = hash`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`), `:437` (`frame`) | CONFIRMED |
+| The anonymous object is serialised and written at `:419`; its fields `kind`, `backend`, `sha256`, `bootVerified`, `kernelBooted`, `milestones`, `titleStarted`, `executionState`, `guestPc`, `diagnosticCode`, `segmentsRetired`, `stop`, `captured`, `gte`, `frame` are at `:421-437` | `OpenBiosProbeCommand.cs:419` (write), `:421` (`kind`), `:423` (`sha256 = hash`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`), `:437` (`frame`) | CONFIRMED |
 | `BuildStop` builds `pc`, `sr`, `cause`, `epc`, `badVAddr`, `gpr[32]`, `lastFetches` (`Hex(e.Pc):Hex(e.Word)`, last 16), `lastTransfers` (last 16, including `From.Word`) | `OpenBiosProbeCommand.cs:1004-1014` (`pc`/`sr`/`cause`/`epc`/`badVAddr` at `:1010-1011`; `gpr` at `:1012`; `lastFetches` at `:1013`; `lastTransfers` at `:1014`) | CONFIRMED |
 | `BuildStop` is called with the interpreter engine's `FinalSnapshot` | `OpenBiosProbeCommand.cs:361` | CONFIRMED |
 | `captured` is built at the capture PC: `pc`, `word = ReadGuestWord(pc)` (raw instruction word), `gpr[32]`, `lastTransfers` (PCs only) | `OpenBiosProbeCommand.cs:344-350`; `word` at `:346`; `gpr` at `:347` | CONFIRMED |
 | `gte.lastUnsupportedCommand` is `Gte.LastUnsupportedCommand`, set to `command & 0x01FF_FFFF`; `gte.commandsExecuted` is a count | `OpenBiosProbeCommand.cs:435`; `src/PSXRecomp.Core/Runtime/Gte/GteRegisterBank.cs:106`, `:115` | CONFIRMED |
-| `milestones` is an `OpenBiosBootReport` record. Its fields are readable: `ResetVectorFetched`, `KernelRunningFromRam`, `VectorsInstalled`, `ExceptionVectorExecuted`, `ShellEntered`, `ShellEnteredAtFetch`, `InterruptEntries`, `SyscallEntries`, `TitleEntryPc`, `FirstUnexpectedException`, plus the derived `TitleStarted` and `KernelBooted`. The probe passes it to `milestones = report`. | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:10-40` (record and derived properties at `:20`, `:29-38`) | CONFIRMED |
+| `milestones` is an `OpenBiosBootReport` record: `ResetVectorFetched`, `KernelRunningFromRam`, `VectorsInstalled`, `ExceptionVectorExecuted`, `ShellEntered`, `ShellEnteredAtFetch`, `InterruptEntries`, `SyscallEntries`, `TitleEntryPc`, `FirstUnexpectedException`, plus `TitleStarted` and `KernelBooted` | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:10-40` (record and derived properties at `:20`, `:29-38`) | CONFIRMED |
 | `milestones.firstUnexpectedException` is `OpenBiosUnexpectedException(ExcCode, Epc, BadVAddr, Cause, AtFetch)` | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:40`; read by the probe at `OpenBiosProbeCommand.cs:808` | CONFIRMED |
-| Other probe-document fields named by the review (`fetchIndices`, `engine`, `standalone`, `interpretedEntries`, `atBoundary`, `milestoneComparison`, `consistency`, `timings`, `aot`, `execution`, `accounting`, `loadedImages[].name`) | the document object, `OpenBiosProbeCommand.cs:663-756` (generated-host variant, see W2) and `:421-437` (interpreter variant) | CONFIRMED (names); their value shapes were not all read. Classified by name in section 7.6; shape UNVERIFIED for `aot`, `execution`, `milestoneComparison`, `consistency`, `timings`, `fetchIndices`. |
-| The `--json` document is written by the common writer that serialises the whole node | `OpenBiosProbeCommand.cs:743-746` (`SerializeToNode`, `consistency`, text), `:755` (`output.WriteLine(text)`) | CONFIRMED |
+| `--capture-at <hex-pc>` option | `OpenBiosProbeCommand.cs:59-67` | CONFIRMED |
+| The probe loads a 512 KiB OpenBIOS ROM and boots the firmware, so the interpreter fetches are expected to include BIOS-range PCs | `OpenBiosProbeCommand.cs:201-207` (ROM load); the boot design | CONFIRMED (ROM load); PREDICTED (BIOS-range fetches) |
+| Whether any value in the `--json` output lies in the BIOS range | not checked (no probe run, no captured `--json` output inspected) | UNVERIFIED |
 
-**W2. Generated-host `--json` document (`OpenBiosProbeCommand.cs:663-756`).**
+**W2. Generated-host `--json` document.** The document object is built at `:663-742` and passed to the common writer, which serialises it at `:743-746` and writes it at `:755`.
 
 | Element | Location | Label |
 |---|---|---|
-| The generated-host document is built at `:663-756` and written at `:755` through the same path as W1 | `OpenBiosProbeCommand.cs:663-756`, `:743-746`, `:755` | CONFIRMED |
-| `diagnosticMessage` is set from `result.DiagnosticMessage` (free text) | `OpenBiosProbeCommand.cs:677` (`diagnosticMessage = result.DiagnosticMessage`) | CONFIRMED |
-| `--fallback-targets` export is written with `WriteAtomically` from the same run | `OpenBiosProbeCommand.cs:660` | CONFIRMED |
-| `accounting.unsupportedOpcodes[]` entries: `excCode`, `opcode` (instruction field), `pc`, `word` (raw instruction word), `atFallbackFetch` | `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:195-198` | CONFIRMED |
-| Pinned by a test: `unsupported[0]["word"] == "0xFC000000"` and `unsupported[1]["opcode"] == 0x12` | `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:183`, `:185` | CONFIRMED |
+| The generated-host document object (fields are classified in section 7.6) | `OpenBiosProbeCommand.cs:663-742` | CONFIRMED |
+| Common serialisation and write: `SerializeToNode`, `consistency` added, text produced, written | `OpenBiosProbeCommand.cs:743-746`, `:755` | CONFIRMED |
+| `diagnosticMessage` is set from `result.DiagnosticMessage` (free text) | `OpenBiosProbeCommand.cs:677` | CONFIRMED |
+| `stopAt` is `{ pc, reachedByInterpreter, reachedByHost }` | `OpenBiosProbeCommand.cs:678-680` | CONFIRMED |
+| `build` carries counts (`imageInstructions`, `nativeInstructions`, `blocks`, `roots`, `staticFallbackTargets`, `symbols` as a count) | `OpenBiosProbeCommand.cs:681-689` | CONFIRMED |
+| `loadedImages[]` carries `name`, `blocks`, `nativeInstructions`, `skippedEntries` (PCs) | `OpenBiosProbeCommand.cs:690` | CONFIRMED |
+| `loadedCodeVersions` is `loadedCode.Blocks.Count` | `OpenBiosProbeCommand.cs:691` | CONFIRMED |
+| `interpretedEntries` is `observedPcs.Order()` (a PC array) | `OpenBiosProbeCommand.cs:692`; `observedPcs` at `:488-490` | CONFIRMED |
+| `precompileMilliseconds` is `buildMs + compileMs` (not rounded at this point) | `OpenBiosProbeCommand.cs:693` | CONFIRMED |
+| `atBoundary` is a dictionary keyed by PC (`Hex(b.Key)`) whose value is `new { nativeInstructions, seconds }` | `OpenBiosProbeCommand.cs:550` (dictionary), `:597` (value shape), `:694` (output) | CONFIRMED |
+| `execution` carries native and fallback counts, `topFallbackTargets` (strings of PC, counts, and a cause), and `timings = costs` (`:706`, shape not read) | `OpenBiosProbeCommand.cs:695-709` | CONFIRMED |
+| `accounting` is `accounting.Report(...)` | `OpenBiosProbeCommand.cs:710-711` | CONFIRMED |
+| `timings` is built at `:712-723` from `Math.Round(..., 1)` doubles (0.1 ms precision) | `OpenBiosProbeCommand.cs:712-724` | CONFIRMED |
+| `aot` carries `generatedCBytes` and `artifactBytes` | `OpenBiosProbeCommand.cs:725` | CONFIRMED |
+| `boundaries` is a dictionary keyed by PC whose values are `Describe()` objects | `OpenBiosProbeCommand.cs:726`; `OpenBiosProbeDifferential.cs:95-107` | CONFIRMED |
+| `differential` is a dictionary keyed by PC whose values are `Compare` results, or a string for an unreached boundary | `OpenBiosProbeCommand.cs:727-731` | CONFIRMED |
+| `referenceBoundariesMissing` is a PC array | `OpenBiosProbeCommand.cs:732` | CONFIRMED |
+| `referenceSecondsAtBoundary` is a dictionary keyed by PC of `referenceSeconds` values (type not read here) | `OpenBiosProbeCommand.cs:733` | CONFIRMED (location); value type UNVERIFIED |
+| `firstInterrupt` is `{ interpreter: Describe(), host: Describe() }` | `OpenBiosProbeCommand.cs:734` | CONFIRMED |
+| `firstInterruptDifferential` is `Compare(referenceInterrupt, hostInterrupt)` or a string | `OpenBiosProbeCommand.cs:735-736` | CONFIRMED |
+| `milestoneComparison` is `{ match, interpreter = referenceMilestones }` | `OpenBiosProbeCommand.cs:737-741` | CONFIRMED |
 | `ProbeGuestState.Describe()` returns `pc`, `atFetch`, `cpu` (a map of named CPU values), `devices` (a map), `instructionWord` (raw word read from RAM at PC), `sr`, `cause`, `epc`, `ramSha256`, `guestCycles`, `scratchpadSha256` | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107`; `instructionWord` at `:101`; `ramSha256` at `:104` | CONFIRMED |
-| The `cpu` map is built from a list that includes `hi`, `lo`, `sr`, `cause`, `epc`, `badvaddr` (and the 31 GPRs, per the review; the GPR entries are in the same list) | `OpenBiosProbeDifferential.cs:36` (`cpu.AddRange([...("hi", hi), ("lo", lo), ("sr", cop0.Sr), ("cause", cop0.Cause), ("epc", cop0.Epc), ("badvaddr", cop0.BadVAddr)])`) | CONFIRMED (the six listed); CONFIRMED-by-review (the GPR entries) |
-| `scratchpad_sha256` is a device digest, added to the device list | `OpenBiosProbeDifferential.cs:41` | CONFIRMED |
-| `vram_sha256` is a device digest, added to the state list | `OpenBiosProbeDifferential.cs:83` | CONFIRMED |
-| The differential compares CPU and RAM and emits per-field mismatch objects (`kind = "cpu"` entries with `interpreter` and `host` hex values) | `OpenBiosProbeDifferential.cs:117-118` | CONFIRMED |
-| The differential emits a RAM mismatch object with `address`, `page`, `contextStart`, `interpreterBytes`, `hostBytes` (16 raw RAM bytes each side in the context window) | `OpenBiosProbeDifferential.cs:138-143` | CONFIRMED |
+| The `cpu` map is built from a list that includes `hi`, `lo`, `sr`, `cause`, `epc`, `badvaddr` and the GPR entries (the GPR entries per the review) | `OpenBiosProbeDifferential.cs:36` | CONFIRMED (the six named); CONFIRMED-by-review (GPR entries) |
+| `scratchpad_sha256` is a device digest | `OpenBiosProbeDifferential.cs:41` | CONFIRMED |
+| `vram_sha256` is a device digest | `OpenBiosProbeDifferential.cs:83` | CONFIRMED |
+| The differential emits per-field mismatch objects (`kind = "cpu"` with `interpreter` and `host` hex values) | `OpenBiosProbeDifferential.cs:117-118` | CONFIRMED |
+| The differential emits a RAM mismatch object with `address`, `page`, `contextStart`, `interpreterBytes`, `hostBytes` (16 raw RAM bytes each side) | `OpenBiosProbeDifferential.cs:138-143` | CONFIRMED |
 | The differential emits `interpreterRamSha256` and `hostRamSha256` (whole-RAM digests) | `OpenBiosProbeDifferential.cs:154-155` | CONFIRMED |
+| `accounting.unsupportedOpcodes[]`: `excCode`, `opcode`, `pc`, `word` (raw instruction word), `atFallbackFetch` | `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:195-198` | CONFIRMED |
+| Pinned by a test: `unsupported[0]["word"] == "0xFC000000"` and `unsupported[1]["opcode"] == 0x12` | `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:183`, `:185` | CONFIRMED |
 
-**W3. Non-JSON console output (`OpenBiosProbeCommand.cs:441-450`).**
+**W3. Non-JSON console output, interpreter path (`OpenBiosProbeCommand.cs:441-450`).**
 
 | Element | Location | Label |
 |---|---|---|
 | Prints `OpenBIOS execution probe (sha256:{hash}, backend=...)` (firmware digest, `:443`), state, PC, and code | `OpenBiosProbeCommand.cs:441-445` | CONFIRMED |
 | Prints `Stop: {JsonSerializer.Serialize(stop)}`, which includes the full `gpr[32]` and COP0 fields | `OpenBiosProbeCommand.cs:446-449` | CONFIRMED |
 | Prints `Kernel boot milestones: {report}` | `OpenBiosProbeCommand.cs:450` | CONFIRMED |
+
+**W12. Non-JSON summary (`OpenBiosProbeCommand.cs:749-751`, `Summarize` at `:838`).** When `--json` is not set, the document is parsed back and summarised line by line.
+
+| Element | Location | Label |
+|---|---|---|
+| The summary is written at `:749-751` from `Summarize(JsonNode.Parse(text))` | `OpenBiosProbeCommand.cs:747-751` | CONFIRMED |
+| `Summarize` prints `hotEntries[]` entries with `pc`, `symbol` (a symbol name), `reason`, `transitions`, `retiredInstructions` | `OpenBiosProbeCommand.cs:859-861` | CONFIRMED |
+| `Summarize` prints `hotPcs[]` entries with `pc`, `symbol`, `fetches`, `share` | `OpenBiosProbeCommand.cs:864-866` | CONFIRMED |
+| `Summarize` prints the differential result, and on a mismatch the `firstMismatch` JSON (may carry register or RAM values) | `OpenBiosProbeCommand.cs:874` | CONFIRMED |
+| The `hotEntries` and `hotPcs` names are used by `Summarize`; their producer was not read in this revision | `OpenBiosProbeCommand.cs:859`, `:864` | CONFIRMED (consumer); producer UNVERIFIED |
 
 **W4. `--retire-out <file>` (JSON lines, one per fetch at a position).**
 
@@ -219,26 +251,37 @@ The probe (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs`) has more than one writer
 
 | Element | Location | Label |
 |---|---|---|
-| Written with `WriteAtomically` | `OpenBiosProbeCommand.cs:660` | CONFIRMED |
-| The export carries `ramWord` (a raw RAM word, read at `:968`) and `lastReturnPc` (`:952-977`) | `OpenBiosProbeCommand.cs:952-977` (`lastReturnPc`), `:968` (`ramWord`) | CONFIRMED (lines); the export's full schema was not read |
+| The export is written with `WriteAtomically` after the run | `OpenBiosProbeCommand.cs:660`; `WriteAtomically` at `:981` | CONFIRMED |
+| The export document `BuildFallbackTargetsDocument` contains `format`, `sha256` (the firmware digest, `hash`, `:973`), `run` (`ObservedRootPlanner.RunDocument(DescribeRun(hash, manifest, discSha256, ...))`, `:974`, which includes the firmware digest and the disc digest), `outcome` (`state`, `complete`, `stopAt`, `:975`), and `targets[]` (`pc`, `cause`, `entries`, `instructions`, `lastReturnPc`, `ramWord`, `:961-969`) | `OpenBiosProbeCommand.cs:952-977` | CONFIRMED |
+| `ramWord` is a raw RAM word, read by `ramWordOf` | `OpenBiosProbeCommand.cs:968` | CONFIRMED |
 
-**W9. `--mdec-events <file>` (JSON lines, `OpenBiosProbeMdecLog.cs:43-56`).**
+**W9. `--mdec-events <file>` (JSON lines).**
 
 | Element | Location | Label |
 |---|---|---|
 | Each line carries `engine`, `seq`, `g`, `kind`, `value` (raw 32-bit word), `pc`, `lastFallbackFetchPc`, `command` (raw 32-bit word), `remaining`, `control` (register), `fifoWords`, `busyBefore`, `busyAfter` | `src/PSXRecomp.Cli/OpenBiosProbeMdecLog.cs:43-56` | CONFIRMED |
 
-**W10. `--boundary-log <file>` (JSON lines, `OpenBiosProbeBoundaryLog.cs:40-56`).**
+**W10. `--boundary-log <file>` (JSON lines).**
 
 | Element | Location | Label |
 |---|---|---|
 | Each line is `Describe(engine, devices, vblank, cycles)`: device registers, `vramSha256`, and the boundary position | `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:40-56` | CONFIRMED (call and fields named by the review); the `Describe` body was not read in full |
 
-**W11. `--list-disc <file>` (JSON, `OpenBiosProbeCommand.cs:251-289`).**
+**W11. `--list-disc <file>` (JSON).**
 
 | Element | Location | Label |
 |---|---|---|
 | Writes the disc's file listing, including file names from the disc image | `OpenBiosProbeCommand.cs:251-289` | CONFIRMED (range); field shape not read |
+
+**W13. Standard error (`stderr`) writers.** Messages written to stderr, which may carry local paths or free text.
+
+| Element | Location | Label |
+|---|---|---|
+| Path in the message for an existing fallback export (`--fallback-targets {path} already exists`) | `OpenBiosProbeCommand.cs:154` | CONFIRMED |
+| Exception type and message (`ex.Message`), which may contain local paths | `OpenBiosProbeCommand.cs:242` | CONFIRMED |
+| Warnings with the boundary or MDEC failure text | `OpenBiosProbeCommand.cs:233`, `:235` | CONFIRMED |
+| Progress lines with fetch counts, transitions, and seconds | `OpenBiosProbeCommand.cs:529`, `:608`, `:615` | CONFIRMED |
+| Fallback export status lines (`did not finish`, `ended in {result.State}`) | `OpenBiosProbeCommand.cs:651`, `:657` | CONFIRMED |
 
 ### 1.9 Identity hashes already in use
 
@@ -320,7 +363,7 @@ Existing identities and the proposed use of each:
 | Identity | Existing field or source | Scope | Proposed use in trace |
 |---|---|---|---|
 | Session | `UnitTraceRun` GUID (`UnitTraceRun.cs:88`), passed as `PSX_TRACE_SESSION` | One run | `session` on every record; new optional `sessionId` in `report.json` (Q1) |
-| Input identity | `ExecutionDiagnosticReport.InputSha256` (`ExecutionDiagnosticReport.cs:16`), set only on the `--report` path (`RunCommand.cs:54-58`) | One input file, same across rebuilds of the same input | Trace header field `inputSha256`, bare lowercase hex (the existing encoding) |
+| Input identity | `ExecutionDiagnosticReport.InputSha256` (`ExecutionDiagnosticReport.cs:16`), set only on the `--report` path (`RunCommand.cs:54-58`) | One input file, same across rebuilds of the same input | Trace header field `inputSha256`, bare lowercase hex (the existing encoding); default-deny pending Q17 |
 | Built-artifact identity | `ExecutionDiagnosticReport.ArtifactIdentity` (`ExecutionDiagnosticReport.cs:19`), set from `"sha256:" + hex` of the built artifact (`RunCommand.cs:191`) | One build output; changes whenever the build output changes | Trace header field `artifactSha256`, bare lowercase hex (prefix stripped) |
 | Run ID | `runId` (`RuntimeHost/Program.cs:198`, also `:624`); `GuardStatsScope` run ID (`GuardStatsScope.cs:18`) | One run | Retire for trace purposes (Q2) |
 
@@ -391,49 +434,49 @@ Measurements required before default levels are chosen: wall time and output byt
 - The shareable diagnostic log admits an `opcode` key, which is a raw instruction word (`ExecutionDiagnosticLog.cs:28`), and the writer emits it (`ExecutionDiagnosticBundleWriter.cs:53`). The CLI passes an empty array, so the CLI bundle does not reach it today (`RunCommand.cs:201`). The writer API does. **CONFIRMED.**
 - BIOS content diagnostic reports counts and provenance only. **CONFIRMED** (`BiosAddressGuard.cs:81`).
 - **Exposure 1 (CONFIRMED):** `LoadedCodeMismatchDiagnostics` writes `windowAot`, `windowRam` (5 words each, `LoadedCodeMismatchDiagnostics.cs:296-297`), and `aotSha256` and `ramSha256` (`:293-294`). The window words are instruction words from the loaded image and from guest RAM. The comment calls the window bounded sampling. Bounded is not the same as redacted. Whether this output is ever published is **UNVERIFIED.**
-- **Exposure 2 (CONFIRMED): raw instruction words in probe output.** The writers W1-W3 and W9 carry them (section 7.6 lists each occurrence): `stop.lastFetches` (`:1013`), `stop.lastTransfers` (`:1014`), `captured.word` (`:346`), `gte.lastUnsupportedCommand` (`:435`), `accounting.unsupportedOpcodes[].word` (`OpenBiosProbeAccounting.cs:197`), `ProbeGuestState.Describe().instructionWord` (`OpenBiosProbeDifferential.cs:101`), the MDEC `value` and `command` words (`OpenBiosProbeMdecLog.cs:43-56`), and the fallback export `ramWord` (`OpenBiosProbeCommand.cs:968`). Whether any of them comes from the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `BiosAddressGuard.cs:103`) is **UNVERIFIED.** The probe boots OpenBIOS, so BIOS-range fetches are PREDICTED.
+- **Exposure 2 (CONFIRMED): raw instruction words in probe output.** The writers W1, W2, W3, W4, W8, W9, and W12 carry them (section 7.6 lists each occurrence): `stop.lastFetches` (`:1013`), `stop.lastTransfers` (`:1014`), `captured.word` (`:346`), `gte.lastUnsupportedCommand` (`:435`), `accounting.unsupportedOpcodes[].word` (`OpenBiosProbeAccounting.cs:197`), `ProbeGuestState.Describe().instructionWord` (`OpenBiosProbeDifferential.cs:101`), the MDEC `value` and `command` words (`OpenBiosProbeMdecLog.cs:43-56`), and the fallback export `ramWord` (`OpenBiosProbeCommand.cs:968`). Whether any of them comes from the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `BiosAddressGuard.cs:103`) is **UNVERIFIED.** The probe boots OpenBIOS, so BIOS-range fetches are PREDICTED.
 - **Exposure 3 (CONFIRMED, local by current writer; not guaranteed; test pending):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`OpenBiosProbeCommand.cs:337-342`). The file is not in the `--json` document and not in the four-entry `#457` bundle (`ExecutionDiagnosticBundleWriter.cs:18-21`). That is what the current writers do. Nothing enforces it. The leakage guarantee is **UNVERIFIED** until the test in section 7.5 exists.
-- **Exposure 4 (CONFIRMED, owner ruling):** full register dumps. The owner ruling removes them from shareable output. They appear in: `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`OpenBiosProbeCommand.cs:1010-1012`); `captured.gpr` (`:347`); the console `Stop:` line (`:446-449`); `--retire-out` lines (`:328-333`); `ProbeGuestState.Describe().cpu` (`OpenBiosProbeDifferential.cs:36`); the checkpoint and fallback state objects (section 1.4); and `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`OpenBiosBootMonitor.cs:40`). All of these are local only.
+- **Exposure 4 (CONFIRMED, owner ruling):** full register dumps. The owner ruling removes them from shareable output. They appear in: `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`OpenBiosProbeCommand.cs:1010-1012`); `captured.gpr` (`:347`); the console `Stop:` line (`:446-449`); `--retire-out` lines (`:328-333`); `ProbeGuestState.Describe().cpu` (`OpenBiosProbeDifferential.cs:36`), and therefore `boundaries`, `firstInterrupt`, and `firstInterruptDifferential` (`OpenBiosProbeCommand.cs:726`, `:734`, `:735-736`); the checkpoint and fallback state objects (section 1.4); and `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`OpenBiosBootMonitor.cs:40`). All of these are local only.
 
 ### 7.2 Shareable output is an explicit allowlist
 
-**Rule.** A field is shareable only if it appears in this allowlist. A field not listed is excluded. Adding a field requires editing this list. The required test (section 7.5) will enforce the list once it is written; it does not exist yet. **PREDICTED.**
+**Rule.** A field is shareable only if it appears in this allowlist. A field not listed is excluded. Adding a field requires editing this list. The required test (section 7.5) will enforce the list once it is written. It does not exist yet. **PREDICTED.**
 
 Each allowed class has one rule:
 
 | Class | Rule | Allowed fields |
 |---|---|---|
-| PC (guest address) | 32-bit unsigned, written as `0x` plus 8 hex digits. It names where execution was, not what the bytes were. | `stop.pc`; `captured.pc`; `guestPc` (top level); `ExecutionDiagnosticReport.GuestPc`; `milestones.TitleEntryPc`; `ExecutionDiagnosticLog` `guestPc` and `guestAddress` context keys; `captured.lastTransfers` (PC-to-PC pairs only); `stop.lastTransfers` after removing `From.Word`; `LoadedCodeMismatchDiagnostics` `pc` and `windowStartPc`; `RuntimeHostDiagnostic` `FinalPc`, `LastAotBlockPc`, `TransferSourcePc`, `TransferTargetPc`; `RuntimeHostRunMetrics` `LastFallbackEntryPc`, `LastFallbackReturnPc` |
+| PC (guest address) | 32-bit unsigned, written as `0x` plus 8 hex digits. It names where execution was, not what the bytes were. | `stop.pc`; `captured.pc`; `guestPc` (top level); `ExecutionDiagnosticReport.GuestPc`; `milestones.TitleEntryPc`; `ExecutionDiagnosticLog` `guestPc` and `guestAddress` context keys; `captured.lastTransfers` (PC-to-PC pairs only); `stop.lastTransfers` after removing `From.Word`; `LoadedCodeMismatchDiagnostics` `pc` and `windowStartPc`; `RuntimeHostDiagnostic` `FinalPc`, `LastAotBlockPc`, `TransferSourcePc`, `TransferTargetPc`; `RuntimeHostRunMetrics` `LastFallbackEntryPc`, `LastFallbackReturnPc`; `interpretedEntries` (an array of PCs, `:692`); `loadedImages[].skippedEntries` (PCs, `:690`); `referenceBoundariesMissing` (PCs, `:732`); the keys of `atBoundary` (`:694`) and `referenceSecondsAtBoundary` (`:733`); `stopAt.pc` (`:679`); `fallback-targets` `targets[].pc` and `lastReturnPc`, and `outcome.stopAt` (by writer rule, local, see W8) |
 | Address (device or RAM location, not data) | 32-bit unsigned hex, as above. Names a location, not contents. | `RuntimeHostRunMetrics.LastMmioPhysicalAddress`; `LoadedCodeMismatchDiagnostics.ramPage` (a page index, written as hex) |
-| Classification code | A value from a closed enum, or a registered `DiagnosticCode` (`^[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)*$`, `docs/architecture/diagnostics.md:55`). Never free text. | `diagnosticCode`; `executionState`; `kind`; `backend`; `engine`; `standalone`; `atBoundary`; `milestones` booleans (`ResetVectorFetched`, `KernelRunningFromRam`, `VectorsInstalled`, `ExceptionVectorExecuted`, `ShellEntered`); `bootVerified`, `kernelBooted`, `titleStarted`; `milestones.firstUnexpectedException.excCode` (exception code 0-31); `ExecutionDiagnosticReport` `Outcome`, `State`, `DiagnosticCode`; `ExecutionEnvironmentReport` `OsPlatform`, `OsArchitecture`, `ProcessArchitecture`, `TargetArchitecture` (closed sets, if the setter enforces them, to be confirmed); `RuntimeHostDiagnostic` `FallbackOutcome`, `FallbackRejectReason`, `ClassifiedExitCode`, `NativeTerminationReason`, `OrchestratorState`, `OrchestratorDiagnosticCode`, `TimedOut`, `FallbackEnabled`, `FallbackAttempted`, `TargetHasCompiledBlock`, `TargetInsideImage`, `LastMmioWasWrite`; `trace` `termination`, `status` |
-| Count | Non-negative integer. | `segmentsRetired`; `gte.commandsExecuted`; `interpretedEntries`; `milestones.ShellEnteredAtFetch`, `milestones.InterruptEntries`, `milestones.SyscallEntries`; `milestones.firstUnexpectedException.atFetch`; `retired` (trace); `comparedWords`, `rejections`, `fullMatches`, `versionCount`, `version`, `ramHashChanges` (`LoadedCodeMismatchDiagnostics`); the range pairs `firstMismatchIndexRange`, `mismatchedWordsRange`; `RuntimeHostRunMetrics` `MmioAccesses`, `TimeReports`; `RuntimeHostDiagnostic` `AotRetiredInstructions`, `FallbackRetiredInstructions`, `FallbackTransitionCount`; `ExecutionDiagnosticReport.SegmentBudget`; `frame.nonZeroPixels` (count only, not the frame) |
-| Whole-artifact digest | SHA-256, bare lowercase 64-character hex (section 4 encoding). A digest of a partial window, a region, RAM, VRAM, scratchpad, or any device memory is **not** allowed (section 7.3). | `ExecutionDiagnosticReport.InputSha256`; `ExecutionDiagnosticReport.ArtifactIdentity` (after prefix stripping); `discHash` context key (`ExecutionDiagnosticLog`); `inputSha256` and `artifactSha256` trace header fields |
-| Duration | Milliseconds as a number, rounded to a fixed precision in the writer. Wall clock is not written as a timestamp. | `RuntimeHostRunMetrics.WallMilliseconds`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds` (`RuntimeHostDiagnostic.cs:146-150`); probe `timings` (shape UNVERIFIED) |
+| Classification code | A value from a closed enum, or a registered `DiagnosticCode` (`^[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)*$`, `docs/architecture/diagnostics.md:55`). Never free text. | `diagnosticCode`; `executionState`; `kind`; `backend`; `engine`; `standalone`; `milestones` booleans (`ResetVectorFetched`, `KernelRunningFromRam`, `VectorsInstalled`, `ExceptionVectorExecuted`, `ShellEntered`); `bootVerified`, `kernelBooted`, `titleStarted`; `milestones.firstUnexpectedException.excCode` (exception code 0-31); `ExecutionDiagnosticReport` `Outcome`, `State`, `DiagnosticCode`; `RuntimeHostDiagnostic` `FallbackOutcome`, `FallbackRejectReason` (only if the writer enforces a closed set, else excluded), `ClassifiedExitCode`, `NativeTerminationReason`, `OrchestratorState`, `OrchestratorDiagnosticCode`, `TimedOut`, `FallbackEnabled`, `FallbackAttempted`, `TargetHasCompiledBlock`, `TargetInsideImage`, `LastMmioWasWrite`; trace `termination`, `status`; `milestoneComparison.match` (boolean) |
+| Count | Non-negative integer. | `segmentsRetired`; `gte.commandsExecuted`; `build` counts (`imageInstructions`, `nativeInstructions`, `blocks`, `roots`, `staticFallbackTargets`, `symbols` as a count, `:681-689`); `loadedCodeVersions` (`:691`); `loadedImages[].blocks` and `nativeInstructions` (`:690`); `aot.generatedCBytes`, `aot.artifactBytes` (`:725`); `milestones.ShellEnteredAtFetch`, `milestones.InterruptEntries`, `milestones.SyscallEntries`; `milestones.firstUnexpectedException.atFetch`; `atBoundary` values `nativeInstructions` (`:597`); `retired` (trace); `comparedWords`, `rejections`, `fullMatches`, `versionCount`, `version`, `ramHashChanges` (`LoadedCodeMismatchDiagnostics`); the range pairs `firstMismatchIndexRange`, `mismatchedWordsRange`; `RuntimeHostRunMetrics` `MmioAccesses`, `TimeReports`; `RuntimeHostDiagnostic` `AotRetiredInstructions`, `FallbackRetiredInstructions`, `FallbackTransitionCount`; `ExecutionDiagnosticReport.SegmentBudget`; `frame.nonZeroPixels` (count only, not the frame) |
+| Whole-artifact digest | SHA-256, bare lowercase 64-character hex (section 4 encoding). Digests of a partial window, a region, RAM, VRAM, scratchpad, or any device memory are **not** allowed (section 7.3). Whether a digest of a user's copy of a licensed file is allowed is Q17. | Default-deny pending Q17: `ExecutionDiagnosticReport.InputSha256`, `ExecutionDiagnosticReport.ArtifactIdentity` (after prefix stripping), `discHash` context key, `inputSha256` trace header field. Share-candidate: `artifactSha256` (the built artifact, a digest of this build's output, see Q17 for the rule that applies to it) |
+| Duration | Milliseconds as a number, rounded to 0.1 ms in the writer. Wall clock is not written as a timestamp. | `RuntimeHostRunMetrics.WallMilliseconds`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds` (`RuntimeHostDiagnostic.cs:146-150`); probe `timings` (`OpenBiosProbeCommand.cs:712-724`, read, rounded to 0.1 ms); `precompileMilliseconds` (`:693`, rounded by the projection); `atBoundary` values `seconds` (`:597`, rounded to 0.1 s by the projection) |
 | Identifier | Session ID (section 4), 32-hex GUID. | `session` (new per-record field, section 2) |
 
-Fields that are default-deny (not allowed until a decision or a read) are in section 7.6, under "Default-deny".
+Fields that are default-deny (not allowed until a decision or a read) are in section 7.6, under "default-deny".
 
 ### 7.3 Excluded fields (shareable output must not contain these)
 
 | Excluded class | Fields | Why |
 |---|---|---|
-| General registers (owner ruling) | `stop.gpr` (`OpenBiosProbeCommand.cs:1012`); `captured.gpr` (`:347`); `gpr[32]` in every `checkpoint`; `gpr` in the native `unit` state and fallback `entry`/`exit` objects (`unit-trace.md`); `retire-out` `gpr` (`:328-333`); `ProbeGuestState.Describe().cpu` GPR entries (`OpenBiosProbeDifferential.cs:36`); console `Stop:` line (`:446-449`) | Full register dump. Local only (owner ruling). |
-| COP0 state (owner ruling) | `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`:1010-1011`); `sr`, `cause`, `epc` in every `checkpoint` and fallback state; `ProbeGuestState.Describe()` `sr`, `cause`, `epc` (`OpenBiosProbeDifferential.cs:95-107`) and `cpu` COP0 entries (`:36`); `badvaddr` (`:36`); `retire-out` `sr`, `cause`, `epc` (`:328-333`); `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`OpenBiosBootMonitor.cs:40`) | COP0 full state. Local only (owner ruling). |
+| General registers (owner ruling) | `stop.gpr` (`OpenBiosProbeCommand.cs:1012`); `captured.gpr` (`:347`); `gpr[32]` in every `checkpoint`; `gpr` in the native `unit` state and fallback `entry`/`exit` objects (`unit-trace.md`); `retire-out` `gpr` (`:328-333`); `ProbeGuestState.Describe().cpu` GPR entries (`OpenBiosProbeDifferential.cs:36`); console `Stop:` line (`:446-449`); `boundaries` (`OpenBiosProbeCommand.cs:726`, each value a `Describe()` with the `cpu` map); `firstInterrupt` (`:734`, both `Describe()` objects); `firstInterruptDifferential` (`:735-736`, a `Compare` result with `cpu` mismatch values); `differential` (`:727-731`, `Compare` results with `cpu` mismatch values) | Full register dump. Local only (owner ruling). |
+| COP0 state (owner ruling) | `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`:1010-1011`); `sr`, `cause`, `epc` in every `checkpoint` and fallback state; `ProbeGuestState.Describe()` `sr`, `cause`, `epc` (`OpenBiosProbeDifferential.cs:95-107`) and `cpu` COP0 entries (`:36`); `badvaddr` (`:36`); `retire-out` `sr`, `cause`, `epc` (`:328-333`); `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`OpenBiosBootMonitor.cs:40`); `boundaries`, `firstInterrupt`, `firstInterruptDifferential` (the same `Describe()` and `Compare` objects, `:726`, `:734`, `:735-736`) | COP0 full state. Local only (owner ruling). |
 | HI and LO | `hi`, `lo` in checkpoint and state objects; `ProbeGuestState.Describe().cpu` entries `hi` and `lo` (`OpenBiosProbeDifferential.cs:36`); `retire-out` `hi`, `lo` (`:328-333`) | Part of the register dump. Excluded as a register dump. **PREDICTED** classification, pending Q13. |
-| Raw instruction words | `captured.word` (`OpenBiosProbeCommand.cs:346`); `stop.lastFetches` (`:1013`); `stop.lastTransfers` `From.Word` (`:1014`); `gte.lastUnsupportedCommand` (`:435`); `accounting.unsupportedOpcodes[].word` (`OpenBiosProbeAccounting.cs:197`); `accounting.unsupportedOpcodes[].opcode` (`:198`), since it is the instruction's opcode field; `ProbeGuestState.Describe().instructionWord` (`OpenBiosProbeDifferential.cs:101`); `ExecutionDiagnosticLog` `opcode` context key (`ExecutionDiagnosticLog.cs:28`); MDEC `value` and `command` (`OpenBiosProbeMdecLog.cs:43-56`); `mmio.value`; `TransferOpcode` (`RuntimeHostDiagnostic`); the fallback export `ramWord` (`OpenBiosProbeCommand.cs:968`) | Instruction encoding from guest memory. Excluded from shareable output. |
+| Raw instruction words | `captured.word` (`OpenBiosProbeCommand.cs:346`); `stop.lastFetches` (`:1013`); `stop.lastTransfers` `From.Word` (`:1014`); `gte.lastUnsupportedCommand` (`:435`); `accounting.unsupportedOpcodes[].word` (`OpenBiosProbeAccounting.cs:197`); `accounting.unsupportedOpcodes[].opcode` (`:198`), since it is the instruction's opcode field; `ProbeGuestState.Describe().instructionWord` (`OpenBiosProbeDifferential.cs:101`); `ExecutionDiagnosticLog` `opcode` context key (`ExecutionDiagnosticLog.cs:28`); MDEC `value` and `command` (`OpenBiosProbeMdecLog.cs:43-56`); `mmio.value`; `TransferOpcode` (`RuntimeHostDiagnostic`); the fallback export `ramWord` (`OpenBiosProbeCommand.cs:968`); `execution.topFallbackTargets` strings (`:704-705`, which carry the cause text and counts, see default-deny) | Instruction encoding from guest memory. Excluded from shareable output. |
 | RAM contents | `windowAot`, `windowRam` (`LoadedCodeMismatchDiagnostics.cs:296-297`); `OpenBiosProbeDifferential` RAM context `interpreterBytes`, `hostBytes` (`:138-143`); `--dump-ram` file (W7); any memory bytes; any run of 8 or more consecutive hex words | Raw loaded-image and guest-RAM words. |
-| Whole-RAM, VRAM, and device digests (owner direction, M4) | `ramSha256` (`LoadedCodeMismatchDiagnostics.cs:294`; `OpenBiosProbeDifferential.cs:104`); `interpreterRamSha256`, `hostRamSha256` (`:154-155`); `vram_sha256` (`:83`); `scratchpad_sha256` (`:41`, `:106`) | A digest of RAM or device memory is a region digest, and is banned by the RAM-region rule in section 7.3. This is a banned class, not a default-deny. |
-| Free text | `diagnosticMessage` (`OpenBiosProbeCommand.cs:677`); `OsVersion` (`ExecutionEnvironmentReport.cs:18`, `:39`); `Title` (`ExecutionDiagnosticReport.cs`); `FailureExceptionType` (`RuntimeHostDiagnostic`); `FallbackRejectReason` if it is free text (decision: treat as classification only if the writer enforces a closed set, else excluded) | Free text is not a classification. It can carry host, title, or path content. |
-| Local file and symbol names | `accounting.hotSymbols` symbol names; `loadedImages[].name` (file names); `--list-disc` file names (W11) | File and symbol names are user-supplied text, not classifications. |
-| Host and environment identity | `environment.json` fields `DotNetVersion`, `RuntimeIdentifier`, `CompilerVersion`, `ProcessArchitecture`, `OsArchitecture` beyond the closed sets; `ProductRevision`, `Revision` (default-deny, Q15); the `runId` value, which is host run identity (Q2) | Host identity. Not a trace field. |
+| Whole-RAM, VRAM, and device digests (owner direction) | `ramSha256` (`LoadedCodeMismatchDiagnostics.cs:294`; `OpenBiosProbeDifferential.cs:104`); `interpreterRamSha256`, `hostRamSha256` (`:154-155`); `vram_sha256` (`:83`); `scratchpad_sha256` (`:41`, `:106`) | A digest of RAM or device memory is a region digest, and is banned by the RAM-region rule in section 7.3. This is a banned class, not a default-deny. |
+| Free text | `diagnosticMessage` (`OpenBiosProbeCommand.cs:677`); `fetchIndices` (`:672`, a constant explanation string); `OsVersion` (`ExecutionEnvironmentReport.cs:18`, `:39`); `Title` (`ExecutionDiagnosticReport.cs`); `FailureExceptionType` (`RuntimeHostDiagnostic`); `FallbackRejectReason` unless a closed set is enforced; the stdout summary text of W12 (`:859-874`); the stderr text of W13 | Free text is not a classification. It can carry host, title, or path content. |
+| Symbol, file, and disc names | `accounting.hotSymbols` symbol names; `hotEntries[].symbol` and `hotPcs[].symbol` (`OpenBiosProbeCommand.cs:861`, `:866`); `loadedImages[].name`; `--list-disc` file names (W11) | User-supplied text (a symbol file or the user's disc). Not a classification. |
+| Host and environment identity | `environment.json` fields `DotNetVersion`, `RuntimeIdentifier`, `CompilerVersion`, and the closed-set fields in section 7.6 until their setters are read (`OsPlatform`, `OsArchitecture`, `ProcessArchitecture`, `TargetArchitecture`); `ProductRevision`, `Revision` (default-deny, Q15); the `runId` value, which is host run identity (Q2) | Host identity. Not a trace field. |
 | Trace-only values | `t` timestamps (default null; Q10); `skipped` counts are allowed as counts | Timestamps are opt-in and excluded from share-ready bundles (Q10). |
-| Frame pixels | `--dump-frame` PPM (W6); `frame` pixel content; the `frame` digest (moved to default-deny, section 7.6) | Pixel content is game output. Local only. |
-| Disc and program contents | `--list-disc` (W11), `--fallback-targets` (W8) contents beyond the classes above | Derived from the user's disc. Local only. |
+| Frame pixels | `--dump-frame` PPM (W6); `frame` pixel content; the `frame` digest (default-deny under Q14, section 7.6) | Pixel content is game output. Local only. |
+| Disc and program contents | `--list-disc` (W11) and `--fallback-targets` (W8) contents beyond the classes above | Derived from the user's disc. Local only. |
 
 ### 7.4 Local/share boundary (rule)
 
 1. **Shareable output** is produced only by one writer, the shareable projection. It builds a document from the allowlist in section 7.2 and nothing else. A document is shareable only when this projection built it. **PREDICTED.**
-2. **Local output** is any other output. The writers W1-W11 of section 1.8, the trace files, `environment.json` as currently written, the mismatch report as currently written, and the `--json` documents of the probe are all local. Local output may contain any field, including the excluded classes of section 7.3. **CONFIRMED** (these outputs exist and contain those fields today).
+2. **Local output** is any other output. The writers W1-W13 of section 1.8, the trace files, `environment.json` as currently written, the mismatch report as currently written, and the `--json` documents of the probe are all local. Local output may contain any field, including the excluded classes of section 7.3. **CONFIRMED** (these outputs exist and contain those fields today).
 3. A local output must not be attached to a bundle, a report, or an issue. The `#457` bundle writer accepts only shareable-projection documents. **PREDICTED** (the writer change does not exist; today the bundle writer takes typed records and does not check provenance).
 4. **A local-only classification is not a guarantee of non-leakage.** Calling an output "local" is a label. It stops leakage only if the shareable projection is tested to emit nothing outside the allowlist, and the bundle writer is tested to refuse non-projection input. Until the tests in section 7.5 exist and pass, the leakage guarantee is **UNVERIFIED**.
 
@@ -443,103 +486,165 @@ Fixtures are not written from section 7.3. Each fixture is generated by calling 
 
 Required tests:
 
-1. **`ShareableOutputAllowlistTests.Shareable_writer_emits_no_excluded_field`** (new file under `src/PSXRecomp.Tests/Diagnostics/`). Fixtures: run the probe document builder (W1 and W2 code paths), `ProbeGuestState.Describe()`, `OpenBiosProbeAccounting`, `OpenBiosBootReport` (milestones), `RuntimeHostDiagnostic` and `RuntimeHostRunMetrics`, `ExecutionEnvironmentReport`, `ExecutionDiagnosticReport`, and `LoadedCodeMismatchDiagnostics.ToJsonNode()`. Feed their outputs to the projection. The test checks the projection's output, not the fixture.
+1. **`ShareableOutputAllowlistTests.Shareable_writer_emits_no_excluded_field`** (new file under `src/PSXRecomp.Tests/Diagnostics/`). Fixtures: run the probe document builder (W1 and W2 code paths), the summary path (W12), `ProbeGuestState.Describe()` and `Compare`, `OpenBiosProbeAccounting`, `OpenBiosBootReport` (milestones), `RuntimeHostDiagnostic` and `RuntimeHostRunMetrics`, `ExecutionEnvironmentReport`, `ExecutionDiagnosticReport`, and `LoadedCodeMismatchDiagnostics.ToJsonNode()`. Feed their outputs to the projection. The test checks the projection's output, not the fixture.
 2. **`ShareableOutputAllowlistTests.Shareable_writer_keys_are_allowlisted`.** Walks the projection's output and fails on any key path not in the section 7.2 allowlist.
 3. **`ShareableOutputAllowlistTests.Shareable_writer_emits_no_excluded_key_or_value`.** Applies the matching rules below to the projection's output.
 4. **`ShareableOutputAllowlistTests.Bundle_writer_refuses_local_output`.** Asserts `ExecutionDiagnosticBundleWriter.Write` refuses a document that the projection did not build.
-5. **`ExecutionDiagnosticBundleWriterTests.Bundle_writer_rejects_opcode_context_key`** (required design change C2). Builds a bundle from a diagnostic carrying an `opcode` context key, and asserts the `diagnostics.log` entry contains no `opcode=` text and no value from that key. The writer drops the key (fail-closed: keys not on the allowlist are dropped; the allow-list is `ExecutionDiagnosticLog.cs:17-30` and the filter is at `:78-79`). **PREDICTED.**
+5. **`ExecutionDiagnosticBundleWriterTests.Bundle_writer_drops_opcode_context_key`** (required design change C2). Builds a bundle from a diagnostic carrying an `opcode` context key, and asserts the `diagnostics.log` entry contains no `opcode=` text and no value from that key. The writer drops the key: keys not on the allow-list are removed by the filter at `ExecutionDiagnosticLog.cs:78-79`, against the allow-list at `:17-30`, and the `opcode` key is removed from the allow-list. This is a drop, not a rejection, so the test name and this description both say "drops". **PREDICTED.**
+6. **`WriterInventoryTests.Probe_writers_match_section_1_8`.** Greps the probe sources for output calls (the search in section 1.8) and fails if an output call is not listed as a W-row. This is the test that makes the completeness claim of section 1.8 checkable. **PREDICTED.**
 
-**Matching rules for test 3 (m4).**
+**Matching rules for test 3.**
 
-- **Key match:** a key is excluded if it matches, case-insensitively, any term in this explicit list, as a substring of the key: `word`, `gpr`, `hi`, `lo`, `sr`, `cause`, `epc`, `badvaddr`, `opcode`, `bytes`, `ram`, `vram`, `scratchpad`, `window`, `dump`, `pixel`, `message`. The substring match is a second line of defence. Test 2 is the primary check, because the allowlist is exact.
+- **Key match:** a key is excluded if it matches, case-insensitively, any term in this explicit list, as a substring of the key: `word`, `gpr`, `hi`, `lo`, `sr`, `cause`, `epc`, `badvaddr`, `opcode`, `bytes`, `ram`, `vram`, `scratchpad`, `window`, `dump`, `pixel`, `message`, `symbol`, `name`, `boundaries`, `firstinterrupt`. The substring match is a second line of defence. Test 2 is the primary check, because the allowlist is exact.
 - **Hex-run rule:** a value fails if it is an array of 8 or more consecutive strings that each match `^0x[0-9A-Fa-f]{1,8}$`, or a single hex string of 32 or more bytes (64 or more hex digits) that is not a whole-artifact digest in the allowlist.
 - **Free-text rule:** any string value that is not a classification code, a PC, an identifier, or a digest in the allowlist fails.
 
-The leakage guarantee in section 7.4 stays **UNVERIFIED** until tests 1 through 5 exist and pass.
+The leakage guarantee in section 7.4 stays **UNVERIFIED** until tests 1 through 6 exist and pass.
 
-### 7.6 Writer classification (C1, M1, M2)
+### 7.6 Writer and field classification
 
-Each writer and each field group is labelled local or share-candidate. "Share-candidate" means its fields pass the allowlist if the projection emits them. "Default-deny" means it is not allowed until the stated decision or read. "Banned" means it is excluded by a rule in section 7.3 and never emitted.
+Each writer and each field is labelled local or share-candidate. "Share-candidate" means its fields pass the allowlist if the projection emits them. "Default-deny" means it is not allowed until the stated decision or read. "Banned" means it is excluded by a rule in section 7.3 and never emitted. Unread shapes are default-deny (Q16).
 
-**Writers (C1, M1).**
+**Writers.**
 
 | Writer | Location | Content | Label |
 |---|---|---|---|
-| Interpreter probe `--json` (W1) | `OpenBiosProbeCommand.cs:421-437`, written `:743-755` | Mixed, see field table below | Local |
-| Generated-host `--json` (W2) | `OpenBiosProbeCommand.cs:663-756`, written `:755` | Mixed, see field table below; `diagnosticMessage` (`:677`); `accounting` (`OpenBiosProbeAccounting.cs:195-198`); `differential` (`OpenBiosProbeDifferential.cs`) | Local |
-| Console `Stop` and milestones (W3) | `OpenBiosProbeCommand.cs:441-450` | Full GPRs and COP0 (`Stop:`); firmware digest (`:443`); milestones | Local |
-| `--retire-out` (W4) | `OpenBiosProbeCommand.cs:317`, `:328-333` | Full GPR, hi, lo, COP0 per fetch | Local (banned classes) |
-| `--pc-histogram` (W5) | `OpenBiosProbeCommand.cs:368-377` | `totalRamFetches`, PCs with counts, bucket starts with counts | Share-candidate fields (PC and count), but local by writer; file comment says "Local diagnostic only" |
-| `--dump-frame` (W6) | `OpenBiosProbeCommand.cs:378-411` | Framebuffer pixels (PPM) | Local; pixels are excluded (section 7.3); pixel content not a share-candidate |
-| `--dump-ram` (W7) | `OpenBiosProbeCommand.cs:81`, `:172`, `:337-342` | Raw 2 MiB RAM | Local; banned |
-| `--fallback-targets` (W8) | `OpenBiosProbeCommand.cs:660`, `:952-977`, `:968` | `ramWord` (raw RAM word), `lastReturnPc` (PC) | Local; `ramWord` banned; `lastReturnPc` share-candidate by writer rule, local by writer |
-| `--mdec-events` (W9) | `OpenBiosProbeMdecLog.cs:43-56` | `value` and `command` raw words, `control` register, `pc`, `lastFallbackFetchPc`, counts, flags | Local; raw words banned; `pc`, `lastFallbackFetchPc`, `seq`, `g`, `fifoWords`, `remaining` are share-candidates by writer rule |
-| `--boundary-log` (W10) | `OpenBiosProbeBoundaryLog.cs:40-56` | Device registers, `vramSha256` (VRAM digest, banned), boundary PCs | Local; VRAM digest banned; device register values local |
-| `--list-disc` (W11) | `OpenBiosProbeCommand.cs:251-289` | Disc file names | Local; file names excluded (section 7.3) |
-| Trace files (native `<path>`, fallback `<path>.fallback`) | `unit-trace.md`; `RecompilerHostCodeGen.cs` | Unit and fallback records; CPU state with `gpr` | Local; PC and count fields are share-candidates by writer rule |
+| W1 Interpreter probe `--json` | `OpenBiosProbeCommand.cs:419` (write), `:421-437` (object) | Mixed; see the W1 field table | Local |
+| W2 Generated-host `--json` | `OpenBiosProbeCommand.cs:663-742` (object), `:743-746` (serialise), `:755` (write) | Mixed; see the W2 field table | Local |
+| W3 Console output, interpreter path | `OpenBiosProbeCommand.cs:441-450` | Full GPRs and COP0 (`Stop:`); firmware digest (`:443`); milestones | Local |
+| W4 `--retire-out` | `OpenBiosProbeCommand.cs:317`, `:328-333` | Full GPR, hi, lo, COP0 per fetch | Local (banned classes) |
+| W5 `--pc-histogram` | `OpenBiosProbeCommand.cs:368-377` | `totalRamFetches`, PCs with counts, bucket starts with counts | Share-candidate fields (PC and count), local by writer; file comment says "Local diagnostic only" |
+| W6 `--dump-frame` | `OpenBiosProbeCommand.cs:378-411` | Framebuffer pixels (PPM) | Local; pixels excluded (section 7.3) |
+| W7 `--dump-ram` | `OpenBiosProbeCommand.cs:81`, `:172`, `:337-342` | Raw 2 MiB RAM | Local; banned |
+| W8 `--fallback-targets` | `OpenBiosProbeCommand.cs:660`, `:952-977` | See the W8 field table | Local |
+| W9 `--mdec-events` | `OpenBiosProbeMdecLog.cs:43-56` | `value` and `command` raw words, `control` register, `pc`, `lastFallbackFetchPc`, counts, flags | Local; raw words banned; `pc`, `lastFallbackFetchPc`, `seq`, `g`, `fifoWords`, `remaining` are share-candidates by writer rule |
+| W10 `--boundary-log` | `OpenBiosProbeBoundaryLog.cs:40-56` | Device registers, `vramSha256` (banned), boundary PCs | Local; VRAM digest banned; device register values local |
+| W11 `--list-disc` | `OpenBiosProbeCommand.cs:251-289` | Disc file names | Local; file names excluded (section 7.3) |
+| W12 Non-JSON summary | `OpenBiosProbeCommand.cs:747-751`, `Summarize` at `:838-875` | Hot entries with symbol names (`:861`), hot PCs with symbol names (`:866`), the differential result and `firstMismatch` (`:874`) | Local; symbol names and mismatch detail excluded; PCs and counts share-candidate by writer rule |
+| W13 stderr | `OpenBiosProbeCommand.cs:154`, `:233`, `:235`, `:242`, `:529`, `:608`, `:615`, `:651`, `:657` | Local paths (`:154`, `:242` `ex.Message`), failure text (`:233`, `:235`), progress with seconds and counts (`:529`, `:608`, `:615`), status (`:651`, `:657`) | Local; free text, excluded |
+| Trace files (native `<path>`, fallback `<path>.fallback`) | `unit-trace.md`; `RecompilerHostCodeGen.cs` | Unit and fallback records; CPU state with `gpr` | Local; PC and count fields share-candidates by writer rule |
 | Checkpoint records | `CpuCheckpoint.cs:17` | `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc`, `pc` | Local only (owner ruling) |
 | Loaded-code mismatch report (`#773`) | `LoadedCodeMismatchDiagnostics.cs:277-300`; written by `Program.cs:624` path | See field table | Local (banned fields present) |
 | Runtime host diagnostic and metrics (`#763`) | `RuntimeHostDiagnostic.cs:24`, `:146-160` | See field table | Local until projected |
 | `report.json` (`#457`) | `ExecutionDiagnosticBundleWriter.cs:51`; `ExecutionDiagnosticReport.cs:14-25` | See field table | Share-candidate fields; written to the bundle without a projection today |
-| `environment.json` (`#457`) | `ExecutionDiagnosticBundleWriter.cs:52`; `ExecutionEnvironmentReport.cs:11-45` | See field table | Share-candidate fields only after `OsVersion` is removed; written whole today |
+| `environment.json` (`#457`) | `ExecutionDiagnosticBundleWriter.cs:52`; `ExecutionEnvironmentReport.cs:11-45` | See field table | Share-candidate fields only after `OsVersion` is removed and the closed-set setters are read; written whole today |
 | `diagnostics.log` (`#457`) | `ExecutionDiagnosticBundleWriter.cs:53`; `ExecutionDiagnosticLog.cs:17-30` | Context keys, including `opcode` | Share-candidate after the C2 change |
 | `issue.md` (`#457`) | `ExecutionIssueMarkdown.cs:36` | Derived from `report` | Same classes as `report.json` |
 
-**Field tables (M2).**
-
-*Probe `--json` fields (W1, W2).*
+**W1 field table (`OpenBiosProbeCommand.cs:421-437`).**
 
 | Field | Class | Label |
 |---|---|---|
-| `kind`, `backend`, `engine`, `standalone`, `executionState`, `atBoundary`, `titleStarted`, `bootVerified`, `kernelBooted`, `diagnosticCode` | Classification | Share-candidate |
+| `kind`, `backend`, `executionState`, `titleStarted`, `bootVerified`, `kernelBooted`, `diagnosticCode` | Classification | Share-candidate |
 | `guestPc` | PC | Share-candidate |
-| `segmentsRetired`, `interpretedEntries`, `fetchIndices` (shape UNVERIFIED) | Count | Share-candidate (`fetchIndices` default-deny until read) |
-| `sha256` (`OpenBiosProbeCommand.cs:423`, firmware digest) | Whole-artifact digest | Default-deny pending Q12 |
-| `frame` (`:437`): `width`, `height`, `nonZeroPixels`, `sha256` | `width`, `height`, `nonZeroPixels` are counts; `sha256` is a frame digest, not a whole-artifact digest | Counts: share-candidate. `sha256`: default-deny pending Q14 |
-| `stop` (`:432`) | Mixed, see writer W1 | Share-candidate only for `pc`, `lastTransfers` PCs, `diagnostic` classifications; excluded for `gpr`, COP0, `lastFetches`, `word` |
-| `captured` (`:433`) | Mixed | Share-candidate only for `pc` and `lastTransfers`; excluded for `word`, `gpr` |
+| `segmentsRetired` | Count | Share-candidate |
+| `sha256` (`:423`, firmware digest) | Firmware digest | Default-deny pending Q12 |
+| `stop` (`:432`) | Mixed (see the `stop` rows below) | Mixed |
+| `captured` (`:433`) | Mixed (see the `captured` rows below) | Mixed |
 | `gte` (`:435`) | `commandsExecuted`: count; `lastUnsupportedCommand`: raw instruction field | `commandsExecuted`: share-candidate; `lastUnsupportedCommand`: excluded |
-| `milestones` (`OpenBiosBootMonitor.cs:10-40`) | Booleans, counts, `TitleEntryPc` (PC), `FirstUnexpectedException` (below) | Booleans and counts: share-candidate. `TitleEntryPc`: share-candidate (PC). `FirstUnexpectedException.excCode` and `.atFetch`: share-candidate. `FirstUnexpectedException.epc`, `.badVAddr`, `.cause`: excluded (COP0) |
-| `milestoneComparison` | Shape not read | Default-deny until read |
-| `consistency` | Shape not read (built from boundary PCs and the differential, `:743-745`) | Default-deny until read |
-| `timings` | Durations | Share-candidate (shape UNVERIFIED; each value is a duration) |
-| `aot`, `execution` | Shape not read | Default-deny until read |
-| `accounting` | `unsupportedOpcodes[].excCode` (classification), `.pc` (PC), `.atFallbackFetch` (count): share-candidate. `.word`, `.opcode`: excluded. `hotSymbols` symbol names: excluded. Other fields: default-deny until read | Mixed |
-| `loadedImages[].name` | File name | Excluded |
-| `differential` (`OpenBiosProbeDifferential.cs`) | `cpu` map (excluded: GPR, COP0, hi, lo); `devices` map (`scratchpad_sha256`, `vram_sha256`: banned); `instructionWord` (excluded); `pc`, `atFetch`, `guestCycles` (PC, count, count: share-candidate); `ramSha256`, `scratchpadSha256` (banned); `interpreterRamSha256`, `hostRamSha256` (banned); RAM context bytes (banned); `kind = "cpu"` mismatch entries (excluded, carry register values) | Mixed |
-| `diagnosticMessage` (`:677`) | Free text | Excluded |
-| `fallback` and `fallbackTargets` exports | Covered by W8 | Local |
+| `frame` (`:437`): `width`, `height`, `nonZeroPixels` | Counts | Share-candidate |
+| `frame.sha256` (`:437`) | Frame digest, not a whole-artifact digest | Default-deny pending Q14 |
+| `milestones` (`OpenBiosBootMonitor.cs:10-40`) | Booleans, counts, `TitleEntryPc` (PC), `FirstUnexpectedException` (below) | Booleans and counts share-candidate; `TitleEntryPc` share-candidate (PC); `firstUnexpectedException.excCode` and `.atFetch` share-candidate; `.epc`, `.badVAddr`, `.cause` excluded (COP0) |
 
-*`report.json` fields (`ExecutionDiagnosticReport.cs:14-25`).*
+**`stop` rows (`OpenBiosProbeCommand.cs:1004-1014`).**
 
 | Field | Class | Label |
 |---|---|---|
-| `Schema` | Classification (schema identity) | Share-candidate |
-| `ProductRevision` | Build identifier | Default-deny pending Q15 |
-| `InputSha256` | Whole-artifact digest | Share-candidate |
-| `Title` | Free text (game title) | Excluded |
-| `Revision` | Build identifier | Default-deny pending Q15 |
-| `ArtifactIdentity` | Whole-artifact digest with `sha256:` prefix | Share-candidate (prefix stripped, section 4) |
-| `Outcome`, `State` | Classification | Share-candidate |
-| `GuestPc` | PC | Share-candidate |
-| `DiagnosticCode` | Classification | Share-candidate |
-| `SegmentBudget` | Count | Share-candidate |
-| `FramebufferSha256` | Frame digest, not a whole-artifact digest | Default-deny pending Q14 |
+| `stop.pc` | PC | Share-candidate |
+| `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` | COP0 | Excluded (owner ruling) |
+| `stop.gpr` | General registers | Excluded (owner ruling) |
+| `stop.lastFetches` | Raw instruction words | Excluded |
+| `stop.lastTransfers` | PC-to-PC pairs with `From.Word` | PCs share-candidate; `From.Word` excluded |
 
-*`environment.json` fields (`ExecutionEnvironmentReport.cs:11-45`).*
+**`captured` rows (`OpenBiosProbeCommand.cs:344-350`).**
+
+| Field | Class | Label |
+|---|---|---|
+| `captured.pc` | PC | Share-candidate |
+| `captured.word` | Raw instruction word | Excluded |
+| `captured.gpr` | General registers | Excluded (owner ruling) |
+| `captured.lastTransfers` | PC-to-PC pairs | Share-candidate |
+
+**W2 field table (`OpenBiosProbeCommand.cs:663-742`).**
+
+| Field | Location | Class | Label |
+|---|---|---|---|
+| `kind`, `engine`, `standalone` | `:665-667` | Classification | Share-candidate |
+| `sha256` | `:668` (`probe.Hash`) | Firmware digest | Default-deny pending Q12 |
+| `bootVerified`, `kernelBooted`, `titleStarted` | `:669-673` | Classification | Share-candidate |
+| `milestones` | `:671` | As the milestones rows in the W1 table | Mixed (classes per W1) |
+| `fetchIndices` | `:672` | Constant explanatory string | Excluded (free text) |
+| `executionState`, `diagnosticCode` | `:674`, `:676` | Classification | Share-candidate |
+| `guestPc` | `:675` | PC | Share-candidate |
+| `diagnosticMessage` | `:677` | Free text | Excluded |
+| `stopAt` | `:678-680` | `pc` (PC); `reachedByInterpreter`, `reachedByHost` (booleans) | Share-candidate |
+| `build` | `:681-689` | Counts (see section 7.2) | Share-candidate |
+| `loadedImages[]` | `:690` | `name` excluded; `blocks`, `nativeInstructions` counts; `skippedEntries` PCs | Mixed |
+| `loadedCodeVersions` | `:691` | Count | Share-candidate |
+| `interpretedEntries` | `:692` | PC array (`observedPcs`) | Share-candidate (PC class) |
+| `precompileMilliseconds` | `:693` | Duration (`buildMs + compileMs`, rounded by the projection) | Share-candidate |
+| `atBoundary` | `:694` (from `:550`, `:597`) | Keys: PC. Values: `nativeInstructions` (count), `seconds` (duration, rounded by the projection) | Share-candidate (PC key, count, duration) |
+| `execution` | `:695-709` | Native and fallback counts; `topFallbackTargets` strings (PC, counts, cause text); `timings = costs` (`:706`, shape not read) | Default-deny until read (whole object) |
+| `accounting` | `:710-711` | See the `accounting` row in section 7.6 classes below | Mixed |
+| `timings` | `:712-724` | Rounded durations (0.1 ms, read) | Share-candidate (duration class) |
+| `aot` | `:725` | `generatedCBytes`, `artifactBytes`: sizes (counts) | Share-candidate |
+| `boundaries` | `:726` (`Describe()` per PC) | Excluded (cpu map, `instructionWord`, `ramSha256`, `scratchpadSha256`, `sr`/`cause`/`epc`); residual `pc`, `atFetch`, `guestCycles` share-candidate by field rule | Mixed; the object as a whole is local |
+| `differential` | `:727-731` (`Compare` per PC, or a string) | Mismatch objects carry register and RAM values (excluded) | Local |
+| `referenceBoundariesMissing` | `:732` | PC array | Share-candidate (PC class) |
+| `referenceSecondsAtBoundary` | `:733` | PC-keyed seconds (value type not read here) | Default-deny until the value type is read |
+| `firstInterrupt` | `:734` | `interpreter` and `host`: `Describe()` objects | Local (cpu map and `instructionWord` excluded); residual `pc`, `atFetch`, `guestCycles` share-candidate by field rule |
+| `firstInterruptDifferential` | `:735-736` | `Compare` result (register and RAM mismatch values), or a string | Local |
+| `milestoneComparison` | `:737-741` | `match` (boolean); `interpreter` (milestones object, classes per W1) | `match`: share-candidate; `interpreter`: as milestones |
+| `consistency` | `:744` (from `Consistency(node, boundaryPcs, probe.StopAt)`) | Built from the document; shape not read | Default-deny until read |
+
+**W8 fallback export fields (`OpenBiosProbeCommand.cs:961-977`).**
+
+| Field | Class | Label |
+|---|---|---|
+| `format` | Classification (`ObservedRootPlanner.TargetFormat`) | Share-candidate |
+| `sha256` (`:973`, the firmware digest `hash`) | Firmware digest | Default-deny pending Q12 |
+| `run` (`:974`, includes the firmware digest and the disc digest from `DescribeRun`) | Contains digests of the firmware and the user's disc | Default-deny pending Q12 and Q17 |
+| `outcome` (`:975`): `state` (classification), `complete` (boolean), `stopAt` (PC) | Mixed | `state`, `complete`: share-candidate; `stopAt`: share-candidate (PC) |
+| `targets[]` (`:961-969`): `pc`, `lastReturnPc` (PC); `cause` (classification); `entries`, `instructions` (counts); `ramWord` (raw RAM word) | Mixed | `pc`, `lastReturnPc`, `cause`, `entries`, `instructions`: share-candidate by writer rule, local by writer; `ramWord`: banned |
+
+**Accounting (`OpenBiosProbeAccounting.cs:195-198`; the W2 `accounting` object at `:710-711`).**
+
+| Field | Class | Label |
+|---|---|---|
+| `unsupportedOpcodes[].excCode` | Classification | Share-candidate |
+| `unsupportedOpcodes[].pc` | PC | Share-candidate |
+| `unsupportedOpcodes[].atFallbackFetch` | Count | Share-candidate |
+| `unsupportedOpcodes[].word`, `.opcode` | Raw instruction fields | Excluded |
+| `hotSymbols` symbol names | Symbol names | Excluded |
+| Other `accounting` fields | Shape not read | Default-deny until read (Q16) |
+
+**`milestones` detail (`OpenBiosBootMonitor.cs:10-40`).** The shape is read from the record declaration (not from a serialised sample). The per-field classes are those in the W1 table above.
+
+**`environment.json` fields (`ExecutionEnvironmentReport.cs:11-45`).**
 
 | Field | Class | Label |
 |---|---|---|
 | `Schema` | Classification | Share-candidate |
-| `OsPlatform` | Classification | Share-candidate (closed set to be confirmed) |
-| `OsVersion` | Free text (`:18`, `:39`) | Excluded (M2, C-level finding for the bundle) |
-| `OsArchitecture`, `ProcessArchitecture` | Classification | Share-candidate (closed set to be confirmed) |
-| `DotNetVersion` | Build/tool identifier | Default-deny pending Q15 |
-| `RuntimeIdentifier` | Build/tool identifier | Default-deny pending Q15 |
-| `CompilerVersion` | Build/tool identifier | Default-deny pending Q15 |
-| `TargetArchitecture` | Classification | Share-candidate (closed set to be confirmed) |
+| `OsPlatform`, `OsArchitecture`, `ProcessArchitecture`, `TargetArchitecture` | Classification, if the setter enforces a closed set | Default-deny until the setters are read (their setters are not read in this revision) |
+| `OsVersion` | Free text (`:18`, `:39`) | Excluded |
+| `DotNetVersion`, `RuntimeIdentifier`, `CompilerVersion` | Build and tool identifiers | Default-deny pending Q15 |
 
-*Loaded-code mismatch report fields (`LoadedCodeMismatchDiagnostics.cs:277-300`).*
+**`report.json` fields (`ExecutionDiagnosticReport.cs:14-25`).**
+
+| Field | Class | Label |
+|---|---|---|
+| `Schema` | Classification | Share-candidate |
+| `ProductRevision`, `Revision` | Build identifiers | Default-deny pending Q15 |
+| `InputSha256` | Game-input digest | Default-deny pending Q17 |
+| `Title` | Free text (game title) | Excluded |
+| `ArtifactIdentity` | Digest of the built artifact, with `sha256:` prefix | Share-candidate (prefix stripped, section 4) |
+| `Outcome`, `State` | Classification | Share-candidate |
+| `GuestPc` | PC | Share-candidate |
+| `DiagnosticCode` | Classification | Share-candidate |
+| `SegmentBudget` | Count | Share-candidate |
+| `FramebufferSha256` | Frame digest | Default-deny pending Q14 |
+
+**Loaded-code mismatch report fields (`LoadedCodeMismatchDiagnostics.cs:277-300`).**
 
 | Field | Class | Label |
 |---|---|---|
@@ -547,16 +652,16 @@ Each writer and each field group is labelled local or share-candidate. "Share-ca
 | `version`, `versionCount`, `comparedWords`, `rejections`, `fullMatches`, `ramHashChanges` | Counts | Share-candidate |
 | `ramPage` | Address (page index) | Share-candidate |
 | `firstMismatchIndexRange`, `mismatchedWordsRange` | Count ranges | Share-candidate |
-| `aotSha256` | Digest of AOT words for a version, a region digest | Banned (region digest) |
+| `aotSha256` | Digest of AOT words for a version, a region digest | Banned |
 | `ramSha256` | RAM digest | Banned |
 | `windowAot`, `windowRam` | Raw words | Banned |
 | `origins` | `OriginsJson()`, shape not read | Default-deny until read |
 
-*Runtime metrics and host diagnostic (`RuntimeHostDiagnostic.cs:146-160` and the record at `:24`).*
+**Runtime metrics and host diagnostic (`RuntimeHostDiagnostic.cs:146-160` and the record at `:24`).**
 
 | Field | Class | Label |
 |---|---|---|
-| `WallMilliseconds`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds` | Durations | Share-candidate |
+| `WallMilliseconds`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds` | Durations | Share-candidate (rounded by the projection) |
 | `MmioAccesses`, `TimeReports` | Counts | Share-candidate |
 | `LastFallbackEntryPc`, `LastFallbackReturnPc` | PC | Share-candidate |
 | `LastMmioPhysicalAddress` | Address | Share-candidate |
@@ -565,34 +670,33 @@ Each writer and each field group is labelled local or share-candidate. "Share-ca
 | `FinalPc`, `LastAotBlockPc`, `TransferSourcePc`, `TransferTargetPc` | PC | Share-candidate |
 | `TransferOpcode` | Raw instruction field | Excluded |
 | `FallbackTargets` (list of `MixedFallbackTarget`) | Shape not read | Default-deny until read |
-| `FailureExceptionType` | Type name (free text) | Excluded unless closed set |
+| `FailureExceptionType` | Type name (free text) | Excluded unless a closed set is enforced |
 | `FallbackOutcome`, `OrchestratorState`, `OrchestratorDiagnosticCode`, `NativeTerminationReason`, `ClassifiedExitCode` | Classification | Share-candidate |
-| `FallbackRejectReason` | Free text if not a closed set | Excluded unless the writer enforces a closed set |
+| `FallbackRejectReason` | Free text unless a closed set is enforced | Excluded unless the writer enforces a closed set |
 | `AotRetiredInstructions`, `FallbackRetiredInstructions`, `FallbackTransitionCount` | Counts | Share-candidate |
 | `TimedOut`, `FallbackEnabled`, `FallbackAttempted`, `TargetHasCompiledBlock`, `TargetInsideImage` | Booleans | Share-candidate |
 
-*Milestones (`OpenBiosBootMonitor.cs:10-40`, label UNVERIFIED removed; the shape is readable).* See the probe table above.
-
-*Trace records (`unit-trace.md`).* `pc`, `next`, `seq`, `retired`, `termination`, `status`, `handoff`, `start`, `end`, `native_total`: share-candidate. `gpr`, `hi`, `lo`, `sr`, `cause`, `epc`, `state`, `entry`, `exit`: local only (owner ruling).
+**Trace records (`unit-trace.md`).** `pc`, `next`, `seq`, `retired`, `termination`, `status`, `handoff`, `start`, `end`, `native_total`: share-candidate. `gpr`, `hi`, `lo`, `sr`, `cause`, `epc`, `state`, `entry`, `exit`: local only (owner ruling).
 
 ## 8. Recommendation
 
 1. Adopt the unit-trace envelope (`v`, `seq`, `kind`, session) as trace schema v1, and add `stream`, `mmio`, and `event` kinds. Do not invent a second format. **PREDICTED** (rationale: the existing joiner, tests, and parsers already implement the rules).
 2. Make `session` the single run identity for trace purposes. Retire `runId` (`RuntimeHost/Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them only as aliases. **PREDICTED.**
-3. Reuse the existing `inputSha256` and `ArtifactIdentity` hashes, both as bare lowercase hex; add no new artifact ID field (section 4). **PREDICTED.**
+3. Reuse the existing `artifactSha256` and `inputSha256` fields, both as bare lowercase hex. `inputSha256` stays default-deny pending Q17. Add no new artifact ID field (section 4). **PREDICTED.**
 4. **Required design changes, before any shareable output or bundle:**
-   - **C2:** remove the `opcode` key from `ExecutionDiagnosticLog`'s allowlist (`ExecutionDiagnosticLog.cs:28`). Update `ExecutionDiagnosticLogTests.cs:37` (the `InstructionOpcode` context entry) and `:48` (the expected `opcode=0xDEADBEEF` in the formatted line). Add test 5 of section 7.5.
-   - **M2:** `environment.json` is removed from the shareable bundle, or projected to the allowlist with `OsVersion` removed (`ExecutionDiagnosticBundleWriter.cs:52`). `ProductRevision`, `Revision`, and the tool identifiers are default-deny until Q15.
-   - **M4:** the firmware digest (`OpenBiosProbeCommand.cs:423`, console `:443`) is default-deny until Q12. `frame.sha256` (`:437`) and `FramebufferSha256` are default-deny until Q14. Whole-RAM, VRAM, and device digests are banned (section 7.3).
+   - **C2:** remove the `opcode` key from `ExecutionDiagnosticLog`'s allow-list (`ExecutionDiagnosticLog.cs:28`). The writer then drops it (test 5 of section 7.5, `Bundle_writer_drops_opcode_context_key`). Update `ExecutionDiagnosticLogTests.cs:37` (the `InstructionOpcode` context entry) and `:48` (the expected `opcode=0xDEADBEEF` in the formatted line).
+   - **M2:** `environment.json` is removed from the shareable bundle, or projected to the allowlist with `OsVersion` removed (`ExecutionDiagnosticBundleWriter.cs:52`). `ProductRevision`, `Revision`, and the tool identifiers are default-deny until Q15. The closed-set fields (`OsPlatform`, `OsArchitecture`, `ProcessArchitecture`, `TargetArchitecture`) are default-deny until their setters are read.
+   - **M4 and F-series:** the firmware digest (`OpenBiosProbeCommand.cs:423`, console `:443`, fallback export `:973`, `run` at `:974`) is default-deny until Q12. `frame.sha256` (`:437`) and `FramebufferSha256` are default-deny until Q14. The game-input digests are default-deny until Q17. Whole-RAM, VRAM, and device digests are banned (section 7.3).
+   - **Unread shapes:** `execution`, `consistency`, `referenceSecondsAtBoundary`, `accounting` (other than the classified fields), and the environment and runtime fields in section 7.6 are default-deny until read (Q16).
    - **M6:** tests that pin raw output must change with the fixes:
-     - `OpenBiosProbeAccountingTests.cs:183` (`word`) and `:185` (`opcode`) pin the raw fields of `unsupportedOpcodes`. They must change so the shareable projection emits no `word` or `opcode`. The local writer keeps them, so the test moves to the local writer and the projection test asserts absence.
-     - `LoadedCodeMismatchDiagnosticsTests.cs:34-35` pin `windowAot` and `windowRam`. They stay on the local writer. The projection test asserts they are absent.
+     - `OpenBiosProbeAccountingTests.cs:183` (`word`) and `:185` (`opcode`) pin the raw fields of `unsupportedOpcodes`. They stay on the local writer, and the projection test asserts absence.
+     - `LoadedCodeMismatchDiagnosticsTests.cs:34-35` pin `windowAot` and `windowRam`. They stay on the local writer, and the projection test asserts absence.
      - `ExecutionDiagnosticLogTests.cs:37` and `:48` pin the `opcode` key, as above.
    - **Exposure 3 (`--dump-ram`):** keep local. Test 4 of section 7.5 and the projection tests cover it.
 5. Build the shareable projection (section 7.2) and the required tests (section 7.5) before any trace or bundle is shared. **PREDICTED.**
 6. Ship L1 (boundary) first. Its cost is near zero and reuses existing records. Add L2 and sampling only after the measurement in section 5 exists. **PREDICTED.**
 
-**Blocker (stated, not fixed in this design).** The shareable projection cannot be finished until the default-deny fields are read (`aot`, `execution`, `milestoneComparison`, `consistency`, `fetchIndices`, `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, `accounting` remaining fields) and their owners decide them. This is a read-and-decide task, not a design gap. It is recorded as a blocker for the implementation phase, not for this design. **OBSERVED** (the shapes were not read in this work).
+**Blocker (stated, not fixed in this design).** The shareable projection cannot be finished until the default-deny fields are read and their owners decide them. The unread shapes are `execution` (including `timings = costs`), `consistency`, `referenceSecondsAtBoundary` (value type), `accounting` (other fields), `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, and the environment setters. This is a read-and-decide task, not a design gap. It is recorded as a blocker for the implementation phase, not for this design. **OBSERVED** (the shapes were not read in this work).
 
 ## 9. Open questions and the decision each needs
 
@@ -611,20 +715,23 @@ Ownership note: the GitHub API shows no assignee on any issue read for this docu
 | Q9 | Should the Studio GUI and CLI read the same JSON Lines files, or a joined summary only? | Repository owner (mao2009) | #45 (open; completion criterion "GUI/CLIで共通利用できる形式を定義"); #40 and #42 (both open) | OBSERVED (#45 body); UNVERIFIED (GUI code not searched) |
 | Q10 | May trace timestamps appear in share-ready bundles, given the determinism rule in `docs/architecture/diagnostics.md` section 5? | Repository owner (mao2009) | #49 is closed, so the diagnostics contract has no open tracking issue. Open item for this decision: #45. | CONFIRMED that the current contract excludes time; OBSERVED (#49 closed) |
 | Q11 | Does any value in the shareable output lie in the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical)? The shareable output under section 7.2 contains PCs and addresses, so the check is on those. **Concrete action:** run `openbios-probe <openbios.bin> --json --capture-at <hex-pc>` (`OpenBiosProbeCommand.cs:59-67`; `--dump-ram` also requires `--capture-at`, `:172`), then, for each PC-class and address-class value in the output, mask the segment bits and test it against `0x1FC00000`-`0x1FC7FFFF`. Record the result in the test log of the required test, not in this document. If any such value is in range, decide whether a BIOS-range value may appear in a shareable document. Raw words are not part of the shareable output, so they are not tested for this purpose. | Repository owner (mao2009) | #45 (open) | UNVERIFIED (not checked by running the probe) |
-| Q12 | Is a SHA-256 of the firmware file (`sha256` at `OpenBiosProbeCommand.cs:423`; console `:443`) acceptable in a shareable document? It identifies the user's BIOS image but carries no BIOS bytes. Default-deny until decided. | Repository owner (mao2009) | #45 (open) | OBSERVED (field exists); default-deny (section 7.6) |
+| Q12 | Is a SHA-256 of the firmware file (`sha256` at `OpenBiosProbeCommand.cs:423`; console `:443`; fallback export `:973`) acceptable in a shareable document? It identifies the user's BIOS image but carries no BIOS bytes. Default-deny until decided. | Repository owner (mao2009) | #45 (open) | OBSERVED (field exists); default-deny (section 7.6) |
 | Q13 | Are HI and LO (section 7.3) to be shareable? The owner ruling covers GPR and COP0; this document classifies HI and LO as part of the register dump and excludes them. | Repository owner (mao2009) | #45 (open) | PREDICTED classification; the ruling does not name HI/LO |
 | Q14 | Is a digest of the displayed frame (`frame.sha256`, `OpenBiosProbeCommand.cs:437`; `FramebufferSha256` in `ExecutionDiagnosticReport`) acceptable in a shareable document? It is a frame digest, not a whole-artifact digest. Default-deny until decided. | Repository owner (mao2009) | #45 (open) | CONFIRMED (fields exist); default-deny (section 7.6) |
 | Q15 | Are build and tool identifiers shareable: `ProductRevision`, `Revision`, `DotNetVersion`, `RuntimeIdentifier`, `CompilerVersion`? Default-deny until decided. | Repository owner (mao2009) | #45 (open) | CONFIRMED (fields exist); default-deny (section 7.6) |
-| Q16 | Shapes not yet read (`aot`, `execution`, `milestoneComparison`, `consistency`, `fetchIndices`, `timings`, `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, `accounting` remaining fields). Each stays default-deny until read and classified. Is that the accepted rule until the read is done? | Repository owner (mao2009) | #45 (open) | UNVERIFIED (shapes not read in this work) |
+| Q16 | Shapes not yet read (`execution`, `consistency`, `referenceSecondsAtBoundary` value type, `accounting` other fields, `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, environment setters). Each stays default-deny until read and classified. Is that the accepted rule until the read is done? | Repository owner (mao2009) | #45 (open) | UNVERIFIED (shapes not read in this work) |
+| Q17 | Are file digests of the user's own inputs shareable? `InputSha256` and `discHash` identify the user's copy of a licensed game file, the same way the firmware digest identifies the user's BIOS (Q12). Today `InputSha256` is written into the `#457` bundle's `report.json` (`ExecutionDiagnosticReport.cs:16`, bundle at `ExecutionDiagnosticBundleWriter.cs:51`), so the current bundle would change if the rule were default-deny. The design uses one rule for all three: a digest of a user-owned licensed file is default-deny until decided, and `artifactSha256` (a digest of this build's output, not a user file) is share-candidate. Owner to confirm this rule, or to split it. | Repository owner (mao2009) | #45 (open) | OBSERVED (fields and bundle writer); PREDICTED rule |
 
 ## 10. Limits of this document
 
 - This is a design only. No code, test, or schema file was changed.
 - Overhead numbers are not measured.
 - The leakage guarantee in section 7.4 is **UNVERIFIED** until the tests in section 7.5 exist and pass.
+- The writer inventory (section 1.8) is a search result, not a proof of completeness. Test 6 of section 7.5 makes it checkable. **UNVERIFIED.**
 - Several field shapes are named but not read (section 7.6, default-deny). They are a stated blocker (section 8), not a claimed classification.
 - The `RunCommand` bundle gate was traced (section 1.2). No other path into the bundle was traced beyond the `ExecutionDiagnosticBundleWriter` lines cited.
 - GUI code was not searched exhaustively.
 - The `--dump-ram` file's contents were not inspected; its content class is taken from the code (`observed.ReadGuestWord` over KSEG0 main RAM), not from a produced file.
 - The Q11 check was not run. No result is stated in this document.
 - `milestones` is readable and is classified in section 7.6. Its JSON shape was taken from the record declaration (`OpenBiosBootMonitor.cs:10-40`), not from a serialised sample.
+- The producers of `hotEntries`, `hotPcs`, and the `referenceSeconds` values were not read in this revision.
