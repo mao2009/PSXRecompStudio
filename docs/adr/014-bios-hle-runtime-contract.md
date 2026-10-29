@@ -2114,7 +2114,19 @@ express "not done yet" without a fake immediate return.
   form models its handler, and the forms differ (the interpreter's CPU takes it and stops, the artifact's INT boundary
   accepts only IP2). So every pending poll first checks for one and both forms stop with
   `BIOS_HLE_WAIT_SOFTWARE_INTERRUPT` before any time passes; the generated host reads SR/CAUSE with the existing `E`
-  query. Outside a wait the IP2-only artifact boundary is unchanged (ADR-025).
+  query. This is the BIOS-wait contract, and it is unchanged.
+- **Software interrupts outside a wait (Issue #728).** Outside a blocking wait no execution form models a software
+  interrupt's handler, and the artifact's INT boundary stays IP2-only (ADR-025). A takeable software interrupt (CAUSE.IP0/IP1
+  with SR.IM0/IM1 and SR.IEc) is therefore a fail-closed stop with the one shared public code
+  `SOFTWARE_INTERRUPT_UNSUPPORTED` (`MixedFallbackDiagnostics.SoftwareInterruptUnsupported`), in two places: a fallback
+  segment that returns to the artifact with one pending, and an interpreter-alone fallback segment that takes one. Both
+  backends report the same code for the same condition. The code is used only when the software-interrupt condition is
+  identifiable; `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` and `CPU_EXCEPTION` keep their meaning. Tests:
+  `SoftwareInterruptBackendDivergenceTests`. This is a temporary contract for unsupported paths, not a handler model.
+  Known gap, not decided: a fallback return whose next instruction is a BIOS blocking call (a JAL to a vector) stops at
+  the return with `SOFTWARE_INTERRUPT_UNSUPPORTED` before the call's first poll, so the wait code is not reached on that
+  path (`BiosBlockingCallWaitTests.SoftwareInterruptDuringAWait_StopsBothForms_WithTheSameDiagnostic_AfterTheSamePolls`
+  whole-program form). The owner must choose the contract for that case.
 - **Scope.** This is the mechanism only. No real BIOS call returns `Pending` yet; A0:70/A0:55 `_bu_init` stay
   unregistered (#712), and running the PadCardIrq element is still #661. A service with its own semantic timeout (the
   card state machine's per-VBlank timeout) completes through its condition; `MaxPolls` is only the backstop.

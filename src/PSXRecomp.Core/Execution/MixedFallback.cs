@@ -38,6 +38,13 @@ public static class MixedFallbackDiagnostics
     /// <summary>The fallback raised an exception the interpreter loop does not service (not INT, not SYSCALL).</summary>
     public const string ExceptionUnsupported = "ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED";
 
+    /// <summary>
+    /// An enabled software interrupt (CAUSE.IP0/IP1 with SR.IM0/IM1 and SR.IEc) is taken, or pending at a fallback return,
+    /// outside a BIOS blocking wait. No execution form models its handler (Issue #728). The interpreter-alone and the
+    /// mixed/artifact paths report this one code for the same condition. Inside a wait the BIOS wait code is kept.
+    /// </summary>
+    public const string SoftwareInterruptUnsupported = "SOFTWARE_INTERRUPT_UNSUPPORTED";
+
     /// <summary>One fallback segment retired its whole instruction budget without reaching a clean block entry.</summary>
     public const string SegmentBudgetExhausted = "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED";
 

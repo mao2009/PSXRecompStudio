@@ -95,7 +95,7 @@ This supersedes "no second RAM and no copy/sync" **for the duration of one fallb
 
 **Host-resolved register-indirect resume (Issue #763).** Two host-completed resumes are the host's own register-indirect jump: a BIOS HLE service returning to `$ra` (`jr ra`), and the kernel exception handler leaving the exception, to EPC or to the registered hook's saved pc with `$v0 = 1` (`jr k0; rfe`; regression: `MixedFallbackKernelExceptionTests`). The host marks exactly that decision with a bare `J` line immediately before `D 0 pc has_v0 v0`; only then does the artifact record `pc` as `indirect_target`, so the fallback query reports it as indirect. `J` is strictly adjacent to its decision: the artifact accepts nothing between them, so a second `J`, `N`, a fallback command, a RAM access or EOF after `J` is a protocol error (exit 100), as is a `J` with an operand. With a device scheduler the host therefore sends the `T` time credit before `J`, then `J` and `D` back to back. The mark lives in one `artifact_host_serve` call and is never carried to a later one; a non-Success `D` after `J` marks nothing. No other host-resolved resume is marked: a guest-patched jump-table target, a SYSCALL resume, a `B0:17` state replacement, a pending blocking-call wait and a fallback return keep the provenance the artifact's own jumps set, so they stay fail-closed.
 
-**Fail-closed diagnostics.** `ARTIFACT_FALLBACK_UNSUPPORTED_STATE` (left the image), `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` (an exception the interpreter loop does not service), `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_SYNC_FAILED`; a BIOS or kernel boundary inside a segment keeps the Runtime's own diagnostic.
+**Fail-closed diagnostics.** `ARTIFACT_FALLBACK_UNSUPPORTED_STATE` (left the image), `ARTIFACT_FALLBACK_EXCEPTION_UNSUPPORTED` (an exception the interpreter loop does not service), `SOFTWARE_INTERRUPT_UNSUPPORTED` (a takeable software interrupt on a fallback return or taken in a fallback segment, Issue #728), `ARTIFACT_FALLBACK_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_TRANSITION_BUDGET_EXHAUSTED`, `ARTIFACT_FALLBACK_SYNC_FAILED`; a BIOS or kernel boundary inside a segment keeps the Runtime's own diagnostic.
 
 **Evidence.** Counts only, deterministic: transitions, returns, instructions retired by the interpreter, pages copied each way, and per target `(entries, instructions, last return PC)`. Timings are measurement-only and never enter a canonical document.
 
@@ -301,3 +301,23 @@ Do not infer exact device-time parity from native coverage percentages alone.
 The acceptance gate compares interpreter and generated-host guest-cycle counts
 and CPU/COP0, RAM, scratchpad and device snapshots at every defined OpenBIOS
 observation boundary, including the first hardware IRQ and EXE marker.
+
+## Addendum (Issue #728): software interrupts stay outside the artifact INT boundary
+
+The artifact's INT boundary is unchanged: it accepts an interrupt only for CAUSE.IP2 with SR.IEc and SR.IM2 (the
+`artifact_interrupt_boundary` condition above). A takeable software interrupt (CAUSE.IP0/IP1 with SR.IM0/IM1 and SR.IEc)
+has no handler model in any execution form, and the artifact does not take it.
+
+The only fail-closed added for it is on a fallback return. A fallback segment that returns to the artifact with a
+takeable software interrupt pending stops instead of resuming, and an interpreter-alone fallback segment that takes one
+stops the same way. Both report `SOFTWARE_INTERRUPT_UNSUPPORTED` (`MixedFallbackDiagnostics.SoftwareInterruptUnsupported`).
+This is a temporary contract for unsupported paths, not an interrupt model.
+
+Not covered by this addendum:
+
+- A takeable software interrupt that arises while the artifact runs its own code (no fallback return) is not stopped by
+  the artifact. The interpreter's whole-program title path with a Runtime attached serves it through the kernel exception
+  handler (ADR-025 #662). The two backends therefore still differ there. This is pre-existing and out of scope.
+- Inside a BIOS blocking wait the wait code `BIOS_HLE_WAIT_SOFTWARE_INTERRUPT` is kept (ADR-014).
+- Verification is by the deterministic unit and generated-host tests in `SoftwareInterruptBackendDivergenceTests`. No
+  real-ROM run was made for this addendum.

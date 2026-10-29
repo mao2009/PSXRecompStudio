@@ -1762,19 +1762,10 @@ static void artifact_interrupt_boundary(RecompilerState* state) {
     uint32_t sr = state->cop0_sr;
     /* Provenance only lasts while control is still at the vector the entry set. */
     if (state->pc != 0x80000080u && state->pc != 0xBFC00180u) artifact_int_entry = 0;
-    if (state->irq_line != 0u && (sr & 0x1u) != 0u && (sr & 0x400u) != 0u) {
-        /* The same entry a guest SYSCALL/BREAK takes in firmware mode (Issue #732); IP2 is kept, not replaced. */
-        state->pc = recompiler_exception_entry(state, 0u, state->pc, 0u);
-        artifact_int_entry = 1;
-        return;
-    }
-    /* Issue #728: a takeable software interrupt (CAUSE.IP0/IP1 & SR.IM0/IM1, with SR.IEc) has no handler model here. The
-       interpreter takes it at this boundary and stops with Exception (docs/cpu/exceptions.md, a Runtime failure). Take the
-       same entry and stop with the same termination, so the artifact never resumes past an enabled software interrupt. */
-    if ((sr & 0x1u) != 0u && (state->cop0_cause & sr & 0x300u) != 0u) {
-        state->pc = recompiler_exception_entry(state, 0u, state->pc, 0u);
-        state->termination_reason = RECOMPILER_REASON_EXCEPTION;
-    }
+    if (state->irq_line == 0u || (sr & 0x1u) == 0u || (sr & 0x400u) == 0u) return;
+    /* The same entry a guest SYSCALL/BREAK takes in firmware mode (Issue #732); IP2 is kept, not replaced. */
+    state->pc = recompiler_exception_entry(state, 0u, state->pc, 0u);
+    artifact_int_entry = 1;
 }
 
 /* Attach the shared Runtime host bridge (Issue #757 Phase 2). This is the

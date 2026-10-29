@@ -498,14 +498,14 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         if (returned)
         {
-            // Issue #728: the interpreter alone would take an enabled software interrupt at this return PC and stop there
-            // (docs/cpu/exceptions.md: a software interrupt is a Runtime failure). The artifact's INT boundary accepts only
-            // IP2, so resuming it here would silently drop that interrupt. Fail closed with the same stop.
+            // Issue #728: the interpreter alone would take an enabled software interrupt at this return PC (a Runtime failure,
+            // docs/cpu/exceptions.md). The artifact's INT boundary accepts only IP2 (ADR-025), so resuming it would silently
+            // drop that interrupt. Fail closed with the shared software-interrupt code.
             if (IsTakeableSoftwareInterrupt(_core.GetCop0(Cop0Status), _core.GetCop0(Cop0Cause)))
             {
                 return new FallbackSegmentOutcome(
                     FallbackSegmentStatus.Stopped, state, retired,
-                    MixedFallbackDiagnostics.ExceptionUnsupported,
+                    MixedFallbackDiagnostics.SoftwareInterruptUnsupported,
                     $"The fallback returned to pc 0x{state.Pc:X8} with a software interrupt pending and enabled " +
                     $"(CAUSE=0x{state.Cause:X8}, SR=0x{state.Sr:X8}); the artifact's INT boundary takes only IP2, so mixed execution does not resume.");
             }
@@ -539,6 +539,14 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // artifact path would report for it.
                 return new FallbackSegmentOutcome(
                     FallbackSegmentStatus.Stopped, state, retired, result.DiagnosticCode, result.DiagnosticMessage);
+
+            case RecompilerIrTerminationReason.Exception when IsTakenSoftwareInterrupt():
+                // Issue #728: the INT taken here is a software one (no hardware line pending). Same code as the mixed return.
+                return new FallbackSegmentOutcome(
+                    FallbackSegmentStatus.Stopped, state, retired,
+                    MixedFallbackDiagnostics.SoftwareInterruptUnsupported,
+                    $"The fallback took a software interrupt at pc 0x{snapshot.PC:X8} (CAUSE=0x{_core.GetCop0(Cop0Cause):X8}, " +
+                    $"SR=0x{_core.GetCop0(Cop0Status):X8}); no execution form models its handler, so mixed execution does not continue past it.");
 
             case RecompilerIrTerminationReason.Exception:
                 return new FallbackSegmentOutcome(
@@ -740,14 +748,6 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
                 // With a complete guest BIOS, *all* architectural exceptions (including
                 // SYSCALL, BREAK and address faults) must reach firmware-owned vectors.
                 // The legacy HLE slice still fails on non-IRQ exceptions exactly as before.
-                // Issue #728: a software interrupt is a Runtime failure on every backend (docs/cpu/exceptions.md), even with a
-                // Runtime attached: no handler model serves it, and the artifact's boundary stops on it too.
-                if (_core.ExceptionCode == InterruptExcode && !TookHardwareInterrupt())
-                {
-                    termination = RecompilerIrTerminationReason.Exception;
-                    break;
-                }
-
                 if (!TookHardwareInterrupt() && !_allowRuntimeRamExecution)
                 {
                     termination = RecompilerIrTerminationReason.Exception;
@@ -965,6 +965,16 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// </summary>
     private static bool IsTakeableSoftwareInterrupt(uint sr, uint cause) =>
         (sr & 0x1u) != 0 && (cause & sr & 0x300u) != 0;
+
+    /// <summary>
+    /// Whether the exception the last step raised is an INT caused by a software bit alone (Issue #728): Excode INT, a
+    /// software bit pending and enabled, and no hardware line (IP2 with IM2) pending. Reads the state after the CPU's entry;
+    /// the entry clears only SR.IEc and the KU/IE stack, so the IM bits and CAUSE.IP bits still identify the interrupt.
+    /// </summary>
+    private bool IsTakenSoftwareInterrupt() =>
+        _core.ExceptionCode == InterruptExcode &&
+        (_core.GetCop0(Cop0Cause) & _core.GetCop0(Cop0Status) & 0x300u) != 0 &&
+        (_core.GetCop0(Cop0Cause) & _core.GetCop0(Cop0Status) & HardwareInterruptBit) == 0;
 
     /// <summary>
     /// Whether the next <see cref="PSXCoreWrapper.Step"/> would take an INT instead of fetching (Issue #717): the

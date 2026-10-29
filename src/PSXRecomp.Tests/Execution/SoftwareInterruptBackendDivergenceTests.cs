@@ -10,12 +10,10 @@ using static PSXRecomp.Tests.Infrastructure.MixedFallbackTestSupport;
 namespace PSXRecomp.Tests.Execution;
 
 /// <summary>
-/// Issue #728: the software-interrupt (CAUSE.IP0/IP1) divergence between the interpreter and the artifact. A fallback
-/// segment whose return JR carries <c>MTC0 SR</c> in its delay slot leaves IP0 pending and enabled at the return PC. Run
-/// alone the interpreter takes that INT on its next step and stops with <c>Exception</c>. The artifact's INT boundary
-/// accepts INT only for CAUSE.IP2 and SR.IM2 (<c>artifact_interrupt_boundary</c>), so a segment that returned Clean and
-/// resumed the artifact would drop the interrupt silently. The mixed segment now stops with the same Runtime-failure
-/// classification the interpreter alone uses (docs/cpu/exceptions.md).
+/// Issue #728: a fallback segment that returns to the artifact with an enabled software interrupt (CAUSE.IP0/IP1 with
+/// SR.IM0/IM1 and SR.IEc) pending must stop, not resume: the artifact's INT boundary accepts only IP2 (ADR-025). The
+/// interpreter-alone and the mixed/artifact paths report <see cref="MixedFallbackDiagnostics.SoftwareInterruptUnsupported"/>
+/// for it. Inside a BIOS blocking wait the wait code is kept (<c>BiosBlockingCallWaitTests</c>).
 /// </summary>
 [Test]
 public sealed class SoftwareInterruptBackendDivergenceTests
@@ -23,7 +21,7 @@ public sealed class SoftwareInterruptBackendDivergenceTests
     private const uint ReturnPc = Entry + 0x20u; // the Nop right after the JR and its delay slot, inside the image
     private const uint SrIec_Im0 = 0x0000_0101u;
     private const uint CauseIp0 = 0x0000_0100u;
-    private const uint StraightReturnPc = Entry + 0x1Cu; // StraightProgram: the Nop after the MTC0 SR
+    private const uint HostReturnPc = Entry + 0x10u; // FallbackProgram: the Nop after the JALR (the program's return point)
 
     private static (PsxDeviceGraph Graph, InterpreterTitleExecutionEngine Engine) Attached(uint[] words)
     {
@@ -53,19 +51,18 @@ public sealed class SoftwareInterruptBackendDivergenceTests
     }
 
     /// <summary>
-    /// Whole-program form of <see cref="Program"/> for the artifact-only runs: the MTC0 SR is followed by a fall-through
-    /// to <see cref="StraightReturnPc"/> (statically reachable, so the artifact compiles it), and the program ends with
-    /// a jump to zero. The INT is the next fetch at <see cref="StraightReturnPc"/> on both backends.
+    /// The compiled program calls an uncompiled target through JALR, so the target runs as a fallback segment. The target
+    /// sets CAUSE and SR, then returns with <c>jr ra</c> to <see cref="HostReturnPc"/>, which ends the program.
     /// </summary>
-    private static uint[] StraightProgram(uint cause, uint sr)
+    private static uint[] FallbackProgram(uint cause, uint sr)
     {
-        var code = new Block(Entry);
-        code.Emit(Li(T0, cause));
-        code.Emit(Mtc0(T0, 13), Nop);
-        code.Emit(Li(T0, sr));
-        code.Emit(Mtc0(T0, 12));
-        code.Emit(Nop, Jr(Zero), Nop); // StraightReturnPc is the Nop; the jump to zero is the program's end
-        return Image(code);
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), [Jalr(T0)], [Nop]);
+        main.Emit([Nop], [Jr(Zero)], [Nop]); // HostReturnPc is the first Nop; the jump to zero is the program's end
+        var target = new Block(Target);
+        target.Emit(Li(T1, cause), [Mtc0(T1, 13)], [Nop]);
+        target.Emit(Li(T1, sr), [Jr(Ra)], [Mtc0(T1, 12)]);
+        return Image(main, target);
     }
 
     private static FallbackCpuState Entering()
@@ -73,6 +70,13 @@ public sealed class SoftwareInterruptBackendDivergenceTests
         var gpr = new uint[TitleExecutionRequest.GprCount];
         gpr[(int)Ra] = ReturnPc;
         return new FallbackCpuState(gpr, 0, 0, Entry, 0, 0, 0);
+    }
+
+    private static FallbackCpuState EnteringTarget()
+    {
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        gpr[(int)Ra] = HostReturnPc;
+        return new FallbackCpuState(gpr, 0, 0, Target, 0, 0, 0);
     }
 
     [Fact]
@@ -84,9 +88,8 @@ public sealed class SoftwareInterruptBackendDivergenceTests
 
         var outcome = engine.RunFallbackSegment(Entering(), new HashSet<uint> { ReturnPc }, 100);
 
-        // The interpreter alone takes this INT at ReturnPc (see the test below). Resuming the artifact there would drop it.
         outcome.Status.Should().Be(FallbackSegmentStatus.Stopped, "a takeable software interrupt is a Runtime failure, not a return");
-        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.ExceptionUnsupported, outcome.DiagnosticMessage);
+        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SoftwareInterruptUnsupported, outcome.DiagnosticMessage);
         outcome.State.Pc.Should().Be(ReturnPc);
         (outcome.State.Cause & outcome.State.Sr & 0x300u).Should().NotBe(0u, "IP0 is pending and enabled in the stopped state");
     }
@@ -108,7 +111,7 @@ public sealed class SoftwareInterruptBackendDivergenceTests
     }
 
     [Fact]
-    public void InterpreterAlone_TakesTheSameInterruptAtTheReturnPc_AndStopsWithException()
+    public void InterpreterAlone_TakesTheSameInterruptAtTheReturnPc_AndStopsWithTheSoftwareInterruptCode()
     {
         var (graph, engine) = Attached(Program(CauseIp0, SrIec_Im0));
         using var _ = graph;
@@ -118,44 +121,65 @@ public sealed class SoftwareInterruptBackendDivergenceTests
         var outcome = engine.RunFallbackSegment(Entering(), new HashSet<uint>(), 100);
 
         outcome.Status.Should().Be(FallbackSegmentStatus.Stopped);
-        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.ExceptionUnsupported, outcome.DiagnosticMessage);
+        outcome.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SoftwareInterruptUnsupported, outcome.DiagnosticMessage);
         outcome.State.Pc.Should().Be(0x80000080u, "the INT entered the general exception vector (BEV=0)");
         outcome.State.Epc.Should().Be(ReturnPc, "EPC is the instruction the INT preempted: the same PC mixed execution resumes at");
         outcome.RetiredInstructions.Should().Be(8, "li(2), mtc0, nop, li(2), JR and its slot all retire, then the INT preempts the fetch at ReturnPc");
     }
 
     [Theory]
-    [InlineData(0x0000_0100u, 0x0000_0100u)] // IP0 pending, IM0 set, IEc clear: not takeable
-    [InlineData(0x0000_0100u, 0x0000_0001u)] // IP0 pending, IEc set, IM0 clear: masked
-    [InlineData(0u, 0x0000_0101u)]           // nothing pending
-    public void Artifact_AndInterpreterAlone_CompleteWhenNoSoftwareInterruptIsTakeable(uint cause, uint sr)
+    [InlineData(0x0000_0100u, 0x0000_0101u)] // IP0 takeable
+    [InlineData(0x0000_0200u, 0x0000_0201u)] // IP1 takeable
+    public void InterpreterAloneAndMixed_ReportTheSameDiagnosticForAnUnsupportedSoftwareInterrupt(uint cause, uint sr)
     {
-        var words = StraightProgram(cause, sr);
+        var words = FallbackProgram(cause, sr);
         using var dir = new TempDirectory();
 
-        var artifact = RunArtifact(words, dir, null).Result;
-        var interpreter = RunInterpreter(words);
+        var (graph, engine) = Attached(words);
+        using var _ = graph;
+        using var __ = engine;
+        var interpreter = engine.RunFallbackSegment(EnteringTarget(), new HashSet<uint>(), 100);
 
-        artifact.State.Should().Be(TitleExecutionState.Completed, artifact.DiagnosticMessage);
-        interpreter.State.Should().Be(TitleExecutionState.Completed, interpreter.DiagnosticMessage);
+        var mixed = RunArtifact(words, dir, new MixedFallbackOptions()).Result;
+
+        interpreter.Status.Should().Be(FallbackSegmentStatus.Stopped, interpreter.DiagnosticMessage);
+        mixed.State.Should().NotBe(TitleExecutionState.Completed, mixed.DiagnosticMessage);
+        mixed.DiagnosticCode.Should().Be(interpreter.DiagnosticCode, $"interpreter: {interpreter.DiagnosticMessage} / mixed: {mixed.DiagnosticMessage}");
+        mixed.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SoftwareInterruptUnsupported);
     }
 
-    [Fact]
-    public void Artifact_AndInterpreterAlone_StopOnATakeableSoftwareInterrupt_WithTheSameRuntimeFailure()
+    [Theory]
+    [InlineData(0x0000_0100u, 0x0000_0101u, true)]  // IP0 takeable: stop
+    [InlineData(0x0000_0200u, 0x0000_0201u, true)]  // IP1 takeable: stop
+    [InlineData(0x0000_0100u, 0x0000_0100u, false)] // IP0 pending, IEc clear: returns
+    [InlineData(0x0000_0100u, 0x0000_0001u, false)] // IP0 pending, IEc set, IM0 clear: masked
+    [InlineData(0x0000_0200u, 0x0000_0401u, false)] // IP1 pending, IM1 clear (IM2 set): masked
+    [InlineData(0x0000_0400u, 0x0000_0401u, false)] // IP2 only (hardware line, not a software interrupt): returns
+    [InlineData(0u, 0x0000_0101u, false)]           // nothing pending: normal return
+    public void FallbackReturn_StopsOnlyForATakeableSoftwareInterrupt_OnBothBackends(uint cause, uint sr, bool stops)
     {
-        var words = StraightProgram(CauseIp0, SrIec_Im0);
+        var words = FallbackProgram(cause, sr);
         using var dir = new TempDirectory();
 
-        // Issue #728: the artifact used to resume past this INT silently; it now takes the same entry and stops, as the
-        // interpreter alone does (docs/cpu/exceptions.md: a software interrupt is a Runtime failure).
-        var artifact = RunArtifact(words, dir, null).Result;
-        var interpreter = RunInterpreter(words);
+        var (graph, engine) = Attached(words);
+        using var _ = graph;
+        using var __ = engine;
+        var interpreter = engine.RunFallbackSegment(EnteringTarget(), new HashSet<uint> { HostReturnPc }, 100);
 
-        foreach (var (name, result) in new[] { ("artifact", artifact), ("interpreter", interpreter) })
+        var mixed = RunArtifact(words, dir, new MixedFallbackOptions()).Result;
+
+        if (stops)
         {
-            result.State.Should().Be(TitleExecutionState.RuntimeFailure, $"{name}: {result.DiagnosticMessage}");
-            result.DiagnosticCode.Should().Be("CPU_EXCEPTION", $"{name}: {result.DiagnosticMessage}");
-            result.FinalSnapshot?.PC.Should().Be(0x8000_0080u, $"{name}: the INT entered the general exception vector (BEV=0)");
+            interpreter.Status.Should().Be(FallbackSegmentStatus.Stopped, interpreter.DiagnosticMessage);
+            interpreter.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SoftwareInterruptUnsupported, interpreter.DiagnosticMessage);
+            mixed.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SoftwareInterruptUnsupported, mixed.DiagnosticMessage);
+            mixed.State.Should().NotBe(TitleExecutionState.Completed);
+        }
+        else
+        {
+            interpreter.Status.Should().Be(FallbackSegmentStatus.Returned, interpreter.DiagnosticMessage);
+            interpreter.State.Pc.Should().Be(HostReturnPc);
+            mixed.State.Should().Be(TitleExecutionState.Completed, mixed.DiagnosticMessage);
         }
     }
 }

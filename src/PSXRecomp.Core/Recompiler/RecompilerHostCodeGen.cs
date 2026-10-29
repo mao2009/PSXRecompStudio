@@ -1219,8 +1219,7 @@ int recompiler_trace_attach(struct RecompilerState* state) {
         // where the interpreter's CPU takes INT too (not while branch_pending_). Gated by the same
         // budget guard as the blocks below, so budget == 0 still executes nothing. A null hook (every
         // state that does not set one) keeps the pre-existing behavior.
-        // Issue #728: the hook may stop the run (a takeable software interrupt): return its termination before any unit runs.
-        sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostInterruptField} != 0 && steps < budget) {{ {StateParam}->{HostInterruptField}({StateParam}); if ({StateParam}->{TerminationField} != RECOMPILER_REASON_SUCCESS) return {StateParam}->{TerminationField}; }}");
+        sb.AppendLine(IndentUnit + IndentUnit + $"if ({StateParam}->{HostInterruptField} != 0 && steps < budget) {{ {StateParam}->{HostInterruptField}({StateParam}); }}");
         // Issue #774: the unit's entry PC, captured after the interrupt boundary (which may move pc to the vector). The
         // credit below cannot recover it: an interrupted unit has already set pc to its resume address.
         if (traceUnits)
