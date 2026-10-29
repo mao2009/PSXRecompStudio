@@ -98,6 +98,80 @@ public sealed class RecompiledHostVBlankObserverTests
         late.Should().Equal(2UL, 3UL);
     }
 
+    // ----- Owner ruling on PR #850: a game-execution callback's exception propagates. Deterministic: 3 subscribers, 3 VBlanks. -----
+
+    [Fact]
+    public void A_Game_Callback_Exception_Propagates_Unchanged_And_Stops_The_Rest_Of_The_Advance()
+    {
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var thrown = new InvalidOperationException("game defect at VBlank 2");
+        var first = new List<ulong>();
+        var throwing = new List<ulong>();
+        var last = new List<ulong>();
+        _ = scheduler.AddVblankCallback(first.Add);
+        _ = scheduler.AddVblankCallback(vblank =>
+        {
+            throwing.Add(vblank);
+            if (vblank == 2) throw thrown;
+        });
+        _ = scheduler.AddVblankCallback(last.Add);
+
+        var act = () => scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
+
+        // The same instance propagates out of Advance (rule 1).
+        act.Should().Throw<InvalidOperationException>().Which.Should().BeSameAs(thrown);
+        // Rule 2: the subscriber before the throw ran at VBlank 2; the one after it did not; VBlank 3 was not delivered to anyone.
+        first.Should().Equal(1UL, 2UL);
+        throwing.Should().Equal(1UL, 2UL);
+        // The subscriber after the throwing one, on VBlank 2, is not invoked; VBlank 3 is not delivered.
+        last.Should().Equal(1UL);
+    }
+
+    [Fact]
+    public void A_Game_Callback_Exception_Does_Not_Roll_Back_The_Counters_And_Is_Not_Recorded_As_An_Observer_Failure()
+    {
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var delivered = new List<ulong>();
+        _ = scheduler.AddVblankCallback(vblank =>
+        {
+            delivered.Add(vblank);
+            if (vblank == 2) throw new InvalidOperationException("game defect");
+        });
+
+        var act = () => scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
+        act.Should().Throw<InvalidOperationException>();
+
+        // Rules 3 and 4: the counters keep the values at the throw. The whole batch was counted before delivery, so the count
+        // (3) is larger than the notifications delivered (2). Counters alone do not show how many were delivered.
+        scheduler.VblankCount.Should().Be(3UL);
+        scheduler.ElapsedCycles.Should().Be(3 * DeviceScheduler.VblankIntervalCycles, "the phase is fully advanced; nothing rolls back");
+        delivered.Should().Equal(1UL, 2UL);
+        // Rule 6: a game-execution exception is never recorded as a diagnostic observer failure.
+        scheduler.VblankObserverFailure.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_Diagnostic_Observer_Throw_Is_Contained_While_Game_Callbacks_Run_And_The_Game_Exception_Propagates()
+    {
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        var game = new List<ulong>();
+        var gameThrown = new InvalidOperationException("game defect at VBlank 2");
+        // The diagnostic observer throws at VBlank 1; the game callbacks run in that VBlank (rule 5). The game throws at VBlank 2.
+        _ = scheduler.AddDiagnosticVblankObserver(vblank => { if (vblank == 1) throw new ArgumentException("observer defect"); });
+        _ = scheduler.AddVblankCallback(vblank => { game.Add(vblank); if (vblank == 2) throw gameThrown; });
+
+        var act = () => scheduler.Advance(3 * DeviceScheduler.VblankIntervalCycles);
+
+        act.Should().Throw<InvalidOperationException>().Which.Should().BeSameAs(gameThrown);
+        // The game callback ran in VBlank 1, where the observer was contained.
+        game.Should().Equal(1UL, 2UL);
+        // Rule 6: the recorded failure is the observer's own, not the game exception's.
+        scheduler.VblankObserverFailure.Should().Be(new VblankObserverFailure(1, nameof(ArgumentException), "observer defect"));
+    }
+
     [Fact]
     public void The_First_Observer_Failure_Is_Recorded_And_Later_VBlanks_Are_Still_Delivered()
     {

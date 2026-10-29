@@ -94,6 +94,24 @@ public sealed class OpenBiosProbeObserverFailureTests
     }
 
     [Fact]
+    public void An_Interpreter_Run_Whose_Game_Callback_Throws_Is_Reported_As_A_Failure_Not_A_Success()
+    {
+        // Owner ruling (PR #850): a game-execution callback's exception propagates. The probe must not turn it into a success.
+        // KeyNotFoundException is deliberately not one of the probe's listed exception types.
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        var seam = new OpenBiosProbeCommand.ObserverSeam(
+            InterpreterGameCallbacks: scheduler => _ = scheduler.AddVblankCallback(_ => throw new KeyNotFoundException("game defect")));
+
+        var exit = Run(
+            [rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "600000", "--boundary-log", dir.Combine("game.jsonl"), "--json"],
+            out var output, out var error, seam);
+
+        exit.Should().Be(1, "a game callback's failure must be reported as a failed run");
+        error.Should().Contain("KeyNotFoundException").And.Contain("game defect");
+    }
+
+    [Fact]
     public void Generated_Host_Observer_Failure_Is_Recorded_In_The_JSON_Document_And_Is_Null_When_Clean()
     {
         using var dir = new TempDirectory();

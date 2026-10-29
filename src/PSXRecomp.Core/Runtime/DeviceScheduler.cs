@@ -28,6 +28,13 @@ namespace PSXRecomp.Core.Runtime;
 /// interpreter steps that way and runs the guest's handler (Issue #499) — while
 /// <see cref="PSXCoreWrapper.StepWithoutInterrupts"/> holds it low.
 /// </para>
+/// <para>
+/// Thread safety: not thread-safe. The VBlank subscription list (<c>_vblankSubscribers</c>), the removal flags and
+/// <c>RemoveSubscriber</c> are unsynchronised. One thread drives <see cref="Advance"/> and the subscription calls made during
+/// it. Subscribers are registered or disposed only while no <see cref="Advance"/> is running on another thread, for example
+/// before a run starts or after it ends. The host's cancellation path never touches the subscriptions: it cancels a token and
+/// sets the frame gate. Disposing a handle from another thread during <see cref="Advance"/> is not supported.
+/// </para>
 /// </remarks>
 [Domain]
 public sealed class DeviceScheduler
@@ -81,8 +88,16 @@ public sealed class DeviceScheduler
     public VblankObserverFailure? VblankObserverFailure { get; private set; }
 
     /// <summary>
-    /// Registers a game-execution VBlank callback. Its exception propagates out of <see cref="Advance"/>, unchanged. The
-    /// same delegate registered twice runs once. Disposing the returned handle removes it.
+    /// Registers a game-execution VBlank callback. Contract (owner ruling, PR #850):
+    /// <list type="number">
+    /// <item>Its exception is not swallowed. It propagates out of <see cref="Advance"/>, unchanged.</item>
+    /// <item>The subscribers after it for that VBlank, and the later VBlanks of that <see cref="Advance"/>, are not delivered.</item>
+    /// <item>The counters (<see cref="VblankCount"/>, the elapsed cycles and the phase) are not rolled back: they keep the values
+    /// they had at the throw. Because the whole batch is counted before delivery, <see cref="VblankCount"/> can exceed the number
+    /// of notifications delivered. Counters do not show how many notifications were delivered.</item>
+    /// <item>It is never recorded as <see cref="VblankObserverFailure"/>; only a diagnostic observer's exception is.</item>
+    /// </list>
+    /// The same delegate registered twice runs once. Disposing the returned handle removes it.
     /// </summary>
     internal IDisposable AddVblankCallback(Action<ulong> callback) => Subscribe(callback, diagnostic: false);
 
@@ -300,7 +315,10 @@ public sealed class DeviceScheduler
             _vblankCount += vblanksElapsed;
 
             // Each VBlank that elapsed is delivered to every subscriber, in registration order. A subscriber may dispose its
-            // handle during delivery, so the list is copied first.
+            // handle during delivery, so the list is copied first. Contract (PR #850): a game-execution callback's exception
+            // propagates out of Advance at the statement below, with no catch, so the rest of this delivery and the later
+            // VBlanks of this call are skipped, and the counters above keep their values (no rollback). Only a diagnostic
+            // observer's exception is caught here and recorded as VblankObserverFailure.
             for (ulong i = 1; i <= vblanksElapsed; i++)
             {
                 var vblank = previousVblankCount + i;

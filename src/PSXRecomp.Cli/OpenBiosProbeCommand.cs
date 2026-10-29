@@ -35,7 +35,8 @@ internal static class OpenBiosProbeCommand
     /// </summary>
     internal sealed record ObserverSeam(
         Func<Action<ulong, ulong>, Action<ulong, ulong>>? Interpreter = null,
-        Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? GeneratedHost = null);
+        Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? GeneratedHost = null,
+        Action<DeviceScheduler>? InterpreterGameCallbacks = null);
 
     internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error, ObserverSeam? observerSeam = null)
     {
@@ -243,7 +244,7 @@ internal static class OpenBiosProbeCommand
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
                         firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath)), json, output, error, mdecLog, boundaryLog, observerSeam?.GeneratedHost)
-                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog, error, observerSeam?.Interpreter);
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog, error, observerSeam?.Interpreter, observerSeam?.InterpreterGameCallbacks);
             }
             finally
             {
@@ -256,9 +257,10 @@ internal static class OpenBiosProbeCommand
                     error.WriteLine($"openbios-probe: warning: MDEC event log is incomplete: {failure}");
             }
         }
-        catch (Exception ex) when (
-            ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
-                or FileNotFoundException or DirectoryNotFoundException or DllNotFoundException or FormatException)
+        // Every exception that ends the run is a failed run, with its type and message on stderr and exit 1. A game-execution
+        // VBlank callback's exception (owner ruling, PR #850) propagates out of the run, so an unlisted type must not escape the probe
+        // as an unhandled crash: it is reported here, never turned into a success.
+        catch (Exception ex)
         {
             error.WriteLine($"openbios-probe: {ex.GetType().Name}: {ex.Message}");
             return 1;
@@ -395,7 +397,7 @@ internal static class OpenBiosProbeCommand
     private static int RunInterpreter(
         OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
         string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null,
-        TextWriter? error = null, Func<Action<ulong, ulong>, Action<ulong, ulong>>? wrapObserver = null)
+        TextWriter? error = null, Func<Action<ulong, ulong>, Action<ulong, ulong>>? wrapObserver = null, Action<DeviceScheduler>? gameCallbacks = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
@@ -420,8 +422,15 @@ internal static class OpenBiosProbeCommand
         var monitor = new OpenBiosBootMonitor(observed is null ? null : () => (observed.Cop0Diagnostics.Cause, observed.Cop0Diagnostics.Epc, observed.Cop0Diagnostics.BadVAddr));
         if (observed is not null)
         {
+            // Test seam (ObserverSeam.InterpreterGameCallbacks): registers game-execution callbacks once, on the first fetch after Load.
+            var gameCallbacksPending = gameCallbacks is not null;
             observed.FetchObserver = pc =>
             {
+                if (gameCallbacksPending && observed.Scheduler is { } scheduler)
+                {
+                    gameCallbacksPending = false;
+                    gameCallbacks!(scheduler);
+                }
                 lastFetch = pc;
                 monitor.OnFetch(pc);
                 if (retireTargets is not null && retireWriter is not null && retireTargets.Contains(observed.GuestCycles))

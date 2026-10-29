@@ -75,4 +75,43 @@ public sealed class InterpreterVBlankObserverAttachTests
         observerRuns.Should().Equal(1UL);
         otherRuns.Should().Equal(1UL, 2UL);
     }
+
+    [Fact]
+    public void Setting_VBlankObserver_On_An_Attached_Engine_Attaches_It_At_Once_Through_The_Public_Property()
+    {
+        // No reflection: the public setter is the path a caller uses on an engine built with Attach (which never calls Load).
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        using var engine = InterpreterTitleExecutionEngine.Attach([MipsEncoding.Nop], Entry, graph, scheduler);
+        var runs = new List<ulong>();
+
+        engine.VBlankObserver = (vblank, _) => runs.Add(vblank);
+        scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+
+        runs.Should().Equal(1UL);
+    }
+
+    [Fact]
+    public void Changing_Or_Clearing_VBlankObserver_Replaces_Or_Removes_Only_The_Engines_Registration()
+    {
+        using var graph = new PsxDeviceGraph();
+        var scheduler = graph.CreateScheduler();
+        using var engine = InterpreterTitleExecutionEngine.Attach([MipsEncoding.Nop], Entry, graph, scheduler);
+        var first = new List<ulong>();
+        var second = new List<ulong>();
+        var other = new List<ulong>();
+        _ = scheduler.AddVblankCallback(other.Add);
+
+        engine.VBlankObserver = (vblank, _) => first.Add(vblank);
+        engine.VBlankObserver = (vblank, _) => second.Add(vblank);
+        scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+        engine.VBlankObserver = null;
+        scheduler.Advance(DeviceScheduler.VblankIntervalCycles);
+
+        first.Should().BeEmpty("a replaced observer no longer runs");
+        // The replacement ran once, at VBlank 1, and was removed at VBlank 2.
+        second.Should().Equal(1UL);
+        // Another subscriber is untouched by the engine's changes.
+        other.Should().Equal(1UL, 2UL);
+    }
 }

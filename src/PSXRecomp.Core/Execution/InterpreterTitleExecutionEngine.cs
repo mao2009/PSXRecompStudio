@@ -340,11 +340,23 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Active device scheduler, available after Load; used for VBlank-aligned capture.</summary>
     public DeviceScheduler? Scheduler => _scheduler;
 
+    private Action<ulong, ulong>? _vblankObserver;
+
     /// <summary>
     /// Called at each VBlank of this engine's scheduler with the VBlank index and the scheduler time (diagnostic observation
-    /// only, Issue #774 W03). The scheduler is created by Load, so the callback is attached there: set this before the run.
+    /// only, Issue #774 W03). Setting it attaches the observer to the current scheduler at once when one exists (an engine
+    /// created with <see cref="Attach"/> already has one, and Load creates one); otherwise it is attached when Load creates the
+    /// scheduler. Setting a new value replaces this engine's registration, and null removes it. No other subscriber is touched.
     /// </summary>
-    public Action<ulong, ulong>? VBlankObserver { get; set; }
+    public Action<ulong, ulong>? VBlankObserver
+    {
+        get => _vblankObserver;
+        set
+        {
+            _vblankObserver = value;
+            AttachVBlankObserver();
+        }
+    }
 
     /// <summary>
     /// The first exception the diagnostic <see cref="VBlankObserver"/> threw on the scheduler this engine uses, or null. When
@@ -361,7 +373,8 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     {
         _vblankObserverRegistration?.Dispose();
         _vblankObserverRegistration = null;
-        if (VBlankObserver is not { } observer || _scheduler is not { } scheduler) return;
+        // A disposed engine never registers again: its observer must not reach a scheduler that outlives it.
+        if (_disposed || VBlankObserver is not { } observer || _scheduler is not { } scheduler) return;
         _vblankObserverRegistration = scheduler.AddDiagnosticVblankObserver(vblank => observer(vblank, scheduler.ElapsedCycles));
     }
 
