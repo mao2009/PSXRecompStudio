@@ -186,6 +186,7 @@ source:     { file, sha256, sizeBytes }     // file: "<name>.c", a bare file nam
 binary:     { file, sha256, sizeBytes }     // file: "<name>" or "<name>.exe", as produced
 files:      [ "<name>.c", "<name>[.exe]", "<name>.o" (game builds only) ]   // bare names, what promote moves
 toolchain:  { compilerVersionLine, targetTriple, recipeTokens }   // path-free, see 3.6
+digests:    { artifact: { file, sha256, sizeBytes }, imageSidecar: { file, sha256, sizeBytes } }   // packaged builds only, read by the packaged host; see 3.8
 runtimeInputs: [ { name, kind, requiredBy, sha256? } ]   // names and hashes only, never the BIOS or ROM content
 productRevision: "<InformationalVersion>"       // informational, not part of buildKey
 ```
@@ -248,6 +249,24 @@ Each input is one of three classes. **Keyed**: it is in the build key or in a ch
 - Workaround: rebuild. Delete the output directory, which forces Build. Skip is never the workaround for an untracked input. A forced-rebuild command-line option is a possible later addition and is not part of this design.
 
 **Complete reproducibility is not guaranteed.** The rules above make Skip conservative. They do not make the build reproducible across machines, toolchains, or library versions. Section 4 gives the scope of what the key covers.
+
+### 3.8 Digests read by the packaged host (H2, H3)
+
+The packaged host (issue #48, W12) must verify the SHA-256 of two files before use. H2 is the artifact binary. H3 is the image sidecar. The host fails closed on a mismatch or a missing file. W12 names this build manifest as the carrier for the expected digests. The digests are not written into `runtime-host.json`, because that would be a schema-2 change, which Q16 rejects (W12).
+
+**Fields.** `digests.artifact` holds `{ file, sha256, sizeBytes }` for H2. `digests.imageSidecar` holds `{ file, sha256, sizeBytes }` for H3. The file names are bare names. The sidecar name is `RuntimeHostLayout.ImageFileName`, which is `artifact-image.bin` (`src/PSXRecomp.Infrastructure/Standalone/RuntimeHostLayout.cs:45`). The packager writes it into `runtime/` (`src/PSXRecomp.Cli/PackageCommand.cs:231`). It is not the engine's file of the same name in the output directory (`src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:512`), which is a different file and not a digest source.
+
+**Location.** A packaged build writes its manifest to `runtime/build-manifest.json`, beside the sidecar it describes, so the host reads it from where the host runs. A non-packaged build keeps the manifest in the output directory (3.5).
+
+**Computation order.** H2 is hashed from the staged artifact, and the promote step (7.2) is a move of the same bytes, so the digest stays valid after promotion. The packager writes the sidecar, then hashes it (H3), then writes the manifest. The manifest is never written before the digests it contains.
+
+**Owner.** The owner of the `digests` field is issue #46 (this design, W14). The writer is the build-manifest writer in Domain (7.2), called by the packager. Today `PackageCommand` does not go through the workflow, so moving the packager onto that writer is a migration item (Section 7.2).
+
+**Read-only input.** The packaged host reads `digests` as read-only input. It verifies H2 and H3 against the recorded values before use. It never writes, regenerates, or edits the manifest or any digest. If a digest is wrong, the fix is on the writer side: rebuild or repackage. Editing the manifest is never the fix.
+
+**Fail closed (W12).** On a mismatch in H2 or H3, or a missing H2, H3, or manifest file, the host refuses to start. It does not run unverified. The check itself is implemented in W12. This design only defines the contract and the writer.
+
+**Not part of the key.** The digests are outputs, derived after the build. They are not in `buildKey` and do not change Skip (Section 6), so the identity rules in 3.1 and 3.5 and the accepted-limit rules in 3.7 are unchanged. `runtime-host.json` is not covered by these digests. Its integrity is W12's concern.
 
 ## 4. Reproducibility: scope and limits (no guarantee)
 
