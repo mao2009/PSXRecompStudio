@@ -92,7 +92,7 @@ The smoke set is the subset that runs on every change without any user input. It
 Host mode per fixture, applied to every fixture the same way:
 
 - `bios-putchar-marker` and `unresolved-jump`: run through the production recompiler/runtime path used by `RecompiledArtifactE2ETests`. [CONFIRMED]
-- `natural-end-transitions`: its source comment says it verifies "bridge mode" for non-guest-firmware cases. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:153-154`; OBSERVED: `docs/runtime/runtime-host.md:295-298`] Whether bridge mode needs host setup beyond the E2E path is UNVERIFIED (Q8). It is deferred, as described in Selection below.
+- `natural-end-transitions`: its source comment says it verifies "bridge mode" for non-guest-firmware cases. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:153-154`, the comment directly above the `NaturalEndWithTransitions` definition. `docs/runtime/runtime-host.md` does not tie this fixture to bridge mode; its bridge wording at line 298 is for `GuestFirmwareOpenbios`.] Whether bridge mode needs host setup beyond the E2E path is UNVERIFIED (Q8). It is deferred, as described in Selection below.
 - `natural-end-v0`: described as a "RuntimeHost-managed natural-end flow" [CONFIRMED description text]. It depends on host launch behavior that this design has not reviewed. Extended tier.
 - `guest-firmware-openbios`: exercises the `GuestFirmware=true` mode, with no HLE, at `0x1FC00000`. Its input requirements beyond the repository-authored instruction words are UNVERIFIED. Extended tier, and not enabled in CI until those are checked. [CONFIRMED description text]
 
@@ -119,9 +119,9 @@ The smoke tier is a required check for changes under `src/PSXRecomp.Core/Recompi
 
 ## 5. Result record
 
-**Scope rule.** Real-title evaluation takes only `ScenarioResult` records with `Subject = RealTitle`. A `SyntheticFixture` result never enters any derivation: Evidence count (#33 §4.2), Confidence (§4.3), level derivation (§5), Known Issue and Regression (§6), and display (§9). This includes a `SyntheticFixture` result that carries a `TitleKey`. [CONFIRMED: `e7aef36` §8 derivation input rule and §3.2, which name §4.2, §4.3, §5, §6 and §9. Known Issues are further limited by #33 §6.1 eligibility (`e7aef36`).]
+**Scope rule.** Real-title evaluation takes only `ScenarioResult` records with `Subject = RealTitle`. A `SyntheticFixture` result never enters any derivation: Evidence count (#33 §4.2), Confidence (#33 §4.3), level derivation (#33 §5), Known Issue and Regression (#33 §6), and display (#33 §9). This includes a `SyntheticFixture` result that carries a `TitleKey`. [CONFIRMED: `e7aef36` #33 §8 (line 370) and #33 §3.2 (line 136), which name #33 §4.2, §4.3, §5, §6 and §9. Known Issues are further limited by #33 §6.1 eligibility (`e7aef36`).]
 
-**Outcome rule.** Evidence count is the number of distinct `EvidenceIds` referenced by `RealTitle` results with `Outcome = Pass` (#33 §4.2 at `e7aef36`). Confidence reads the same `RealTitle` results. `EvidenceRecord` has no `Outcome` field (#33 §4.1). #33 §4.2 at `e7aef36` counts `ScenarioResult` records, and this document does not assume an `EvidenceRecord.Outcome` anywhere. [CONFIRMED: `e7aef36` §4.1 field list and §4.2 text]
+**Outcome rule.** Evidence count is the number of distinct `EvidenceIds` referenced by `RealTitle` results with `Outcome = Pass`, grouped by `(TitleKey, Facet, ScenarioId, ScenarioVersion, Binding)` (#33 §4.2 at `e7aef36`, line 225). Results with different `ScenarioVersion` values are never summed, and no count crosses a binding. Confidence reads the same `RealTitle` results. `EvidenceRecord` has no `Outcome` field (#33 §4.1). #33 §4.2 at `e7aef36` counts `ScenarioResult` records, and this document does not assume an `EvidenceRecord.Outcome` anywhere. [CONFIRMED: `e7aef36` §4.1 field list and §4.2 text]
 
 The result record uses the #33 `ScenarioResult` (§3.4) without extra fields. Field mapping:
 
@@ -150,7 +150,7 @@ Outcome values follow #33 section 3.5 at `e7aef36`, which includes the owner-app
 |---|---|---|
 | `Pass` | All criteria met on this binding. | criteria evaluation |
 | `Fail` | Evidence produced, a criterion not met. | criteria evaluation |
-| `Blocked` | Stopped at a known unsupported boundary. | `RecompiledArtifactOutcome.Blocked` (OBSERVED: #33 citing `RecompiledArtifactExitCode.cs:18-21`) |
+| `Blocked` | Stopped at a known unsupported boundary. | Derived from the execution states `UnsupportedTransfer`, `RuntimeHandoff` and `BudgetExhausted` (`RecompiledArtifactExitCode.cs:53-55`). Not derived from run-level `RecompiledArtifactOutcome.Blocked`, because `Cancelled` also maps to that value (`RecompiledArtifactExitCode.cs:59`). A `Cancelled` state must never become `Blocked`. |
 | `Error` | Harness or host failure, not a guest result. | `RecompiledArtifactOutcome.Failure` (OBSERVED) |
 | `Cancelled` | Stopped by a cancellation request before a classified guest end. Distinct from `Blocked`, `NotRun` and `Fail`. | `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`). The registry maps from the title-level state, not from `RecompiledArtifactOutcome`, which folds it into `Blocked` (`RecompiledArtifactExitCode.cs:59`). |
 | `NotRun` | No attempt, or attempt produced no evidence. | run planner |
@@ -175,7 +175,7 @@ Stop mapping, from execution state to registry Outcome:
 | Invalid state | `TitleExecutionState.InvalidState` | `Error` | Run-level `Failure` (`RecompiledArtifactExitCode.cs:57`) |
 | Any other state | not listed above | `Error` | Default rule (W15): an unclassified state is an `Error`, never `Pass`, `Fail` or `Blocked`. [PREDICTED] |
 | Budget stop | `BudgetExhausted` / `OUTER_BUDGET_EXHAUSTED` pattern (`capabilities.md:87`) | `Blocked` | Diagnosable stop |
-| User cancel | `RecompilerExecutionStatus.Cancelled` (`RecompilerExecutionStatus.cs:35`), reaching `TitleExecutionState.Cancelled` at `ExecutionOrchestrator.cs:157-159` | `Cancelled` | The run-level `RecompiledArtifactOutcome` is still `Blocked` (`RecompiledArtifactExitCode.cs:59`); the registry does not use that value. [CONFIRMED] |
+| User cancel | `RecompilerExecutionStatus.Cancelled` (`RecompilerExecutionStatus.cs:35`), creating `TitleExecutionState.Cancelled` at `ExecutionOrchestrator.cs:157-159` (stop during a segment), and also at `:75` (stop before the run starts) and `:135` (stop between segments) | `Cancelled` | The run-level `RecompiledArtifactOutcome` is still `Blocked` (`RecompiledArtifactExitCode.cs:59`); the registry does not use that value. [CONFIRMED] |
 | Engine timeout | `RecompilerExecutionStatus.TimedOut` (`RecompilerExecutionStatus.cs:29`) | `Error` | The orchestrator maps any non-`Completed`, non-`Cancelled` status to `RuntimeFailure` with the engine's diagnostic code or `ENGINE_FAILED` (`ExecutionOrchestrator.cs:162-171`). `RecompiledArtifactExitCode.cs:56` maps `RuntimeFailure` to `Failure`, and #33 aligns `Failure` with `Error`. [CONFIRMED for each step] |
 
 ### 5.2 Evidence attachments
@@ -194,7 +194,7 @@ Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`
 - A synthetic result identifies its fixture through `ScenarioId`, which the W15 catalog maps to a `FixtureId`. The result does not carry the fixture hash or a disc hash. [PREDICTED]
 - `TitleKey` may be omitted when `Subject = SyntheticFixture` and is required for `RealTitle`. [CONFIRMED: `e7aef36` §3.4 line 159]
 - At `e7aef36`, `TitleKey` equals `ReleaseKey` (`(Serial, Region, Revision)`). [CONFIRMED: `e7aef36` §3.1 line 118] This document uses that identity only for real-title results.
-- Positive filter (#33 §8 derivation input rule and §3.4 at `e7aef36`): a result enters a derivation only if `Subject = RealTitle`, it has a `TitleKey`, and its `Facet` is not `None`. A `SyntheticFixture` result is excluded even when it carries a `TitleKey`.
+- Positive filter (#33 §8 at `e7aef36`, line 370, and §3.2, line 136): a result enters a derivation only if `Subject = RealTitle`, it has a `TitleKey`, and its `Facet` is not `None`. A `SyntheticFixture` result is excluded even when it carries a `TitleKey`.
 - Fail closed: #33 §3.4 (at `e7aef36`) rejects, at write time, a result whose `Subject` is missing or unknown. Such a result is never stored, is never treated as `RealTitle` by default, and is reported as invalid. A `RealTitle` result without `TitleKey` is also invalid (#33 §3.4: mandatory for `RealTitle`). W15 adds one rule that #33 does not state: a result without `Facet` is rejected at write time (W15 rule, not in #33).
 - Owner-approved conditions (binding ruling): synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as `Pass` or `Fail`; `Unknown`, `NotRun` and `Cancelled` are distinct; #33's identity and binding rules are unchanged.
 
