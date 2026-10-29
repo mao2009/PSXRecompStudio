@@ -1,848 +1,569 @@
-# Issue #43: Incremental Analysis and Cache (design)
+# Issue #43: Incremental Analysis and Cache (design, r6)
 
-- Status: Proposed (design only; no implementation in this change)
+- Status: Proposed. Design only. No implementation in this change.
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r5. r4 was the final fix cycle for the r3 review of `684b573`: closure
-  made operational (F1), golden verification made non-vacuous (F2), and the
-  stale-entry test made reachable with a named injection seam (F3). r5 applies the
-  r3 minor items m1 to m9 (section 12 maps every finding of every review to its section).
-- Scope: a design for the analysis cache. It does not change the decoder,
-  the analyzer, the artifact format, or any public API.
+- Revision: r6. A redesign by owner ruling. The static file partition of r2 to r5
+  is withdrawn. The design review cycle restarts from zero.
 
-## Labels
+## 0. What changed and why
 
-Every claim carries one of these labels:
+**Owner ruling.** Redesign the cache closure on the actual dependency graph, not on a
+static file partition. Accuracy beats performance.
 
-- **CONFIRMED**: read directly in the source at the cited `file:line`, or
-  reproduced by a grep or count run during this design pass.
-- **OBSERVED**: taken from a search result, a fetched page, or tool output, not
-  from a line read. Absence claims are OBSERVED.
-- **PREDICTED**: a consequence of the design that no test has exercised yet.
-- **UNVERIFIED**: not checked. Each one is listed in section 9.
+**Why the r5 partition is withdrawn.** The partition was a claim that a set of files
+was closed under the analysis. Checking it against the code shows the claim is false.
+Each of the following was checked by `git grep` at base `2e3ecad`:
 
-Paths are repository-relative. No BIOS, ROM, CHD content, or user file paths
-appear in this document.
+- **CONFIRMED** `src/PSXRecomp.Core/DiscImage/BiosCallRecognition.cs` is a set-A file
+  in r5. It calls `BiosJumpTables.TryResolveVectorFamily` (`:336`) and uses
+  `BiosCallFamily` (`:44`, `:66`, `:237`, `:286`, `:567`). Neither type is in set A.
+  `BiosJumpTables` and `BiosCallFamily` are declared under `src/PSXRecomp.Core/Runtime/`
+  (`BiosCallFamily` at `Runtime/BiosCallIdentity.cs:68`).
+- **CONFIRMED** `src/PSXRecomp.Core/DiscImage/ChdCdSectorSource.cs` is a set-E file in
+  r5. It implements `ICdSectorSource` (`:15`) and uses `CdDiscToc` (`:30`, `:33`). The
+  declaring files of `ICdSectorSource` and `CdDiscToc` were not located (UNVERIFIED).
+- **CONFIRMED** `ArtifactJson` is called from C-side files:
+  `src/PSXRecomp.Core/Recompiler/RecompilerContract.cs:1126`, `:1132`, and
+  `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/RealRomCoverageDocument.cs:245`
+  (`ToCanonicalJson`). r5 classified `ArtifactJson` as non-analysis.
+- **CONFIRMED** `src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:147` writes
+  `ArtifactKind = AnalysisArtifactSchema.CoverageArtifactKind`. The artifact kind
+  string is therefore a value that a set-C file produces and that a cached payload may
+  carry. r5 did not account for it.
+
+**Consequence.** A file partition cannot prove that a stage's result depends only on
+its declared files. The design below does not use a partition. Each stage's cache key
+is built from what the stage actually depends on: its static dependency graph, plus the
+values it actually reads at run time. Anything whose dependencies cannot be determined
+is never cached.
 
 ## 1. Current state
 
 ### 1.1 What exists today
 
-- **CONFIRMED** No persistent analysis cache exists. The analysis flow is a pure
-  function over caller-supplied bytes: "It is a pure domain component: all bytes
-  are supplied by the caller and no artifact is written here"
-  (`src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:23-24`).
-- **CONFIRMED** The only caches are lifetime-scoped and not persisted:
-  - CHD hunk cache, an in-memory dictionary per reader
-    (`src/PSXRecomp.Core/DiscImage/ChdReader.cs:85`, `:97`, `:187-193`).
-  - Coverage probe cache, keyed by raw instruction word, per `Analyze` call
-    (`src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:98`, `:237-259`).
-- **OBSERVED** No AI analysis result producer exists in `src/`.
-- **CONFIRMED** The evidence taxonomy already contains an AI label:
-  `AIPrediction = 6` (`src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`).
-  Collision risk is handled in 8.1.
-- **CONFIRMED** Both CLI and GUI call the same pipeline entry points:
-  - CLI: `src/PSXRecomp.Cli/CliInput.cs:100-116` (`LoadChdWithIdentity`).
-  - GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97`,
-    `:117`. The GUI caller of `discImageSha256` was not read (U10).
-  Neither front end persists artifacts. Persistence lives in the test-project
-  flow driver (2.2).
+- **CONFIRMED** No persistent analysis cache exists. The pipeline is a pure function
+  over caller-supplied bytes: "It is a pure domain component: all bytes are supplied
+  by the caller and no artifact is written here" (`src/PSXRecomp.Core/DiscImage/RomAnalysisPipeline.cs:23-24`).
+- **CONFIRMED** The only caches are lifetime-scoped:
+  - CHD hunk cache, an in-memory dictionary per reader (`src/PSXRecomp.Core/DiscImage/ChdReader.cs:85`, `:97`, `:187-193`).
+  - Coverage probe cache, keyed by raw instruction word, per `Analyze` call (`src/PSXRecomp.Core/Recompiler/RealRomCoverageAnalyzer.cs:98`, `:237-259`).
+- **OBSERVED** No AI analysis result producer exists. `git grep AIPrediction` at base returns only the enum member at `src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`.
+- **CONFIRMED** The CLI and the GUI both call the same pipeline entry points:
+  - CLI: `src/PSXRecomp.Cli/CliInput.cs:100-116` (`LoadChdWithIdentity`). Hash block at `:106-109`. Pipeline call at `:115`.
+  - GUI: `src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:97`, `:117`. The caller of `discImageSha256` is not read (UNVERIFIED).
+- **CONFIRMED** Persistence is in the test-project driver, not in Core:
+  `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:178-181` (coverage, then `DeterministicArtifactBuilder.Build`), and `RealRomArtifactWriter.cs:44-50`.
 
-### 1.2 The YAML instruction definition
+### 1.2 Stages are inlined today
 
-- **CONFIRMED** `config/cpu/r3000a-instructions.yaml` declares
-  `meta.version: "1.0"` at line 11 and describes itself as the "Machine-readable
-  SSOT for Decoder, Interpreter, Recompiler, Test Generator, Debugger, MCP"
-  (line 2). Its governing decisions are `docs/adr/001-cpu-specification-ssot.md`
-  and `docs/adr/002-instruction-definition-yaml.md`.
-- **OBSERVED** No code parses that file at runtime or build time. A search of
-  `*.cs`, `*.csproj`, `*.props`, `*.targets`, `*.ps1`, `*.sh`, and `*.py` for
-  `yaml`, `YamlDotNet`, `r3000a-instructions`, or `instructions.yaml` finds only
-  the CI workflow-lint script and documentation references.
-- **CONFIRMED** The decoder is hand-written: `R3000aDecoder` is a static class of
-  opcode-field constants (`src/PSXRecomp.Core/Cpu/R3000aDecoder.cs:6-8`,
-  `:9-40`), and `Decode(uint)` is at `:70`.
+- **CONFIRMED** `RomAnalysisPipeline.RunFromIsoSectorReader` (starts at `RomAnalysisPipeline.cs:206`) runs the stages inline. Decode is at `:351-374`,
+  basic blocks at `:377-397`, the report at `:400-444`. There is no separate stage function.
+- **Consequence (prerequisite R-0).** The design requires each cacheable stage to be a
+  callable function with explicit inputs and a serializable output. Extracting them is
+  a refactor that must precede the cache. It is not behavior-changing, and its
+  equivalence is covered by the existing tests (UNVERIFIED, U1).
 
-**Consequence:** a YAML edit cannot change analysis output today (rule Y1, 4.3).
+### 1.3 The YAML instruction definition
 
-### 1.3 Versioning gap
+- **CONFIRMED** `config/cpu/r3000a-instructions.yaml` declares `meta.version: "1.0"`
+  (line 11). Its governing decisions are `docs/adr/001-cpu-specification-ssot.md` and
+  `docs/adr/002-instruction-definition-yaml.md`.
+- **OBSERVED** No code parses that file at runtime or build time (search of `*.cs`,
+  `*.csproj`, `*.props`, `*.targets`, `*.ps1`, `*.sh`, `*.py`).
+- **CONFIRMED** The decoder is hand-written: `src/PSXRecomp.Core/Cpu/R3000aDecoder.cs:6-8`, `:9-40`, `Decode(uint)` at `:70`.
+- **Consequence.** A YAML edit cannot change analysis output today. The design keeps
+  the YAML out of every key until a reader exists (section 4.6).
 
-- **CONFIRMED** Artifact shape is versioned per document:
-  `ManifestSchemaVersion = 2`, `ReportSchemaVersion = 2`,
-  `InstructionsSchemaVersion = 1`, `CfgSchemaVersion = 1`,
-  `CoverageSchemaVersion = 1`, and `FunctionProvenanceSchemaVersion = 1`
-  (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisArtifactSchema.cs:27-49`).
-- **CONFIRMED** No constant identifies the analysis engine's behavior.
-  `ArtifactFixtureIdentity` carries only the disc, executable, and format
-  identity (`ArtifactFixtureIdentity.cs:15-40`).
-- **PREDICTED** A schema version does not detect a change in analysis logic. The
-  per-stage fingerprint sets in 4.2 are the correctness input instead.
+### 1.4 Schema versions
 
-### 1.4 Project metadata
+- **CONFIRMED** `ManifestSchemaVersion = 2`, `ReportSchemaVersion = 2`,
+  `InstructionsSchemaVersion = 1`, `CfgSchemaVersion = 1`, `CoverageSchemaVersion = 1`,
+  `FunctionProvenanceSchemaVersion = 1` (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisArtifactSchema.cs:27-49`).
+- **CONFIRMED** `CoverageArtifactKind` is at `AnalysisArtifactSchema.cs:64`. It is used
+  by `RealRomCoverageAnalyzer.cs:147` (section 0).
+- **PREDICTED** A schema version does not detect a change in analysis logic. Schema
+  versions are kept in keys, but they are not the correctness mechanism.
+
+### 1.5 Project metadata
 
 - **CONFIRMED** `ProjectFormatVersion = 1` (`src/PSXRecomp.Core/Project/ProjectSchema.cs:19`).
-- **UNVERIFIED** That no project field feeds analysis (U1).
+- **UNVERIFIED** Which project fields reach analysis (U3).
 
-## 2. Dependency graph (producer chain)
+## 2. The actual dependency graph
 
-### 2.1 Stage chain in `RomAnalysisPipeline`
+### 2.1 Stages and their real inputs
 
-`RunFromChd` and `RunFromIsoImage` converge on `RunFromIsoSectorReader`. Cache
-units are N7 through N12a. N14 and N15 are recomputed on every run and have no key.
+Each row is a stage. "Reads" lists the values the stage function actually reads, with
+the file that reads them. It is taken from the code, not from a file list.
 
-| # | Node | Inputs | Evidence |
+| Stage | Cached | Reads (actual) | Evidence |
 |---|---|---|---|
-| N1 | Input identity | image bytes or stream, `discImageSha256` | Supplied hash is only checked for non-emptiness: `RomAnalysisPipeline.cs:93-98` (stream), `:194-198` (bytes). The test driver computes its own hash at `src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs:100-106`. The pipeline must verify it (8.3). |
-| N2 | CHD open | N1 | `RomAnalysisPipeline.cs:115-117` (`ChdReader.Open`) |
-| N3 | ISO filesystem | N2 or raw ISO | `RomAnalysisPipeline.cs:128-129`, `:217`; `DiscImageAnalyzer.CreateIsoReader` at `:128` |
-| N4 | SYSTEM.CNF and boot executable | N3 | executable hash at `:259` (`ComputeSha256`, `:576-579`) |
-| N5 | PS-X EXE header and entry point | N4 | `RomAnalysisPipeline.cs:277-337`; `PsxExe.cs`, `PsxExeHeader.cs` |
-| N6 | Text region bounds | N5 | `RomAnalysisPipeline.cs:340-347` (checks only that `TextSegment` is non-empty) |
-| N7 | Decode (linear sweep) | N6, `textEnd`; `count` is not part of the sweep (5) | `RomAnalysisPipeline.cs:351-355`; loop `:507-541`; `R3000aDecoder.Decode` at `:516`; formatter at `:522-523` |
-| N8 | Basic blocks and CFG | N7 decoded list, sliced to `count` | `RomAnalysisPipeline.cs:381`; `BasicBlockBuilder.cs:20` takes `instructionCount` and never reads it (CONFIRMED: the name appears only at `:20`); re-decode at `:30` |
-| N9 | Function discovery | N7 decoded list, N8 blocks and edges | `RomAnalysisPipeline.cs:404`; `FunctionDiscovery.Build` at `FunctionDiscovery.cs:81-88` takes no count; re-decode at `:96` |
-| N10 | BIOS call recognition | N7, N8, N9 | `RomAnalysisPipeline.cs:432`; `BiosCallRecognition.cs:140`, decode at `:176` and delay-slot decode at `:195`; imports `Runtime` for `BiosCallNames` (`:3`, `:584`) |
-| N11 | Report assembly | N7-N10 | `RomAnalysisPipeline.cs:400-444`; call-candidate re-decodes at `:553` |
-| N12a | Recompilation classification | N11 report, lowering validator | `RealRomCoverageAnalyzer.cs:88` (`Analyze`); `Classify` and `ProbeLowerable` at `:223` and `:234-261`; `MipsToIrLowerer.LowerProgram` at `src/PSXRecomp.Core/Recompiler/MipsToIrLowerer.cs:176`, called at `RealRomCoverageAnalyzer.cs:251` |
-| N12d | Differential section | caller-supplied validations | `RealRomCoverageAnalyzer.cs:85-88` (doc), `:185`, `:377-382` |
-| N14 | Artifact documents | N11, N12a, N12d | `RealRomAnalyzer.cs:178-181`; `DeterministicArtifactBuilder.cs:74`, `:86-89`, `:101-106`, coverage at `:115-121`, manifest at `:123-127` |
-| N15 | Persistence | N14 | `src/PSXRecomp.Tests/RealRomAnalysis/RealRomArtifactWriter.cs:44-50` |
+| N1 input identity | no | image bytes or stream; supplied hash (non-empty check only) | `RomAnalysisPipeline.cs:93-98`, `:194-198`; `RealRomAnalyzer.cs:100-106` |
+| N2 CHD open | no | image bytes or stream | `RomAnalysisPipeline.cs:115-117` |
+| N3 ISO filesystem | no | sectors from N2 or raw image | `RomAnalysisPipeline.cs:128-129`, `:217` |
+| N4 boot executable | no | SYSTEM.CNF, boot file bytes; executable SHA-256 at `:259` | `RomAnalysisPipeline.cs:259`, `:576-579` |
+| N5 EXE header | no | executable bytes | `RomAnalysisPipeline.cs:277-337`; `PsxExe.cs`, `PsxExeHeader.cs` |
+| N6 text bounds | no | header fields; `TextSegment` | `RomAnalysisPipeline.cs:340-347` (non-empty check only) |
+| N7 decode | yes | text bytes from `EntryPoint` to `TextEnd` (`RomAnalysisPipeline.cs:507-508`); `count` (loop bound, `:511`) | `RomAnalysisPipeline.cs:501-543`; `R3000aDecoder.Decode` at `:516`; formatter at `:522-523` |
+| N8 basic blocks | yes | decoded list; `instructionCount` parameter, unused in the body (`BasicBlockBuilder.cs:20`); re-decodes at `:30` | `RomAnalysisPipeline.cs:381` |
+| N9 functions | yes | decoded list, blocks, edges; no count parameter (`FunctionDiscovery.cs:81-88`); re-decode at `:96` | `RomAnalysisPipeline.cs:404` |
+| N10 BIOS calls | yes | decoded list, blocks, functions; `BiosJumpTables`, `BiosCallFamily`, `BiosCallNames` | `RomAnalysisPipeline.cs:432`; `BiosCallRecognition.cs:140`, `:176`, `:195`, `:336`, `:584` |
+| N11 report | yes | N7 through N10 outputs | `RomAnalysisPipeline.cs:400-444`; call-candidate re-decode at `:553` |
+| N12a classification | yes | report; lowering validator; `ArtifactFixtureIdentity` (embedded) | `RealRomCoverageAnalyzer.cs:88`, `:223`, `:234-261`; `MipsToIrLowerer.cs:176`, call at `:251` |
+| N12d differential | no (never cached) | caller-supplied validations | `RealRomCoverageAnalyzer.cs:85-88`, `:185`, `:377-382` |
+| N14 artifact documents | no | N11, N12a, N12d; `ArtifactJson` serialization | `DeterministicArtifactBuilder.cs:74`, `:96-99`, `:115-121`, `:124`; `ArtifactJson.cs:32` |
+| N15 persistence | no | N14 | `RealRomArtifactWriter.cs:44-50` |
 
-**Edge summary**
+### 2.2 Data flow
 
-- N1 to N7 is a strict chain. Each cached key includes its upstream key (3.2), so
-  an upstream change reaches every stage below through the chain.
-- N7 is the fan-out point. N8, N9, and N10 consume the decoded list.
-- N12a consumes every decoded instruction through `Classify` (`:223`), so the
-  lowering validator is an input to the classification.
-- N12d is an input to document assembly only. It is never cached (4.7).
-- N14 is recomputed every run, so a change to its code changes output bytes but
-  never a cached payload.
-- `RealRomAnalysisArtifacts.Coverage` is nullable
-  (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/RealRomAnalysisArtifacts.cs:24`).
-- `AnalysisManifestDocument.cs:10-12` names three documents and is stale: the
-  builder also adds `coverage.json` (`DeterministicArtifactBuilder.cs:117-121`).
+- The output of each cached stage is the only thing a later stage reads from it. For
+  example, N8 reads the decoded list produced by N7, and nothing else of N7.
+- The chain is therefore a data chain: a stage's key includes the digest of the actual
+  values it reads from the previous stage's output. It does not include the previous
+  stage's code identity. If an upstream code change leaves its output unchanged, the
+  downstream entry stays valid, which is correct.
+- N1 to N6 are not cached. They run on every run, so their values are actual values
+  at the time of the run, not cached ones.
 
-### 2.2 Who drives persistence and the completion markers
-
-- **CONFIRMED** Persistence is in the test-project driver
-  (`src/PSXRecomp.Tests/RealRomAnalysis/RealRomAnalyzer.cs`). The driver calls the
-  pipeline, then coverage, then `DeterministicArtifactBuilder.Build`, then the
-  writer. The cache must move or mirror this logic into a production component (8.4, U3).
-- **CONFIRMED** The `Manifest` and `Complete` stages are recorded by that driver:
-  `recorder.Pass(RomAnalysisStage.Manifest, ...)` at `RealRomAnalyzer.cs:261` and
-  `recorder.Pass(RomAnalysisStage.Complete, ...)` at `:262`. The stage enum notes
-  that the pipeline does not produce them (`src/PSXRecomp.Core/DiscImage/RomAnalysisStage.cs:10`).
-- **Proposal, not an existing convention.** An on-disk `COMPLETE` file marker is
-  new. It is modeled on the stage record the driver already writes.
-- **Identity computation by path (r5, m7).** The SHA-256 is computed on every run on
-  the test-driver path (`RealRomAnalyzer.cs:102-104`) and on the CLI path
-  (`CliInput.cs:106-109`). The GUI path is UNVERIFIED (U10). See I2 (6.6).
-
-### 2.3 Dependency graph (summary)
-
-```
-N1 identity --> N2 CHD --> N3 ISO --> N4 boot exe --> N5 EXE --> N6 text bounds
-  --> N7 decode  [sets: extract + decode]
-        |--> N8 basic blocks  [set: analysis]
-        |--> N9 functions     [set: analysis]
-        |        \--> N10 BIOS calls  [set: analysis; also N8]
-        '--> N11 report
-               --> N12a classification [set: coverage, includes lowering]
-               --> N12d differential   [caller validations; never cached]
-               --> N14 documents --> N15 persist   [recomputed each run]
-```
-
-## 3. Cache key composition
+## 3. Cache key: the dependency-based definition
 
 ### 3.1 Principle
 
-A key identifies the exact content of a computation: all of its inputs and the
-analyzer code that produced it. Keys contain no filesystem path
-(`ArtifactFixtureIdentity.cs:11-12`).
+A cache entry for a stage is valid for a run if and only if the stage would compute the
+same payload in that run. For that to hold, the key must cover:
 
-### 3.2 Fingerprint sets and the key
+- **Every value the stage reads.** These are the actual values, digested.
+- **Every line of code the stage can execute.** This is the static dependency closure
+  of the stage function, computed from the code, not from a list of files.
 
-The correctness input is a set of per-stage fingerprints (4.2):
+If both are covered, equal keys imply equal payloads. The rest of this section defines
+how each part is determined and when that determination is not possible.
 
-- `setExtract`: code that turns the image into executable bytes and bounds (N2 to N6),
-  and the stage and outcome types that gate persistence (W5). Carried by every key.
-- `setDecode`: `setExtract` plus the decoder and formatter (N7). Carried by N7 and,
-  through the chain, by every key below it.
-- `setAnalysis`: `setDecode` plus basic blocks, functions, BIOS recognition, and
-  the analysis contract types (N8 through N11). Carried by N8 through N12a.
-- `setCoverage`: `setAnalysis` plus the classification and lowering validator
-  (N12a). Carried by N12a only.
-- `dependencyFingerprint`: build inputs that can change compiled behavior (4.2).
-  Carried by every key.
+### 3.2 Key definition
 
-**Key encoding.** A stage key is the SHA-256 of the canonical text produced by the
-key encoder (3.6). `ArtifactJson` is not used: its options
-(`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:34-38`) keep
-declaration order (`ArtifactJson.cs:23`).
-
-| Field | Source | Carried by | Notes |
-|---|---|---|---|
-| `keyFormat` | cache constant | all cache units | Bumped when the key layout changes |
-| `stage` | stage id | all cache units | `N7`, `N8`, `N9`, `N10`, `N11`, `N12a` |
-| `setExtractFingerprint` | 4.2 | all | |
-| `setDecodeFingerprint` | 4.2 | N7 and below | |
-| `setAnalysisFingerprint` | 4.2 | N8 through N12a | |
-| `setCoverageFingerprint` | 4.2 | N12a | Includes lowering |
-| `dependencyFingerprint` | 4.2 | all | |
-| `engineRevision` | manual label | none | Not a key field |
-| `schemaVersions` | `AnalysisArtifactSchema.*SchemaVersion`, `FunctionProvenanceSchemaVersion` | all | Existing constants (1.3) |
-| `discImageSha256` | N1, verified (8.3) | all | `ArtifactFixtureIdentity.cs:23-24` |
-| `executableSha256`, `executableSizeBytes` | N4 | all | `ArtifactFixtureIdentity.cs:35-39` |
-| `entryPoint`, `textEnd` | N5, N6 | N7 and below | Decode bounds |
-| `instructionCount` | caller | N8 through N12a | Conservative: N8 does not read it (`BasicBlockBuilder.cs:20`) and N9 does not take it. Its effective input is the sliced decoded-list length |
-| `inputContainer` | N2 vs raw ISO | all | `"CHD"` or `"ISO"` (3.4) |
-| `projectFields` | 3.3 | per classification | Analysis-relevant project fields only; empty today |
-| `upstreamKeys` | prior cache-unit keys | N8 and below | Merkle chain. N7 has none (N6 is not a cache unit) |
-
-### 3.3 Project fields
-
-- **PREDICTED** Project metadata affects analysis only through fields read by N1 to
-  N14. Each such field must be listed in `projectFields`.
-- **UNVERIFIED** The full field set (U1).
-
-### 3.4 Container format
-
-- **CONFIRMED** The pipeline records a skip when there is no container
-  (`RomAnalysisPipeline.cs:163`). The hash is of the file bytes
-  (`RealRomAnalyzer.cs:102-104`), so a raw ISO and a CHD of identical content have
-  different `discImageSha256` values.
-- **PREDICTED** Such a pair misses today. `inputContainer` makes the separation explicit.
-
-### 3.5 Example keys (format only)
+For a cached stage `s`:
 
 ```
-{"dependencyFingerprint":"<hex>","discImageSha256":"<hex>","entryPoint":<u32>,"executableSha256":"<hex>","inputContainer":"CHD","keyFormat":<int>,"schemaVersions":{"cfg":1,"instructions":1,"report":2},"setDecodeFingerprint":"<hex>","setExtractFingerprint":"<hex>","stage":"N7","textEnd":<u32>,"upstreamKeys":{}}
-
-{"dependencyFingerprint":"<hex>","discImageSha256":"<hex>","executableSha256":"<hex>","inputContainer":"CHD","instructionCount":<int>,"keyFormat":<int>,"schemaVersions":{"cfg":1,"instructions":1,"report":2},"setAnalysisFingerprint":"<hex>","setDecodeFingerprint":"<hex>","setExtractFingerprint":"<hex>","stage":"N8","upstreamKeys":{"N7":"<hex>"}}
-
-These are placeholders in the encoder's form (3.6): member names are quoted and
-sorted by UTF-8 bytes, and there is no whitespace. `<hex>` stands for a quoted
-lowercase hex string, and `<int>` and `<u32>` for unquoted integers. The
-`schemaVersions` object above is abbreviated to three members. The real key lists
-every schema constant in name order.
+key(s) = SHA-256( canonical( keyFormat, s,
+                             codeIdentity(s),
+                             inputs(s) ) )
 ```
 
-### 3.6 Key encoder specification
+- `codeIdentity(s)` is the **dependency closure** digest of the stage function (3.3).
+- `inputs(s)` is the set of values the stage reads, each digested. The set is declared
+  as an explicit record type per stage (3.5), and it is checked against the reads (3.6).
+- `canonical(...)` is the encoding in 3.7.
 
-The encoder output is exactly the following, with no added whitespace:
+### 3.3 Code identity: the static dependency closure
+
+- **Definition.** The closure of a stage function `f` is the set of Core symbols
+  reachable from `f` through references: method calls, object creation, type use in
+  signatures, bodies, fields, constants, base types, and implemented interfaces. Each
+  symbol maps to its declaring source file. The closure is computed by a build-time
+  tool on the Roslyn semantic model (UNVERIFIED feasibility, U2).
+- **Digest.** `codeIdentity(s)` is the SHA-256 of the closure's member list. Each member
+  is recorded as the repository-relative path of its declaring file, its normalized
+  content digest, and the symbol's fully qualified name, sorted by the UTF-8 bytes of
+  the path and then the name. Normalized content is the file with CRLF replaced by LF
+  (DEC-LF1, below).
+- **Graph change.** A change in the closure (a new reference, a removed reference, a
+  moved symbol) changes the member list, so it changes `codeIdentity(s)` and the key.
+  This is the rule "graph changes are misses".
+- **Coverage of types the reviewer named.** `BiosJumpTables`, `BiosCallFamily`,
+  `CdDiscToc`, `ICdSectorSource`, and `ArtifactJson` are in a closure whenever a
+  reached symbol references them. The design does not assert that any of them is absent
+  from a closure. The closure is computed, not written down.
+
+### 3.4 Completeness: when the closure can be trusted
+
+A closure is complete only if the static graph contains every symbol that can run. The
+tool marks the stage **uncacheable** if any of the following is reached. An
+uncacheable stage is always recomputed, and no entry is written for it.
+
+1. **Reflection.** `typeof` on a symbol used only through reflection, `GetType`,
+   `Activator`, `MethodInfo`, `Invoke` on runtime-looked-up members, or
+   `System.Reflection` APIs.
+2. **Dynamic code.** `dynamic`, `System.Linq.Expressions` compilation, or runtime code
+   generation.
+3. **Native calls.** A P/Invoke or `LibraryImport` declaration, or a call into
+   `PSXRecomp.Native` through `NativeInterop.cs` (root of Core, CONFIRMED present).
+4. **Delegates from outside.** A delegate or function value passed into the stage
+   that is not one of the declared inputs (3.5). Its target is unknown.
+5. **Interface or virtual dispatch with implementations outside Core.** Class
+   hierarchy analysis over the Core assembly gives the implementation set. If any
+   implementation lies outside Core, the set is unknown.
+6. **Unresolved symbols.** A reference the semantic model cannot resolve.
+7. **Assembly references outside the allow-list** (the BCL, `PSXRecomp.Architecture`,
+   and the Core assembly). Any other assembly makes the closure unknown.
+
+The allow-list in (7) includes the BCL. The BCL is not analyzed. Its behavior is
+assumed fixed for a given runtime version. The runtime version is part of
+`dependencyIdentity` (3.8), so a runtime change is a miss.
+
+### 3.5 Input records
+
+Each cached stage has an explicit input record. The record is the only way the
+stage receives values. Example for N7:
+
+```
+DecodeStageInputs {
+  uint   EntryPoint;
+  uint   TextEnd;
+  int    Count;            // read by the loop bound at RomAnalysisPipeline.cs:511
+  byte[] TextBytes;        // the bytes read from EntryPoint to TextEnd, digested
+}
+```
+
+Example for N8:
+
+```
+BasicBlockStageInputs {
+  digest DecodedListDigest;   // digest of the N7 output actually passed in
+  // instructionCount is NOT a field: BasicBlockBuilder.cs:20 never reads it
+}
+```
+
+Rules:
+
+- **Input rule I-a.** A field of an input record is in the key if and only if the
+  stage reads it. A field that is never read is removed from the record.
+- **Input rule I-b.** A stage that reads a value not in its record is non-compliant.
+  The completeness check (3.4) treats the stage as uncacheable until the record is
+  corrected.
+- **Input rule I-c.** Digests are over the actual values. For `TextBytes`, the value
+  is the byte range the decoder actually reads, not the whole executable.
+
+### 3.6 Checking the reads
+
+Two checks make the record match the code:
+
+- **Static.** Each parameter and each record field used in the stage's closure is
+  read by a statement the closure reaches. A parameter with no reads (for example
+  `instructionCount` in `BasicBlockBuilder.Build`) is reported. Static, UNVERIFIED
+  feasibility (U2).
+- **Runtime.** The stage's input record is wrapped in a recording accessor during the
+  synthetic corpus run. Each field's read count is recorded. A field with zero reads
+  across the corpus is a failure of the test (T-READ). A field read but not present in
+  the record is impossible by construction because reads go through the record.
+
+### 3.7 Canonical encoding
+
+The key text is produced by a dedicated encoder. `ArtifactJson` is not used for keys:
+`ArtifactJson.CanonicalOptions` keeps declaration order
+(`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactJson.cs:34-38`, `:23`).
 
 - **Encoding.** UTF-8, no byte-order mark, LF only, one line, no trailing newline.
-- **Objects.** `{`, members separated by `,`, `}`. Each member is `"name":value`.
-  There is no space after the colon.
-- **Member order.** Members are sorted by the UTF-8 bytes of the member name,
-  compared byte by byte, shorter prefix first. Declaration order is never used.
+- **Objects.** `{`, members separated by `,`, `}`. Each member is `"name":value`, with
+  no space after the colon. The name is a JSON string.
+- **Member order.** Sorted by the UTF-8 bytes of the member name, compared byte by
+  byte, shorter prefix first. Declaration order is never used.
 - **Arrays.** `[`, elements separated by `,`, `]`, in the given order.
-- **Strings.** `"`-delimited. `"` is written `\"`, `\` is written `\\`. Each
-  control character U+0000 to U+001F is written `\u00xx` with lowercase hex,
-  including those with short forms (`\n` is written `\u000a`). Every other
-  character is written as its UTF-8 bytes, unescaped.
+- **Strings.** `"`-delimited. `"` is `\"`, `\` is `\\`. Each control character U+0000 to
+  U+001F is `\u00xx` with lowercase hex, including those with short forms. Other
+  characters are written as their UTF-8 bytes, unescaped.
 - **Integers.** Base 10, no leading `+`, no leading zeros, `-` only when negative.
 - **Booleans and null.** `true`, `false`, `null`.
 - **No floats.** An encoder given a float fails.
-- **Golden value.** T1 asserts the exact text of a fixed sample and its SHA-256.
+- **Golden value.** T-KEY asserts the exact text of a fixed sample and its SHA-256.
 
-## 4. Invalidation rules
+### 3.8 Dependency identity (outside the source)
 
-Each rule names the cache units whose keys change. "Chain" means the later key
-includes the upstream key, so the change also reaches every stage below.
+`dependencyIdentity` covers inputs that are not Core source:
 
-### 4.1 Decoder and formatter change
+- The resolved package versions, from `obj/project.assets.json`. This is an explicit
+  input exception: it is build output read by its exact name, and no other `obj/` file
+  is read. The csproj pins only direct packages (`src/PSXRecomp.Core/PSXRecomp.Core.csproj:24-25`),
+  and no lock file exists (CONFIRMED by listing). SharpCompress is used by
+  `src/PSXRecomp.Core/DiscImage/ChdCdCodec.cs:3`, so its version is a dependency.
+- The SDK version and runtime version. The source is the MSBuild property
+  `$(NETCoreSdkVersion)` (UNVERIFIED in this repository, U5). `TargetFramework` is
+  `net10.0` (`PSXRecomp.Core.csproj:3`).
+- The compile inputs that are not in a closure: `Directory.Build.props` and
+  `src/Architecture/PSXRecompArchitectureAttributes.cs`. The latter is compiled into
+  Core when `CompileArchitectureAttributes` is set (`PSXRecomp.Core.csproj:7`). It is
+  linked by `Directory.Build.props:22-24` and declares the internal marker attributes
+  (`DomainAttribute`, `ApplicationAttribute`, `InfrastructureAttribute`, `TestAttribute`,
+  `GeneratedAttribute`). Attributes are metadata and do not run, but a change alters
+  the compiled assembly, so `dependencyIdentity` includes the file (CONFIRMED lines
+  above; the effect on analysis output is UNVERIFIED).
 
-- **CONFIRMED** The decoder maps raw words to mnemonic, format, control flow, and
-  delay-slot kind (`R3000aDecoder.cs:70`). Its consumers are
-  `RomAnalysisPipeline.cs:516` (N7), `RomAnalysisPipeline.cs:553` (N11),
-  `BasicBlockBuilder.cs:30` (N8), `FunctionDiscovery.cs:96` (N9),
-  `BiosCallRecognition.cs:176` and `:195` (N10).
-- **CONFIRMED** Text output depends on `MipsInstructionFormatter`:
-  `RomAnalysisPipeline.cs:522-523` copies `FormatMnemonic` and `FormatOperands`
-  into the decoded record. The register table is at
-  `src/PSXRecomp.Core/DiscImage/MipsInstructionFormatter.cs:12-17`.
-- **Rule D1.** A change to any file in `setDecode` changes `setDecodeFingerprint`.
-  Invalidated: N7, and by chain N8 through N12a.
-- **Rule D1a.** The behavioral guard tuple includes the formatter output
-  (`mnemonic`, `operands`).
-- **Behavioral guard (PREDICTED).** A fingerprint over a fixed corpus of words is a
-  secondary check for a decoder output change without a source change. It is not
-  the correctness input.
+### 3.9 Decision: line endings
 
-### 4.2 Per-stage fingerprint sets and closure
+**DEC-LF1.** Digests use LF-normalized content. CRLF pairs become LF, a lone CR is kept,
+and a BOM is kept. Rationale: a checkout with different line-ending settings must not
+change a digest for the same source. The git warning that "LF will be replaced by
+CRLF" for the design file was observed during commit `6d038a0` (OBSERVED). The known
+exception is a multi-line verbatim string literal, whose value depends on its line
+endings. Lint test T-LF rejects such literals in any file in a closure.
 
-**Set membership.** Every entry is a repository-relative path. Membership is a
-committed literal list in the generator and in T13. No glob defines membership.
+## 4. Invalidation
 
-- **`setExtract`** (20 files, N2 to N6, and persistence gating): the readers and
-  parsers, plus the pipeline's own control flow, plus the stage and outcome types.
-  - `src/PSXRecomp.Core/DiscImage/`: `ChdReader.cs`, `ChdHeader.cs`,
-    `ChdMapEntry.cs`, `ChdBitstream.cs`, `ChdHuffmanDecoder.cs`, `ChdCdCodec.cs`,
-    `ChdCdSectorSource.cs`, `Iso9660Reader.cs`, `Iso9660DirectoryEntry.cs`,
-    `SystemCnfParser.cs`, `PsxExe.cs`, `PsxExeHeader.cs`, `DiscImageAnalyzer.cs`,
-    `RomAnalysisPipeline.cs`.
-  - F1 addition, one per listed file: `RomAnalysisStage.cs`,
-    `RomAnalysisStageResult.cs`, `RomAnalysisStageRecorder.cs`,
-    `RomAnalysisOutcome.cs`, `RomAnalysisStatus.cs`. The stage identifiers form
-    part of cache-unit stage ids and the pass/fail gate of W5, so a change to them
-    is in scope.
-  - `src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/ArtifactFixtureIdentity.cs`: the
-    fixture identity type. Cache payloads that embed it (N12a) and every key carry
-    its fields, so a change to its shape is in scope. It moved here from
-    `setCoverage` in r5 (review 3, m5), which leaves `setCoverage` at five files.
-- **`setDecode`** (`setExtract` plus 17 files): all 16 files in
-  `src/PSXRecomp.Core/Cpu/`, and `src/PSXRecomp.Core/DiscImage/MipsInstructionFormatter.cs`.
-- **`setAnalysis`** (`setDecode` plus 26 files): `DiscImage/BasicBlock.cs`,
-  `DiscImage/BasicBlockBuilder.cs`, `DiscImage/FunctionDiscovery.cs`,
-  `DiscImage/BiosCallRecognition.cs`, `DiscImage/DecodedInstruction.cs`,
-  `DiscImage/DecodeFailure.cs`, `DiscImage/DiscImageAnalysisReport.cs`,
-  `Runtime/BiosCallNames.cs` (the only `Runtime` file referenced from the analysis
-  side; `BiosCallRecognition.cs:584`), and all 18 files in
-  `src/PSXRecomp.Core/Analysis/Contracts/` (the contract types the report and CFG use).
-- **`setCoverage`** (`setAnalysis` plus 5 files): `Recompiler/RealRomCoverageAnalyzer.cs`,
-  `Recompiler/MipsToIrLowerer.cs`, `Recompiler/MipsToIrLoweringResult.cs`,
-  `Recompiler/RecompilerContract.cs` (it declares every `RecompilerIr*` type the
-  lowerer uses, for example `RecompilerIrDiagnosticCode` at `:273` and
-  `RecompilerIrProgram` at `:610`), and
-  `DiscImage/AnalysisArtifacts/RealRomCoverageDocument.cs` (it defines the
-  classification enum). Section 9 (U9) closes this list for the IR types.
-- **`dependencyFingerprint`** (not counted in the 236 Core files):
-  - `src/PSXRecomp.Core/PSXRecomp.Core.csproj` and `Directory.Build.props` (repository root).
-  - `src/Architecture/PSXRecompArchitectureAttributes.cs`. Coverage of this file
-    is stated in 4.2.1.
-  - The resolved packages and the SDK version (4.2.2).
+### 4.1 Rules
 
-#### 4.2.1 How `src/Architecture` is covered
+- **V1. Changed input value.** A changed input digest changes the key. The entry is
+  not reused. Recomputation writes a new entry.
+- **V2. Changed closure.** A changed code identity changes the key. This includes a
+  changed body, a changed reference, and a moved symbol.
+- **V3. Changed dependency identity.** A changed package version, SDK version, or
+  runtime version changes every key.
+- **V4. Untracked value.** A value a stage reads that is not in its record is a
+  defect of the record, detected by 3.6. Until it is fixed, the stage is uncacheable.
+- **V5. Unknown dependency.** An unknown dependency (3.4) makes the stage uncacheable.
+  An uncacheable stage is always recomputed.
+- **V6. Parameter not read.** A parameter the stage does not read is not in the key.
+  This is accurate, not a gap: changing it cannot change the payload.
 
-- **CONFIRMED** `Directory.Build.props:22-24` adds
-  `src/Architecture/PSXRecompArchitectureAttributes.cs` to every project whose
-  `CompileArchitectureAttributes` property is `true`, linked as
-  `Architecture/PSXRecompArchitectureAttributes.cs`. `PSXRecomp.Core.csproj:7`
-  sets that property.
-- **CONFIRMED** The file is 29 lines and declares only internal attribute classes
-  (`DomainAttribute`, `ApplicationAttribute`, `InfrastructureAttribute`,
-  `TestAttribute`, `GeneratedAttribute`). It has no code that runs in analysis.
-- **Decision DEC-ARCH.** The file is in `dependencyFingerprint`, not in a
-  per-stage set. It is a compiled input to Core, so a change to it changes the
-  assembly, but it has no effect on analysis output. Including it in the
-  dependency set is the conservative choice: a change invalidates the whole
-  cache, which is acceptable for a file this rarely edited.
+### 4.2 Per-stage consequences
 
-#### 4.2.2 Dependency inputs not in source
+- **N7.** Changing the decoder, formatter, or any code in N7's closure (for example
+  `R3000aDecoder.cs`) changes `codeIdentity(N7)`. A change to the text bytes changes
+  `TextBytes`. Changing `count` changes the key only through the decoder's loop bound.
+  See 5.1 for the sweep rule.
+- **N8.** Its key includes the digest of the N7 output it reads. A change to N7's
+  output, or to N8's closure, is a miss. A change to `instructionCount` is not a miss,
+  because the parameter is not read (`BasicBlockBuilder.cs:20`).
+- **N9 to N11.** Same pattern: input digests from the previous stage's output and the
+  stage's own closure.
+- **N10.** The closure includes `BiosJumpTables` and `BiosCallFamily` through the
+  references in `BiosCallRecognition.cs` (section 0). A change to either is a miss for
+  N10 and, through the data chain, for the stages whose output N10 changes.
+- **N12a.** The closure includes the lowering validator through `Classify` and
+  `ProbeLowerable` (`RealRomCoverageAnalyzer.cs:223`, `:234-261`) and the
+  `MipsToIrLowerer` reached through `LowerProgram` (`MipsToIrLowerer.cs:176`). A
+  change to the lowerer is a miss for N12a only, if N11's output is unchanged.
+- **N12d.** Never cached. It is built at N14 from the validations of the current run
+  (`RealRomCoverageAnalyzer.cs:85-88`). Caching it would need a digest of the
+  validation evidence, which the cache does not own.
 
-- **Resolved packages.** The build reads the resolved `(packageId, resolvedVersion)`
-  pairs for `PSXRecomp.Core` from `obj/project.assets.json` at build time, sorted.
-  The csproj pins only direct packages: `SharpCompress 0.50.4`
-  (`PSXRecomp.Core.csproj:25`) and `loach.PureSharp 0.1.6` (`:24`). No lock file
-  exists (CONFIRMED). SharpCompress is used by `ChdCdCodec.cs:3`, and a version
-  change can change decoded content under an unchanged image hash, so its version
-  is a key input.
-- **Explicit input exception (r5, m6).** `obj/project.assets.json` is the only
-  `obj/` file any fingerprint reads. It is build output written by NuGet restore, and
-  it is read by its exact name. This is the sole exception to the rule that `obj/` is
-  excluded (4.2.3, and "Files excluded by definition" in 4.2). The entries read from it
-  are the `(packageId, resolvedVersion)` pairs above.
-- **SDK version source (r5, m6).** The SDK version is taken from the MSBuild property
-  `$(NETCoreSdkVersion)`, which the .NET SDK sets during evaluation. The property
-  name is UNVERIFIED in this repository and must be confirmed when the target is
-  written (U12, U17). `TargetFramework` is `net10.0` (`PSXRecomp.Core.csproj:3`).
+### 4.3 Input identity
 
-#### 4.2.3 Hash input format
+- **I2.** The disc image SHA-256 is computed from the full file on every run on the
+  test-driver path (`RealRomAnalyzer.cs:102-104`) and on the CLI path
+  (`CliInput.cs:106-109`). The GUI path is UNVERIFIED (U6). The pipeline must verify the
+  supplied hash on every path (4.4).
 
-For a set, the fingerprint is the SHA-256 of the following byte stream. Members
-are sorted by the UTF-8 bytes of their path. For each member, append:
+### 4.4 Identity verification (proposal)
 
-1. the UTF-8 bytes of the repository-relative path, forward slashes, no leading slash;
-2. `0x0A`;
-3. the decimal byte length of the normalized content, no leading zeros;
-4. `0x0A`;
-5. the normalized content bytes;
-6. `0x0A`.
+- **Rule V-ID.** The pipeline computes SHA-256 over the stream or array it runs and
+  compares it with the supplied value. A mismatch fails the Input stage with a dedicated
+  failure kind. The stream path hashes from position 0 to end, then seeks back to 0. The
+  stream contract already requires seekability (`RomAnalysisPipeline.cs:70-72`). The
+  Domain already uses SHA-256 (`RomAnalysisPipeline.cs:2`, `:576-579`).
+- **Migration.** `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:24` defines
+  `Sha` as a literal 64-character string that is not the hash of the bytes passed at
+  `:347`. About 50 call sites exist in the test projects (9 in that file, 2 in
+  `SyntheticChdReaderTests.cs`, 2 in `RealRomAnalyzer.cs`, 36 in
+  `RomAnalysisPipelineTests.cs`, 1 in `RealRomProductionExecutionTests.cs`). How many
+  pass a constant is UNVERIFIED (U7).
 
-Normalized content is the file's bytes with each CRLF pair replaced by LF. A lone
-CR is kept. A BOM, if present, is kept.
-
-**Decision DEC-LF1 (line endings).** Hash LF-normalized bytes, so that a checkout
-with different line-ending settings does not produce a different fingerprint for
-the same source. The hazard is observed on this machine: git reported "LF will be
-replaced by CRLF" for the design file during commit `6d038a0` (OBSERVED). The
-known exception is a multi-line verbatim string literal, whose value depends on
-its line endings. Lint test T20 rejects such literals in any set file.
-
-#### 4.2.4 Closure
-
-**Partition.** The closure test enumerates the tracked `.cs` files under
-`src/PSXRecomp.Core/`. It enumerates the git index (`git ls-files`), not the disk, so
-`obj/` and `bin/` are excluded by construction and by the glob (`obj/` and `bin/`
-are ignored by `.gitignore:4-5`). Every file must belong to exactly one owner:
-
-| Owner | Files | Basis |
-|---|---|---|
-| `setExtract` (E) | 20 | 4.2 |
-| `setDecode`-only (D) | 17 | 4.2 |
-| `setAnalysis`-only (A) | 26 | 4.2 |
-| `setCoverage`-only (C) | 5 | 4.2 |
-| NonAnalysis (N) | 168 | 4.2.5 |
-| **Total** | **236** | matches the 236 tracked files at base `2e3ecad` (CONFIRMED by count) |
-
-T21 fails when a file is in no owner, when a file is in two owners, when a
-listed file is missing from the index, or when the total is not 236. A new Core
-file therefore fails the build until it is assigned.
-
-**What closure does and does not prove.** Closure is a classification
-guarantee: no file is silently outside every set. Reachability is a separate claim:
-that no N-file is called or referenced from an E, D, A, or C file. The greps run
-in this pass were:
-
-- `using PSXRecomp.Core.(Runtime|Dma|MemoryCard|Execution|Project|TitleIdentity|Diagnostics)`
-  across the E, D, A, and C files: two hits, `BiosCallRecognition.cs:3` (Runtime,
-  covered by `BiosCallNames.cs` in A) and `RomAnalysisOutcome.cs:2` (Diagnostics,
-  see 4.2.5).
-- Names of the Recompiler, root, and native files (`IndirectRootDiscovery`,
-  `ReachableProgramBuilder`, `RecompilerIrMemoryEffectClassifier`, `LoadedCodeTable`,
-  `ObservedRootPlanner`, `GeneratedHostBuild`, `PSXCoreWrapper`, `NativeInterop`,
-  `IFileIdentityProbe`, `ProcessTreeInterop`) across the E, D, A, and C files: no hit.
-- `RecompilerIrMemoryEffectClassifier` has no reference in `src/PSXRecomp.Core`
-  other than its own file (CONFIRMED by grep).
-
-A reference from the N side, found by a Roslyn analysis, is what U14 must still
-rule out (UNVERIFIED). Until U14 runs, reachability rests on these greps.
-
-#### 4.2.5 NonAnalysis entries, by prefix, with reasons
-
-Each entry is a directory prefix, or a single file where noted. Counts are from
-the classification pass.
-
-| Prefix | Files | Reason |
-|---|---|---|
-| `Runtime/` (excluding `Runtime/BiosCallNames.cs`, which is in A) | 68 | Runtime device model, BIOS HLE execution, GPU, SPU, CD-ROM, MDEC, and controller input. The analysis side references only `BiosCallNames` (4.2.4). |
-| `Diagnostics/` | 19 | Diagnostic model and reporting. `RomAnalysisOutcome.cs` (E) has a `Diagnostic` property attached by the caller (`RomAnalysisOutcome.cs:24`). That attached value is not part of any cache payload. |
-| `Recompiler/` (excluding the four C files) | 17 | Host code generation, interpreter and executor bridges, loaded-code tables, root discovery, and generated-host build. No reference from E, D, A, or C files (4.2.4). |
-| `Execution/` | 15 | Title-execution orchestration, engines, and firmware boot monitoring. |
-| `Dma/` | 14 | Memory bus and DMA adapters. |
-| `TitleIdentity/` | 7 | Title identity model. Used by `Runtime/Gpu/FrameSnapshot.cs`, not by the analysis side. |
-| `DiscImage/AnalysisArtifacts/` (excluding `RealRomCoverageDocument.cs`, which is in C, and `ArtifactFixtureIdentity.cs`, which is in E) | 10 | Document serialization for N14 and N15. Cached payloads use the key encoder, not `ArtifactJson`. |
-| `Project/` | 4 | Project metadata. Analysis-relevant fields are governed by rule P1 and `projectFields`. |
-| `MemoryCard/` | 3 | Memory-card storage model. |
-| `DiscImage/ChdMapStatistics.cs`, `DiscImage/IsoVolumeStatistics.cs` | 2 | Statistics computed for N14 (`DeterministicArtifactBuilder.cs:27-28`). The computation reads the reader's data but produces no cache payload. |
-| Root of `src/PSXRecomp.Core/` (`FileIdentityInterop.cs`, `IFileIdentityProbe.cs`, `LinuxFileStatInterop.cs`, `MacOsFileStatInterop.cs`, `NativeInterop.cs`, `NativeLibraryResolver.cs`, `PSXCoreWrapper.cs`, `PosixStatResult.cs`, `ProcessTreeInterop.cs`) | 9 | Native interop and host file and process probing. Not referenced from the analysis side (4.2.4). |
-| **Total** | **168** | |
-
-#### 4.2.6 Generation and closure of the build targets
-
-A build target computes each fingerprint from its committed list and emits the
-results as a generated constant in `obj/`. The generated constant is not an input
-(it is not in any list). The target runs before compilation (U12 checks it against
-the native build and CI).
-
-### 4.3 YAML change
-
-- **CONFIRMED** The YAML has no runtime or build-time reader (1.2).
-- **Rule Y1 (current-state rule).** While no code reads the YAML, it is in no key and no
-  set. A comment-only edit must not invalidate the cache. **Revisit this rule when a
-  generator or runtime reader of `config/cpu/r3000a-instructions.yaml` lands.**
-  The triggering decision is `docs/adr/002-instruction-definition-yaml.md`. The
-  SSOT decision is `docs/adr/001-cpu-specification-ssot.md`.
-- **Rule Y2.** When a generator lands, its generated file is listed in `setDecode`.
-  The YAML itself is not hashed raw, because whitespace and comments would
-  over-invalidate.
-- **UNVERIFIED** Whether any generator exists outside the searched file types (U2).
-
-### 4.4 Project change
-
-- **Rule P1.** A project edit invalidates only cache units whose `projectFields`
-  changed. Today that set is empty.
-- **Rule P2.** `ProjectFormatVersion` (`ProjectSchema.cs:19`) enters the key only if
-  the project format changes what the analysis reads.
-
-### 4.5 Input change
-
-- **Rule I1.** A changed disc image or executable changes N1 or N4 and therefore
-  every stage below. This is a miss by construction.
-
-### 4.6 Lowering change (`setCoverage` minus `setAnalysis`)
-
-- **CONFIRMED** `Classify` calls `ProbeLowerable` for each instruction that reaches
-  that branch (`RealRomCoverageAnalyzer.cs:223`), and `ProbeLowerable` calls
-  `MipsToIrLowerer.LowerProgram` (`:251`). The class of each decoded instruction is
-  therefore a function of the lowering validator.
-- **Rule L1.** A change to a file in `setCoverage` but not in `setAnalysis` changes
-  `setCoverageFingerprint`. Those five files are `RealRomCoverageAnalyzer.cs`,
-  `MipsToIrLowerer.cs`, `MipsToIrLoweringResult.cs`, `RecompilerContract.cs`, and
-  `RealRomCoverageDocument.cs`. Invalidated: **N12a
-  only**. N7 through N11 keep their hits, because their keys do not carry
-  `setCoverageFingerprint`. N14 and N15 are recomputed.
-- **Rule L1a.** A lowering change that alters `Classify` but lies in a file outside
-  `setCoverage` is a closure defect. T21 and T16 detect it.
-
-### 4.7 Differential-section input (N12d)
-
-- **Rule C1.** The differential section is built from validations that actually
-  executed (`RealRomCoverageAnalyzer.cs:85-88`). Its absence means "nothing was proven".
-- **Rule C2.** N12d is never cached and is in no key. It is assembled at N14 from the
-  validations supplied on that run.
-- **Follow-up refactor.** To cache N12a alone, the static method `Analyze`
-  (`RealRomCoverageAnalyzer.cs:88`) must separate classification from
-  `Differential = BuildDifferential(validations)`. The assignment is at
-  `RealRomCoverageAnalyzer.cs:185`, and `BuildDifferential` is at `:377-382`. No
-  constructor is involved. Until then, N12a is cached as the document built with no validations,
-  and N14 supplies the differential. That needs `BuildDifferential` to be reachable
-  from N14 (U18).
-- **Test.** T15 compares warm and cold runs with the differential on and off.
-
-## 5. Partial re-analysis units and cost
+## 5. Partial re-analysis units
 
 ### 5.1 Decode sweep (N7)
 
-- **CONFIRMED** The current loop is bounded by `count` and by `textEnd`
-  (`RomAnalysisPipeline.cs:507-511`). `maxAddress` is `exe.Header.TextEnd` (`:507`).
-  The loop body reads `GetInstructionWord` inside a `try` (`:513-539`).
-- **Decision DEC-N7 (cost).** A cold N7 run decodes from `EntryPoint` to `TextEnd`
-  (`RomAnalysisPipeline.cs:507-508`), not only the first `count` words. The cost is linear in text size and
-  is not measured (U5). Each later request is served as a prefix with no re-decode.
-- **Prefix rule.** An N7 entry with `sweepEnd = textEnd` serves any `count`. For a
-  requested `M`, the consumer takes the first `min(M, total)` instructions.
+- **CONFIRMED** The loop is bounded by `count` and by `textEnd`: `maxAddress` is
+  `exe.Header.TextEnd` (`RomAnalysisPipeline.cs:507`), the start is `EntryPoint` (`:508`),
+  and the loop stops at `decoded < count` (`:511`). Each word is read inside a `try` (`:513-539`).
+- **Decision DEC-N7.** The N7 stage is defined as the sweep from `EntryPoint` to
+  `TextEnd`, without `count`. A request for `count = M` is a prefix of that sweep,
+  taken by the consumer. Cold N7 therefore decodes the whole text region. This is
+  slower than the present code for a small `count`. The cost is UNVERIFIED (U4).
+- **Prefix rule.** For a requested `M`, the consumer takes the first `min(M, total)`
+  instructions.
 - **Failure rule.** A decode failure at address `A` is included in a count-limited
-  result iff `A < entry + 4*M`. The loop stops after `M` successful decodes
-  (`:511`), so a failure at or beyond `entry + 4*M` is never reached by a
-  count-limited run.
+  result iff `A < entry + 4*M`. The loop stops after `M` successful decodes (`:511`).
 
 ### 5.2 Text shorter than the declared size
 
 - **CONFIRMED** The text check at `RomAnalysisPipeline.cs:340-347` rejects only a
-  zero-length `TextSegment`, not a segment shorter than `header.TextSize`.
-- **CONFIRMED** `PsxExe.GetInstructionWord` throws `ArgumentOutOfRangeException`
-  when `offset + 4 > TextSegment.Length` (`src/PSXRecomp.Core/DiscImage/PsxExe.cs:21-30`).
-- **CONFIRMED** The decode loop catches that exception (`RomAnalysisPipeline.cs:531`),
-  records a `DecodeFailure` ("Address outside text segment bounds"), and breaks
-  (`:533-538`). No exception escapes the stage, and the decode is a partial sweep
-  with one failure.
-- **Test T17** pins this: a segment shorter than its declared size passes
-  `MIPS_DECODE` with exactly one failure at the first address past the segment.
+  zero-length `TextSegment`.
+- **CONFIRMED** `PsxExe.GetInstructionWord` throws `ArgumentOutOfRangeException` when
+  `offset + 4 > TextSegment.Length` (`src/PSXRecomp.Core/DiscImage/PsxExe.cs:21-30`).
+- **CONFIRMED** The decode loop catches it (`RomAnalysisPipeline.cs:531`), records a
+  `DecodeFailure` ("Address outside text segment bounds"), and stops (`:533-538`). No
+  exception escapes the stage.
+- **Test T-SHORT** pins this behavior.
 
-### 5.3 Other unit rules
+### 5.3 Other units
 
-- **Unit of reuse: the cache unit (N7, N8, N9, N10, N11, N12a).** A hit replaces that
-  unit's computation. A miss recomputes it and, through the chain, every unit below.
-- **No sub-stage reuse below N7.** Per-block or per-function reuse needs a dependency
-  model and is out of scope for v1.
-- **Coverage probe.** Probe results are keyed by raw word (`RealRomCoverageAnalyzer.cs:231-237`).
-  N12a is the cache unit, and its key carries `setCoverageFingerprint`, so the probe
-  cache inside a run is sound.
+- The unit of reuse is a cached stage (N7, N8, N9, N10, N11, N12a). A hit replaces that
+  stage. A miss recomputes it. Downstream stages are recomputed only if their own keys
+  change, because their keys contain the digests of the values they read.
+- No reuse within a stage (per block, per function) in v1.
 
-### 5.4 Cost summary
-
-- Cold N7: linear in text size (DEC-N7), not measured (U5).
-- Identity: a full-image SHA-256 on every run, plus a second read on the stream path
-  (8.3). Not measured (U5).
-- Warm run: N7 prefix slicing and key computation, plus payload reads. Not measured (U5).
-
-## 6. Fail-closed handling of incomplete or corrupted cache
-
-The rule is that an entry is used only if it is proven complete and internally
-consistent. A miss is never an error, and a miss never yields output a cold run would not.
+## 6. Cold and warm, corruption, and diagnostics
 
 ### 6.1 Entry layout (proposal)
 
-Each cache unit is a directory with:
+Each cache entry is a directory with:
 
-- `header`: format version, `key` (the key text from 3.6), `payloadSha256`,
-  `payloadSizeBytes`, the set fingerprints in effect, and `schemaVersions`.
-- `payload`: the stage output in the key encoder's canonical form.
-- `COMPLETE`: a marker written last (proposal, 2.2).
+- `header`: `keyFormat`, the full key text (3.7) and its SHA-256, `payloadSha256`,
+  `payloadSizeBytes`, and the stage's `codeIdentity` and `dependencyIdentity`.
+- `payload`: the stage output in the canonical form of 3.7.
+- `COMPLETE`: a marker written last. This is a proposal. The code has no on-disk
+  marker today. The driver records `Manifest` and `Complete` as stage results at
+  `RealRomAnalyzer.cs:261-262`, and `RomAnalysisStage.cs:10` states that the pipeline
+  does not produce them.
 
 ### 6.2 Write protocol
 
 - **W1.** Write `payload` and `header` to temporary names in the entry directory.
 - **W2.** Flush to disk.
 - **W3.** Rename into place.
-- **W4.** Write `COMPLETE` last, and only after W3 succeeds for every file.
-- **W5.** Never write an entry for a unit whose stage did not pass (the stage records
-  distinguish pass from fail).
-- **W6.** A rename that fails because the target exists is success only if the existing
-  header's `payloadSha256` matches. Otherwise the entry is quarantined (6.4) and the
-  write is retried once.
+- **W4.** Write `COMPLETE` last, after W3 succeeds for every file.
+- **W5.** Never write an entry for a stage that did not pass, or for an uncacheable stage.
+- **W6.** A rename that fails because the target exists succeeds only if the existing
+  header's `payloadSha256` matches. Otherwise the entry is quarantined and the write is
+  retried once.
 
-### 6.3 Read protocol (fail closed) and residual risk
+### 6.3 Read protocol
 
-An entry is used only if all of the following hold. Any failure is a miss.
+An entry is used only if all of the following hold:
 
 - **R1.** `COMPLETE` exists.
-- **R2.** `header` parses and its format version is supported.
-- **R3.** `header.key` equals the key computed from the current inputs.
-- **R4.** `payload` size equals `payloadSizeBytes`.
-- **R5.** SHA-256 of `payload` equals `payloadSha256`.
-- **R6.** The payload deserializes under the current schema versions.
-- **R7.** Any exception during R1 through R6 is caught and treated as a miss.
+- **R2.** `header` parses, and its `keyFormat` is supported.
+- **R3.** `header.key` equals the key computed from the current inputs (3.2).
+- **R4.** The payload size equals `payloadSizeBytes`.
+- **R5.** SHA-256 of the payload equals `payloadSha256`.
+- **R6.** The payload deserializes under the current schema.
+- **R7.** Any exception during R1 to R6 is caught and treated as a corrupt entry.
 
-**What R1 through R7 prove.** They prove that an entry is complete and internally
-consistent with the key it claims. They do not prove that the payload is what the
-current analyzer would compute. R3 detects a stale entry only when the set
-fingerprints in the key have changed, so the key is the only protection against an
-analyzer change.
+R1 to R7 prove only that an entry is internally consistent. R3 is the only check that
+ties an entry to the current code and inputs, and it is correct only if the key is
+complete (3.4 to 3.6). A consistent entry whose key is current but whose payload
+differs from what the stage computes now would be used. That can only happen if the
+key is incomplete. Section 7 is the test for that case.
 
-**Residual risk (F3).** A stale-but-consistent entry is one whose key is current but
-whose payload was produced by different analyzer code. That occurs when a
-behavior change lies in a file that is missing from its set (a closure defect) or
-when a set fingerprint is not updated. Normal mode serves such an entry as a hit.
-**The entry is used until verify mode runs in CI** (4.2, the golden verification),
-and then only if the golden corpus exercises the changed behavior. A defect that
-affects only real-title inputs and not the synthetic corpus is not caught by
-verification. This residual risk is accepted for v1 and is stated here, not hidden.
+### 6.4 Corruption and missing entries: fail safe
 
-### 6.4 Quarantine and recovery
+- **F1. Corrupt.** An entry that fails R1, R2, R4, R5, R6, or R7 but exists, or whose
+  R3 check fails, is quarantined by renaming it to a name that records the failing
+  check. The stage is recomputed and the result written by 6.2. A diagnostic
+  `ANALYSIS_CACHE_QUARANTINED` is reported on the run as a warning.
+- **F2. Missing.** An entry that does not exist is a miss. The stage is recomputed. No
+  diagnostic is reported. A missing entry is normal.
+- **F3. Uncacheable.** A stage that is uncacheable (3.4) is recomputed on every run.
+  The run reports `ANALYSIS_CACHE_UNCACHEABLE` as information, once per stage.
+- **F4. Partial failure.** If a stage fails, no entry is written for it or for any stage
+  below it (W5). The run reports the stage failure through the existing pipeline outcome.
+- **Codes.** Three codes are proposed: `ANALYSIS_CACHE_QUARANTINED`,
+  `ANALYSIS_CACHE_UNCACHEABLE`, and `ANALYSIS_CACHE_VERIFY_MISMATCH`. None is registered
+  today. Under `docs/adr/019-diagnostics-and-recovery-contract.md`, a code is a validated
+  `SCREAMING_SNAKE` identity, and registering them is recommended
+  (`src/PSXRecomp.Core/Diagnostics/DiagnosticCodes.cs:47-53` holds the existing analysis
+  codes, which do not cover cache faults).
 
-- **Q1.** An entry that fails R2 through R6 is renamed to a quarantine name that
-  records the failing check, not a clock value.
-- **Q2.** After a miss, the unit is recomputed and written by the write protocol.
-- **Q3.** Dedicated codes: `ANALYSIS_CACHE_QUARANTINED` for Q1 and
-  `ANALYSIS_CACHE_VERIFY_MISMATCH` for verify failures (6.5 below). They are not
-  reused from `AnalyzerAnalysisFailed` or `AnalyzerReportFailed`
-  (`src/PSXRecomp.Core/Diagnostics/DiagnosticCodes.cs:47-53`). Under
-  `docs/adr/019-diagnostics-and-recovery-contract.md` a code is a validated
-  `SCREAMING_SNAKE` identity, and registering the two codes is recommended. A
-  quarantine is a warning on the run.
+### 6.5 Cold and warm
 
-### 6.5 Verification and the injection seam
+Cold and warm runs must produce the same payloads. This is the central correctness
+property. Section 7 defines the test.
 
-The seam is injected through two Core types, so tests need no filesystem:
-
-- `IAnalysisCacheStore`: the store port (8.4). Tests pass an in-memory fake.
-- `AnalysisCacheOptions`: a value with `Mode` (`Normal` or `Verify`), the store, and
-  a cold-recompute delegate `Func<CacheUnit, ColdResult>`. The delegate is the
-  pipeline's own stage code. Tests pass a delegate that returns a known payload.
-
-- **Normal mode.** A consistent entry (R1 to R7 pass) is returned as a hit with no
-  cold recompute. A key-consistent entry with a stale payload is served as a hit (the
-  residual risk of 6.3).
-- **Verify mode.** For each cache unit, the pipeline runs the cold recompute on the
-  current inputs and compares its canonical payload with the stored payload
-  byte for byte. A difference is `ANALYSIS_CACHE_VERIFY_MISMATCH` and a hard failure.
-  Verify mode does not return a cache hit to the caller.
-
-### 6.6 Input identity is never cached as truth
-
-- **I2.** The disc image SHA-256 is computed from the full file on every run on the
-  test-driver path (`RealRomAnalyzer.cs:102-104`) and on the CLI path
-  (`CliInput.cs:106-109`). The GUI path is UNVERIFIED (U10), so the design does not
-  rely on it. The pipeline verifies the supplied hash on every path (8.3). A size-and-mtime
-  shortcut is rejected because it is not a content identity.
-
-## 7. Deterministic test plan
+## 7. Tests
 
 Tests use synthetic inputs from `src/PSXRecomp.Tests/RealRomAnalysis/`:
 `SyntheticDiscBuilder.cs`, `SyntheticChdBuilder.cs`, and `SyntheticIsoBothEndianTests.cs`
-(CONFIRMED that these exist; their APIs are UNVERIFIED, U7). No BIOS, ROM, or CHD
-content is used. Clocks are injected. Temp paths are not asserted.
+(these exist; their APIs are UNVERIFIED, U8). No BIOS, ROM, or CHD content is used.
+Clocks are injected. Temp paths are not asserted.
+
+Injection seams, all Core types:
+
+- `IAnalysisCacheStore`: the store port (8.2). Tests pass an in-memory fake.
+- `IStageCodeIdentity`: returns `codeIdentity` and the completeness verdict per stage.
+  Tests pass a fake to simulate a changed closure or an incomplete one.
+- `IStageInputRecorder`: wraps a stage's input record and counts reads per field (3.6).
+- `AnalysisCacheOptions`: `Mode` (`Normal` or `Verify`), the store, the code identity
+  provider, the recorder, and a diagnostics sink.
 
 | ID | Test | Asserts |
 |---|---|---|
-| T1 | Key encoder (3.6) | The encoded text of a fixed sample equals the committed text byte for byte, and its SHA-256 equals the committed value. Members are in UTF-8 byte order. Reordering record members in source leaves the text unchanged. Control characters are `\u00xx`. Floats are rejected |
-| T2 | Key sensitivity | Changing `discImageSha256`, any set fingerprint, `dependencyFingerprint`, a schema version, or `inputContainer` changes exactly the keys that carry it (3.2). Changing `instructionCount` changes the N8, N9, N10, N11, and N12a keys and **does not** change the N7 key |
-| T3 | Project non-analysis edit | Changing a project field outside `projectFields` leaves every key unchanged |
-| T4 | Set scope (D1, A1) | A change to a `setDecode` file (`R3000aDecoder.cs`) changes N7 and, by chain, N8 through N12a. A change to a `setCoverage`-only file (`RealRomCoverageAnalyzer.cs`) changes N12a only. A change to a `setAnalysis`-only file (`BasicBlockBuilder.cs`) changes N8 through N12a and leaves N7 unchanged |
-| T5 | YAML comment-only edit | No key changes (Y1) |
-| T6 | Corruption matrix | Zero-length file, truncated payload, flipped byte, missing `COMPLETE`, wrong `key`, unsupported format version, malformed header, schema-version mismatch: each produces a miss, a quarantine with `ANALYSIS_CACHE_QUARANTINED`, and output byte-identical to a cold run |
-| T7 | Partial failure | A pipeline failure at N8 writes no entry for N8 or later; the N7 entry is the only one written |
-| T8 | Warm equals cold | For each synthetic image, the warm run's artifact bytes equal the cold run's, byte for byte |
-| T9 | Stale-but-consistent entry (F3) | Injection: `AnalysisCacheOptions` with an in-memory `IAnalysisCacheStore` whose entry has a valid header and `COMPLETE` for the current key, and a payload different from the cold result. **Normal mode** returns that payload as a hit and performs no cold recompute. **Verify mode** reports `ANALYSIS_CACHE_VERIFY_MISMATCH` and returns no hit |
-| T10 | Concurrent write | Two writers with the same key leave one complete entry. A fake filesystem that interleaves renames does not produce a torn entry |
-| T11 | Shared store and identity | The CLI and GUI entry points, given the same bytes, compute the same verified `discImageSha256`, the same key, and read the same entry. A wrong supplied hash fails at the Input stage, with no cache write and no artifact |
-| T12 | No path in key | No key or entry contains an absolute path (`PathRedactor.cs` under `src/PSXRecomp.Tests/RealRomAnalysis/`; API UNVERIFIED, U7) |
-| T13 | Set membership | Each committed list equals its literal list exactly. Counts are E 20, D 17, A 26, C 5. No `obj/` or `bin/` path, no generated constant. The fingerprint of a fixed sample tree equals a committed golden value. Unchanged under CRLF to LF. Changed by a single content byte |
-| T14 | Prefix reuse with failure filter (5.1) | An N7 entry computed without `count`, sliced to `M`, equals a cold decode at `M`, including failures filtered by `A < entry + 4*M` |
-| T15 | Differential on and off | Warm and cold runs compared with validations supplied and without. Both match byte for byte. N12d is never read from the cache |
-| T16 | Lowering scope (L1) | A change to `MipsToIrLowerer.cs` changes `setCoverageFingerprint`, invalidates N12a only, and leaves N7 through N11 hits |
-| T17 | Short text segment (5.2) | A segment shorter than its declared size passes `MIPS_DECODE` with exactly one failure at the first address past the segment; no exception escapes |
-| T18 | Identity verification (8.3) | A supplied hash that differs from the computed hash fails the Input stage with a dedicated failure kind, with no analysis and no cache write |
-| T19 | Dependency fingerprint | Changing a resolved `(packageId, version)` pair, the SDK version, or `src/Architecture/PSXRecompArchitectureAttributes.cs` changes `dependencyFingerprint` and every key |
-| T20 | Multi-line verbatim literal lint (DEC-LF1) | Fails if any file in a committed set contains a multi-line verbatim string literal |
-| T21 | Closure (F1, 4.2.4) | Enumerates tracked `.cs` files under `src/PSXRecomp.Core/` from the git index (not the disk glob, so `obj/` and `bin/` are excluded). Requires exactly one owner per file, owner counts E 20, D 17, A 26, C 5, N 168, total 236. Fails on an unassigned file, a double-assigned file, a missing listed file, or a different total |
-| T22 | Golden verification (F2, 6.5 and 4.2) | See 4.2.7. Requires a minimum number of compared entries per cache unit and fails on payload mismatch |
+| T-COLD-WARM | Cold and warm equality (6.5) | For each synthetic fixture and each cached stage N7 to N12a: run cold with an empty store, store the entries, then run warm. Every cacheable stage must report a hit (a warm run with zero hits fails). The warm payload equals the cold payload byte for byte, per stage and for the whole document (`ArtifactFile.ToUtf8Bytes`). |
+| T-DEP-INPUT | Changed tracked input is not reused | For each stage and each field of its input record, change that one field in a fake. The key differs, the entry is not reused, and the recomputed payload is written under the new key. |
+| T-DEP-CODE | Changed closure is not reused | Substitute a changed `codeIdentity` for a stage in `IStageCodeIdentity`. The entry is not reused. Downstream stages whose output is unchanged may still hit, and the test asserts exactly which. |
+| T-DEP-DEAD | Unread parameter is accurate | Change a parameter that the stage does not read (for example `instructionCount` for N8). The key does not change and the entry is reused. This pins rule V6. |
+| T-UNCACHE | Unknown dependency is never cached | Inject an incomplete verdict for a stage. The stage recomputes on every run, writes no entry, and reports `ANALYSIS_CACHE_UNCACHEABLE`. |
+| T-READ | Input record matches reads | Run each cached stage under the recorder on the synthetic corpus. Every field of the input record is read at least once. A field with zero reads fails. |
+| T-CLOSURE-RT | Runtime closure check | Run each cached stage under an instrumented build that records executed methods and types. Every executed symbol must be in the static closure. An executed symbol outside the closure fails the test, because the closure was incomplete. Limited to exercised paths (UNVERIFIED feasibility of the instrumentation, U2). |
+| T-CORRUPT | Corrupt entries fail safe | For each corruption case (zero-length file, truncated payload, flipped byte, wrong key in header, unsupported `keyFormat`, malformed header, schema mismatch), the run recomputes, the output equals the cold output byte for byte, and `ANALYSIS_CACHE_QUARANTINED` is reported once per corrupt entry. |
+| T-MISSING | Missing entries are silent misses | Delete an entry. The run recomputes, the output equals the cold output, and no diagnostic is reported. |
+| T-PARTIAL | Partial failure writes nothing below | A failure injected at N8 writes no entry for N8 or later. The N7 entry is the only one written. |
+| T-STALE | Stale-but-consistent entry (residual risk) | An entry whose header and `COMPLETE` marker match the current key, with a payload that differs from the cold result. **Normal mode** returns that payload as a hit and performs no cold recompute. **Verify mode** reports `ANALYSIS_CACHE_VERIFY_MISMATCH` and returns no hit. |
+| T-SHORT | Short text segment (5.2) | An executable whose text segment is shorter than its declared size passes `MIPS_DECODE` with exactly one failure at the first address past the segment, and no exception escapes. |
+| T-PREFIX | Prefix reuse with failure filter (5.1) | An N7 entry computed without `count`, sliced to `M`, equals a cold decode at `M`, including failures filtered by `A < entry + 4*M`. |
+| T-DIFF | Differential on and off | Cold and warm runs with validations supplied and without. Both match byte for byte. N12d is never read from the cache. |
+| T-IDENT | Identity verification (4.4) | A supplied hash that differs from the computed hash fails the Input stage with a dedicated failure kind and no cache write. The CLI and GUI entry points, given the same bytes, compute the same verified hash. The GUI part is UNVERIFIED until U6 runs. |
+| T-KEY | Key encoder (3.7) | The encoded text of a fixed sample equals the committed text byte for byte, and its SHA-256 equals the committed value. Member order is UTF-8 byte order. Floats are rejected. |
+| T-LF | Multi-line verbatim literal lint (DEC-LF1) | Fails if any file in a closure contains a multi-line verbatim string literal. |
+| T-GOLDEN | Cross-revision regression | Committed golden payloads, produced from synthetic fixtures, are compared with a cold recompute. Each cached stage must have at least 4 compared entries (one per fixture), so the check cannot pass with zero comparisons. An intentional payload change requires regenerating the goldens with the named command `regenerate-analysis-goldens`, and the golden diff is reviewed. Golden location: `src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGolden/`, one `<unit>/<fixtureId>.golden.json` per pair (proposal). |
 
-Determinism rules for every test:
+Determinism rules for every test: no wall-clock values in keys, headers, or assertions;
+no dependence on the order of unsorted collections; no reliance on the temp directory name.
 
-- No wall-clock values in keys, headers, or assertions.
-- No dependence on the order of unsorted collections.
-- No reliance on the machine's temp directory name.
+## 8. Architecture, identity, and AI results
 
-### 4.2.7 Golden verification (F2)
+### 8.1 Architecture placement
 
-**Golden corpus.** The corpus is committed under
-`src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGolden/` (decision for U15, below).
-It holds one file per (cache unit, synthetic fixture), named `<unit>/<fixtureId>.golden.json`,
-with the fixed fields `fixtureId`, `unit`, `payloadSha256`, and `payload` (canonical text
-from 3.6). Fixture ids are `synthetic-iso-le`, `synthetic-iso-be`, `synthetic-chd`,
-and `synthetic-short-text`. The four are generated by the existing synthetic builders
-(U7). The units are N7, N8, N9, N10, N11, and N12a.
+The architecture matrix (`docs/architecture-matrix.md`) assigns the pieces:
 
-**Verification.** The verify job, run on every change in CI:
-
-1. For every (unit, fixture) pair, cold-recompute the payload from the synthetic
-   inputs with the current source tree. This happens regardless of whether the key
-   changed.
-2. Compare the recomputed canonical payload with the golden `payload` byte for byte.
-   Any difference fails the job. The key is not part of the comparison.
-3. Also run the cache path: populate an in-memory store from the cold run, read it
-   back in normal mode, and compare the hit with the golden payload.
-4. **Minimum comparisons.** For each unit N7 through N12a, the number of compared
-   pairs must be at least 4, equal to the number of fixtures. A unit with fewer
-   comparisons fails the job. A check that compares zero entries therefore cannot pass.
-
-**Intentional change.** A change that alters any payload fails the job unless the
-same change regenerates the goldens with the named command
-`regenerate-analysis-goldens` and commits the regenerated files. The reviewer
-reads the golden diff in that PR. This gate is enforced by review, not by a
-machine check. That is the residual risk of this design, recorded in 6.3.
-
-**Generator.** `regenerate-analysis-goldens` is a test-project command. It is built
-from the working tree's analyzer sources (all four sets and the dependency set) plus
-the key encoder (3.6). For the initial corpus, the generator is built from the base
-commit's analyzer sources plus the new encoder, so the first goldens are the base
-analyzer's outputs in the new encoding. Later regenerations use the working tree.
-
-**Synthetic-only rule.** Goldens are computed only from synthetic fixtures. They
-contain no BIOS, ROM, or CHD content and no user path.
-
-**Failure reporting.** The job reports the unit, fixture, and first differing byte
-offset, and uses `ANALYSIS_CACHE_VERIFY_MISMATCH`.
-
-## 8. Mapping to Issue #43 acceptance criteria
-
-The issue's acceptance criteria (OBSERVED, from a fetched summary; unchecked):
-
-1. Define dependencies between analysis artifacts. **Section 2.**
-2. Define the cache key. **Section 3.**
-3. Define invalidation rules for Analyzer, Decoder, Project, and YAML changes.
-   **Section 4 (D1, A1, L1, P1, Y1, Y2).**
-4. Define the unit of partial re-analysis. **Section 5.**
-5. Define conditions for reusing AI results. **Section 8.1.**
-6. Define recovery for a corrupted cache. **Section 6.**
-7. Settle one cache shared by CLI and GUI. **Sections 8.2 and 8.3.**
-
-### 8.1 AI result reuse (proposal)
-
-- **OBSERVED** No AI result producer exists. The search `git grep AIPrediction` at base
-  `2e3ecad` over the whole tree returns exactly one hit,
-  `src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`. No consumer of the label
-  exists in the repository (r5, m4).
-- **CONFIRMED** `EvidenceType.AIPrediction = 6` already exists
-  (`src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`), next to
-  `AnalyzerFinding = 5` (`:16`).
-- **Collision risk.** An AI result labeled `AIPrediction` could be read as evidence
-  by any consumer that switches on `EvidenceType`. The rules below prevent it inside
-  this design, but they do not stop an existing or future consumer. A consumer audit
-  is U16.
-- **Rule AI1.** An AI result is advisory. It is never stored as analysis output and
-  never appears in an analysis document. It has its own entry type, outside the
-  cache units.
-- **Rule AI2.** An AI result is reused only when its key matches: the hashes of the
-  artifacts it was computed from, the prompt or template revision, the model
-  identifier, and the model settings.
-- **Rule AI3.** An AI result is invalidated when any cache unit it depends on is
-  invalidated, through its upstream hashes.
-- **Rule AI4.** Whether a stored AI result uses `EvidenceType.AIPrediction` is a
-  decision for its own ADR. The existing label must not be reused silently.
-
-### 8.2 Shared CLI and GUI cache
-
-- **CONFIRMED** Both front ends call the same pipeline (1.1).
-- **Policy S1.** One store format and one key function. The port and key types are in
-  `PSXRecomp.Core`, and the file store is in `PSXRecomp.Infrastructure` (8.4). The CLI
-  and GUI pass only a store root.
-- **Policy S2.** The store root is supplied by the host. Its location is U4.
-- **Policy S3.** Cross-process concurrency uses the write protocol (W6). Readers never
-  see an incomplete entry.
-
-### 8.3 Identity verification
-
-- **CONFIRMED** The CLI hashes the file in its own pass and then runs the pipeline on a
-  second open of the same path (`src/PSXRecomp.Cli/CliInput.cs:100-116`). The two passes
-  are not atomic.
-- **CONFIRMED** The GUI accepts `discImageSha256` as a parameter and passes it on
-  (`src/PSXRecompStudio/Services/RealRomTitleExecutionService.cs:110-117`).
-- **CONFIRMED** The pipeline checks only that the supplied hash is non-empty
-  (`RomAnalysisPipeline.cs:93-98`, `:194-198`).
-- **Rule V1.** The pipeline computes SHA-256 over the stream or byte array it runs and
-  compares it with the supplied value. A mismatch fails the Input stage with a
-  dedicated failure kind, and no analysis runs. The stream path hashes from position
-  0 to end, then seeks back to 0. The stream contract already requires seekability
-  (`RomAnalysisPipeline.cs:70-72`). The Domain already uses SHA-256
-  (`RomAnalysisPipeline.cs:2`, `:576-579`).
-- **Rule V2.** The supplied hash becomes a claim that is checked, not an identity.
-- **Migration.** V1 breaks callers that pass a constant. `DiscImageHostileSizeTests.cs:24`
-  defines `Sha` as the literal `0123456789abcdef...` (64 hex characters). That is not
-  the hash of the bytes it passes at `:347`, so V1 would fail it. About 50 call sites
-  of `RunFromChd` and `RunFromIsoImage` exist in the test projects (9 in
-  `DiscImageHostileSizeTests.cs`, 2 in `SyntheticChdReaderTests.cs`, 2 in
-  `RealRomAnalyzer.cs`, 36 in `RomAnalysisPipelineTests.cs`, 1 in
-  `RealRomProductionExecutionTests.cs`). How many use a constant is UNVERIFIED (U13).
-- **Cost.** Verification reads the stream twice on the stream path (U5).
-
-### 8.4 Architecture placement
-
-The architecture matrix (`docs/architecture-matrix.md`) assigns:
-
-- Domain (`PSXRecomp.Core`) owns ports and deterministic contracts
-  (`architecture-matrix.md:22`, rule 1 at `:64`). It must not reference
+- **CONFIRMED** Domain (`PSXRecomp.Core`) owns ports and deterministic contracts
+  (`architecture-matrix.md:22`, rule 1 at `:64`) and must not reference
   `PSXRecomp.Infrastructure`.
-- Infrastructure (`PSXRecomp.Infrastructure`) owns managed host adapters, including
-  `File` and `Directory` access (`architecture-matrix.md:24`, `:55`, rule 2 at `:65`).
-- Application and CLI do not call `File.*` or `Directory.*` for ordinary logic (rule 3
-  at `:66`). Wiring a concrete adapter is allowed only at one composition-root site
-  with a narrowly scoped AARC002 suppression (`:47`).
+- **CONFIRMED** Infrastructure owns managed host adapters, including `File` and
+  `Directory` access (`architecture-matrix.md:24`, `:55`, rule 2 at `:65`).
+- **CONFIRMED** Application and CLI do not call `File.*` or `Directory.*` for ordinary
+  logic (rule 3 at `:66`). Concrete adapter wiring is allowed at one composition-root
+  site with a narrowly scoped AARC002 suppression (`:47`).
 
 Resolution:
 
-- **Core:** `IAnalysisCacheStore`, the key and entry types, the key encoder (3.6), the
-  lookup and validation logic (R1 to R7 as pure checks), the quarantine decision, and
-  `AnalysisCacheOptions` (6.5). No file access.
-- **Infrastructure:** `FileAnalysisCacheStore : IAnalysisCacheStore`, marked
-  `[Infrastructure]`, with the temporary write, flush, rename, marker, and quarantine
-  rename (6.2, 6.4).
-- **Precedent.** `FileProjectMetadataStore` (`src/PSXRecomp.Infrastructure/FileProjectMetadataStore.cs`,
-  `[Infrastructure]`, Issue #42) implements `IProjectMetadataStore`, which is defined in
-  `PSXRecomp.Core.Project`.
-- **Composition.** The CLI and GUI receive the port. The one composition-root site that
-  constructs `FileAnalysisCacheStore` is the only Application-to-Infrastructure reference.
-- **ADR required** before implementation: the new port and adapter, the move of
-  persistence out of the test project (U3), and any use of an AI evidence label (Rule AI4).
+- Core: `IAnalysisCacheStore`, the key and entry types, the key encoder (3.7), the
+  input records, `IStageCodeIdentity`, `IStageInputRecorder`, `AnalysisCacheOptions`,
+  and the validation logic (R1 to R7 as checks over bytes already read). No file access.
+- Infrastructure: `FileAnalysisCacheStore : IAnalysisCacheStore`, marked
+  `[Infrastructure]`, with the file operations of 6.2.
+- Precedent: `src/PSXRecomp.Infrastructure/FileProjectMetadataStore.cs` implements
+  `IProjectMetadataStore`, which is defined in `PSXRecomp.Core.Project` (Issue #42).
+- The closure tool runs at build time or in CI. Its placement (a test-project tool, a
+  build target, or a separate project) is UNVERIFIED (U2).
+- **ADR required** before implementation: the port, the adapter, the move of persistence
+  out of the test project (U3), the closure tool, and any use of an AI evidence label.
   This document does not create one.
 
-## 9. Open items and UNVERIFIED list
+### 8.2 Stores and seams
 
-- **U1.** Enumerate every project field and classify it as analysis-relevant or not (3.3, P1).
-- **U2.** Confirm that no build script or generator reads the YAML outside the searched types (4.3).
-- **U3.** Decide where the production driver lives. Requires an ADR (8.4).
-- **U4.** Decide the store root (8.2).
-- **U5.** Benchmark cold N7 over the full text region (DEC-N7), the double read of V1, and the warm path (5.4).
-- **U6.** Confirm the behavioral-guard corpus coverage (4.1).
-- **U7.** Read `PathRedactor.cs` and the synthetic builder APIs before the tests are implemented.
-- **U8.** Check whether `DeterministicArtifactTests.cs` already pins golden bytes.
-- **U9. Closed (r5).** `setCoverage` is the five files listed in 4.2. Evidence, all
-  OBSERVED from `git grep` at base `2e3ecad`: `RecompilerIrMemoryEffectClassifier` is
-  declared in `src/PSXRecomp.Core/Recompiler/RecompilerIrMemoryEffectClassifier.cs:28`
-  and has no reference anywhere in `src/PSXRecomp.Core` other than that file. Every
-  other `RecompilerIr*` type declared in Core is in `RecompilerContract.cs`
-  (declarations at lines 9 to 639, and the serializer at `:1119`). The lowerer's
-  types are therefore in one file. This closes U9 for the IR types. The lowerer's
-  own call graph into other Recompiler files is covered by the same grep, which
-  found none.
-- **U10.** Read the caller of `AnalyzeAndExecuteFromDisc` for the GUI hash (8.3).
-- **U11.** Confirm an identity-mismatch failure kind can be added without changing the mapping in `DiagnosticAdapter.cs`.
-- **U12.** Verify the set-fingerprint build target under the native build and `.github/workflows/ci.yml`.
-- **U13.** Migrate the test callers of `RunFromChd` and `RunFromIsoImage` to a helper that
-  computes a real SHA-256 (8.3). Count the callers that pass a constant.
-- **U14.** Roslyn reachability check: no N-file (4.2.5) is referenced from an E, D, A, or C file. Closure (T21) is a classification guarantee until this runs.
-- **U15. Decided here (owner may override).** Location: `src/PSXRecomp.Tests/RealRomAnalysis/AnalysisCacheGolden/`. Format: one canonical JSON file per (unit, fixture), `<unit>/<fixtureId>.golden.json`, with the fields in 4.2.7. Content: synthetic fixtures only.
-- **U16. Closed (r5).** The base-commit search in 8.1 finds no consumer of `AIPrediction`. The collision risk stays a rule for future code (Rule AI4), not a present defect.
-- **U17.** Confirm the dependency-input capture of `obj/project.assets.json` (4.2.2).
-- **U18.** Plan the `Analyze` split of N12a and N12d (4.7).
-- **U19.** `setAnalysis` membership of the Analysis contract types (4.2) is taken as the full
-  18-file directory; U14 can narrow it, but narrowing is not required for correctness.
-- **U20.** Check the Architecture attribute file's compile-time link (`Directory.Build.props:22-24`) against the architecture contract file (`src/architecture.contract.json`), which was not read. The marker types themselves are named in DEC-ARCH (4.2.1), which is the cited coverage for this item (r5, m9).
+The store is injected. The CLI and the GUI pass a store root and the same key function.
+The root's location is UNVERIFIED (U6).
+
+### 8.3 Shared CLI and GUI cache
+
+- Both front ends call the same pipeline (1.1). The key function and the store format
+  are shared code.
+- Cross-process concurrency uses the write protocol (6.2, W6).
+
+### 8.4 AI result reuse (proposal)
+
+- **OBSERVED** No AI result producer exists (1.1).
+- **CONFIRMED** `EvidenceType.AIPrediction = 6` exists at
+  `src/PSXRecomp.Core/Analysis/Contracts/EvidenceType.cs:17`, next to `AnalyzerFinding = 5` (`:16`).
+- **Rules.** An AI result is advisory: it is never stored as an analysis unit or in an
+  analysis document. It is reused only when its key matches the hashes of the artifacts
+  it was computed from, the prompt or template revision, the model identifier, and the
+  model settings. It is invalidated when any input digest it depends on changes. Whether
+  it uses `EvidenceType.AIPrediction` is a decision for its own ADR (UNVERIFIED for
+  consumers beyond the base search).
+
+## 9. Open items (all UNVERIFIED unless stated)
+
+- **U1.** Prerequisite R-0: extract each cached stage from `RunFromIsoSectorReader` into a function with an explicit input record (1.2). Equivalence of the refactor is covered by existing tests (UNVERIFIED).
+- **U2.** Feasibility of the closure tool on the Roslyn semantic model: reference enumeration including types, attributes, base types, and interfaces; class hierarchy analysis; detection of reflection, dynamic, and native calls (3.4); the static unused-parameter check (3.6); and the runtime instrumentation for T-CLOSURE-RT. Each of these is UNVERIFIED. Until they run, no stage may be marked cacheable.
+- **U3.** Enumerate the project fields that reach analysis (1.5).
+- **U4.** Measure cold N7 over the full text region (DEC-N7).
+- **U5.** Confirm the `$(NETCoreSdkVersion)` property in this repository (3.8).
+- **U6.** Read the GUI caller of `discImageSha256` (`RealRomTitleExecutionService.cs:110-117`, caller not read), and decide the store root (8.2).
+- **U7.** Count the test call sites that pass a constant SHA (4.4 Migration).
+- **U8.** Read `PathRedactor.cs` and the synthetic builder APIs before the tests are implemented.
+- **U9.** Locate the declarations of `ICdSectorSource` and `CdDiscToc` (section 0).
+- **U10.** Confirm that the `obj/project.assets.json` input is the only `obj/` file read (3.8).
+- **U11.** Check which declared stage outputs embed `ArtifactJson`-serialized content (`RealRomCoverageDocument.cs:245`, `RecompilerContract.cs:1126`) and whether a cached payload uses that encoding (3.7 uses the key encoder).
 
 ## 10. Non-goals
 
@@ -850,69 +571,14 @@ Resolution:
 - No cache implementation. This document is the design only.
 - No AI result producer.
 - No change to the project file format.
-- No stronger identity than full SHA-256 for inputs.
-- No ADR is created here. ADRs are required before implementation (8.4).
+- No ADR is created here.
 
-## 11. Review status
+## 11. Review history
 
-- r3 review, F1 (closure): resolved in 4.2.4 and 4.2.5, with counts E 20, D 17, A 26, C 5,
-  N 168 (total 236) as of r5, and T21 scoped to the git index.
-- r3 review, F2 (vacuous golden verify): resolved in 4.2.7 and 6.5. Key mismatch is no
-  longer treated as "superseded". Every unit is cold-recomputed and compared byte for
-  byte, with a minimum of 4 comparisons per unit, and intentional change requires the
-  named command `regenerate-analysis-goldens`.
-- r3 review, F3 (T9 unreachable): resolved in 6.3 (residual risk), 6.5 (seam), and T9.
-- r3 review, minor items m1 to m9: applied in r5. The mapping is in section 12.
-- r5 also moves `ArtifactFixtureIdentity.cs` from `setCoverage` to `setExtract` so that
-  `setCoverage` is the five files named by the r3 handoff. The move is a choice made
-  here: the file is an identity type that every key and payload depends on, so it
-  belongs with the extraction-side types. The owner may reverse it.
-
-## 12. Finding traceability
-
-Each finding of each review round, and where it is resolved. Section labels in the
-review text (for example "CRITICAL-A" and "CRITICAL-1 of r2") no longer appear in
-this file. The table uses the review round and the finding ID instead. Round 1 is
-the review of `6d038a0`, round 2 of `c8299d4`, and round 3 of `684b573`.
-
-| Round | ID | Finding | Resolved in |
-|---|---|---|---|
-| 1 | C1 | A lowering change must invalidate N12a | 3.2 (`setCoverage`), 4.6 (L1), T16 |
-| 1 | C2 | The differential section depends on validations | 4.7 (C2), T15 |
-| 1 | C3 | A missed engineRevision bump gives silent stale hits | 4.2 (per-stage sets), 4.2.7, 6.3 (residual risk), 6.5 |
-| 1 | M1 | `instructionCount` in the N7 key | 3.2, 5.1, T2, T14 |
-| 1 | M2 | The decoder fingerprint misses `MipsInstructionFormatter` | 4.1 (D1, D1a) |
-| 1 | M3 | Key ordering is not specified | 3.6, T1 |
-| 1 | M4 | Store placement contradicts the architecture matrix | 8.4 |
-| 1 | M5 | The shared-cache identity hash is trusted | 8.3 (V1, V2), T11, T18 |
-| 1 | m1 | Use a dedicated diagnostic code | 6.4 (Q3) |
-| 1 | m2 | `FunctionProvenanceSchemaVersion` missing from 1.3 | 1.3 |
-| 1 | m3 | Cite ADR-001 and ADR-002; Y1 is a current-state rule | 1.2, 4.3 (Y1) |
-| 1 | m4 | Decoder consumer list incomplete | 4.1 |
-| 2 | CRITICAL-A | Scoped rules are unreachable (global fingerprint) | 3.2, 4.2, 4.6 (L1), 4.1 (D1), T4, T16 |
-| 2 | M1 | Fingerprint input set is wrong (obj, generated constant, packages, csproj, hash format) | 4.2 (membership), 4.2.2, 4.2.3, T13 |
-| 2 | M2 | Verify mode does not catch a stale entry | 4.2.7, 6.5, T9 |
-| 2 | m1 | AIPrediction citation and collision risk | 8.1 |
-| 2 | m2 | CRLF evidence labeled CONFIRMED; LF rule unnumbered | 4.2.3 (DEC-LF1) |
-| 2 | m3 | Unused count parameter; failure rule; T2 omits N12a | 2.1, 5.1, 5.2, T2, T17 |
-| 2 | m4 | Key encoder escaping and separators | 3.6, T1 |
-| 2 | m5 | Example `upstreamKeys` refers to N6 | 3.5 |
-| 2 | m6 | Cost of cold decode; N12a/N12d follow-up | 5.1 (DEC-N7), 4.7, U18 |
-| 2 | m7 | N14 manifest citation is stale | 2.1 (N14 and manifest note) |
-| 2 | m8 | V1 breaks existing tests that pass a constant | 8.3 (Migration), U13 |
-| 2 | m9 | COMPLETE citation is a doc comment | 2.2 |
-| 3 | F1 | Closure is not operational | 4.2.4, 4.2.5, T21, DEC-ARCH (4.2.1) |
-| 3 | F2 | Golden verification passes vacuously | 4.2.7, 6.5, T22 |
-| 3 | F3 | T9 is unreachable as written | 6.3 (residual risk), 6.5 (seam), T9 |
-| 3 | m1 | "whole text region" wording | 5.1 |
-| 3 | m2 | "same constructor" wording | 4.7 |
-| 3 | m3 | Example member names unquoted | 3.5 |
-| 3 | m4 | AIPrediction base-commit search; U16 | 8.1, U16 (closed) |
-| 3 | m5 | U9 closure; setCoverage list | 3.2, 4.2 (setCoverage, setExtract), 4.2.4, 4.6, U9 (closed) |
-| 3 | m6 | Explicit input exception; SDK version source | 4.2.2 |
-| 3 | m7 | "computed on every run" holds only for some paths | 2.2, 6.6 (I2) |
-| 3 | m8 | Traceability table; label consistency | section 12 (this table) |
-| 3 | m9 | Architecture marker types cited under the props lines | 4.2.1 (DEC-ARCH), U20 |
-
-Round-1 and round-2 items that changed in later rounds are listed under the round
-that last changed them. Items marked "closed" have an OBSERVED basis in section 9 or 8.1.
+- Rounds 1 to 3 (on `6d038a0`, `c8299d4`, `684b573`) and the r4 and r5 revisions used a
+  static file partition. That partition is withdrawn by the owner ruling and by the
+  falsifications in section 0. Its findings are superseded, and no traceability to
+  them is kept.
+- The verified citations from those rounds that remain true are kept in sections 1 to
+  5. Citations that were not re-run in this revision are labeled UNVERIFIED in section 9
+  where they matter.
