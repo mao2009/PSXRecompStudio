@@ -2,7 +2,7 @@
 
 Tracking: [#51](https://github.com/mao2009/PSXRecompStudio/issues/51). Related: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33) (Compatibility Registry), [#42](https://github.com/mao2009/PSXRecompStudio/issues/42) (Project/Workspace), [#44](https://github.com/mao2009/PSXRecompStudio/issues/44) (PS1 Hardware Runtime Architecture), [#46](https://github.com/mao2009/PSXRecompStudio/issues/46) (Recomp Artifact & Build Management), [#49](https://github.com/mao2009/PSXRecompStudio/issues/49) (Diagnostics & Recovery).
 
-Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `2e3ecad`. The compatibility registry input is `origin/batch2/w13-compat-registry-design` at `700633d` (`docs/design/issue-33-compat-registry.md`). It was read as an input. Its review was not awaited, so its decisions are treated as proposals (section 9).
+Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `2e3ecad`. The compatibility registry input is `origin/batch2/w13-compat-registry-design` at `700633d` (`docs/design/issue-33-compat-registry.md`). It was read as an input. The four #33 changes in section 9 are approved by owner ruling (binding) but are not yet in the #33 text at `700633d`. At the last `ls-remote` check, W13 had not pushed an update, so the pin stays at `700633d` until it does.
 
 ## 0. Labels and constraints
 
@@ -53,7 +53,7 @@ The test model is a set of **scenarios**. Each scenario is a repository-owned, v
 ```
 ScenarioDefinition {
   Id                 // "smoke.boot.synthetic-putchar", "smoke.runtime.unresolved-jump"
-  Facet              // Boot | Gameplay | Save | Audio | Graphics | None   (None is a #33 change, section 9)
+  Facet              // Boot | Gameplay | Save | Audio | Graphics | None   (None is an owner-approved #33 change, section 9)
   Tags[]             // Input | Runtime | Disc | ... (not facets; see below)
   Version            // bump when pass criteria change
   Subject            // SyntheticFixture(id, sha256) | UserInput(discHash?, exeFingerprint?)
@@ -123,7 +123,7 @@ The result record reuses the #33 types. It does not define a second evidence mod
 | `Binding` | `ScenarioResult.Binding` (§3.4), `Binding` (§4.4) | reused |
 | `Outcome` | `ScenarioResult.Outcome` (§3.4, values in §3.5) | reused |
 | `EvidenceIds` | `ScenarioResult.EvidenceIds` (§3.4) | reused |
-| `TitleKey` | `ScenarioResult.TitleKey` (§3.4), required | **changed**: optional when `Subject` is `SyntheticFixture` (see 5.4) |
+| `TitleKey` | `ScenarioResult.TitleKey` (§3.4), required | **changed** (owner-approved): may be omitted only when `Subject` is `SyntheticFixture` (see 5.4) |
 | `Facet` | `ScenarioResult.Facet` (§3.4) | **changed**: adds a `None` value for scenarios with no facet (for example `smoke.runtime.*`) |
 | `Producer` (tool, version, reporter class) | `EvidenceRecord.ProducedBy` (§4.1) and reporter class (§4.1.2) | reused |
 | `CapturedUnixSeconds` | `EvidenceRecord.CapturedUnixSeconds` (§4.1) | reused |
@@ -136,7 +136,7 @@ No `Schema` string or separate `ResultId` is introduced. The schema identity is 
 
 ### 5.1 Outcome
 
-Outcome values follow #33 section 3.5. [OBSERVED: #33 at `700633d`]
+Outcome values follow #33 section 3.5, plus the owner-approved `Cancelled` value. `Unknown` is defined here and is not yet in #33. [OBSERVED: #33 at `700633d`]
 
 | Outcome | Meaning | Maps from |
 |---|---|---|
@@ -145,6 +145,8 @@ Outcome values follow #33 section 3.5. [OBSERVED: #33 at `700633d`]
 | `Blocked` | Stopped at a known unsupported boundary. | `RecompiledArtifactOutcome.Blocked` (OBSERVED: #33 citing `RecompiledArtifactExitCode.cs:18-21`) |
 | `Error` | Harness or host failure, not a guest result. | `RecompiledArtifactOutcome.Failure` (OBSERVED) |
 | `NotRun` | No attempt, or attempt produced no evidence. | run planner |
+| `Cancelled` | Stopped by a cancellation request before a classified guest end. Distinct from `Blocked`, `NotRun`, `Unknown`, `Fail`. | `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`). The registry maps from the title-level state, not from `RecompiledArtifactOutcome`, which folds it into `Blocked` (`RecompiledArtifactExitCode.cs:59`). |
+| `Unknown` | An attempt produced a result whose state cannot be determined, for example a missing or unparseable outcome field. Distinct from `NotRun` (no attempt) and `Cancelled`. Never counts toward a level. | Defined here. The owner ruling names the state; its definition is PREDICTED and UNVERIFIED against #33 text. |
 
 Stop reasons, which are carried in `ObservedFacts` and not in `Outcome`:
 
@@ -153,7 +155,7 @@ Stop reasons, which are carried in `ObservedFacts` and not in `Outcome`:
 | Completed | `TitleExecutionState.Completed` | `Pass` only if criteria are met, else `Fail` | `Completed` means a classified end, not gameplay completion (OBSERVED: #33 §2.1) |
 | Unsupported transfer | `TitleExecutionState.UnsupportedTransfer` | `Blocked` | Diagnosable stop |
 | Budget stop | `BudgetExhausted` / `OUTER_BUDGET_EXHAUSTED` pattern (`capabilities.md:87`) | `Blocked` | Diagnosable stop |
-| **User cancel** | `RecompilerExecutionStatus.Cancelled` (`RecompilerExecutionStatus.cs:35`), reaching `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`) | `Blocked` per existing code, with `ObservedFacts.stopReason = Cancelled`. The engine status becomes `Cancelled` at `ExecutionOrchestrator.cs:156-159` (returns `TitleExecutionState.Cancelled`); `RecompiledArtifactExitCode.cs:59` maps `Cancelled` to `Blocked`. [CONFIRMED] | A cancel is not a guest boundary. Section 7.1 rule 6 stops it from creating a regression. |
+| **User cancel** | `RecompilerExecutionStatus.Cancelled` (`RecompilerExecutionStatus.cs:35`), reaching `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`) | Registry outcome `Cancelled` (owner-approved). The run-level `RecompiledArtifactOutcome` is still `Blocked`, because `RecompiledArtifactExitCode.cs:59` folds `Cancelled` into it, and the registry does not use that run-level value. The engine status becomes `Cancelled` at `ExecutionOrchestrator.cs:156-159` (returns `TitleExecutionState.Cancelled`); `RecompiledArtifactExitCode.cs:59` maps `Cancelled` to `Blocked`. [CONFIRMED] | A cancel is not a guest boundary. It is never Pass or Fail, and section 7.1 rule 6 keeps it out of regression detection. |
 | Engine timeout | `RecompilerExecutionStatus.TimedOut` | `Error` with `stopReason = TimedOut`. The orchestrator maps any non-`Completed`, non-`Cancelled` status to `RuntimeFailure` with the engine's diagnostic code or `ENGINE_FAILED` (`ExecutionOrchestrator.cs:162-170`); `RecompiledArtifactExitCode.cs:56` maps `RuntimeFailure` to `Failure`; #33 aligns `Failure` with `Error`. [CONFIRMED for each step] | Closes Q8 for the orchestrator path. A caller that bypasses the orchestrator is UNVERIFIED. |
 
 Rules:
@@ -161,6 +163,7 @@ Rules:
 - `Blocked` is a diagnosable stop, not a defect. [OBSERVED: `capabilities.md:49`, per #33]
 - `Error` is excluded from the denominator and reported. An errored run cannot turn a Pass into a Fail. [PREDICTED]
 - `NotRun` is never shown as `Pass` or `Fail`. [PREDICTED]
+- `Cancelled` and `Unknown` are never `Pass` or `Fail`, and each is distinct from `NotRun` and from each other. This is an owner-approved condition for `Cancelled`. [PREDICTED for `Unknown`]
 
 ### 5.2 Evidence attachments
 
@@ -180,6 +183,8 @@ Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`
 - (b) Use a reserved pseudo-`TitleKey` such as `synthetic:<fixtureId>`. Rejected: it overloads a key that #33 treats as a real title identity.
 
 Either way, the level derivation in #33 section 5 must exclude `Subject.Kind = SyntheticFixture`. This is a requirement on #33 (Q3). Under option (a), `TitleKey` also becomes optional when `Subject` is `SyntheticFixture`. That is a second #33 change, listed in section 9 and Q3. Scenarios with no facet use the `None` value (section 3), which is a third change, also listed.
+
+Owner-approved conditions (binding ruling) on these changes: synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as `Pass` or `Fail`; `Unknown`, `NotRun` and `Cancelled` are distinct; #33's identity (`ReleaseKey`) and binding rules are kept unchanged.
 
 ## 6. Binding
 
@@ -203,9 +208,9 @@ Let `R(s, b)` be the latest non-superseded result for scenario `s` on binding `b
 1. **Regression**: `R(s, A) = Pass` and `R(s, B)` is `Fail` or `Blocked`, for the same `Subject` and `ScenarioId`, where `B` is a later binding of the same title. [PREDICTED; mirrors #33 section 6.2]
 2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B) = NotRun` (or absent) while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. [PREDICTED]
 3. **Synthetic regression**: the same rule applies to synthetic subjects, but the result is labelled `synthetic` and never rolls up into a title level. A synthetic regression is the primary signal of the smoke tier. [PREDICTED]
-4. **Error is not a regression**: `Error` on B does not create a regression. It creates a harness alert. [PREDICTED]
+4. **Error and Unknown are not regressions**: `Error` or `Unknown` on B does not create a regression. `Error` creates a harness alert; `Unknown` is reported as an unclassified result. [PREDICTED]
 5. **Scenario version change**: if `ScenarioVersion` differs between A and B, the pair is not compared. The result is `Re-baselined`, and the old Pass is kept as history. [PREDICTED]
-6. **Cancel is not a regression**: a `Blocked` result whose `ObservedFacts.stopReason = Cancelled` is treated as `NotRun` for rule 1. Without this rule, an operator cancel would be reported as a regression, because `Blocked` on a later binding triggers rule 1 in #33 section 6.2. [PREDICTED; the rule is needed because of the mapping in 5.1]
+6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is treated as `NotRun` for rule 2. Without this distinction, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [PREDICTED; the rule is needed so that `Cancelled` is not compared as `Blocked`]
 
 ### 7.2 Derived record
 
@@ -251,7 +256,7 @@ If the following #33 decisions change, this design must be revisited. All six we
 5. Persistence as Option D, with the append-only log as v1 (#33 §7.2).
 6. Scenario catalog versioning as part of the derived key (#33 §5; #33 Q13).
 
-This design adds these requirements to #33 at `700633d`. [PREDICTED]
+This design relies on these four requirements on #33. The owner has approved them (binding ruling), but #33 at `700633d` does not yet contain them. The wording below is PREDICTED until W13 updates #33.
 
 1. A `Subject` field (kind plus fixture or user-input reference), so synthetic results can be excluded (section 5.4).
 2. `TitleKey` optional when `Subject` is `SyntheticFixture` (section 5, section 5.4). #33 §3.4 currently requires it.
@@ -275,7 +280,7 @@ This design adds these requirements to #33 at `700633d`. [PREDICTED]
   - a `None` value on `Facet` (section 3);
   - a `Cancelled` row in the execution-state table (section 2.3). #33 §2.1 has no `Cancelled` entry at `700633d`.
 
-  None of these is agreed. Section 9 lists them.
+  All four are approved by owner ruling. The #33 text that records them is pending. Section 9 lists them, with the conditions.
 - **Q4. Disc hash in results.** The disc hash is needed for checklist item 3. Whether it is stored in shared records is the same question as #33 Q3. UNVERIFIED.
 - **Q5. Release gating.** Should a title-level regression ever block a release? Not decided. This draft only reports it.
 - **Q6. Smoke gate path set.** The exact path list for the required smoke tier (section 4.3) is UNVERIFIED and needs a check against the CI configuration, which was not read.
