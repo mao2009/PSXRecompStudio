@@ -2,7 +2,7 @@
 
 Tracking: [#51](https://github.com/mao2009/PSXRecompStudio/issues/51). Related: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33) (Compatibility Registry), [#42](https://github.com/mao2009/PSXRecompStudio/issues/42) (Project/Workspace), [#44](https://github.com/mao2009/PSXRecompStudio/issues/44) (PS1 Hardware Runtime Architecture), [#46](https://github.com/mao2009/PSXRecompStudio/issues/46) (Recomp Artifact & Build Management), [#49](https://github.com/mao2009/PSXRecompStudio/issues/49) (Diagnostics & Recovery).
 
-Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `2e3ecad`. The compatibility registry input is `origin/batch2/w13-compat-registry-design` at `441cd6a` (`docs/design/issue-33-compat-registry.md`). It was read as an input. The four #33 changes are approved by owner ruling and recorded in #33 at `441cd6a` (sections 2.1, 3.2, 3.4 and 9.1). This document pins #33 to `441cd6a`.
+Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `2e3ecad`. The compatibility registry input is `origin/batch2/w13-compat-registry-design` at `441cd6a` (`docs/design/issue-33-compat-registry.md`). It was read as an input. The four #33 changes are approved by owner ruling and recorded in #33 at `441cd6a` (sections 2.1, 3.2, 3.4, 3.5 and 9.1). This document pins #33 to `441cd6a`.
 
 ## 0. Labels and constraints
 
@@ -25,7 +25,7 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 
 ### 2.1 What exists
 
-- Repository-authored synthetic PS-X EXE fixtures exist. They are generated in memory from MIPS instruction words, pinned by SHA-256, and run through the production recompiler/runtime path. Two of the five (`BiosPutCharMarker`, `UnresolvedJump`) are consumed by `RecompiledArtifactE2ETests`; consumed by name in `RecompiledArtifactE2ETests` (`BiosPutCharMarker`, `UnresolvedJump`) and in `RuntimeHostPublishE2E` (`NaturalEndWithV0`, `GuestFirmwareOpenbios`). All five are enumerated by `GeneratedPsxExeFixtureTests` via `All`. No test asserts the expected outcome fields of `NaturalEndWithTransitions` or `GuestFirmwareOpenbios`. [CONFIRMED: `docs/development/generated-psx-exe-fixtures.md`, "Generation contract" and "Verification"; `src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs:57,112,141`; `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs:50,455,493,535,679`; `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtureTests.cs:13-25,40`]
+- Repository-authored synthetic PS-X EXE fixtures exist. They are generated in memory from MIPS instruction words, pinned by SHA-256, and run through the production recompiler/runtime path. Two of the five (`BiosPutCharMarker`, `UnresolvedJump`) are consumed by name in `RecompiledArtifactE2ETests`. Two more (`NaturalEndWithV0`, `GuestFirmwareOpenbios`) are consumed by name in `RuntimeHostPublishE2E`. All five are enumerated by `GeneratedPsxExeFixtureTests` via `All`. No test asserts the expected outcome fields of `NaturalEndWithTransitions` or `GuestFirmwareOpenbios`. [CONFIRMED: `docs/development/generated-psx-exe-fixtures.md`, "Generation contract" and "Verification"; `src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs:57,112,141`; `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs:50,455,493,535,679`; `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtureTests.cs:13-25,40`]
 - The catalog `GeneratedPsxExeFixtures.All` contains **five** fixtures: `BiosPutCharMarker`, `UnresolvedJump`, `NaturalEndWithV0`, `NaturalEndWithTransitions`, `GuestFirmwareOpenbios`. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:202-203`, with IDs at lines 94, 112, 133, 157, 184]
 - The fixture doc's "Current fixtures" table lists only two entries, so it is stale for the three added later. [CONFIRMED that the table lists two; OBSERVED that it is stale, since `All` lists five]
 - The fixture doc states that no generated `.exe` is checked in and that the catalog excludes Sony BIOS code and user-provided inputs. [CONFIRMED: same doc, "Legal and ownership boundary"]
@@ -33,7 +33,7 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 - Existing smoke-style tests: `src/PSXRecompStudio.Tests/MainWindowSmokeTests.cs` (Avalonia headless window and binding checks) and `src/PSXRecomp.Tests/RustAbiSmokeTests.cs` (managed to native to Rust chain, Issue #473, `AbiVersion == 1`). [CONFIRMED: both files exist and their headers were read]
 - Capability matrix rules: a Verified row does not imply complete title compatibility, and verification requires an executable test that asserts an observable contract, not just absence of a crash. [CONFIRMED: `docs/status/capabilities.md:28`, `:55-60`]
 - Execution outcomes: `RecompiledArtifactOutcome` (`Success`, `Blocked`, `Failure`) and `TitleExecutionState`. `TitleExecutionState.Cancelled` exists (Issue #820) and maps to `RecompiledArtifactOutcome.Blocked`. [CONFIRMED: `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:47-49`; `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:59`]
-- `RecompilerExecutionStatus` has `TimedOut` and `Cancelled` (Issue #820). [CONFIRMED: `src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:34-35`]
+- `RecompilerExecutionStatus` has `TimedOut` and `Cancelled` (Issue #820). [CONFIRMED: `src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:29` (`TimedOut`) and `:35` (`Cancelled`)]
 - Other title identity, evidence/confidence, and environment types are as described in the #33 doc (section 2.1 there). [OBSERVED: #33 citations, not re-read in this worktree]
 
 ### 2.2 What does not exist
@@ -42,9 +42,9 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 - No GPU field in `ExecutionEnvironmentReport`, no recomp `BuildId`, and no Runtime version identifier. [OBSERVED: #33 section 2.1]
 - `DiscIdentity` has no content hash field. [OBSERVED: #33 citing `DiscIdentity.cs:10-14`]
 
-### 2.3 Gap in #33
+### 2.3 Cancelled in #33
 
-At `441cd6a`, #33 section 2.1 listed `TitleExecutionState` values without `Cancelled`. At `441cd6a` the `Cancelled` row is recorded (section 2.1, section 9.1 item 4). Section 5.1 relies on it. [CONFIRMED: `441cd6a` text vs. `TitleExecutionContract.cs:47-49`]
+At `441cd6a`, #33 records `Cancelled` in three places: the execution-state list (section 2.1), the Outcome table (section 3.5), and the required-change list (section 9.1 item 4). Section 5.1 relies on these. [CONFIRMED: `441cd6a` `docs/design/issue-33-compat-registry.md` lines 60, 185, 382]
 
 ## 3. Compatibility test model
 
@@ -177,7 +177,7 @@ Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`
 
 ### 5.4 Synthetic subjects
 
-#33 section 3.1 keys `TitleEntry` by `ReleaseKey`. At `441cd6a`, section 3.4 required `TitleKey` with no subject field, so #33 could not tell a synthetic result from a title result. [OBSERVED: #33 at `700633d`] At `441cd6a` that is resolved by the owner-approved `Subject` field (§3.4). Two options (option (a) is the one the owner approved, and #33 §3.4 now has the field):
+#33 section 3.1 keys `TitleEntry` by `ReleaseKey`. At `700633d`, section 3.4 required `TitleKey` with no subject field, so #33 could not tell a synthetic result from a title result. [OBSERVED: #33 at `700633d`] At `441cd6a` that is resolved by the owner-approved `Subject` field (§3.4). Two options (option (a) is the one the owner approved, and #33 §3.4 now has the field):
 
 - (a) Add a `Subject` field to #33 §3.4 (this design's preference).
 - (b) Use a reserved pseudo-`TitleKey` such as `synthetic:<fixtureId>`. Rejected: it overloads a key that #33 treats as a real title identity.
@@ -206,11 +206,12 @@ Detection is derived from results. It is never typed by hand.
 Let `R(s, b)` be the latest non-superseded result for scenario `s` on binding `b`.
 
 1. **Regression**: `R(s, A) = Pass` and `R(s, B)` is `Fail` or `Blocked`, for the same `Subject` and `ScenarioId`, where `B` is a later binding of the same title. [PREDICTED; mirrors #33 section 6.2]
-2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B) = NotRun` (or absent) while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. [PREDICTED]
+2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B)` is `NotRun` or absent, while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. [PREDICTED]
+   - Cancelled is a separate input to this rule. `R(s, A) = Pass` and `R(s, B) = Cancelled`, with `B` differing from `A`, is reported as `Cancelled after change`. It is never reported as `Unverified after change` and never as a regression. [PREDICTED]
 3. **Synthetic regression**: the same rule applies to synthetic subjects, but the result is labelled `synthetic` and never rolls up into a title level. A synthetic regression is the primary signal of the smoke tier. [PREDICTED]
 4. **Error is not a regression**: `Error` on B does not create a regression. It creates a harness alert. [PREDICTED]
 5. **Scenario version change**: if `ScenarioVersion` differs between A and B, the pair is not compared. The result is `Re-baselined`, and the old Pass is kept as history. [PREDICTED]
-6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is treated as `NotRun` for rule 2. Without this distinction, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [PREDICTED; the rule is needed so that `Cancelled` is not compared as `Blocked`]
+6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is an input to rule 2's `Cancelled after change` branch, not to its `NotRun` branch, so `Cancelled` and `NotRun` stay distinct. Without this, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [PREDICTED]
 
 ### 7.2 Derived record
 
@@ -227,7 +228,7 @@ Each row names the #33 decision it depends on. If that decision changes, this se
 
 | Integration point | This design needs | #33 decision it depends on | Status |
 |---|---|---|---|
-| Result outcome | the five outcome values | §3.5 Outcome vocabulary | proposal |
+| Result outcome | the six outcome values (Pass, Fail, Blocked, Error, Cancelled, NotRun) | §3.5 Outcome vocabulary | proposal |
 | Evidence record | `EvidenceRecord` with `Binding`, `ArtifactHash`, `ProducedBy` | §4.1 | proposal |
 | Reporter class | `Maintainer`, `Automated`, `Community` | §4.1.2 | proposal |
 | Binding | exact-match binding | §4.4 and #33 Q5 | proposal; exact match is the default |
@@ -247,7 +248,7 @@ Concrete boundaries:
 
 ## 9. Decisions this design depends on from #33
 
-This section is the W15 dependency list for #33. W13 §9.1 refers to it. If the decisions below change, this design must be revisited. The six decisions were re-checked against `441cd6a` and each is present there. Only item 4 changed (`None` was added). The others are unchanged:
+This section is the W15 dependency list for #33. W13 does not yet cite this list; #33 at `441cd6a` has no reference to #51 or W15. If the decisions below change, this design must be revisited. The six decisions were re-checked against `441cd6a` and each is present there. Item 1 gained the `Cancelled` row (§3.5) and item 4 gained `None` (§3.2), both owner-approved. Items 2, 3, 5 and 6 are unchanged:
 
 1. Outcome vocabulary, with `NotRun` distinct from `Fail` (#33 §3.5).
 2. Exact binding equality, and no implicit carry-forward (#33 §4.4).
@@ -280,7 +281,7 @@ Conditions from the same ruling, all recorded in #33 §9.1 at `441cd6a`: synthet
   - a `Subject` field (section 5.4), and exclude synthetic subjects from title levels;
   - `TitleKey` optional when `Subject` is `SyntheticFixture` (section 5);
   - a `None` value on `Facet` (section 3);
-  - a `Cancelled` row in the execution-state table (section 2.3). #33 §2.1 has no `Cancelled` entry at `441cd6a`.
+  - a `Cancelled` row, recorded in #33 §2.1, §3.5 and §9.1 item 4 at `441cd6a`.
 
   All four are approved by owner ruling and recorded in #33 at `441cd6a`. Section 9 lists them, with the conditions.
 - **Q4. Disc hash in results.** The disc hash is needed for checklist item 3. Whether it is stored in shared records is the same question as #33 Q3. UNVERIFIED.
