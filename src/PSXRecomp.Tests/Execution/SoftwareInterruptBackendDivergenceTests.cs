@@ -182,4 +182,62 @@ public sealed class SoftwareInterruptBackendDivergenceTests
             mixed.State.Should().Be(TitleExecutionState.Completed, mixed.DiagnosticMessage);
         }
     }
+
+    // ---- completed BIOS call after a deferred software interrupt (Issue #728, owner option a) ----------------------
+
+    private const uint CallSitePc = Entry + 0x10u; // the JAL into the A0 vector: the program's return point
+
+    /// <summary>
+    /// The compiled program calls an uncompiled target that sets SR/CAUSE with a takeable software interrupt and returns to
+    /// <see cref="CallSitePc"/>, a JAL into the A0 vector. The target leaves $t1 = A0:3C (putchar), so the call completes
+    /// without pending.
+    /// </summary>
+    private static uint[] CallProgram(uint cause, uint sr)
+    {
+        var main = new Block(Entry);
+        main.Emit(Li(T0, Target), [Jalr(T0)], [Nop]);
+        main.Emit([PSXRecomp.Tests.Recompiler.MipsEncoding.JumpAndLink(BiosJumpTables.A0VectorAddress)], [Nop]);
+        main.Emit([Nop], [Jr(Zero)], [Nop]);
+        var target = new Block(Target);
+        target.Emit(Li(T1, 0x3Cu), Li(A0, 0x41u), Li(T2, cause), [Mtc0(T2, 13)], [Nop]);
+        target.Emit(Li(T2, sr), [Jr(Ra)], [Mtc0(T2, 12)]);
+        return Image(main, target);
+    }
+
+    private static FallbackCpuState EnteringTargetAt(uint returnPc)
+    {
+        var gpr = new uint[TitleExecutionRequest.GprCount];
+        gpr[(int)Ra] = returnPc;
+        return new FallbackCpuState(gpr, 0, 0, Target, 0, 0, 0);
+    }
+
+    [Fact]
+    public void Interpreter_DefersTheSoftwareInterruptAtTheBiosCallSite()
+    {
+        var words = CallProgram(CauseIp0, SrIec_Im0);
+        var (graph, engine) = Attached(words);
+        using var _ = graph;
+        using var __ = engine;
+
+        var outcome = engine.RunFallbackSegment(EnteringTargetAt(CallSitePc), new HashSet<uint> { CallSitePc }, 100);
+
+        outcome.Status.Should().Be(FallbackSegmentStatus.Returned, outcome.DiagnosticMessage);
+        outcome.State.Pc.Should().Be(CallSitePc);
+        engine.LastReturnDeferredSoftwareInterrupt.Should().BeTrue("the return point is a JAL into the A0 vector");
+    }
+
+    [Fact]
+    public void MixedHost_CompletedCallAfterADeferredSoftwareInterrupt_StopsWithTheSharedCodeAtTheVector()
+    {
+        var words = CallProgram(CauseIp0, SrIec_Im0);
+        using var dir = new TempDirectory();
+
+        var mixed = RunArtifact(words, dir, new MixedFallbackOptions()).Result;
+
+        // The call completes (no wait), so the artifact would drop the interrupt: the host stops at the vector, before the
+        // call's result is applied, with the shared software-interrupt code.
+        mixed.State.Should().NotBe(TitleExecutionState.Completed, mixed.DiagnosticMessage);
+        mixed.DiagnosticCode.Should().Be(MixedFallbackDiagnostics.SoftwareInterruptUnsupported, mixed.DiagnosticMessage);
+        mixed.FinalSnapshot!.PC.Should().Be(0x8000_00A0u, "the A0 vector (KSEG0), before the call's result is applied");
+    }
 }
