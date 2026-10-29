@@ -122,6 +122,7 @@ public sealed class MdecDeviceTests : IDisposable
         (_mdec.ReadRegister(4) & (1u << 31)).Should().NotBe(0u, "no output was produced");
     }
 
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: パラメータ 0 語の復号は出力を作らず、デバイスは待機しない。</summary>
     [Fact]
     public void MonoDecode_WithNoData_ProducesNoOutput()
     {
@@ -142,8 +143,9 @@ public sealed class MdecDeviceTests : IDisposable
         _mdec.FifoWordCount.Should().Be(0);
     }
 
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: 出力 FIFO は語数ちょうどで空になり、空の読み出しは 0 を返す。</summary>
     [Fact]
-    public void OutputFifo_DrainsExactlyAtItsWordCount_AndTheDataOutRequestFollows()
+    public void OutputFifo_DrainsExactlyAtItsWordCount_EmptyFifoReadReturnsZero()
     {
         _mdec.WriteRegister(4, 0x20000000u); // enable DMA out
         _mdec.WriteRegister(0, 0x28000000u | 1);
@@ -160,6 +162,7 @@ public sealed class MdecDeviceTests : IDisposable
         _mdec.FifoWordCount.Should().Be(0);
     }
 
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: FIFO より大きい DMA1 バーストは完了せず、語を消費しない。</summary>
     [Fact]
     public void Dma_OutputBurstLargerThanTheFifo_WaitsWithoutConsumingWords()
     {
