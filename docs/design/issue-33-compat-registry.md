@@ -126,7 +126,7 @@ Five facets, each evaluated on its own ladder:
 | Boot | Does the title reach its first stable screen through the Runtime path? | Maps to the Persona-style gate in `capabilities.md:87`. |
 | Gameplay | Can a scripted input path reach and play a defined level or state? | Requires an input-evidence source (see Q14). |
 | Save | Can the title write and read its save through the memory-card model? | Storage format is `Verified` (`capabilities.md:80`); title-level save is separate. |
-| Audio | Is audio produced and does playback stay in sync? | SPU audio output is `Not claimed` (`capabilities.md:78`), so this facet is `Unverified` by default. |
+| Audio | Is audio produced and does playback stay in sync? | SPU audio output is `Not claimed` (`capabilities.md:78`), so this facet is at level 0 by default. |
 | Graphics | Does frame output match a defined reference for a scenario? | GPU is `Partial` (`capabilities.md:77`). |
 
 `None` (owner ruling) is a sentinel for a result that is not attributed to any facet, for example a SyntheticFixture result. `Facet.None` never satisfies a level rung and is never shown as a facet column (section 9).
@@ -277,7 +277,7 @@ Stable       -> Playable and no open Known Issue of severity >= major on the bin
 Highly-Verified -> Stable and Pass evidence from >= 2 reporter classes
 ```
 
-A title-level label is the **minimum** over facets in the chosen binding. A title with Boot Verified and Save Unverified is shown as `Boot-Verified` with Save `Unverified`, never as "Playable". [PREDICTED]
+A title-level label is the **minimum** over facets in the chosen binding. A title with Boot Verified and Save at level 0 is shown as `Boot-Verified` with the Save cell labelled per section 9.2, never as "Playable". [PREDICTED]
 
 "Perfect" is not a rung. It is defined as: every required scenario for every facet is `Pass` on the stated binding, with at least the Highly-Verified evidence threshold, and no open Known Issue. The label means "passes the currently defined scenario set", and it is versioned by the scenario catalog version. This answers the issue's point that Perfect is not absolute completeness. [PREDICTED; the issue leaves names open]
 
@@ -306,7 +306,7 @@ Open issues cap the level they affect (section 5). `UnresolvedItem` (`src/PSXRec
 A Regression is derived, not stored by hand. Its input is `Subject = RealTitle` `ScenarioResult` records only; `SyntheticFixture` results never create or close a Regression (section 3.4):
 
 - A scenario has `Pass` on binding A, and `Fail` or `Blocked` on a later binding B for the same title, facet, and scenario.
-- Or a scenario has `Pass` on binding A and no result on B while the title's binding changed. This is reported as `Unverified after change`, not as a regression. It is a display label in section 9.2 and not a level.
+- Or a scenario has `Pass` on binding A and no result on B while the title's binding changed. This is reported as `Unverified after change`, not as a regression. It is the cell label in section 9.2, row 2, and not a level.
 
 A `Cancelled` result on binding B is neither a Fail nor a Pass, so it does not create a Regression by itself. How it is shown and whether it changes the Regression state is open (Q16). [PREDICTED]
 
@@ -365,7 +365,7 @@ The derivation function must take records and a binding and return the level set
 
 ## 9. Studio presentation
 
-Per title: one row per binding in use, five facet columns, each cell showing the derived level or `Unverified`. The binding selector is required, so no cell is shown without its binding. Known Issues and Regression badges sit next to the cell they affect. Unverified is styled as absence, not as a failure colour. [PREDICTED]
+Per title: one row per binding in use, five facet columns, each cell showing its cell label from section 9.2 (the derived level, or one of the labels in rows 1 to 6). The binding selector is required, so no cell is shown without its binding. Known Issues and Regression badges sit next to the cell they affect. Unverified is styled as absence, not as a failure colour. [PREDICTED]
 
 SyntheticFixture results are never shown in a real-title view. They may appear only in a separate, labelled fixture view. `Facet.None` is never a column. [PREDICTED; follows the owner ruling]
 
@@ -376,13 +376,14 @@ Each cell is one `(title, facet, binding)`. It is labelled by the first matching
 | Order | Condition | Label | Meaning |
 |---|---|---|---|
 | 1 | No record at all for the title or facet | `Unknown` | Nothing can be said. |
-| 2 | Records exist for the facet, but none for this binding | `Not run` | The binding has not been tested for this facet. Not Unverified. |
-| 3 | Any `Fail` result on this binding | `Fail` | Evidence exists and criteria were not met. |
-| 4 | Any `Blocked` or `Error` result on this binding, and no `Pass` | `Blocked` or `Error` | Stopped at a known boundary, or a harness or engine failure. |
-| 5 | Any `Cancelled` result on this binding, and no `Pass` | `Cancelled` (label wording pending Q15) | The run was stopped and its evidence is incomplete. |
-| 6 | At least one `Pass` on this binding | the derived level from section 5 | Level 0 when no ladder rung is met. |
+| 2 | No result on this binding, but a scenario in this facet has a `Pass` on another binding | `Unverified after change` | The binding changed after a Pass. The old Pass is not carried forward (section 4.4), so this cell has no Pass here. It is a label, not a level. |
+| 3 | Records exist for the facet, but none for this binding | `Not run` | The binding has not been tested for this facet. |
+| 4 | Any `Fail` result on this binding | `Fail` | Evidence exists and criteria were not met. |
+| 5 | Any `Blocked` or `Error` result on this binding, and no `Pass` | `Blocked` or `Error` | Stopped at a known boundary, or a harness or engine failure. |
+| 6 | Any `Cancelled` result on this binding, and no `Pass` | `Cancelled` (label wording pending Q15) | The run was stopped and its evidence is incomplete. |
+| 7 | At least one `Pass` on this binding | the derived level from section 5 | Level 0 when no ladder rung is met. |
 
-`Unverified` is not a cell label in this table. It is only the name of level 0 in section 5. A cell is never shown as `Unverified` when its real state is `Unknown`, `Not run`, or `Cancelled`. [PREDICTED; follows the owner ruling]
+`Unverified` is not a cell label on its own. The only cell label that contains it is `Unverified after change` (row 2), and that label needs a prior Pass on another binding. Level 0 in section 5 is also named `Unverified`, but it is a level, and the cell label comes from this table. A cell is never shown as `Unverified` or `Unverified after change` when its real state is `Unknown`, `Not run`, or `Cancelled`. [PREDICTED; follows the owner ruling]
 
 ### 9.1 Required #33 changes (owner ruling)
 
