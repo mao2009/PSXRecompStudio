@@ -61,7 +61,7 @@ internal sealed record OpenBiosProbeBoundaryRecord(
             foreach (var property in document.RootElement.EnumerateObject())
             {
                 if (!names.Add(property.Name))
-                    throw new BoundaryLogFormatException($"duplicate field \"{property.Name}\"");
+                    throw new BoundaryLogFormatException($"duplicate field \"{DisplayKey(property.Name)}\"");
             }
         }
         catch (System.Text.Json.JsonException ex)
@@ -88,7 +88,7 @@ internal sealed record OpenBiosProbeBoundaryRecord(
         }
         foreach (var key in obj.Select(static p => p.Key))
         {
-            if (!RequiredKeys.Contains(key)) throw new BoundaryLogFormatException($"unexpected field \"{key}\"");
+            if (!RequiredKeys.Contains(key)) throw new BoundaryLogFormatException($"unexpected field \"{DisplayKey(key)}\"");
         }
 
         return new OpenBiosProbeBoundaryRecord(
@@ -127,6 +127,24 @@ internal sealed record OpenBiosProbeBoundaryRecord(
         if (obj[key] is JsonValue value && value.TryGetValue<string>(out var text) && pattern.IsMatch(text))
             return text;
         throw new BoundaryLogFormatException($"field \"{key}\" must be {expected}");
+    }
+
+    private const int MaxEchoedKeyLength = 48;
+
+    /// <summary>
+    /// A key read from the file, in a form safe to echo in a diagnostic: control characters become \uXXXX text, and a long
+    /// key is cut to <see cref="MaxEchoedKeyLength"/> characters. A file cannot write arbitrary text to the console this way.
+    /// </summary>
+    internal static string DisplayKey(string key)
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (var c in key.Take(MaxEchoedKeyLength))
+        {
+            if (char.IsControl(c)) builder.Append($"\\u{(int)c:X4}");
+            else builder.Append(c);
+        }
+        if (key.Length > MaxEchoedKeyLength) builder.Append("...");
+        return builder.ToString();
     }
 
     private static string DescribeKind(JsonValueKind kind) => kind switch

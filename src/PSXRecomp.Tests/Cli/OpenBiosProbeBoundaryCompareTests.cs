@@ -118,9 +118,30 @@ public sealed class OpenBiosProbeBoundaryCompareTests
 
         var exit = Compare(dir.FullPath, right, out var output, out var error);
 
+        // Pinned to the branch this test is about: opening a directory as a file is refused as UnauthorizedAccessException on Windows.
         exit.Should().Be(1);
         output.Should().BeEmpty();
-        error.Should().Contain("--compare-boundary-logs:");
+        error.Should().Contain("--compare-boundary-logs: UnauthorizedAccessException:");
+    }
+
+    [Fact]
+    public void A_Parser_Logic_Error_Is_Not_Reported_As_A_Path_Problem()
+    {
+        // Simulated defect: the parser throws a type that a path refusal can also be (an ArgumentException). It must be
+        // reported as an internal error, not labelled as an unreadable or invalid path, and it must not be silent.
+        using var dir = new TempDirectory();
+        var left = dir.WriteFile("left.jsonl", Lines("interpreter", "aa"));
+        var right = dir.WriteFile("right.jsonl", Lines("standalone", "aa"));
+        var o = new StringWriter();
+        var e = new StringWriter();
+
+        var exit = OpenBiosProbeCommand.CompareBoundaryLogs(left, right, o, e,
+            parseLog: (_, _) => throw new ArgumentOutOfRangeException("index", "simulated parser defect"));
+
+        exit.Should().Be(1);
+        o.ToString().Should().BeEmpty();
+        e.ToString().Should().Contain("internal error while parsing or comparing (ArgumentOutOfRangeException)");
+        e.ToString().Should().NotContain("--compare-boundary-logs: ArgumentOutOfRangeException:");
     }
 
     [Fact]

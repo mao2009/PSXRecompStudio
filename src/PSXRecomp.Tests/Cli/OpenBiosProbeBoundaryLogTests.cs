@@ -174,6 +174,40 @@ public sealed class OpenBiosProbeBoundaryLogTests
     }
 
     [Fact]
+    public void A_Duplicate_Key_Written_With_A_Unicode_Escape_Is_Refused()
+    {
+        // "\u0063ycles" is the same property name as "cycles" once unescaped. JsonProperty.Name returns the unescaped name,
+        // so the duplicate check must see the two as equal.
+        var line = Line("interpreter", vram: "aa").Replace("\"cycles\":0", "\"cycles\":0,\"\\u0063ycles\":0", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: duplicate field \"cycles\"");
+    }
+
+    [Fact]
+    public void A_Control_Character_In_An_Echoed_Key_Is_Written_As_Escape_Text()
+    {
+        // The key holds a real BEL character (written in the file as the escape \u0007). The diagnostic must not carry the raw character.
+        var line = Line("interpreter", vram: "aa").Replace("\"vramSha256\"", "\"ex\\u0007tra\":1,\"vramSha256\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: unexpected field \"ex\\u0007tra\"");
+    }
+
+    [Fact]
+    public void A_Long_Echoed_Key_Is_Truncated_In_The_Diagnostic()
+    {
+        var longKey = new string('k', 60);
+        var line = Line("interpreter", vram: "aa").Replace("\"vramSha256\"", "\"" + longKey + "\":1,\"vramSha256\"", StringComparison.Ordinal);
+
+        Action act = () => OpenBiosProbeBoundaryLog.ParseLog([line], "left");
+
+        act.Should().Throw<BoundaryLogFormatException>().WithMessage("left log line 1: unexpected field \"" + new string('k', 48) + "...\"");
+    }
+
+    [Fact]
     public void A_Huge_Integer_Beyond_UInt64_Is_Refused_With_A_Diagnostic()
     {
         var line = Line("interpreter", vram: "aa").Replace("\"vblank\":1", "\"vblank\":18446744073709551616", StringComparison.Ordinal);
@@ -256,11 +290,12 @@ public sealed class OpenBiosProbeBoundaryLogTests
     }
 
     [Fact]
-    public void A_Read_Failure_In_The_Observer_Is_Contained_And_Recorded()
+    public void A_Null_Device_Graph_Is_Contained_And_Recorded_As_A_NullReferenceException()
     {
+        // Renamed to what it does: a null graph makes the device reads throw NullReferenceException, a type the log's
+        // output path does not list. The catch-all in Write must contain it rather than let it end the guest run.
         using var log = new OpenBiosProbeBoundaryLog(new StringWriter());
 
-        // A device graph whose reads fail: the exception is not one the log's output path lists, and it must not escape.
         var act = () => log.Write("interpreter", null!, 1, 0);
 
         act.Should().NotThrow();

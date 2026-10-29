@@ -40,8 +40,9 @@ internal sealed class OpenBiosProbeBoundaryLog : IDisposable
     public void Write(string engine, PsxDeviceGraph devices, ulong vblank, ulong cycles)
     {
         if (FailureMessage is not null) return;
-        // Every exception is contained here, whatever its type: a device read or the writer can fail in ways not listed
-        // above, and one escaping this call would end the guest run. The first failure is kept in FailureMessage.
+        // The catch-all is deliberate. This call runs inside the scheduler's VBlank callback during the guest run, so an
+        // exception escaping it would end the run and change its result. The types a device read or the writer can throw
+        // are not an exhaustive list, so every type is caught and only the first failure is kept in FailureMessage.
         try
         {
             _writer.WriteLine(Describe(engine, devices, vblank, cycles).ToJsonString());

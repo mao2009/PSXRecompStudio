@@ -263,26 +263,43 @@ internal static class OpenBiosProbeCommand
     /// Issue #774 (W03): names the first boundary at which two boundary logs differ, over the boundaries both logs hold.
     /// A boundary that only one log reached is not a mismatch; the counts show how far each run got.
     /// </summary>
-    private static int CompareBoundaryLogs(string leftPath, string rightPath, TextWriter output, TextWriter error)
+    internal static int CompareBoundaryLogs(string leftPath, string rightPath, TextWriter output, TextWriter error,
+        Func<IEnumerable<string>, string, IReadOnlyList<OpenBiosProbeBoundaryRecord>>? parseLog = null)
     {
+        parseLog ??= OpenBiosProbeBoundaryLog.ParseLog;
+        string[] leftLines, rightLines;
+        // Only opening and reading the two paths is covered by the path diagnostic. Every exception that can come from a
+        // path is a refusal, not a crash: an empty or invalid path (ArgumentException, ArgumentNullException), an unsupported
+        // path (NotSupportedException), a missing file or directory (FileNotFoundException, DirectoryNotFoundException, both
+        // IOException), a path too long (PathTooLongException, an IOException), or a directory or other access refusal
+        // (UnauthorizedAccessException).
+        try
+        {
+            leftLines = File.ReadAllLines(leftPath);
+            rightLines = File.ReadAllLines(rightPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+
         IReadOnlyList<OpenBiosProbeBoundaryRecord> left, right;
         try
         {
-            left = OpenBiosProbeBoundaryLog.ParseLog(File.ReadLines(leftPath), "left");
-            right = OpenBiosProbeBoundaryLog.ParseLog(File.ReadLines(rightPath), "right");
+            left = parseLog(leftLines, "left");
+            right = parseLog(rightLines, "right");
         }
         catch (BoundaryLogFormatException ex)
         {
             error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.Message}");
             return 1;
         }
-        // Every exception that opening or reading a path can raise is a refusal, not a crash: an empty or invalid path
-        // (ArgumentException, ArgumentNullException), an unsupported path (NotSupportedException), a missing file or
-        // directory (FileNotFoundException, DirectoryNotFoundException, both IOException), a path too long (PathTooLongException,
-        // an IOException), or a directory or other access refusal (UnauthorizedAccessException).
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.GetType().Name}: {ex.Message}");
+            // Not a path problem: a defect in the parser or the comparison. It is reported as one, so it is neither silent
+            // nor mistaken for an unreadable file.
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: internal error while parsing or comparing ({ex.GetType().Name}): {ex.Message}");
             return 1;
         }
 
