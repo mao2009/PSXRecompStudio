@@ -415,7 +415,7 @@ Additional conditions from the same ruling:
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
 - **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`src/PSXRecompStudio/Services/TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
-- **Q15. Cancelled display label.** The label for a cell whose only non-Pass result is `Cancelled` (section 9.2, row 5) is pending the owner's decision (N3 in the coordinator's list). Until then the draft uses the placeholder `Cancelled`.
+- **Q15. Cancelled display label.** The label for a cell whose only non-Pass result is `Cancelled` (section 9.2, row 5) is pending the owner's decision. Until then the draft uses the placeholder `Cancelled`.
 - **Q16. Cancelled on binding B for regression.** If binding B holds a `Cancelled` result for a scenario that had Pass on binding A, is that a regression, `Unverified after change`, or neither? This draft says neither, and only shows it as Cancelled (section 6.2). Owner to decide.
 - **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 
