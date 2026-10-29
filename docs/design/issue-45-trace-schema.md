@@ -16,7 +16,7 @@ Every claim carries one of four labels:
 - **INFERRED**: a conclusion drawn from code or docs, not measured.
 - **UNVERIFIED**: not checked, or checkable only by running the system.
 
-### 0.1 Issue #45 body (verbatim, from the public API, 542 characters)
+### 0.1 Issue #45 body (verbatim, from the public API `body` field)
 
 > ## 概要
 > Recomp後のゲームや解析結果を調査できる共通Debug/Trace基盤を設計する。
@@ -78,7 +78,7 @@ Every claim carries one of four labels:
 | `inputSha256` is declared at `:52`, and assigned only inside `if (arguments.Report)` (`:54`, value at `:58` from `resolved.Sha256`) | `RunCommand.cs:52-58` | CONFIRMED |
 | The diagnostic bundle is written only inside `if (arguments.Report)` (`:86`); `inputSha256` is passed to `WriteDiagnosticBundle` at `:93` | `RunCommand.cs:86-93` | CONFIRMED |
 | `ExecutionDiagnosticLog` (projects diagnostics onto a small allow-list of context keys, max 256 entries) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:12`, allow-lists `:17-30` | CONFIRMED |
-| `ExecutionDiagnosticBundleWriter` (ZIP of exactly four entries: `report.json`, `environment.json`, `diagnostics.log`, `issue.md`; canonical timestamps) | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:16`, entry names `:20-23` | CONFIRMED |
+| `ExecutionDiagnosticBundleWriter` writes exactly four entries: `report.json`, `environment.json`, `diagnostics.log`, `issue.md` (name constants); canonical timestamps | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:16`, entry-name constants `:18-21` | CONFIRMED |
 
 ### 1.3 Runtime host diagnostic (`#763`, open)
 
@@ -140,13 +140,15 @@ Every claim carries one of four labels:
 |---|---|---|
 | `BuildStop` builds `lastFetches` (`Hex(e.Pc):Hex(e.Word)`, last 16) and `lastTransfers` (last 16, includes `From.Word`) from the engine trace ring | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1004-1014` | CONFIRMED |
 | `BuildStop` is called with the interpreter engine's `FinalSnapshot` | `OpenBiosProbeCommand.cs:361` | CONFIRMED |
-| The stop object is written into the `--json` document as `stop` | `OpenBiosProbeCommand.cs:432` (`stop,` in the anonymous object, `kind = "openbios-probe"` at `:419` region) | CONFIRMED |
-| `captured` is an object built at the capture PC, with `word = ReadGuestWord(pc)` (a raw instruction word) and `pc`, `gpr[32]`, `lastTransfers` (PCs only) | `OpenBiosProbeCommand.cs:344-350`; `word` at `:346` | CONFIRMED |
-| `captured` is written into the `--json` document as `captured` | `OpenBiosProbeCommand.cs:433` | CONFIRMED |
+| The `--json` document is the anonymous object with `kind = "openbios-probe"`; the same object holds `stop`, `captured`, and `gte` | `OpenBiosProbeCommand.cs:421` (`kind`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`) | CONFIRMED |
+| `captured` is an object built at the capture PC, with `word = ReadGuestWord(pc)` (a raw instruction word), `pc`, `gpr[32]`, and `lastTransfers` (PCs only) | `OpenBiosProbeCommand.cs:344-350`; `word` at `:346` | CONFIRMED |
+| `gte.lastUnsupportedCommand` is `observed.Gte.LastUnsupportedCommand`, set by `ExecuteCommand` to `command & 0x01FF_FFFF`: the 25-bit COP2 command field of the instruction that failed | `OpenBiosProbeCommand.cs:435`; `src/PSXRecomp.Core/Runtime/Gte/GteRegisterBank.cs:106`, `:115` | CONFIRMED |
+| `gte.commandsExecuted` is a count | `OpenBiosProbeCommand.cs:435` | CONFIRMED |
 | `--dump-ram <path>` writes the raw 2 MiB main RAM (KSEG0 `0x80000000`, `RamBytes`) to a file named by the user, not into the `--json` document | `OpenBiosProbeCommand.cs:81` (option), `:337-342` (write) | CONFIRMED |
-| The `--dump-ram` file is not part of the `#457` bundle, whose four entries are fixed (`ExecutionDiagnosticBundleWriter.cs:20-23`) and do not include a RAM file | `ExecutionDiagnosticBundleWriter.cs:20-23` | CONFIRMED |
+| The `--dump-ram` file is not part of the `#457` bundle, whose four entries are fixed (`ExecutionDiagnosticBundleWriter.cs:18-21`) and do not include a RAM file | `ExecutionDiagnosticBundleWriter.cs:18-21` | CONFIRMED |
 | The probe loads a 512 KiB OpenBIOS ROM and boots the firmware, so the interpreter fetches are expected to include BIOS-range PCs | `OpenBiosProbeCommand.cs:201-207` (ROM load); the boot design | CONFIRMED (ROM load); PREDICTED (BIOS-range fetches) |
-| Whether any entry in `lastFetches`, `lastTransfers`, or `captured.word` lies at a BIOS address, and whether its word is BIOS instruction data | not checked (no probe run, no captured `--json` output inspected) | UNVERIFIED |
+| Whether any raw word in `lastFetches`, `lastTransfers`, `captured.word`, or `gte.lastUnsupportedCommand` comes from the BIOS range | not checked (no probe run, no captured `--json` output inspected) | UNVERIFIED |
+| The register and COP0 fields are CPU state, not memory words; see section 7, Exposure 4 | `OpenBiosProbeCommand.cs:1011` (`sr`, `cause`, `epc`, `badVAddr`), `:1012` (`gpr`), `:433` (`captured.gpr`), `:805-808` (`firstUnexpectedException`) | CONFIRMED (locations); the JSON shape of `milestones` is UNVERIFIED (serialised from `OpenBiosBootReport`, not read as a schema) |
 
 ### 1.9 Identity hashes already in use
 
@@ -248,13 +250,13 @@ Linking rules (PREDICTED):
 
 ADR-027 (`docs/adr/027-standalone-artifact-runtime-integration.md`, Status Accepted, Issue #739) has three layers, and the later layer supersedes the earlier one:
 
-- **Decision (Phase 2 Step A):** the standalone artifact embeds its image and initial state, reads no input files, and `run --standalone` supplies the shared Runtime host from the CLI process. **OBSERVED** (`ADR-027:52` Decision; `:62-63` Step A scope, which lists "Host bundling" and "Direct launch" as not implemented).
-- **Supersession (Step C):** "Step C (PR #761) supersedes the above: it implements host bundling, direct launch, and self-contained distribution." **OBSERVED** (`ADR-027:70-71`).
-- **Step C packaged layout (`docs/adr/027-...md:128-175`):** the distributed folder contains a native artifact, plus `runtime/PSXRecomp.RuntimeHost[.exe]`, `runtime/runtime-host.json`, and `runtime/artifact-image.bin`. The host "reads `runtime/runtime-host.json`, locates the bundled `artifact-image.bin`, and runs the guest artifact through the shared Runtime" (`:137-139`). The manifest is emitted at `:155` and `:202`, and the image sidecar at `:203`. **OBSERVED.**
+- **Decision and Step A scope (Phase 2 Step A):** the standalone artifact embeds its image and initial state and reads no input files, and `run --standalone` supplies the shared Runtime host from the CLI process. **OBSERVED** (`ADR-027:52` Decision). Step A scope, `:62-66`, lists "Host bundling" (`:62`) and "Direct launch" (`:64-66`) as not implemented in Step A.
+- **Supersession (Step C), quoted in full:** "**Step C (PR #761) supersedes the above**: it implements host bundling, direct launch, and self-contained distribution as described in the Step C scope below." **OBSERVED** (`ADR-027:70-71`).
+- **Step C packaged layout:** the Step C section (`ADR-027:128-175`) describes a distributed folder containing a native artifact plus `runtime/PSXRecomp.RuntimeHost[.exe]`, `runtime/runtime-host.json`, and `runtime/artifact-image.bin`. The host "reads `runtime/runtime-host.json`, locates the bundled `artifact-image.bin`, and runs the guest artifact through the shared Runtime" (`:137-139`). At 2e3ecad the manifest is at `:144`, `:154` and `:202`; the `artifact-image.bin` layout line is `:155`; and the image sidecar is `:203`. **OBSERVED** (`ADR-027:137-139`, `:144`, `:154`, `:155`, `:202`, `:203`).
 
 So the Step A statement "reads no input files" holds only for user inputs (the game EXE or disc, which the packaged run does not take). It does not hold for the packaged layout, where the host reads a bundled image sidecar and a run-configuration file at runtime. **CONFIRMED** against the ADR text. The Step A `run --standalone` model is not the current model.
 
-For a packaged run, the identities a trace can name are: the native artifact executable, `runtime/artifact-image.bin`, `runtime/runtime-host.json`, and the host binary. `InputSha256` is still produced only on the `--report` path (`RunCommand.cs:54-58`), and that path belongs to the `run` command, not to the packaged layout. Q3 asks which of these the trace header carries.
+For a packaged run, the identities a trace can name are: the native artifact executable, `runtime/artifact-image.bin`, `runtime/runtime-host.json`, and the host binary. `InputSha256` is still produced only on the `--report` path (`RunCommand.cs:54-58`), and that path belongs to the `run` command, not to the packaged layout. Q3 asks which of these the trace carries.
 
 ## 5. Performance cost and sampling
 
@@ -298,19 +300,26 @@ Current state, by location:
 - `ExecutionDiagnosticReport` has no field for input payloads, RAM, save data, or paths. **CONFIRMED** (`ExecutionDiagnosticReport.cs:8-10`).
 - BIOS content diagnostic reports counts and provenance only. **CONFIRMED** (`BiosAddressGuard.cs:81`).
 - **Exposure 1 (CONFIRMED):** `LoadedCodeMismatchDiagnostics` writes `windowAot` and `windowRam` (5 words each, around the first mismatch) into JSON (`LoadedCodeMismatchDiagnostics.cs:296-297`). These are instruction words from the loaded image and from guest RAM. The comment calls this bounded sampling. Bounded is not the same as redacted. Whether this output is ever published is **UNVERIFIED.**
-- **Exposure 2 (CONFIRMED):** the OpenBIOS probe `--json` output includes raw instruction words in three places:
-  - `stop.lastFetches`, each `Hex(e.Pc):Hex(e.Word)` (`OpenBiosProbeCommand.cs:1013`);
-  - `stop.lastTransfers`, each including `From.Word` (`:1014`);
-  - `captured.word`, `ReadGuestWord(pc)` at the capture PC (`:346`), written at `:433`.
+- **Exposure 2 (CONFIRMED): four raw instruction-derived fields in the OpenBIOS probe `--json` output.** Each is produced from guest instruction data:
+  1. `stop.lastFetches`, each `Hex(e.Pc):Hex(e.Word)` (`OpenBiosProbeCommand.cs:1013`): raw instruction words, with PCs.
+  2. `stop.lastTransfers`, each including `From.Word` (`:1014`): raw instruction words.
+  3. `captured.word`, `ReadGuestWord(pc)` at the capture PC (`:346`, written at `:433`): a raw instruction word.
+  4. `gte.lastUnsupportedCommand` (`:435`): not a memory word, but the 25-bit COP2 command field taken from the failing instruction (`command & 0x01FF_FFFF`, `GteRegisterBank.cs:115`). It discloses part of an instruction encoding, so it is treated as an instruction-derived field here.
 
-  **Whether any of these words lies in the BIOS range** (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `BiosAddressGuard.cs:103`) **is UNVERIFIED.** The probe boots OpenBIOS, so BIOS-range fetches are PREDICTED. Any such entry would publish raw BIOS instruction words in the `--json` output.
-- **Exposure 3 (CONFIRMED, local-only by construction):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`OpenBiosProbeCommand.cs:337-342`). It is not written into the `--json` document, and it is not part of the four-entry `#457` bundle (`ExecutionDiagnosticBundleWriter.cs:20-23`). Main RAM (KSEG0 `0x80000000`) is not the BIOS range. The file is still raw guest memory, so it must not be attached to any share-ready artifact. The code comment already says "local diagnostic output only". **Is it outside the share-ready boundary: yes, by construction (not in `--json` and not in the bundle). CONFIRMED.**
+  **Whether any of these fields comes from the BIOS range** (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `BiosAddressGuard.cs:103`) **is UNVERIFIED.** The probe boots OpenBIOS, so BIOS-range fetches are PREDICTED. Any such entry would publish raw BIOS instruction data in the `--json` output. The concrete test is in Q11.
+- **Exposure 3 (CONFIRMED, local-only by construction):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`OpenBiosProbeCommand.cs:337-342`). It is not written into the `--json` document, and it is not part of the four-entry `#457` bundle (`ExecutionDiagnosticBundleWriter.cs:18-21`). Main RAM (KSEG0 `0x80000000`) is not the BIOS range. The file is still raw guest memory, so it must not be attached to any share-ready artifact. The code comment already says "local diagnostic output only". **Outside the share-ready boundary: yes, by construction. CONFIRMED.**
+- **Exposure 4 (CPU state, decision made):** the register and COP0 fields below are CPU state, not memory words. **Decision: they do not count as raw words and are not removed.** They are listed so the boundary is explicit:
+  - `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`OpenBiosProbeCommand.cs:1010-1012`);
+  - `captured.gpr` (`:347`);
+  - `milestones.firstUnexpectedException` with `epc`, `badVAddr`, and `cause`, from `OpenBiosUnexpectedException(ExcCode, Epc, BadVAddr, Cause, AtFetch)` (`OpenBiosBootMonitor.cs:40`; the probe reads it at `OpenBiosProbeCommand.cs:808`).
+
+  These values are addresses and register contents. A value such as `epc` or `badVAddr` can lie in the BIOS range, and that is an address, not BIOS data. Q11 checks whether those addresses point into the BIOS range. **CONFIRMED** (locations); the JSON shape of `milestones` is **UNVERIFIED** (serialised from `OpenBiosBootReport`, not read as a schema).
 
 Proposed boundary (PREDICTED):
 
 1. Trace schema v1 has no field for memory bytes. A `value` field on `mmio` is allowed only in a local-only trace level, never in the share-ready bundle.
-2. The share-ready bundle (`#457`) includes only trace records with no `value` and no word arrays. `windowAot`, `windowRam`, `lastFetches`, `lastTransfers`, and `captured.word` are removed from the share-ready form, or reduced to a hash of the window or fetch list instead of printed words. The `--json` form of the OpenBIOS probe is treated the same way when it is shared.
-3. BIOS bytes never enter any trace or report. Only existing `BiosContentDiagnostic` counts and hashes may appear. `BiosAddressGuard` is the enforcement point. Exposure 2 must be checked against this rule first (Q11).
+2. The share-ready bundle (`#457`) includes only trace records with no `value` and no word arrays. `windowAot`, `windowRam`, `stop.lastFetches`, `stop.lastTransfers`, `captured.word`, and `gte.lastUnsupportedCommand` are removed from the share-ready form, or reduced to a hash of the window or fetch list instead of printed values. The `--json` form of the OpenBIOS probe is treated the same way when it is shared. The CPU-state fields of Exposure 4 are not removed.
+3. BIOS bytes never enter any trace or report. Only existing `BiosContentDiagnostic` counts and hashes may appear. `BiosAddressGuard` is the enforcement point. Exposures 2 and 4 must be checked against this rule first (Q11).
 4. ROM and disc bytes never enter a trace. Identity is by hash only (`loaded-code-identity.md`, "The hash is not runtime proof" and the hash-for-identity rule).
 5. `--dump-ram` output stays local. It is never added to a bundle or attached to a report. **PREDICTED.**
 6. A writer-side test enforces (1) to (4): a trace written at L2 must contain no field outside the allow-list, and no hex run of 8 or more words that matches a loaded image window. **PREDICTED** (test does not exist).
@@ -331,15 +340,15 @@ Ownership note: the GitHub API shows no assignee on any issue read for this docu
 |---|---|---|---|---|
 | Q1 | Is `session` a new optional field in `report.json` (schema bump to `v2`) or an optional addition within `v1`? | Repository owner (mao2009) | #457 is closed, so the report schema has no open tracking issue. Open item for this decision: #45. | CONFIRMED that v1 has no session field; OBSERVED (#457 closed) |
 | Q2 | Retire the standalone `runId` (`Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them as aliases? | Repository owner (mao2009) | #763 (open) and #773 (open) | CONFIRMED both exist and both are written |
-| Q3 | For packaged artifacts (section 4.1), which identities does the trace header carry? Candidates: the native artifact executable hash, the `runtime/artifact-image.bin` sidecar hash (the image the host runs), the `runtime/runtime-host.json` hash, and `inputSha256` (only on the `run --report` path, `RunCommand.cs:54-58`). Should `inputSha256` be produced for packaged runs at all? | Repository owner (mao2009) | #739 (open; ADR-027 status Accepted, Issue #739) | OBSERVED (ADR-027:52, :62-63, :70-71, :128-175); CONFIRMED (`RunCommand.cs:54-58`) |
+| Q3 | For packaged artifacts (section 4.1), which identities does the trace header carry? Candidates: the native artifact executable hash, the `runtime/artifact-image.bin` sidecar hash (the image the host runs), the `runtime/runtime-host.json` hash, and `inputSha256` (only on the `run --report` path, `RunCommand.cs:54-58`). Should `inputSha256` be produced for packaged runs at all? | Repository owner (mao2009) | #739 (open; ADR-027 status Accepted, Issue #739) | OBSERVED (ADR-027:52, :62-66, :70-71, :128-175); CONFIRMED (`RunCommand.cs:54-58`) |
 | Q4 | Are `windowAot`/`windowRam` in the loaded-code report removed, reduced to hashes, or kept only in a local-only level? | Repository owner (mao2009) | #773 (open). The fix PR (#786) is closed. | CONFIRMED the words are written |
 | Q5 | Which trace level is the default for `PSXRecomp.RuntimeHost --diagnostics`? | Repository owner (mao2009) | #763 (open) | OBSERVED that the flag is off by default |
 | Q6 | Is MMIO `value` ever allowed outside a local-only trace? Design position: no. | Repository owner (mao2009) | #45 (open). #457 is closed. | PREDICTED position |
-| Q7 | Are GPU, SPU, CD, and DMA events in trace schema v1, or added in a later version? The #45 body lists them under "対象" (Scope) and includes them in the scope list of section 0.1. | Repository owner (mao2009) | #45 (open) | OBSERVED (#45 body, section 0.1) |
+| Q7 | Are GPU, SPU, CD, and DMA events in trace schema v1, or added in a later version? The #45 body lists them under "対象" (Scope) (section 0.1). | Repository owner (mao2009) | #45 (open) | OBSERVED (#45 body, section 0.1) |
 | Q8 | What is the acceptable overhead budget for L2, for example percent of wall time on one standard run? | Repository owner (mao2009) | #45 (open; completion criterion "Performance overheadとsampling方針を定義") | UNVERIFIED (no budget in repo found in this work) |
 | Q9 | Should the Studio GUI and CLI read the same JSON Lines files, or a joined summary only? | Repository owner (mao2009) | #45 (open; completion criterion "GUI/CLIで共通利用できる形式を定義"); #40 and #42 (both open) | OBSERVED (#45 body); UNVERIFIED (GUI code not searched) |
 | Q10 | May trace timestamps appear in share-ready bundles, given the determinism rule in `docs/architecture/diagnostics.md` section 5? | Repository owner (mao2009) | #49 is closed, so the diagnostics contract has no open tracking issue. Open item for this decision: #45. | CONFIRMED that the current contract excludes time; OBSERVED (#49 closed) |
-| Q11 | Does any word in `OpenBiosProbeCommand` `stop.lastFetches`, `stop.lastTransfers`, or `captured.word` lie in the BIOS range, and if so, must those words be removed from `--json` output? | Repository owner (mao2009) | #45 (open) | UNVERIFIED (not checked by running the probe) |
+| Q11 | Do any of the four raw-derived fields of Exposure 2 (`stop.lastFetches`, `stop.lastTransfers`, `captured.word`, `gte.lastUnsupportedCommand`) come from the BIOS range, and do any of the CPU-state addresses of Exposure 4 (`epc`, `badVAddr`, `captured.pc`, `stop.pc`) point into it? If so, must those values be removed from `--json` output? **Concrete action:** run `openbios-probe <openbios.bin> --json --capture-at <hex-pc>` (the option is `--capture-at`, `OpenBiosProbeCommand.cs:59-67`; `--dump-ram` requires it, `:172`), then for each raw word in the output, test its source address against `0x1FC00000`-`0x1FC7FFFF` (physical, after masking the segment bits). For `lastFetches` and `lastTransfers`, the PC in each entry is the address to test; for `captured.word`, the capture PC; for `gte.lastUnsupportedCommand`, the output does not record the instruction's address, so the action must also record the PC of the failing COP2 instruction, or the field is classified as untestable. | Repository owner (mao2009) | #45 (open) | UNVERIFIED (not checked by running the probe) |
 
 ## 10. Limits of this document
 
@@ -348,3 +357,4 @@ Ownership note: the GitHub API shows no assignee on any issue read for this docu
 - The `RunCommand` bundle gate was traced (section 1.2). No other path into the bundle was traced.
 - GUI code was not searched exhaustively.
 - The `--dump-ram` file's contents were not inspected; its content class is taken from the code (`observed.ReadGuestWord` over KSEG0 main RAM), not from a produced file.
+- The JSON shape of `milestones` was not read as a schema.
