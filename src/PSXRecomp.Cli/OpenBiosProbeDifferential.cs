@@ -109,7 +109,7 @@ internal sealed record ProbeGuestState(
 
     /// <summary>
     /// Compares a reference (interpreter) state with a host state. <c>firstMismatch</c> is the first difference in the
-    /// order CPU, devices, RAM; for RAM it names the address, its 4 KiB page and the 16 bytes either side in both states.
+    /// order CPU, devices, RAM; for RAM it names the first differing address and its 4 KiB page, never the bytes.
     /// </summary>
     public static object Compare(ProbeGuestState interpreter, ProbeGuestState host)
     {
