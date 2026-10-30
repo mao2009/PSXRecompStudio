@@ -137,7 +137,8 @@ public sealed class BiosDocumentedProcedureTests
             {
                 using var probe = Process.Start(new ProcessStartInfo(candidate) { ArgumentList = { "--version" }, UseShellExecute = false,
                     RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true });
-                if (probe is not null && probe.WaitForExit(ProcessTimeoutMs))
+                // A started process is not an interpreter: the Windows Store alias stub starts and exits 9009, so the exit code must be 0.
+                if (probe is not null && probe.WaitForExit(ProcessTimeoutMs) && probe.ExitCode == 0)
                 {
                     return candidate;
                 }
