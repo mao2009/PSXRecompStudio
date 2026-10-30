@@ -66,6 +66,7 @@ public sealed class RuntimeHostDiagnosticTests
         diagnostic.NativeTerminationReason.Should().Be(nameof(RecompilerIrTerminationReason.Success));
         diagnostic.OrchestratorState.Should().Be(nameof(TitleExecutionState.UnsupportedTransfer));
         diagnostic.OrchestratorDiagnosticCode.Should().Be("UNRESOLVED_TRANSFER_IN_IMAGE");
+        diagnostic.OrchestratorDiagnosticMessage.Should().Be("message");
         diagnostic.TimedOut.Should().BeFalse();
 
         // Not on the artifact's wire protocol: left null rather than guessed.

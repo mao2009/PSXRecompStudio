@@ -663,7 +663,7 @@ public static class FirmwareRuntimeLauncher
 
             var (rom, romSha256, biosClassification) = FirmwareRuntimeLauncher.LoadAndClassify(biosPath, host.BiosProvenance, error);
             var firmware = OpenBiosFirmware.FromBytes(rom);
-            var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
+            var discPath = FirmwareDiagnosticDistribution.ResolveRuntimeDiscPath(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
             {
                 throw new InvalidDataException("The disc image must not be a symbolic link.");
