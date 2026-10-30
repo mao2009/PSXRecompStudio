@@ -1,14 +1,16 @@
-# Issue #43: Incremental Analysis and Cache (design, r29)
+# Issue #43: Incremental Analysis and Cache (design, r30)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
-  cacheable only when its U2 verdict, V-ID, T-IDENT, and R-G1 (2.1) all hold. Until Rule C holds for a stage, that
+  cacheable only when its U2 verdict, V-ID, T-IDENT, and R-G1 (2.1) all hold. R-G1 is owner-approved as mandatory
+  (2026-10-30, Issue #43 comment); it is a requirement, not implemented or run. Until Rule C holds for a stage, that
   stage is uncacheable in every mode. An uncacheable stage is recomputed on every run, and no entry is
   written for it, in Verify mode as well (section 6.5). The hit path is not executed by any production run
   until Rule C holds, and no test may claim a production stage is cacheable (7.1, 7.3). V-ID is not implemented, so Rule C
   cannot hold for any stage, and a matching gate file does not make a stage cacheable. R-G1 (2.1) applies to every candidate stage in the current pipeline, because each traces back to the image stream: each stays uncacheable until the analysis consumes the buffer that the hash covers.
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r29. Addresses the review of `2b3e8fc` (r28): three findings, mapped in 12.21. The findings of `4b62055` (r27) are in 12.20, `c26abdb` (r26) in 12.19, `d336ff0` (r25) in 12.18, `dc0ab13` (r24) in 12.17, `0a5bcff` (r23) in 12.16, `e3db1c8` (r22) in 12.15, `2311b62` (r21) in 12.14, `597e1aa` (r20) in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
+- Revision: r30. Records the owner ruling of 2026-10-30 on R-G1 (Issue #43 comment), mapped in 12.22. Doc only; no `src/` change.
+  r29 addresses the review of `2b3e8fc` (r28): three findings, mapped in 12.21. The findings of `4b62055` (r27) are in 12.20, `c26abdb` (r26) in 12.19, `d336ff0` (r25) in 12.18, `dc0ab13` (r24) in 12.17, `0a5bcff` (r23) in 12.16, `e3db1c8` (r22) in 12.15, `2311b62` (r21) in 12.14, `597e1aa` (r20) in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
   `6f1494a` (r14) are in 12.7, `d11733c` (r13) in 12.6, `d1c41ac` (r12) in 12.5, `34845dd` (r11) in 12.4, and
   `f77183e` (r10) in 12.3. The direction of r9 to r15 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
@@ -111,8 +113,8 @@ Notes:
   runs (4.3) and compares it with the supplied hash, so a file changed between the supplied-hash pass and the run gives a
   mismatch, and the Input stage fails. V-ID's hash is one read, and the analysis reads the file again (`RomAnalysisPipeline.cs:117`, `ChdReader.Open(chdStream)`, and later reads). A replacement after V-ID's pass and before those reads makes the analysis consume bytes that V-ID did not hash, and Input passes with the key carrying the supplied hash. Closing G1 therefore needs the single-buffer requirement R-G1, not V-ID alone.
   G1 remains open until R-G1 holds for the stage; V-ID alone does not close it. Rule C (b) keeps every stage uncacheable
-  until both V-ID and R-G1 hold. **R-G1 (requirement, not implemented or run; T-IDENT-c in 7.3):** the analysis consumes the
-  same buffer that the hash covers. **Scope of R-G1:** it applies to a candidate stage whose record is fed, directly or through
+  until both V-ID and R-G1 hold. **R-G1 (owner-approved as mandatory on 2026-10-30, Issue #43 comment; requirement, not implemented or run; T-IDENT-c in 7.3):** the analysis must consume the
+  same immutable buffer whose digest is used for input identity and cache keys. A hash-then-reopen scheme is insufficient, because a replacement can occur between reads (TOCTOU). **Scope of R-G1:** it applies to a candidate stage whose record is fed, directly or through
   upstream outputs, from the image stream or from `discImageSha256`. In the current pipeline every candidate stage (N7 to N11,
   and N12a once U1 creates it) traces back to the image bytes that N7 decodes, so R-G1 applies to all of them. A candidate fed
   only by values that do not trace back to the image would not need R-G1; no such candidate exists in the current design.
@@ -563,10 +565,10 @@ build is deterministic, which is UNVERIFIED until U5 confirms it (3.3).
   that the supplied value matches the bytes that run.
 - **Rule C (cacheability; the only cacheability rule).** A stage is cacheable only when all three hold: (a) its U2
   verdict is `cacheable` for the running Core MVID (9.3), which requires every condition (a) to (l) of the verdict rule in 9.3 (3.4 items 1 to 13 not reached, criteria 1 to 6 met);
-  (b) V-ID is implemented, a global condition that is the same for every stage, and R-G1 (2.1, scope in that section) holds for the stage, so that the analysis consumes the buffer V-ID hashes (V-ID alone is not sufficient); (c) T-IDENT-a, T-IDENT-b, and T-IDENT-c pass (7.3). The rule
+  (b) V-ID is implemented, a global condition that is the same for every stage, and R-G1 (2.1, scope in that section; owner-approved as mandatory on 2026-10-30, Issue #43 comment) holds for the stage, so that the analysis consumes the same immutable buffer whose digest is used for identity and keys (V-ID alone is not sufficient); (c) T-IDENT-a, T-IDENT-b, and T-IDENT-c pass (7.3). The rule
   applies to writes, Verify-mode comparison, and Normal-mode hits alike, because an entry keyed on an unverified
-  identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). A matching gate file is one
-  input only: V-ID is not implemented, so Rule C cannot hold, and every stage is uncacheable regardless of the gate file. This
+  identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). A present gate file is a
+  record, not independent permission. It is one input only: V-ID is not implemented, so Rule C cannot hold, and every stage is uncacheable regardless of the gate file. This
   is the current proposal. Other sections restate it or refer to it.
 - **Migration.** `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:24` defines `Sha` as a literal that is
   not the hash of the bytes passed at `:347`. The constant-SHA call sites are the `RunFromChd` calls whose second argument
@@ -697,6 +699,10 @@ differs from what the stage now computes would be used in Normal mode. That is t
   reference test code (`docs/architecture-matrix.md:43`), so a production composition root cannot bind a test
   implementation. The production composition root binds the production implementation only. A verdict that comes from the
   test project is never a Rule C condition and never marks a production stage cacheable.
+- **Shared service and gate (owner ruling, 2026-10-30, Issue #43 comment).** The CLI and the GUI use one analysis-cache
+  service and one gate, the Rule C gate of 4.3. There is no GUI-owned bypass and no GUI-owned key derivation: the GUI
+  passes `discImageSha256` to the shared service and computes no digest or key itself (T-IDENT-a, 7.3). No path may skip
+  Rule C. Until Rule C holds for a stage, every path is fail-closed uncacheable.
 
 Injection seams (Core types, public ports):
 
@@ -815,7 +821,7 @@ Resolution:
 
 ### 8.2 Stores and sharing
 
-- The CLI and GUI pass a store root and the same key function. The store root's location is UNVERIFIED (U6).
+- The CLI and GUI call the same service and gate (7.1), pass a store root, and use the same key function. The store root's location is UNVERIFIED (U6).
 - Cross-process concurrency uses 6.2.
 
 ### 8.3 AI result reuse (proposal)
@@ -1009,7 +1015,10 @@ the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rul
 - **U9. Closed.** `ICdSectorSource.cs:11` (`CdDiscToc`) and `:56` (`ICdSectorSource`).
 - **U10.** Confirm which declared stage outputs embed `ArtifactJson` content (`RealRomCoverageDocument.cs:245`, `RecompilerContract.cs:1126`).
 - **V-ID.** Implement the identity verification of 4.3. One of the three conditions of Rule C (4.3), with U2 and T-IDENT.
-- **R-G1.** The single-buffer requirement of 2.1: the analysis consumes the buffer that V-ID (or any hash) covers. It is a requirement, not implemented or run, and it is needed for every candidate stage in the current pipeline (2.1, scope). The owner is not assigned in this document; the coordinator assigns it, as for U2 (9.1).
+- **R-G1 implementation (follow-up).** The single-buffer requirement of 2.1 is owner-approved as mandatory (2026-10-30, Issue #43 comment).
+  It is not an open owner decision. Implementing it, and its test T-IDENT-c, is follow-up work. It is a requirement, not implemented or run, and it is needed for every candidate stage in the current pipeline (2.1, scope).
+- **T-IDENT-a, T-IDENT-b, T-IDENT-c.** Implement and run the tests of 7.3 (not run; preconditions UNVERIFIED where 7.3 marks them). Each is a condition of Rule C (c).
+- **Owner questions the doc marks (not decided).** (i) Whether the GUI may create the reader through the composition root, which needs the `AARC002` suppression of `docs/architecture-matrix.md:47` (8.1; until decided the GUI runs without the cache, and this does not change the shared-service ruling of 7.1). (ii) DEC-N7 adoption (5.1; owner decision, or U4 plus owner acceptance).
 
 ## 11. Non-goals
 
@@ -1270,4 +1279,11 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | II1 (MEDIUM) | The body still implied that V-ID closes G1: "Until V-ID exists, G1 is open". HH7 had fixed only the FF3 row | Resolved in r29: the sentence reads "G1 remains open until R-G1 holds for the stage; V-ID alone does not close it." The first sentence of the G1 note now calls the V-ID closure a proposal that the argument below does not sustain. The body was checked for other closure sentences, and none presents V-ID as closing G1 | 2.1 (G1 note, R-G1) |
 | II2 (LOW) | R-G1 was applied in different scopes: unrestricted in Rule C (b), narrowed to image-fed stages in §7.3 and §10, and missing from the header's Rule C statement | Resolved in r29: one scope statement in 2.1. R-G1 applies to a candidate stage whose record is fed, directly or through upstream outputs, from the image stream or `discImageSha256`. In the current pipeline every candidate stage (N7 to N11, and N12a once created) traces back to the image bytes N7 decodes, so it applies to all of them. The header, Rule C (b), §7.3, and §10 refer to that scope | 2.1 (scope), header, 4.3 (Rule C (b)), 7.3 (gating), 10 (R-G1) |
 | II3 (LOW) | The migration counts ("2 in RealRomAnalyzer.cs", "1 in RealRomProductionExecutionTests.cs", "about 50") did not match a constant-SHA grep | Resolved in r29: the constant-SHA call sites are the `RunFromChd` calls whose second argument is `Sha`. Counted at `2b3e8fc`: `DiscImageHostileSizeTests.cs` 3, `SyntheticChdReaderTests.cs` 2, `RomAnalysisPipelineTests.cs` 10, total 15. `RealRomAnalyzer.cs` and `RealRomProductionExecutionTests.cs` pass computed hashes and have none. U7 is closed | 4.3 (Migration), 10 (U7) |
+
+### 12.22 Owner ruling of 2026-10-30 (r30)
+
+| ID | Finding | Status in r30 | Resolved in |
+|---|---|---|---|
+| OR1 (owner ruling, Issue #43 comment, 2026-10-30) | R-G1 was an open proposal and was listed as an open item (10) | Recorded in r30: R-G1 is approved as mandatory. The analysis must consume the same immutable buffer whose digest is used for input identity and cache keys; hash-then-reopen is insufficient (TOCTOU). A present gate file is a record, not independent permission. No stage is cached until its Rule C proof is complete (U2 verdict, V-ID, R-G1, T-IDENT-a/b/c). Fail-closed uncacheable until then. R-G1 and V-ID/U2 implementation are follow-up work; design review does not enable the cache. The CLI and GUI share one service and gate, with no GUI-owned bypass or key derivation. Requirement text only; nothing is implemented or run | Header, 2.1 (R-G1), 4.3 (Rule C (b), gate-file wording), 7.1 (shared service and gate), 8.2, 10 (R-G1 follow-up, T-IDENT, owner questions) |
+
 
