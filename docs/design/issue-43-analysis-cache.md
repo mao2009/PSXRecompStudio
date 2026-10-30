@@ -1,4 +1,4 @@
-# Issue #43: Incremental Analysis and Cache (design, r30)
+# Issue #43: Incremental Analysis and Cache (design, r31)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, T-IDENT, and R-G1 (2.1) all hold. R-G1 is owner-approved as mandatory
@@ -9,13 +9,12 @@
   cannot hold for any stage, and a matching gate file does not make a stage cacheable. R-G1 (2.1) applies to every candidate stage in the current pipeline, because each traces back to the image stream: each stays uncacheable until the analysis consumes the buffer that the hash covers.
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r30. Records the owner ruling of 2026-10-30 on R-G1 (Issue #43 comment), mapped in 12.22. Doc only; no `src/` change.
+- Revision: r31. Fixes the independent review of `7bb935b` (r30) and records the owner rulings (R-G1 of 2026-10-30, #40 D2 Option A), mapped in 12.22 (rows OR1 to OR4). Doc only; no `src/` change.
   r29 addresses the review of `2b3e8fc` (r28): three findings, mapped in 12.21. The findings of `4b62055` (r27) are in 12.20, `c26abdb` (r26) in 12.19, `d336ff0` (r25) in 12.18, `dc0ab13` (r24) in 12.17, `0a5bcff` (r23) in 12.16, `e3db1c8` (r22) in 12.15, `2311b62` (r21) in 12.14, `597e1aa` (r20) in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
   `6f1494a` (r14) are in 12.7, `d11733c` (r13) in 12.6, `d1c41ac` (r12) in 12.5, `34845dd` (r11) in 12.4, and
   `f77183e` (r10) in 12.3. The direction of r9 to r15 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
   in this document, not only in the review text.
-- Source identity: the reviewed head is `2b3e8fc`. The `src/` tree is identical through `2b3e8fc`, because this revision
-  changes only the doc. It is also identical at `34845dd`, `d1c41ac`, `d11733c`, `e1afbba`, `6a871a5`, `5e658f5`, `882500e`, `f4b95ab`, `597e1aa`, and `2311b62`
+- Source identity: r31 changes only the doc, so the `src/` tree is identical through the r31 commit (`git diff --stat 98bdf54 HEAD -- src` is empty). It is also identical through `2b3e8fc`, the r28 review head, and at `34845dd`, `d1c41ac`, `d11733c`, `e1afbba`, `6a871a5`, `5e658f5`, `882500e`, `f4b95ab`, `597e1aa`, and `2311b62`
   (`git diff --stat` is empty across them), so every check label in this document is `2311b62`. The grep for the seams and
   codes (7.3) finds none at `2311b62`, the same result as at `e1afbba` and `6a871a5`. SHAs in section 12 name the
   reviewed heads, not check labels.
@@ -569,7 +568,7 @@ build is deterministic, which is UNVERIFIED until U5 confirms it (3.3).
   applies to writes, Verify-mode comparison, and Normal-mode hits alike, because an entry keyed on an unverified
   identity would be unsound. Until Rule C holds, the stage is uncacheable in every mode (6.5). A present gate file is a
   record, not independent permission. It is one input only: V-ID is not implemented, so Rule C cannot hold, and every stage is uncacheable regardless of the gate file. This
-  is the current proposal. Other sections restate it or refer to it.
+  R-G1 is one of the port's inputs (7.1): with the R-G1 state `not implemented`, the stage is uncacheable whatever the U2 verdict and the gate file say. This is the current proposal. Other sections restate it or refer to it.
 - **Migration.** `src/PSXRecomp.Tests/DiscImage/DiscImageHostileSizeTests.cs:24` defines `Sha` as a literal that is
   not the hash of the bytes passed at `:347`. The constant-SHA call sites are the `RunFromChd` calls whose second argument
   is `Sha` (on the same line or the next), counted at `2b3e8fc` from `git grep -n "RunFromChd("` over the test projects:
@@ -675,8 +674,8 @@ differs from what the stage now computes would be used in Normal mode. That is t
 
 ### 6.5 Uncacheable stages in every mode
 
-- **Default status.** Until Rule C (4.3) holds for a stage (its U2 verdict for the running MVID, V-ID, and T-IDENT),
-  that stage is **uncacheable**. This is the default
+- **Default status.** Until Rule C (4.3) holds for a stage (its U2 verdict for the running MVID, V-ID, R-G1 (2.1), and T-IDENT),
+  that stage is **uncacheable**. R-G1 applies to each stage that consumes the image stream or `discImageSha256` (2.1, scope), which is every candidate stage in the current pipeline. This is the default
   for every stage.
 - **Consequence.** An uncacheable stage writes **no entry in any mode**, including Verify mode. Verify mode for an
   uncacheable stage recomputes and compares with nothing, because nothing was written. This closes the path in which
@@ -707,8 +706,8 @@ differs from what the stage now computes would be used in Normal mode. That is t
 Injection seams (Core types, public ports):
 
 - `IAnalysisCacheStore`: the store port (8.1). Tests pass an in-memory fake, which lives in the test project.
-- `IStageCodeIdentity`: returns, for each stage, the Rule C inputs as values: `codeIdentity`, `dependencyIdentity`, the U2 verdict for the stage (`cacheable` or `uncacheable`), the V-ID state, and the T-IDENT state. The port is the single
-  carrier of these inputs. A stage is cacheable only when all three conditions of Rule C hold (4.3). The port does not
+- `IStageCodeIdentity`: returns, for each stage, the Rule C inputs as values: `codeIdentity`, `dependencyIdentity`, the U2 verdict for the stage (`cacheable` or `uncacheable`), the V-ID state, the T-IDENT state, and the R-G1 state (a sixth input: `implemented` only when the analysis for the stage consumes the buffer whose digest is used for identity and keys; `not implemented` today). The port is the single
+  carrier of these inputs. A stage is cacheable only when all three conditions of Rule C hold (4.3). An R-G1 state of `not implemented`, or an unknown one, makes the stage uncacheable whatever the U2 verdict says. The port does not
   decide that by itself.
   Production binds the gate-file-backed implementation (9.3). Tests bind a fake.
 - `IStageInputRecorder`: wraps an input record and counts reads per field (3.6).
@@ -755,7 +754,8 @@ tree; none of those exists at `2311b62`.
 | T-IDENT-c (2.1, R-G1) | Replacement between the hash pass and the analysis read (requirement, not run) | The file is replaced after V-ID's pass and before the analysis's reads. Required: the run fails with the dedicated failure kind, or the analysis consumes only the buffer that V-ID hashed. No cache entry is written in either case. **Part of Rule C (4.3), condition (c).** | Needs R-G1 (single buffer, 2.1) and V-ID implemented (neither present) |
 | T-IDENT2 (C1 of r7) | Same executable, different disc identity | Two fixtures with the same boot executable bytes and different disc hashes (and, in a second case, a different boot path). The N11 keys differ, the second run does not reuse the first run's N11 entry, and the N11 payload contains its own disc hash and boot path. N12a is added to this test when U1 creates a candidate unit (3.5, 9.2). | **After Rule C holds for N11** (it observes reuse). The key difference alone can be checked before |
 | T-DIFF (MAJOR-1 of r7) | N12a is independent of validations | For a fixed `(report, fixture)`, vary `validations` (none, one run, two runs, different order). The N12a payload is byte-identical in every case. The document from N14 differs only in the `Differential` section. | Runs after U1 (N12a exists as a function) |
-| T-UNCACHE | Uncacheable stage writes nothing | For the default status (no gate file, F3), and with an uncacheable U2 verdict injected through `IStageCodeIdentity` (7.1), each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Needs seams `AnalysisCacheOptions` and `IStageCodeIdentity`, and the code `ANALYSIS_CACHE_UNCACHEABLE` (none present at `2311b62`) |
+| T-UNCACHE | Uncacheable stage writes nothing | For the default status (no gate file, F3), and with an uncacheable U2 verdict, or an R-G1 state of `not implemented`, injected through `IStageCodeIdentity` (7.1; T-R-G1-UNIMPL), each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Needs seams `AnalysisCacheOptions` and `IStageCodeIdentity`, and the code `ANALYSIS_CACHE_UNCACHEABLE` (none present at `2311b62`) |
+| T-R-G1-UNIMPL (2.1, R-G1; 7.1 port) | Matching verdict with R-G1 unimplemented (requirement, not run) | With a fake `IStageCodeIdentity` that reports a cacheable U2 verdict, V-ID implemented, T-IDENT passing, and the R-G1 state `not implemented`, each candidate stage is uncacheable: it writes no entry in Verify or Normal mode, returns no hit, and reports `ANALYSIS_CACHE_UNCACHEABLE`. Verifies that a verdict alone cannot make a stage cacheable. | Needs seams `IStageCodeIdentity` and `AnalysisCacheOptions`, V-ID implemented, and R-G1 (none present at `2311b62`); a test-only verdict may exercise it |
 | T-KEY-UNAVAIL (M8 of r8, MINOR-7 of r7) | Unreadable key input | Three cases, with a fake `IStageCodeIdentity`. (a) The MVID unreadable: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (precedence step 1 of 9.3). (b) A matching gate file in the fake, and the package file, `Directory.Build.props`, or the runtime version unreadable, one at a time: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (step 3). (c) The same unreadable input with no matching gate file: reports `ANALYSIS_CACHE_UNCACHEABLE` (step 2), which shows the order. In every case the stage is uncacheable, and no constant key is produced. | Needs seam `IStageCodeIdentity` (a fake in the test project) and the code `ANALYSIS_CACHE_KEY_UNAVAILABLE` (none present at `2311b62`) |
 | T-READ | Record matches reads | Run each stage under the recorder on set-A fixtures. Every record field's read count is recorded. A zero-read field is listed as a flag for review (V6). It is not removed by this test. For N11, the record fields are those of 3.5; the N9 and N10 values that the unit computes at `:404` and `:432` are not record fields. | Runs after U1 (records exist) |
 | T-STATIC (M2 of r8, MAJOR-1 of r7) | Static check of the record and the split | Each stage's one-record function (R-0) has one parameter. Before R-0 creates it, the stage has no such signature, and T-STATIC cannot run for it (today: N7 to N11). For N11 the check is that the extracted function takes the record of 3.5 as its one parameter, and its body reads no local of the enclosing method except the record fields. Its reached body reads nothing outside the record. The N12a closure does not reach `BuildDifferential`, `validations`, or `Differential`. | Static, U2 (9) |
@@ -789,7 +789,7 @@ The architecture matrix (`docs/architecture-matrix.md`) assigns:
 - **CONFIRMED** Infrastructure owns host adapters, including `File` and `Directory` access (`architecture-matrix.md:24`,
   `:55`, rule 2 at `:65`).
 - **CONFIRMED** Application and CLI do not call `File.*` or `Directory.*` for ordinary logic (rule 3 at `:66`).
-  Concrete adapter wiring is allowed at one composition-root site with an AARC002 suppression (`:47`).
+  The matrix says that when a future executable first needs to instantiate a concrete adapter, one composition-root site may use a narrowly scoped `AARC002` suppression with a written rationale, and business or use-case code must remain port-only (`:47`).
 - **CONFIRMED** Production code does not depend on test code (`architecture-matrix.md:43`).
 
 Resolution:
@@ -810,10 +810,16 @@ Resolution:
   suppression. `src/PSXRecompStudio` (namespace root `PSXRecompStudio`, Application layer) references no Infrastructure
   project. If it were to create the reader, it would need the one composition-root `AARC002` suppression that
   `docs/architecture-matrix.md:47` allows, with a written rationale, and wiring beyond that one site needs an architecture
-  change (`:47`, `:210`). **Owner decision (#40 comment, 2026-10-30): D2 Option A is adopted provisionally.** A single,
-  narrow Studio composition-root site may carry a locally scoped `AARC002` suppression, and the GUI uses the same cache
-  service and results as the CLI through shared use cases. There is no GUI-only cache, key derivation, or correctness
-  policy. The single-site rule is **UNVERIFIED** as enforced: the analyzer and the test required in #40 are not built.
+  change (`:47`, `:210`). **Owner decision (#40 comment, 2026-10-30): D2 Option A is adopted provisionally, under ADR-017**
+  (`docs/adr/017-managed-host-io-port-adapter-boundary.md`). The qualifiers are: the suppression is locally scoped and
+  justified; it is not a general exemption; it is limited to a single, narrow Studio composition-root site; and no
+  composition logic may appear in views or viewmodels. The GUI uses the same cache service and results as the CLI
+  through shared use cases, with no GUI-only cache, key derivation, or correctness policy. The analyzer and the test
+  required in #40 must verify the single-site rule. Neither is built, so the rule is **UNVERIFIED**.
+  **Fallback (owner):** if single-site enforcement cannot be made clean, the matter returns to the owner, with Host/Bootstrap
+  option C, rather than spreading suppressions. **Open risk tied to D2 Option A:** `docs/architecture-matrix.md:210` says
+  "repeated `AARC002` exceptions are evidence to introduce a dedicated Host/Bootstrap layer rather than weakening the
+  dependency rules." Repeated exceptions are that signal, and they trigger the fallback.
   **Cache hits remain disabled** for every image-dependent stage until Rule C (4.3) passes. The GUI shows uncached or
   reanalysis status and never fabricates a hit. No cache hit is possible today.
 - Precedent: `src/PSXRecomp.Infrastructure/FileProjectMetadataStore.cs` implements `IProjectMetadataStore`, defined in
@@ -955,11 +961,11 @@ verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and 
 MVID read exists in `src/` at `2311b62` (`git grep` for `ModuleVersionId`, `MetadataVersion`, and `MVID` finds none outside
 tests). **UNVERIFIED:** the read is not yet written. The host would take it from the loaded assembly's module (for example
 `ManifestModule.ModuleVersionId`), which is a reflection call that item 1 forbids inside a stage closure. The call sits in
-the host's composition root (8.1), outside every stage closure, so item 1 does not apply to it. U5 confirms the MVID. If they are equal, the host passes the five Rule C inputs (`codeIdentity`, `dependencyIdentity`, the U2 verdict from the
-gate file, the V-ID state, and the T-IDENT state) into
+the host's composition root (8.1), outside every stage closure, so item 1 does not apply to it. U5 confirms the MVID. If they are equal, the host passes the six Rule C inputs (`codeIdentity`, `dependencyIdentity`, the U2 verdict from the
+gate file, the V-ID state, the T-IDENT state, and the R-G1 state) into
 `IStageCodeIdentity` as a value (the single carrier of the Rule C inputs, 7.1; `AnalysisCacheOptions` holds that port). The gate file's
 verdict is one input to Rule C (4.3), not the whole rule. A stage is cacheable only when Rule C holds in full: the U2
-verdict, V-ID, and T-IDENT. V-ID is not implemented, so until it exists every stage is uncacheable, whether or not a gate file matches. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
+verdict, V-ID, R-G1, and T-IDENT. V-ID is not implemented, so until it exists every stage is uncacheable, whether or not a gate file matches. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
 uncacheable and reports `ANALYSIS_CACHE_UNCACHEABLE` (F3). In the default state no gate file exists, so the same code applies.
 **Precedence (one code per state).** The checks run in this order, and the first failure decides the code.
 1. The running MVID cannot be read. Report `ANALYSIS_CACHE_KEY_UNAVAILABLE`, because no gate file can be matched without it.
@@ -1022,10 +1028,14 @@ the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rul
 - **R-G1 implementation (follow-up).** The single-buffer requirement of 2.1 is owner-approved as mandatory (2026-10-30, Issue #43 comment).
   It is not an open owner decision. Implementing it, and its test T-IDENT-c, is follow-up work. It is a requirement, not implemented or run, and it is needed for every candidate stage in the current pipeline (2.1, scope).
 - **T-IDENT-a, T-IDENT-b, T-IDENT-c.** Implement and run the tests of 7.3 (not run; preconditions UNVERIFIED where 7.3 marks them). Each is a condition of Rule C (c).
-- **GUI AARC002 suppression (decided provisionally, #40 D2 Option A, 2026-10-30).** The GUI uses the shared cache service
-  (7.1). The single composition-root `AARC002` suppression of `docs/architecture-matrix.md:47` is one narrow site. Whether
-  the analyzer enforces the single-site rule is UNVERIFIED: that analyzer and the test required in #40 are not built. Cache
-  hits stay disabled until Rule C (4.3) passes, and the GUI shows uncached or reanalysis status without a fabricated hit (8.1).
+- **GUI AARC002 suppression (provisional, #40 D2 Option A, 2026-10-30, under ADR-017).** Locally scoped and justified; no
+  general exemption; a single narrow Studio composition-root site (`docs/architecture-matrix.md:47`); no composition logic in
+  views or viewmodels. The analyzer and the test required in #40 must verify the single-site rule. Neither is built, so the
+  rule is UNVERIFIED. The GUI uses the shared cache service (7.1). **Fallback (owner):** if single-site enforcement cannot be
+  made clean, return to the owner with Host/Bootstrap option C rather than spreading suppressions. **Open risk:**
+  `docs/architecture-matrix.md:210` says "repeated `AARC002` exceptions are evidence to introduce a dedicated Host/Bootstrap
+  layer rather than weakening the dependency rules." Repeated exceptions under D2 Option A are that signal. Cache hits stay
+  disabled until Rule C (4.3) passes, and the GUI shows uncached or reanalysis status without a fabricated hit (8.1).
 - **Owner questions the doc marks (not decided).** DEC-N7 adoption (5.1; owner decision, or U4 plus owner acceptance).
 
 ## 11. Non-goals
@@ -1293,5 +1303,8 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | ID | Finding | Status in r30 | Resolved in |
 |---|---|---|---|
 | OR1 (owner ruling, Issue #43 comment, 2026-10-30) | R-G1 was an open proposal and was listed as an open item (10) | Recorded in r30: R-G1 is approved as mandatory. The analysis must consume the same immutable buffer whose digest is used for input identity and cache keys; hash-then-reopen is insufficient (TOCTOU). A present gate file is a record, not independent permission. No stage is cached until its Rule C proof is complete (U2 verdict, V-ID, R-G1, T-IDENT-a/b/c). Fail-closed uncacheable until then. R-G1 and V-ID/U2 implementation are follow-up work; design review does not enable the cache. The CLI and GUI share one service and gate, with no GUI-owned bypass or key derivation. Requirement text only; nothing is implemented or run | Header, 2.1 (R-G1), 4.3 (Rule C (b), gate-file wording), 7.1 (shared service and gate), 8.2, 10 (R-G1 follow-up, T-IDENT, owner questions) |
+| OR2 (review of `7bb935b`, MAJOR) | §6.5 "Default status" listed U2, V-ID and T-IDENT but not R-G1. The `IStageCodeIdentity` port carried five inputs with no R-G1 state, so a matching verdict could look cacheable with R-G1 unimplemented | Resolved in r31: §6.5 lists R-G1. The port carries R-G1 as a sixth input (`implemented` or `not implemented`, unknown treated as uncacheable). §9.3 binding and re-enabling lists match. Rule C states the consequence. T-R-G1-UNIMPL (7.3) is a requirement, not run, and T-UNCACHE covers the state | 6.5, 7.1, 7.3 (T-UNCACHE, T-R-G1-UNIMPL), 9.3, 4.3 |
+| OR3 (#40 comment, 2026-10-30, owner review of `7bb935b`, MAJOR) | D2 Option A was stated without its qualifiers, and the repeated-exception risk of `architecture-matrix.md:210` was not recorded | Resolved in r31: under ADR-017; locally scoped and justified; no general exemption; a single narrow Studio composition-root site; no composition logic in views or viewmodels; the analyzer and test must verify the single site (not built, UNVERIFIED); fallback to the owner with Host/Bootstrap option C; repeated exceptions are an open risk tied to D2 Option A | 8.1, 10 |
+| OR4 (review of `7bb935b`, MEDIUM) | §8.1 said concrete adapter wiring "is allowed" at one site, which overstates `architecture-matrix.md:47` ("may use" for a future executable) | Resolved in r31: §8.1 uses the matrix wording. Source identity (header) corrected to the r31 commit and r28 review head | 8.1, header |
 
 
