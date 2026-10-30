@@ -23,9 +23,10 @@ public sealed class SyntheticIsoBothEndianTests
     private const int FileStructureVersionOffset = 881; // PVD BP 882
 
     // Mirrored by scripts/demo/synthetic-disc.ps1 -BothEndianIso9660. The root-only corrected disc is the checked fixture.
-    private const string CorrectedSha256 = "39892b2b734595491f234da7992fa9522b00025c72ec015d7ee51676d474c05b";
-    private const string LegacySha256 = "4f75a05f4f031a0a4b5f650172d325c0b8f60abf3f55b779f19334324152ab27";
-    private const string OpenBiosSha256 = "bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03";
+    // Re-pinned for the 150-sector lead-in in Mode2Form1 (Issue #10 owner ruling); the previous values were 39892b2b..., 4f75a05f..., bbae905d....
+    private const string CorrectedSha256 = "78dd3d0019d99677745799480e5d89e38277f8ad4168e1441e014cfdb7c1e546";
+    private const string LegacySha256 = "2f9773f517448647df7afba5616275f67fa3d25006e7ccde58b360f71e2a6043";
+    private const string OpenBiosSha256 = "ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606";
 
     private static byte[] ExeBytes() => GeneratedPsxExeFixtures.BiosPutCharMarker.Generate();
 
@@ -209,7 +210,7 @@ public sealed class SyntheticIsoBothEndianTests
         ReadField(pvd, 128, 2, bigEndian: false).Should().Be(Payload, "logical block size");
         ReadField(pvd, 120, 2, bigEndian: false).Should().Be(1u, "volume set size");
         ReadField(pvd, 124, 2, bigEndian: false).Should().Be(1u, "volume sequence number");
-        ReadField(pvd, 80, 4, bigEndian: false).Should().Be((uint)(Disc().Length / RawSector), "volume space size equals the sector count");
+        ReadField(pvd, 80, 4, bigEndian: false).Should().Be((uint)(Disc().Length / RawSector - CdSectorAddress.LeadInFrames), "volume space size equals the ISO sector count (the disc less its lead-in)");
     }
 
     [Fact]
@@ -423,7 +424,8 @@ public sealed class SyntheticIsoBothEndianTests
 
     // Issue #743 comparison fixture (the 4th): the corrected ISO 9660 volume carrying the OpenBIOS-compatible EXE.
     // Mirrored by scripts/demo/synthetic-disc.ps1 -OpenBiosCompatible -BothEndianIso9660. The three pins above are unchanged.
-    private const string OpenBiosBothEndianSha256 = "1a5c41f912e1e2b7687bd2dea8c127397581b34f7ed5271dbf509d46126e69c7";
+    // Re-pinned for the 150-sector lead-in (previous value 1a5c41f9...).
+    private const string OpenBiosBothEndianSha256 = "89d11fb9a4c9262f03385965ad8d7fb15edb361e2d3b6ee1e8f4aba4da6febf7";
 
     private static byte[] OpenBiosBothEndianExe() => SyntheticDiscBuilder.OpenBiosCompatibleExe(ExeBytes());
 
@@ -448,7 +450,7 @@ public sealed class SyntheticIsoBothEndianTests
         ReadField(pvd, 120, 2, bigEndian: false).Should().Be(1u, "volume set size");
         ReadField(pvd, 124, 2, bigEndian: false).Should().Be(1u, "volume sequence number");
         pvd[FileStructureVersionOffset].Should().Be(1, "File Structure Version (BP 882)");
-        ReadField(pvd, 80, 4, bigEndian: false).Should().Be((uint)(disc.Length / RawSector), "volume space size equals the sector count");
+        ReadField(pvd, 80, 4, bigEndian: false).Should().Be((uint)(disc.Length / RawSector - CdSectorAddress.LeadInFrames), "volume space size equals the ISO sector count (the disc less its lead-in)");
         ReadField(pvd, 80, 4, bigEndian: false).Should().Be(ReadField(pvd, 84, 4, bigEndian: true), "both-endian space size");
 
         var walk = Walk(disc);

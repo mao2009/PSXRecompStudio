@@ -38,7 +38,7 @@ public sealed class FirmwareDistributionBuilderTests
     {
         using var dir = new TempDirectory();
         var rom = dir.WriteFile("rom.bin", new byte[OpenBiosFirmware.ImageSize]);
-        var disc = dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var aot = dir.CreateSubdirectory("aot");
         dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
         dir.WriteFile("aot/images.txt", Text("exe sample ../external/game.exe\n"));
@@ -58,7 +58,7 @@ public sealed class FirmwareDistributionBuilderTests
     {
         using var dir = new TempDirectory();
         var rom = dir.WriteFile("rom.bin", new byte[OpenBiosFirmware.ImageSize]);
-        var disc = dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var aot = dir.CreateSubdirectory("aot");
         dir.WriteFile("aot/rom.roots", Text("0xBFC00000\nnot-hex\n"));
         dir.WriteFile("aot/images.txt", Text("# none\n"));
@@ -74,7 +74,7 @@ public sealed class FirmwareDistributionBuilderTests
     {
         using var dir = new TempDirectory();
         var rom = dir.WriteFile("rom.bin", new byte[OpenBiosFirmware.ImageSize]);
-        var disc = dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var aot = dir.CreateSubdirectory("aot");
         dir.WriteFile("aot/rom.roots", Text("nope\n"));
         dir.WriteFile("aot/images.txt", Text("# none\n"));
@@ -114,7 +114,7 @@ public sealed class FirmwareDistributionBuilderTests
 
         using var dir = new TempDirectory();
         var rom = dir.WriteFile("rom.bin", new byte[OpenBiosFirmware.ImageSize]);
-        var disc = dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var aot = dir.CreateSubdirectory("aot");
         dir.WriteFile("aot/rom.roots", Text("0xBFC00000\n"));
         dir.WriteFile("aot/images.txt", Text("# none\n"));

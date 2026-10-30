@@ -69,15 +69,42 @@ public interface ICdSectorSource
 }
 
 /// <summary>
-/// A raw single-track image of 2352-byte sectors held in memory (a <c>.bin</c> data track, or a synthetic test disc),
-/// track 1 starting at LBA 0.
+/// The three position spaces of a CD (owner ruling, Issue #10). LBA 0 is MSF 00:02:00, the convention of
+/// <see cref="CdTrack"/> above. A file index is a sector's position from the start of a raw image or BINARY file, which
+/// is MSF 00:00:00 for a disc dump and so carries the 150-sector lead-in. The offset is applied here, once per conversion:
+/// <see cref="CdRomDevice"/> converts a SetLoc MSF to an LBA (minus 150), and a source converts its LBA to its own file
+/// index (plus 150) only when the source stores the disc from file index 0.
 /// </summary>
+[Domain]
+public static class CdSectorAddress
+{
+    /// <summary>Frames before LBA 0 (MSF 00:00:00 to 00:01:74). LBA 0 is MSF 00:02:00.</summary>
+    public const int LeadInFrames = 150;
+
+    /// <summary>Converts a file index (sector position from the start of a file-origin image) to an LBA.</summary>
+    public static int FileIndexToLba(int fileIndex) => fileIndex - LeadInFrames;
+
+    /// <summary>Converts an LBA to the file index of that sector in a file-origin image.</summary>
+    public static int LbaToFileIndex(int lba) => lba + LeadInFrames;
+}
+
+/// <summary>
+/// A raw image of 2352-byte sectors held in memory, from a file origin: sector index 0 is MSF 00:00:00, so the image
+/// begins with the 150-sector lead-in and track 1 at 00:02:00 is LBA 0 (<see cref="CdSectorAddress"/>). Used for a
+/// <c>.bin</c> dump and for synthetic test discs. The lead-out is the file's sector count less 150.
+/// </summary>
+/// <remarks>
+/// Before Issue #10 owner ruling this class mapped LBA to file index directly, so an LBA read 150 sectors early. It is
+/// now the LBA-to-file mapping of <see cref="CdSectorAddress"/>. The CHD source (ChdCdSectorSource, in
+/// PSXRecomp.Core.DiscImage) stores the disc from LBA 0 and is not offset; see its remarks.
+/// </remarks>
 [Domain]
 public sealed class RawCdSectorSource : ICdSectorSource
 {
     private readonly ReadOnlyMemory<byte> _image;
 
-    /// <exception cref="ArgumentException">The image is empty or not a whole number of raw sectors.</exception>
+    /// <exception cref="ArgumentException">The image is empty, not a whole number of raw sectors, or not longer than the
+    /// 150-sector lead-in.</exception>
     public RawCdSectorSource(ReadOnlyMemory<byte> image)
     {
         if (image.Length == 0 || image.Length % ICdSectorSource.RawSectorSize != 0)
@@ -86,8 +113,15 @@ public sealed class RawCdSectorSource : ICdSectorSource
                 $"A raw CD image is a non-empty multiple of {ICdSectorSource.RawSectorSize} bytes; got {image.Length}.", nameof(image));
         }
 
+        var fileSectors = image.Length / ICdSectorSource.RawSectorSize;
+        if (fileSectors <= CdSectorAddress.LeadInFrames)
+        {
+            throw new ArgumentException(
+                $"A raw CD image holds {fileSectors} sectors, not more than the {CdSectorAddress.LeadInFrames}-sector lead-in.", nameof(image));
+        }
+
         _image = image;
-        Toc = CdDiscToc.SingleDataTrack(image.Length / ICdSectorSource.RawSectorSize);
+        Toc = new CdDiscToc([new CdTrack(1, 0, false)], CdSectorAddress.FileIndexToLba(fileSectors));
     }
 
     public CdDiscToc Toc { get; }
@@ -99,7 +133,8 @@ public sealed class RawCdSectorSource : ICdSectorSource
             return false;
         }
 
-        _image.Span.Slice(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize).CopyTo(destination);
+        _image.Span.Slice(CdSectorAddress.LbaToFileIndex(lba) * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize)
+            .CopyTo(destination);
         return true;
     }
 }

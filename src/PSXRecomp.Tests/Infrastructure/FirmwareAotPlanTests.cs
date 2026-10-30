@@ -110,7 +110,7 @@ public sealed class FirmwareAotPlanTests
             dir.Combine("aot", "rom.roots"),
             codeBytes: 64,
             dir.Combine("aot", "images.txt"),
-            new RawCdSectorSource(new byte[2352]));
+            new RawCdSectorSource(new byte[(CdSectorAddress.LeadInFrames + 1) * 2352]));
 
         // Owner ruling (Issue #B2): the roots file is validated, but the BIOS is never ahead-of-time translated.
         plan.Program.Blocks.Should().BeEmpty("the BIOS ROM is never compiled ahead of time; it runs in the interpreter fallback");
@@ -130,7 +130,7 @@ public sealed class FirmwareAotPlanTests
 
         var plan = FirmwareAotPlan.Build(
             OpenBiosFirmware.FromBytes(rom), dir.Combine("aot", "rom.roots"), 64, dir.Combine("aot", "images.txt"),
-            new RawCdSectorSource(new byte[2352]));
+            new RawCdSectorSource(new byte[(CdSectorAddress.LeadInFrames + 1) * 2352]));
 
         plan.Program.Blocks.Should().BeEmpty("the BIOS ROM is never compiled ahead of time");
         var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
@@ -153,7 +153,7 @@ public sealed class FirmwareAotPlanTests
         dir.WriteFile("aot/images.txt", Text("# no images\n"));
         var plan = FirmwareAotPlan.Build(
             OpenBiosFirmware.FromBytes(rom), dir.Combine("aot", "rom.roots"), 64, dir.Combine("aot", "images.txt"),
-            new RawCdSectorSource(new byte[2352]));
+            new RawCdSectorSource(new byte[(CdSectorAddress.LeadInFrames + 1) * 2352]));
 
         var dispatch = RecompilerHostCodeGen.Generate(plan.Program, plan.LoadedCode, allowEmptyProgram: true);
         dispatch.Success.Should().BeTrue(dispatch.DiagnosticMessage);
@@ -223,7 +223,7 @@ public sealed class FirmwareAotPlanTests
             dir.Combine("aot", "rom.roots"),
             codeBytes: 64,
             dir.Combine("aot", "images.txt"),
-            new RawCdSectorSource(new byte[2352]));
+            new RawCdSectorSource(new byte[(CdSectorAddress.LeadInFrames + 1) * 2352]));
 
         act.Should().Throw<InvalidDataException>().WithMessage("*hexadecimal*");
     }

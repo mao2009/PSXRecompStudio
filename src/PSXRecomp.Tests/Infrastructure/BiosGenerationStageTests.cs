@@ -65,7 +65,7 @@ public sealed class BiosGenerationStageTests : IDisposable
         _dir.WriteFile("aot/images.txt", System.Text.Encoding.ASCII.GetBytes("image bios-copy 0x00000500 rom 0xBFC00000 0x40\n"));
 
         ((Action)(() => FirmwareAotPlan.Build(
-            firmware, _dir.Combine("aot", "rom.roots"), 64, _dir.Combine("aot", "images.txt"), new RawCdSectorSource(new byte[2352]))))
+            firmware, _dir.Combine("aot", "rom.roots"), 64, _dir.Combine("aot", "images.txt"), new RawCdSectorSource(new byte[(CdSectorAddress.LeadInFrames + 1) * 2352]))))
             .Should().Throw<InvalidDataException>().WithMessage("*structural kind 'rom-image'*");
     }
 
