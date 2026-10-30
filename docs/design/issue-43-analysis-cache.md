@@ -810,8 +810,12 @@ Resolution:
   suppression. `src/PSXRecompStudio` (namespace root `PSXRecompStudio`, Application layer) references no Infrastructure
   project. If it were to create the reader, it would need the one composition-root `AARC002` suppression that
   `docs/architecture-matrix.md:47` allows, with a written rationale, and wiring beyond that one site needs an architecture
-  change (`:47`, `:210`). This design does not grant that suppression, so the GUI runs without the cache until the owner
-  decides (open item).
+  change (`:47`, `:210`). **Owner decision (#40 comment, 2026-10-30): D2 Option A is adopted provisionally.** A single,
+  narrow Studio composition-root site may carry a locally scoped `AARC002` suppression, and the GUI uses the same cache
+  service and results as the CLI through shared use cases. There is no GUI-only cache, key derivation, or correctness
+  policy. The single-site rule is **UNVERIFIED** as enforced: the analyzer and the test required in #40 are not built.
+  **Cache hits remain disabled** for every image-dependent stage until Rule C (4.3) passes. The GUI shows uncached or
+  reanalysis status and never fabricates a hit. No cache hit is possible today.
 - Precedent: `src/PSXRecomp.Infrastructure/FileProjectMetadataStore.cs` implements `IProjectMetadataStore`, defined in
   `PSXRecomp.Core.Project` (Issue #42).
 - **Writer placement (LOW-1).** The artifact writer is currently `src/PSXRecomp.Tests/RealRomAnalysis/RealRomArtifactWriter.cs`
@@ -1018,7 +1022,11 @@ the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rul
 - **R-G1 implementation (follow-up).** The single-buffer requirement of 2.1 is owner-approved as mandatory (2026-10-30, Issue #43 comment).
   It is not an open owner decision. Implementing it, and its test T-IDENT-c, is follow-up work. It is a requirement, not implemented or run, and it is needed for every candidate stage in the current pipeline (2.1, scope).
 - **T-IDENT-a, T-IDENT-b, T-IDENT-c.** Implement and run the tests of 7.3 (not run; preconditions UNVERIFIED where 7.3 marks them). Each is a condition of Rule C (c).
-- **Owner questions the doc marks (not decided).** (i) Whether the GUI may create the reader through the composition root, which needs the `AARC002` suppression of `docs/architecture-matrix.md:47` (8.1; until decided the GUI runs without the cache, and this does not change the shared-service ruling of 7.1). (ii) DEC-N7 adoption (5.1; owner decision, or U4 plus owner acceptance).
+- **GUI AARC002 suppression (decided provisionally, #40 D2 Option A, 2026-10-30).** The GUI uses the shared cache service
+  (7.1). The single composition-root `AARC002` suppression of `docs/architecture-matrix.md:47` is one narrow site. Whether
+  the analyzer enforces the single-site rule is UNVERIFIED: that analyzer and the test required in #40 are not built. Cache
+  hits stay disabled until Rule C (4.3) passes, and the GUI shows uncached or reanalysis status without a fabricated hit (8.1).
+- **Owner questions the doc marks (not decided).** DEC-N7 adoption (5.1; owner decision, or U4 plus owner acceptance).
 
 ## 11. Non-goals
 
