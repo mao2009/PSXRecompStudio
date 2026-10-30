@@ -151,8 +151,13 @@ Studio, no CLI, and no .NET SDK at runtime.
     <game>[.exe]          native AOT artifact (bridge-capable, direct-launch)
     runtime/
       PSXRecomp.RuntimeHost[.exe]   shared managed Runtime host
-      runtime-host.json               guest run configuration
-      artifact-image.bin              embedded program image (sidecar)
+      runtime-host.json               guest run configuration (every package)
+      build-manifest.json             integrity carrier for the H2/H3 SHA-256 checks; mandatory for newly produced packages (see the 2026-10-30 amendment)
+      artifact-image.bin              embedded program image sidecar (HLE packages only)
+      firmware-boot.json              firmware packages only: firmware boot manifest (H4)
+      firmware/                       firmware packages only: AOT inputs (H5), roots and load-images files (H10)
+      disc/                           firmware packages only: disc image named by the boot manifest (H9)
+      bios-content-diagnostic.txt     firmware packages only: counts-only report, written and never read by the host
     README.txt
   ```
 - `src/PSXRecomp.Core/Execution/ProgramEndHandoff.cs` - Natural program end
@@ -233,3 +238,30 @@ E2E tests in `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs` verify:
 - ✅ Documentation updates (headless-cli.md, runtime-host.md, README.md).
 - ✅ Full build and test suite verification (Linux CI passing).
 - ✅ PR creation and CodeRabbit review.
+
+## Amendment (2026-10-30): Step C layout and integrity carrier
+
+- Scope: only the Step C layout block changes. The decision text, the Option
+  B and C choices, the Step A scope and the status are unchanged.
+- Adds `runtime/build-manifest.json` as the integrity carrier (H16). The
+  Runtime host and the game window must check H2 (`binary.sha256`), and for
+  HLE packages H3 (`packaged.imageSidecar.sha256`), against it before use. This
+  check is not yet implemented. The
+  carrier is mandatory for every newly produced package, HLE and firmware. Its
+  writer is Issue #864 (Artifact Provenance, #46). Its reader is Issue #865
+  (Runtime Configuration, #48). The carrier is not a runtime configuration
+  input, and `runtime-host.json` stays schema 1.
+- Existing firmware inputs, listed explicitly. They already ship and this
+  amendment does not add them: `runtime/firmware-boot.json` (H4);
+  `runtime/firmware/` AOT inputs (H5), including the roots and load-images
+  files (H10); `runtime/disc/<leaf>` (H9); `runtime/bios-content-diagnostic.txt`
+  (counts only, written and never read by the host); and the environment
+  variable `PSXRECOMP_BIOS_ROM` at run time (H6, not a file).
+- Migration and legacy packages: a package produced before this amendment has
+  no `runtime/build-manifest.json`. The amended reader refuses it (fail closed,
+  a classified setup failure; no guest code runs). The host never generates,
+  writes or repairs the carrier, so such a package must be repackaged.
+- No claim is made that a production carrier is enabled, that any acceptance
+  criterion has passed, or that Windows or POSIX protection is verified.
+- Source: `docs/design/issue-48-runtime-config.md` sections 2.2, 3.4 and 11
+  (Q13, Q16, Q17, Q19).
