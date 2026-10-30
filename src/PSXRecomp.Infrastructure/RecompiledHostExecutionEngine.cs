@@ -164,7 +164,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
     /// <summary>
     /// Console output captured from a prebuilt runtime-host run (the guest's C
-    /// stdout up to the engine's RSNAPSHOT diagnostic block). The runtime host
+    /// stdout; the engine's RSNAPSHOT diagnostic block is on stderr). The runtime host
     /// forwards this to its own stdout so boot/TTY messages are visible.
     /// </summary>
     public string? ConsoleOutput => _consoleOutput;
@@ -305,6 +305,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     internal Func<StopRecord, Process, string, bool, bool>? WaitObservedForTest { get; set; }
 
     /// <summary>
+    /// Test seam: delays the start of the stderr read of a segment's child until this task completes (see <c>OutputSink.Pump</c>). It makes a
+    /// stderr pump that lags the stdout end reproducible. Null in production.
+    /// </summary>
+    internal Task? StderrPumpGateForTest { get; set; }
+
+    /// <summary>
     /// Test seam (Issue #827): replaces the kill of the child, so a test injects the OS refusal on the stop and timeout paths. Null
     /// in production.
     /// </summary>
@@ -354,6 +360,12 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         _frameReads.SetExternalStop(cancellationToken);
         return new ExternalStopScope(_frameReads);
     }
+
+    /// <summary>
+    /// The refusal for an unimplemented GTE command. The low 25 bits of the COP2 instruction are part of a guest word, so the
+    /// message names only the fact; the bits are withheld from every public artifact (PR #839, decision A).
+    /// </summary>
+    internal static string GteRefusalMessage(uint commandBits) => "GTE command is not implemented.";
 
     /// <summary>Ends an attachment: the gate stops watching the run's external token.</summary>
     private sealed class ExternalStopScope(FrameReadGate gate) : IDisposable
@@ -869,6 +881,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             arguments.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
         }
 
+        // The state snapshot is written to stderr only for a run this engine manages, and only when it asks for it (PR #839 ruling).
+        arguments.Add(RecompiledArtifactCodeGen.HostSnapshotFlag);
+
         // What a stop did to this child. It alone decides a Cancelled or refused result (see ApplyStopOutcome).
         var stopRecord = new StopRecord
         {
@@ -903,7 +918,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool drainCutWhileAlive;
         try
         {
-            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord);
+            run = RunProcess(_binaryPath, arguments, _runTimeoutMs, OutputBudgetMsForTest ?? _runTimeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge, stopToken, stopRecord,
+                stderrPumpGate: StderrPumpGateForTest);
         }
         // A game-execution VBlank callback's exception that ends a requested stop (owner ruling, PR #850) propagates unchanged. Before it does,
         // the stop is decided and its outcome recorded, so the run is never reported as NotStopped (Issue #827, invariant). Seal waits for a stop
@@ -932,11 +948,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             stopRecord.Seal();
         }
 
-        var (exit, stdout, _, hostProtocolFaulted, pumpEnded) = run;
+        var (exit, stdout, stderr, hostProtocolFaulted, pumpEnded) = run;
 
         // Capture the no-bridge run's stdout so a runtime host can forward the
-        // guest's console output (the boot/TTY text before the engine's
-        // RSNAPSHOT diagnostic block). Bridge runs surface TTY through the bridge's
+        // guest's console output (the boot/TTY text; the engine's RSNAPSHOT diagnostic
+        // block is on stderr, not here). Bridge runs surface TTY through the bridge's
         // runtime sink instead and must not be double-buffered here.
         if (_prebuilt && _launchMode == PrebuiltArtifactLaunchMode.RuntimeHost)
         {
@@ -978,7 +994,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // The outcome first: ResolveOutcome adds the residuals of the output drains (a pipe holder, a cut drain). The diagnostics are taken after
         // it, so they include every residual (owner spec, round 17; a snapshot taken earlier missed them).
         var result = ResolveOutcome(
-            ClassifyArtifactRun(exit, stdout, hostProtocolFaulted, timedOut, bridge),
+            ClassifyArtifactRun(exit, stdout, stderr, hostProtocolFaulted, timedOut, bridge),
             stopRecord,
             drainTimedOut,
             drainCutWhileAlive,
@@ -1138,8 +1154,10 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             stop.Residuals));
 
     /// <summary>Classifies the finished child's output into a segment result (the Issue #459 result contract).</summary>
+    /// <param name="stdout">The guest's text and the bridge's own protocol. It is never read for the snapshot.</param>
+    /// <param name="stderr">The child's stderr. The state snapshot is written here, and only here, for a run the engine manages.</param>
     private static RecompilerExecutionResult ClassifyArtifactRun(
-        int exit, string stdout, bool hostProtocolFaulted, bool timedOut, HostTransferBridge? bridge)
+        int exit, string stdout, string stderr, bool hostProtocolFaulted, bool timedOut, HostTransferBridge? bridge)
     {
         if (hostProtocolFaulted)
         {
@@ -1183,23 +1201,23 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 "The artifact rejected a malformed mixed-execution fallback command.");
         }
 
-        if (exit < 0 || exit > byte.MaxValue || !stdout.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
+        if (exit < 0 || exit > byte.MaxValue || !stderr.Contains(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal))
         {
             return RecompilerExecutionResult.Failed(
                 RecompilerExecutionStatus.ExecutionFailed, "ARTIFACT_FAILED", $"The runnable artifact failed (exit {exit}).");
         }
 
-        var snapshot = ArtifactSnapshotParser.Parse(stdout);
+        var snapshot = ArtifactSnapshotParser.Parse(stderr);
         if (snapshot is null)
         {
-            var message = stdout.Length <= 2000 ? stdout : stdout[..2000] + "...";
-            return RecompilerExecutionResult.Failed(RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", message);
+            return RecompilerExecutionResult.Failed(
+                RecompilerExecutionStatus.MalformedResult, "MALFORMED_ARTIFACT_SNAPSHOT", MalformedSnapshotMessage(stderr));
         }
 
         if (bridge is { ExceptionVectorReached: true })
         {
             // Issue #680: the INT entry state, so the diagnostic says what the CPU delivered.
-            var entry = ArtifactSnapshotParser.ReadCop0(stdout) is { } c
+            var entry = ArtifactSnapshotParser.ReadCop0(stderr) is { } c
                 ? $"EPC=0x{c.Epc:X8}, CAUSE=0x{c.Cause:X8}, SR=0x{c.Sr:X8}"
                 : "COP0 state unavailable";
             return new RecompilerExecutionResult(
@@ -1207,6 +1225,53 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         return new RecompilerExecutionResult(RecompilerExecutionStatus.Completed, snapshot, bridge?.DiagnosticCode, bridge?.DiagnosticMessage);
+    }
+
+    /// <summary>
+    /// Runs a child through the bridged path (a minimal bridge with no devices) and classifies it as a bridged run does. Internal for the channel
+    /// tests: it reaches the bridged stderr read and the same classification as a segment.
+    /// </summary>
+    internal static RecompilerExecutionResult RunBridgedChildForTest(string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs)
+    {
+        using var bridge = new HostTransferBridge(null, new HashSet<uint>(), null, null, null, Array.Empty<uint>(), 0u, null, false, null, null, null,
+            new LoadedCodeTable([]), null);
+        var stopRecord = new StopRecord();
+        try
+        {
+            var (exit, stdout, stderr, hostProtocolFaulted, _) = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs, out var timedOut,
+                out var drainTimedOut, out var drainCutWhileAlive, bridge, CancellationToken.None, stopRecord);
+            var classified = ClassifyArtifactRun(exit, stdout, stderr, hostProtocolFaulted, timedOut, bridge);
+            return ResolveOutcome(classified, stopRecord, drainTimedOut, drainCutWhileAlive, outputBudgetMs);
+        }
+        finally
+        {
+            stopRecord.Seal();
+        }
+    }
+
+    /// <summary>
+    /// The classification of a run with no bridge, from its exit, stdout and stderr (the snapshot is read from stderr). Internal for the
+    /// channel tests: a snapshot on stdout is not accepted, and a snapshot on stderr is.
+    /// </summary>
+    internal static RecompilerExecutionResult ClassifyWithoutBridge(int exit, string stdout, string stderr, bool hostProtocolFaulted, bool timedOut) =>
+        ClassifyArtifactRun(exit, stdout, stderr, hostProtocolFaulted, timedOut, bridge: null);
+
+    /// <summary>
+    /// The diagnostic for a snapshot the parser rejects. It names only the shape (complete or not, and the count of body lines),
+    /// never the raw protocol text: the snapshot carries GPR values, and no line of it may reach a public diagnostic.
+    /// </summary>
+    internal static string MalformedSnapshotMessage(string stdout)
+    {
+        var begin = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal);
+        var end = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotEndMarker, StringComparison.Ordinal);
+        if (begin < 0 || end < begin)
+        {
+            return "The runnable artifact's state snapshot is incomplete.";
+        }
+
+        var lines = stdout[(begin + RecompiledArtifactCodeGen.SnapshotBeginMarker.Length)..end]
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+        return $"The runnable artifact's state snapshot is malformed ({lines} body lines).";
     }
 
     public void Dispose()
@@ -1368,7 +1433,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// caller then neither reads nor disposes those devices (Issue #762).</returns>
     private static (int ExitCode, string Stdout, string Stderr, bool HostProtocolFaulted, bool PumpEnded) RunProcess(
         string fileName, IReadOnlyList<string> arguments, int timeoutMs, int outputBudgetMs, out bool timedOut, out bool drainTimedOut,
-        out bool drainCutWhileAlive, HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord)
+        out bool drainCutWhileAlive, HostTransferBridge? bridge, CancellationToken stopToken, StopRecord stopRecord,
+        TaskScheduler? stderrContinuationScheduler = null, Task? stderrPumpGate = null)
     {
         // The stdout drain of a child that ended on its own is bounded by outputBudgetMs; drainTimedOut reports that it ran out (Issue #827).
         // drainCutWhileAlive reports that the child was still alive (it was killed at its budget) and its output could not be drained.
@@ -1414,7 +1480,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         // If the request arrived before this point, the registration runs at once and the child is killed here.
         // Declared after the process, so it is sealed before the process is disposed on any return path (Issue #827).
         using var stopSeal = stopRecord.Attach(process, stopToken);
-        var stderrTask = process.StandardError.ReadToEndAsync();
+        // stderr is read by a sink, as stdout is: a drain cut short keeps the text read so far. That is how the state snapshot survives a grandchild
+        // that holds the pipe open after the child ended. The text is read through the pump's end (SinkText), never from a continuation.
+        var stderrSink = new OutputSink();
+        var stderrPump = stderrSink.Pump(process.StandardError, stderrPumpGate);
+        var stderrTask = stderrPump.ContinueWith(_ => stderrSink.Text, stderrContinuationScheduler ?? TaskScheduler.Default);
 
         if (bridge is null)
         {
@@ -1435,7 +1505,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 return (
                     int.MinValue,
                     stdoutSink.Text,
-                    DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, cleanupStart, out _),
+                    SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, cleanupStart),
                     false,
                     true);
             }
@@ -1448,8 +1518,11 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var drainStart = Stopwatch.GetTimestamp();
             WaitForDrain(stdoutTask, outputBudgetMs, stopRecord, drainStart, out drainTimedOut);
             var stdout = stdoutSink.Text;
-            var stderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, drainStart, out _);
-            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrTask);
+            // stderr carries the state snapshot. It is waited for within the same drain budget, measured from drainStart as stdout is; the sink
+            // keeps the text read so far, so a stderr pipe still held by a grandchild does not lose a complete snapshot already written.
+            // The stderr pump can lag the stdout end, so the text is read when the pump ends, not at the stdout end.
+            var stderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, drainStart);
+            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
             return (process.ExitCode, stdout, stderr, false, true);
         }
 
@@ -1497,7 +1570,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryKillTree(process, stopRecord, stopToken);
             Trace.WriteLine($"Host-transfer pump failed: {exception}");
             timedOut = false;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), true, true);
+            return (int.MinValue, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), true, true);
         }
 
         if (!pumpCompleted && drainTimedOut)
@@ -1507,7 +1580,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryReleaseStdout(process);
             var drainedPumpEnded = HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromMilliseconds(PumpDrainTimeoutMs));
             timedOut = false;
-            return (process.ExitCode, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, drainedPumpEnded);
+            return (process.ExitCode, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), false, drainedPumpEnded);
         }
 
         if (!pumpCompleted)
@@ -1529,7 +1602,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             TryReleaseStdout(process);
             var pumpEnded = drainedOnItsOwn || HostTransferPumpLifetime.AwaitEnded(pump, TimeSpan.FromSeconds(1));
             timedOut = true;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, pumpEnded);
+            return (int.MinValue, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), false, pumpEnded);
         }
 
         if (!WaitBounded(milliseconds => process.WaitForExit(milliseconds), timeoutMs, stopRecord, process, "exit"))
@@ -1538,12 +1611,15 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // the bridge's devices any more.
             TryKillTree(process, stopRecord, stopToken);
             timedOut = true;
-            return (int.MinValue, TakeOutput(output, outputGate), DrainUntil(stderrTask, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp(), out _), false, true);
+            return (int.MinValue, TakeOutput(output, outputGate), SinkText(stderrPump, stderrSink, PumpDrainTimeoutMs, stopRecord, Stopwatch.GetTimestamp()), false, true);
         }
 
         timedOut = false;
-        var bridgeStderr = DrainUntil(stderrTask, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp(), out _);
-        RecordPipeHeldAfterStop(stopToken, stopRecord, stderrTask);
+        // The bridged run's stderr carries the snapshot: read it as the no-bridge run does, so a pipe a grandchild still holds keeps the text read so far.
+        var bridgeStderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, Stopwatch.GetTimestamp());
+        // Only the stderr pump is checked. Reaching this point requires pumpCompleted (the protocol pump on stdout has ended; the returns
+        // above handle the other cases), so the stdout pipe is not held here and needs no check of its own.
+        RecordPipeHeldAfterStop(stopToken, stopRecord, stderrPump);
         return (process.ExitCode, TakeOutput(output, outputGate), bridgeStderr, false, true);
     }
 
@@ -1649,6 +1725,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     /// </summary>
     private static void RecordPipeHeldAfterStop(CancellationToken stopToken, StopRecord stopRecord, params Task[] pipes)
     {
+        // The pipes are the read pumps: a pump's completion is the end of its stream. A continuation of a pump (the text task) runs later,
+        // so a check on it reports a pipe as held after its end was already read.
         // A child that ended before the stop reached it is not a stop's failure: a pipe it leaves to a console host is the drain's business.
         if (stopToken.IsCancellationRequested && !stopRecord.ChildEndedBeforeStop && pipes.Any(pipe => !pipe.IsCompletedSuccessfully))
         {
@@ -1674,7 +1752,9 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         Action<Process>? kill = null,
         Func<Process, DateTime?>? startTime = null,
         int? outputBudgetMs = null,
-        Action<Process>? descendantKill = null)
+        Action<Process>? descendantKill = null,
+        TaskScheduler? stderrContinuationScheduler = null,
+        Task? stderrPumpGate = null)
     {
         var stopRecord = new StopRecord
         {
@@ -1690,7 +1770,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         bool drainCutWhileAlive;
         try
         {
-            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord);
+            run = RunProcess(fileName, arguments, timeoutMs, outputBudgetMs ?? timeoutMs, out timedOut, out drainTimedOut, out drainCutWhileAlive, bridge: null, stopToken, stopRecord, stderrContinuationScheduler, stderrPumpGate);
         }
         finally
         {
@@ -1701,7 +1781,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
 
         // The harness classifies its child by the engine's own rule (round 19, MEDIUM 2): an exit 0 without a snapshot is a failure, exactly as in
         // a segment. Then the same resolution and the same shutdown diagnostics as RunSegment, so the Windows tests check the same contract.
-        var classified = ClassifyArtifactRun(run.exit, run.stdout, run.hostProtocolFaulted, timedOut, bridge: null);
+        var classified = ClassifyArtifactRun(run.exit, run.stdout, run.stderr, run.hostProtocolFaulted, timedOut, bridge: null);
         var result = ResolveOutcome(classified, stopRecord, drainTimedOut, drainCutWhileAlive, outputBudgetMs ?? timeoutMs);
         var diagnostics = ShutdownDiagnostics(stopRecord, stopToken.IsCancellationRequested);
         return (run.exit, run.stdout, timedOut, confirmed, refused, diagnostics?.ResidualText, result);
@@ -1733,14 +1813,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
     }
 
     /// <summary>
-    /// Consumes a redirected stream within <paramref name="budgetMs"/>. A stop that arrives during the drain caps the rest of it at the
-    /// cleanup budget, measured from the stop, so a stop never waits for the full budget (Issue #827). <paramref name="timedOut"/> reports
-    /// that the budget ran out before the stream ended; the result is then empty, and the caller reports it.
+    /// The text a sink has read when the budget ends. A stream still held open keeps the text read so far, so a complete snapshot already on the
+    /// pipe is not lost. <see cref="DrainUntil"/> returns nothing for a drain that did not complete.
     /// </summary>
-    private static string DrainUntil(Task<string> readTask, int budgetMs, StopRecord stop, long drainStart, out bool timedOut)
+    private static string SinkText(Task pump, OutputSink sink, int budgetMs, StopRecord stop, long drainStart)
     {
-        var completed = WaitForDrain(readTask, budgetMs, stop, drainStart, out timedOut);
-        return completed && readTask.IsCompletedSuccessfully ? readTask.Result : string.Empty;
+        WaitForDrain(pump, budgetMs, stop, drainStart, out _);
+        return sink.Text;
     }
 
     /// <summary>
@@ -1765,8 +1844,14 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
         }
 
         /// <summary>Reads the stream to its end, appending each chunk as it arrives.</summary>
-        public async Task Pump(StreamReader reader)
+        public async Task Pump(StreamReader reader, Task? gate = null)
         {
+            // gate is a test seam (null in production): reading starts only when it completes, which makes a lagging stderr pump reproducible.
+            if (gate is not null)
+            {
+                await gate;
+            }
+
             var buffer = new char[4096];
             int read;
             while ((read = await reader.ReadAsync(buffer.AsMemory())) > 0)
@@ -2419,7 +2504,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 : [];
             if (fields.Length != 6)
             {
-                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix}' reply, received '{reply}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.ReplyMismatch(RecompiledArtifactCodeGen.ProtocolCop0ReplyPrefix, reply));
             }
 
             // intEntry is a boolean on the wire: exactly "0" or "1"; anything else fails closed, never reads as false.
@@ -2427,7 +2512,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             {
                 "0" => false,
                 "1" => true,
-                _ => throw new ProtocolFaultException($"Malformed intEntry in '{reply}'."),
+                _ => throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("intEntry", reply)),
             };
 
             return new Cop0Query(
@@ -2563,7 +2648,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || (isWrite && !uint.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out value))
                 || (width < 4 && value >> (8 * width) != 0))
             {
-                throw new InvalidOperationException($"Malformed MMIO request '{fields}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("MMIO request", fields));
             }
 
             LastMmioAccess = new HostMmioAccess(physical, width, isWrite);
@@ -2605,7 +2690,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || !uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var a)
                 || (parts[0] is "R" or "W" && a >= 64))
             {
-                throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("GTE request", fields));
             }
 
             var gte = _devices.Gte;
@@ -2622,14 +2707,13 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 case "C":
                     if (!gte.ExecuteCommand(a))
                     {
-                        Refuse("GTE_COMMAND_UNSUPPORTED", string.Create(CultureInfo.InvariantCulture,
-                            $"GTE command 0x{a & 0x3F:X2} (word 0x{a:X7}) is not implemented."));
+                        Refuse("GTE_COMMAND_UNSUPPORTED", GteRefusalMessage(a));
                         return;
                     }
 
                     break;
                 default:
-                    throw new InvalidOperationException($"Malformed GTE request '{fields}'.");
+                    throw new InvalidOperationException(ArtifactProtocolDiagnostics.MalformedPayload("GTE request", fields));
             }
 
             Send(string.Create(CultureInfo.InvariantCulture, $"{RecompiledArtifactCodeGen.ProtocolMmioValueReply} {result}"));
@@ -2665,7 +2749,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // Validated whole before any effect: a malformed line must not advance the devices and then fail.
             if (!FusedRetiredRequest.TryParse(fields, out var retired, out var isWrite, out var access))
             {
-                throw new ProtocolFaultException($"Malformed fused guest-time report '{fields}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("fused guest-time report", fields));
             }
 
             // A refused report ends the request without the access, exactly as a refused stand-alone report did.
@@ -2681,7 +2765,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
                 || retired == 0
                 || retired > MaxRetiredPerReport)
             {
-                throw new ProtocolFaultException($"Malformed guest-time report '{fields}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.MalformedPayload("guest-time report", fields));
             }
 
             // Overflow is a refusal, never a wrapped (shorter) elapsed time.
@@ -2817,7 +2901,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var reply = ReadReply();
             if (!reply.StartsWith(RecompiledArtifactCodeGen.ProtocolDataPrefix, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException($"Expected a '{RecompiledArtifactCodeGen.ProtocolDataPrefix}' reply, received '{reply}'.");
+                throw new InvalidOperationException(ArtifactProtocolDiagnostics.ReplyMismatch(RecompiledArtifactCodeGen.ProtocolDataPrefix, reply));
             }
 
             return (byte)ParseUInt(reply[RecompiledArtifactCodeGen.ProtocolDataPrefix.Length..].Trim());
@@ -2832,7 +2916,7 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             var reply = ReadReply();
             if (!string.Equals(reply, RecompiledArtifactCodeGen.ProtocolWriteAck, StringComparison.Ordinal))
             {
-                throw new ProtocolFaultException($"Expected a '{RecompiledArtifactCodeGen.ProtocolWriteAck}' reply to a RAM write, received '{reply}'.");
+                throw new ProtocolFaultException(ArtifactProtocolDiagnostics.WriteNotAcknowledged(RecompiledArtifactCodeGen.ProtocolWriteAck, reply));
             }
         }
 

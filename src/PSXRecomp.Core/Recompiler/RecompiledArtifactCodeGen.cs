@@ -56,6 +56,12 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Require deadline credits from the host in every synchronization reply.</summary>
     public const string ExactDeviceTimeFlag = "--exact-device-time";
 
+    /// <summary>
+    /// Asks the artifact to write its state snapshot (<see cref="SnapshotBeginMarker"/> to <see cref="SnapshotEndMarker"/>) to stderr. Only the
+    /// parent passes it, on every launch it manages. A direct launch never passes it, so it prints no snapshot.
+    /// </summary>
+    public const string HostSnapshotFlag = "--host-snapshot";
+
     /// <summary>Supplied by the runtime host to a packaged artifact to tell it to run the
     /// embedded image standalone, without the launcher's delegation to the bundled
     /// Runtime host (Phase 2 Step C, Issue #739, ADR-027).
@@ -227,10 +233,10 @@ public static class RecompiledArtifactCodeGen
     /// <summary>Artifact exit code: a fallback command was malformed (Issue #693).</summary>
     public const int FallbackProtocolExitCode = 101;
 
-    /// <summary>Marks the start of the stable state snapshot on stdout.</summary>
+    /// <summary>Marks the start of the stable state snapshot on stderr (written only when the parent passes <see cref="HostSnapshotFlag"/>).</summary>
     public const string SnapshotBeginMarker = "RSNAPSHOT_BEGIN";
 
-    /// <summary>Marks the end of the stable state snapshot on stdout.</summary>
+    /// <summary>Marks the end of the stable state snapshot on stderr.</summary>
     public const string SnapshotEndMarker = "RSNAPSHOT_END";
 
     /// <summary>The maximum init-memory entries the driver's input format accepts.
@@ -1046,23 +1052,35 @@ int main(int argc, char** argv) {
     }
     }
 
-" + bridgeAttach + @"    recompiler_dispatch(&state, budget);
+" + bridgeAttach + @"    /* PR #839 owner ruling: the state snapshot is written to stderr only for a run the parent manages (--host-snapshot). A direct launch
+       prints no snapshot on stdout or stderr. */
+    int snapshot_flag = 0;
+    {
+        int snapshot_arg;
+        for (snapshot_arg = 1; snapshot_arg < argc; snapshot_arg++) {
+            if (strcmp(argv[snapshot_arg], ""--host-snapshot"") == 0) snapshot_flag = 1;
+        }
+    }
+    recompiler_dispatch(&state, budget);
     artifact_report_retired();
 
-    printf(""RSNAPSHOT_BEGIN\n"");
-    printf(""termination=%d\n"", (int)state.termination_reason);
-    printf(""pc=0x%08X\n"", state.pc);
-    printf(""hi=0x%08X\n"", state.hi);
-    printf(""lo=0x%08X\n"", state.lo);
-    for (int i = 0; i < 32; i++) printf(""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
-    printf(""exception.raised=%d\n"", (int)state.exception_raised);
-    printf(""exception.code=0x%08X\n"", state.exception_code);
-    printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
-    printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
-    printf(""cop0.sr=0x%08X\n"", state.cop0_sr);
-    printf(""cop0.cause=0x%08X\n"", state.cop0_cause);
-    printf(""cop0.epc=0x%08X\n"", state.cop0_epc);
-    printf(""RSNAPSHOT_END\n"");
+    if (snapshot_flag) {
+    fprintf(stderr, ""RSNAPSHOT_BEGIN\n"");
+    fprintf(stderr, ""termination=%d\n"", (int)state.termination_reason);
+    fprintf(stderr, ""pc=0x%08X\n"", state.pc);
+    fprintf(stderr, ""hi=0x%08X\n"", state.hi);
+    fprintf(stderr, ""lo=0x%08X\n"", state.lo);
+    for (int i = 0; i < 32; i++) fprintf(stderr, ""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
+    fprintf(stderr, ""exception.raised=%d\n"", (int)state.exception_raised);
+    fprintf(stderr, ""exception.code=0x%08X\n"", state.exception_code);
+    fprintf(stderr, ""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
+    fprintf(stderr, ""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
+    fprintf(stderr, ""cop0.sr=0x%08X\n"", state.cop0_sr);
+    fprintf(stderr, ""cop0.cause=0x%08X\n"", state.cop0_cause);
+    fprintf(stderr, ""cop0.epc=0x%08X\n"", state.cop0_epc);
+    fprintf(stderr, ""RSNAPSHOT_END\n"");
+    fflush(stderr);
+    }
 
     return (int)state.termination_reason;
 }
@@ -1865,23 +1883,35 @@ static void artifact_attach_host_bridge(RecompilerState* state) {
         artifact_attach_host_bridge(&state);
     }
 
+    /* PR #839 owner ruling: the state snapshot is written to stderr only for a run the parent manages (--host-snapshot). A direct launch
+       prints no snapshot on stdout or stderr. */
+    int snapshot_flag = 0;
+    {
+        int snapshot_arg;
+        for (snapshot_arg = 1; snapshot_arg < argc; snapshot_arg++) {
+            if (strcmp(argv[snapshot_arg], ""--host-snapshot"") == 0) snapshot_flag = 1;
+        }
+    }
     recompiler_dispatch(&state, (uint32_t)budget);
     artifact_report_retired(); /* whatever the last units retired below the threshold */
 
-    printf(""RSNAPSHOT_BEGIN\n"");
-    printf(""termination=%d\n"", (int)state.termination_reason);
-    printf(""pc=0x%08X\n"", state.pc);
-    printf(""hi=0x%08X\n"", state.hi);
-    printf(""lo=0x%08X\n"", state.lo);
-    for (i = 0; i < 32; i++) printf(""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
-    printf(""exception.raised=%d\n"", (int)state.exception_raised);
-    printf(""exception.code=0x%08X\n"", state.exception_code);
-    printf(""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
-    printf(""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
-    printf(""cop0.sr=0x%08X\n"", state.cop0_sr);
-    printf(""cop0.cause=0x%08X\n"", state.cop0_cause);
-    printf(""cop0.epc=0x%08X\n"", state.cop0_epc);
-    printf(""RSNAPSHOT_END\n"");
+    if (snapshot_flag) {
+    fprintf(stderr, ""RSNAPSHOT_BEGIN\n"");
+    fprintf(stderr, ""termination=%d\n"", (int)state.termination_reason);
+    fprintf(stderr, ""pc=0x%08X\n"", state.pc);
+    fprintf(stderr, ""hi=0x%08X\n"", state.hi);
+    fprintf(stderr, ""lo=0x%08X\n"", state.lo);
+    for (i = 0; i < 32; i++) fprintf(stderr, ""gpr[%d]=0x%08X\n"", i, state.gpr[i]);
+    fprintf(stderr, ""exception.raised=%d\n"", (int)state.exception_raised);
+    fprintf(stderr, ""exception.code=0x%08X\n"", state.exception_code);
+    fprintf(stderr, ""exception.faultPc=0x%08X\n"", state.exception_fault_pc);
+    fprintf(stderr, ""exception.inDelaySlot=%d\n"", (int)state.exception_in_delay_slot);
+    fprintf(stderr, ""cop0.sr=0x%08X\n"", state.cop0_sr);
+    fprintf(stderr, ""cop0.cause=0x%08X\n"", state.cop0_cause);
+    fprintf(stderr, ""cop0.epc=0x%08X\n"", state.cop0_epc);
+    fprintf(stderr, ""RSNAPSHOT_END\n"");
+    fflush(stderr);
+    }
 
     return (int)state.termination_reason;
 }

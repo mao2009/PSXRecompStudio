@@ -218,6 +218,23 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
         (_interrupts.Status & bits).Should().Be(1u << Cdrom);
     }
 
+    // PR #839 re-review item 4: the ChangeClearRCnt flag is read from guest RAM (flag 1 here). The diagnostic must not carry it.
+    [Theory]
+    [MemberData(nameof(Sources))]
+    public void Withheld_ChangeClearRCnt_Flag_Is_Absent_From_The_Diagnostic_Message(uint t, int irq)
+    {
+        Pend(irq, 1u << irq);
+        SetFlag(t, 1u);
+        WriteTable(0x00008000, 0x1C0);
+        WriteEvCb(0x00008000, 0xF2000000u + t, BiosEventControlBlocks.StatusEnabled, 2, BiosEventControlBlocks.ModeCallback, 0x80010000);
+
+        var result = BiosTimerVblankIrqHandler.Run(Context());
+
+        result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
+        result.Detail.Should().Contain($"IRQ{irq}").And.Contain("#687");
+        result.Detail.Should().NotContain("flag=").And.NotContain("flag=1");
+    }
+
     [Theory]
     [MemberData(nameof(Sources))]
     public void A_Matching_Enabled_Callback_EvCB_Fails_Closed_Naming_Only_The_Sources_Event(uint t, int irq)
@@ -232,7 +249,7 @@ public sealed class BiosTimerVblankIrqHandlerTests : IDisposable
             var result = BiosTimerVblankIrqHandler.Run(Context());
 
             result.Status.Should().Be(BiosExceptionChainStatus.Unsupported);
-            result.Detail.Should().Contain($"IRQ{irq}").And.Contain($"flag={flag}")
+            result.Detail.Should().Contain($"IRQ{irq}").And.NotContain("flag=")
                 .And.Contain($"event 0x{0xF2000000u + t:X8},2").And.Contain("#687");
             for (var other = 0u; other <= 3; other++)
             {

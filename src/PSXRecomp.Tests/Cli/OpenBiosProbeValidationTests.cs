@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using FluentAssertions;
 using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.Execution;
+using PSXRecomp.Infrastructure;
 using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
@@ -165,6 +166,27 @@ public sealed class OpenBiosProbeValidationTests
         new FileInfo(boundaryLog).Exists.Should().BeFalse("the refusal happens before the log is opened");
     }
 
+#pragma warning disable AARC003 // Test-only check that the refused dump file was not created.
+    // Finding 2 (PR #839 re-review): --dump-ram carries RAM words, so it is refused inside a Git work tree, before the run starts.
+    [Fact]
+    public void Run_DumpRamInsideAWorkTree_IsRefusedBeforeTheRun()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+
+        var exit = RunProbe([
+            rom, "--engine", "interpreter", "--capture-at", "80010000",
+            "--dump-ram", Path.Combine(dir.FullPath, "repo", "reports", "ram.bin")
+        ], out _, out var error);
+
+        exit.Should().Be(1);
+        error.Should().Contain("--dump-ram").And.Contain("outside any Git work tree");
+        File.Exists(Path.Combine(dir.FullPath, "repo", "reports", "ram.bin")).Should().BeFalse();
+    }
+#pragma warning restore AARC003
+
     [Theory]
     [InlineData("--dump-ram")]
     [InlineData("--dump-frame")]
@@ -190,6 +212,129 @@ public sealed class OpenBiosProbeValidationTests
 
         exit.Should().Be(1);
         error.Should().Contain("--list-disc cannot be combined");
+    }
+
+    // PR #839 review (MAJOR): --capture-at at a PC in the BIOS ROM range must not export the BIOS word. The reset vector is
+    // the first fetch, and the first synthetic ROM word (lui t0, 0x8001 = 0x3C088001) must not appear in the probe output.
+    [Fact]
+    public void Run_CaptureAtRomRange_DoesNotExportTheBiosWord()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+
+        RunProbe([
+            rom, "--engine", "interpreter",
+            "--capture-at", "BFC00000", "--segments", "1", "--segment-budget", "2000", "--json"
+        ], out var output, out _);
+
+        output.ToLowerInvariant().Should().NotContain("3c088001", "the BIOS word at a ROM-range capture PC must not be exported");
+        var captured = JsonNode.Parse(output)!["captured"]!;
+        captured["pc"]!.ToString().Should().Be("0xBFC00000");
+        captured["word"].Should().BeNull("a PC outside guest RAM has no RAM word to export");
+    }
+
+    // A ROM spin: addiu t1, zero, 0x5A5A (0x24095A5A), then j 0xBFC00000 with a nop delay slot.
+    private static byte[] SpinRom()
+    {
+        uint[] words = [0x24095A5Au, 0x08000000u | ((RomBase & 0x0FFFFFFFu) >> 2), 0];
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        for (var i = 0; i < words.Length; i++) BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        return bytes;
+    }
+
+    // PR #839 re-review (MAJOR): the stop diagnostics (lastFetches) are built on every interpreter run. A fetch in the BIOS ROM
+    // range must not export its word, on stdout in JSON or text form.
+    [Fact]
+    public void Run_StopPathOnRomRange_DoesNotExportTheBiosWord()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SpinRom());
+        string[] args = [rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000"];
+
+        RunProbe([.. args, "--json"], out var json, out _);
+        RunProbe(args, out var text, out _);
+
+        json.ToUpperInvariant().Should().NotContain("24095A5A", "the BIOS word fetched in the ROM range must not be exported in JSON");
+        text.ToUpperInvariant().Should().NotContain("24095A5A", "the BIOS word fetched in the ROM range must not be exported in text");
+        text.Should().Contain("Stop: ", "the stop diagnostics were produced, so the path was exercised");
+        JsonNode.Parse(json)!["stop"]!["lastFetches"]!.AsArray().Should().NotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(0xBFC00000u)] // the reset vector (KSEG1)
+    [InlineData(0x9FC00000u)] // the ROM through KSEG0
+    [InlineData(0x1FC00000u)] // the ROM physical base
+    public void WordFor_RomRangePc_WithholdsTheWord(uint pc) =>
+        OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().BeNull();
+
+    // Decision A (PR #839, arbitration): a RAM word at a PC is withheld from every output, whatever its PC.
+    [Theory]
+    [InlineData(0x80010000u)]
+    [InlineData(0x00010000u)]
+    public void WordFor_RamPc_WithholdsTheWord(uint pc) =>
+        OpenBiosProbeCommand.WordFor(pc, 0x24095A5Au).Should().BeNull();
+
+    // PR #839 (decision A): lui t0, 0x24BE; ori t0, t0, 0xEF01; j reset vector; nop. Each pass leaves t0 = 0x24BEEF01, a register value
+    // that no ROM word carries. Every GPR value is withheld from every public artifact, whatever its origin.
+    private static byte[] GprRom()
+    {
+        uint[] words = [0x3C0824BEu, 0x3508EF01u, 0x08000000u | ((RomBase & 0x0FFFFFFFu) >> 2), 0];
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        for (var i = 0; i < words.Length; i++) BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        return bytes;
+    }
+
+    [Fact]
+    public void Run_GprHoldingTheSyntheticValue_WithholdsTheRegisterValuesFromEveryPublicOutput()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", GprRom());
+        string[] args = [rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000"];
+
+        RunProbe([.. args, "--capture-at", "BFC00008", "--json"], out var captureJson, out _);
+        RunProbe([.. args, "--json"], out var stopJson, out _);
+        RunProbe(args, out var text, out _);
+
+        foreach (var output in new[] { captureJson, stopJson, text })
+        {
+            output.ToUpperInvariant().Should().NotContain("24BEEF01", "a general-purpose register value must not be exported");
+        }
+
+        JsonNode.Parse(captureJson)!["captured"]!["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        JsonNode.Parse(stopJson)!["stop"]!["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        text.Should().Contain("Stop: ", "the stop diagnostics were produced, so the path was exercised");
+    }
+
+    [Fact]
+    public void Run_RetireOut_WithholdsTheRegisterValuesFromTheFile()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", GprRom());
+        var states = dir.WriteFile("states.txt", Encoding.ASCII.GetBytes("3\n4\n"));
+        var retireOut = GetTempPath(dir, "retire.jsonl");
+
+        RunProbe([rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000",
+            "--retire-states", states, "--retire-out", retireOut], out _, out _);
+
+#pragma warning disable AARC003 // Test-only inspection of the probe's retire file, which the probe writes itself.
+        var lines = File.ReadAllLines(retireOut);
+#pragma warning restore AARC003
+        lines.Should().NotBeEmpty("the listed retirement positions were reached");
+        string.Join("\n", lines).ToUpperInvariant().Should().NotContain("24BEEF01", "a register value must not be written to the retire file");
+        foreach (var line in lines)
+        {
+            JsonNode.Parse(line)!["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        }
+    }
+
+    // PR #839 (decision A): the GTE refusal names the fact, not the COP2 instruction bits (a part of a guest word).
+    [Fact]
+    public void GteRefusalMessage_DoesNotExportTheCommandBits()
+    {
+        var message = RecompiledHostExecutionEngine.GteRefusalMessage(0x02BEEF01u);
+
+        message.ToUpperInvariant().Should().NotContain("BEEF01", "the COP2 instruction bits are a part of a guest word");
+        message.Should().Contain("GTE command", "the refusal still names what was refused");
     }
 
     [Fact]

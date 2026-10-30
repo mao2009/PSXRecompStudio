@@ -79,6 +79,9 @@ public static class RunCommand
                 standalone: arguments.Standalone);
 
             var artifactPath = ResolveArtifactPath(outputDirectory);
+            // Decision A (PR #839, arbitration): the V0 marker is a GPR value. The CLI's JSON is built from the public type, which has no field
+            // for it; the internal result is used for internal purposes only.
+            var publicResult = outcome.Result.ToPublic();
             var frameEvidence = arguments.FrameEvidence
                 ? ProductionFrameEvidenceCollector.Collect(input)
                 : null;
@@ -114,7 +117,7 @@ public static class RunCommand
                         Success: success,
                         Artifact: artifactPath,
                         Output: outcome.Output,
-                        Result: outcome.Result,
+                        Result: publicResult,
                         DiagnosticBundle: diagnosticBundlePath,
                         FrameEvidence: frameEvidence)));
                 }
@@ -125,7 +128,7 @@ public static class RunCommand
                         Success: success,
                         Artifact: artifactPath,
                         Output: outcome.Output,
-                        Result: outcome.Result,
+                        Result: publicResult,
                         DiagnosticBundle: diagnosticBundlePath)));
                 }
                 else if (frameEvidence is not null)
@@ -135,7 +138,7 @@ public static class RunCommand
                         Success: success,
                         Artifact: artifactPath,
                         Output: outcome.Output,
-                        Result: outcome.Result,
+                        Result: publicResult,
                         FrameEvidence: frameEvidence)));
                 }
                 else
@@ -145,7 +148,7 @@ public static class RunCommand
                         Success: success,
                         Artifact: artifactPath,
                         Output: outcome.Output,
-                        Result: outcome.Result)));
+                        Result: publicResult)));
                 }
             }
             else
@@ -246,10 +249,6 @@ public static class RunCommand
         if (result.GuestPc is { } guestPc)
         {
             standardOutput.WriteLine($"Guest PC: 0x{guestPc:X8}");
-        }
-        if (result.ResultValue is { } resultValue)
-        {
-            standardOutput.WriteLine($"Result: 0x{resultValue:X8}");
         }
         if (result.DiagnosticCode is { } code)
         {

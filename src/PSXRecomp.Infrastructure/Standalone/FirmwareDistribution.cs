@@ -786,9 +786,6 @@ public static class FirmwareRuntimeLauncher
                 nativeInstructions = engine.NativeRetiredInstructions,
                 fallbackInstructions = evidence?.FallbackInstructions,
                 fallbackTransitions = evidence?.Transitions,
-                // The final register file lets a caller verify ROM -> game -> ROM control/data continuity from the
-                // run's own output without a second engine.
-                finalGpr = result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray(),
             }));
             return exitCode;
         }

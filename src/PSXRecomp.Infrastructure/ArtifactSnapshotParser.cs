@@ -6,7 +6,7 @@ namespace PSXRecomp.Infrastructure;
 
 /// <summary>
 /// Parses the stable snapshot <see cref="RecompiledArtifactCodeGen"/>'s driver
-/// prints on stdout (<c>termination=</c>/<c>pc=</c>/<c>hi=</c>/<c>lo=</c>/<c>gpr[N]=</c>
+/// prints on stderr (<c>termination=</c>/<c>pc=</c>/<c>hi=</c>/<c>lo=</c>/<c>gpr[N]=</c>
 /// and, when the run raised, <c>exception.raised=</c>/<c>exception.code=</c>/
 /// <c>exception.faultPc=</c>/<c>exception.inDelaySlot=</c> between
 /// <see cref="RecompiledArtifactCodeGen.SnapshotBeginMarker"/> and
@@ -17,18 +17,18 @@ namespace PSXRecomp.Infrastructure;
 [Infrastructure]
 internal static class ArtifactSnapshotParser
 {
-    public static RecompilerStateSnapshot? Parse(string stdout)
+    public static RecompilerStateSnapshot? Parse(string stderr)
     {
-        ArgumentNullException.ThrowIfNull(stdout);
+        ArgumentNullException.ThrowIfNull(stderr);
 
-        var begin = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal);
-        var end = stdout.IndexOf(RecompiledArtifactCodeGen.SnapshotEndMarker, StringComparison.Ordinal);
+        var begin = stderr.IndexOf(RecompiledArtifactCodeGen.SnapshotBeginMarker, StringComparison.Ordinal);
+        var end = stderr.IndexOf(RecompiledArtifactCodeGen.SnapshotEndMarker, StringComparison.Ordinal);
         if (begin < 0 || end < 0 || end < begin)
         {
             return null;
         }
 
-        var body = stdout[(begin + RecompiledArtifactCodeGen.SnapshotBeginMarker.Length)..end];
+        var body = stderr[(begin + RecompiledArtifactCodeGen.SnapshotBeginMarker.Length)..end];
 
         int? termination = null;
         uint? pc = null, hi = null, lo = null;
@@ -90,7 +90,7 @@ internal static class ArtifactSnapshotParser
             }
             else if (key is "cop0.sr" or "cop0.cause" or "cop0.epc")
             {
-                // Issue #663 / #680: the artifact's COP0 state is well-formed evidence on stdout, but
+                // Issue #663 / #680: the artifact's COP0 state is well-formed evidence on stderr, but
                 // RecompilerStateSnapshot carries no COP0 state, so it is validated and dropped here;
                 // ReadCop0 gives a caller that wants it (the INT diagnostic) the values.
                 if (!TryParseHex(value, out _)) return null;
@@ -134,11 +134,11 @@ internal static class ArtifactSnapshotParser
             termination: (RecompilerIrTerminationReason)termination.Value);
     }
 
-    /// <summary>The artifact's final COP0 <c>sr</c>/<c>cause</c>/<c>epc</c> from <paramref name="stdout"/>'s snapshot, or null when absent or malformed.</summary>
-    public static (uint Sr, uint Cause, uint Epc)? ReadCop0(string stdout)
+    /// <summary>The artifact's final COP0 <c>sr</c>/<c>cause</c>/<c>epc</c> from <paramref name="stderr"/>'s snapshot, or null when absent or malformed.</summary>
+    public static (uint Sr, uint Cause, uint Epc)? ReadCop0(string stderr)
     {
         uint? sr = null, cause = null, epc = null;
-        foreach (var rawLine in stdout.Split('\n'))
+        foreach (var rawLine in stderr.Split('\n'))
         {
             var line = rawLine.Trim();
             var eq = line.IndexOf('=');

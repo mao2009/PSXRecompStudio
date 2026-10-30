@@ -310,6 +310,36 @@ public sealed class BiosCopyDetectionTests
     }
 
     [Fact]
+    public void TheRefusalMessages_ContainNoBiosWords_OnAnyRefusalRoute()
+    {
+        // Disclosure: a refusal names the input, its kind and its ground; it never carries a BIOS word (hex). Every refusal route is checked.
+        var bios = Bios();
+        var fragment = Fragment(bios, 20000, 60);
+        var biosHex = bios.Words.Select(static word => word.ToString("X8")).ToHashSet(StringComparer.Ordinal);
+        var inBiosRange = new LoadImageManifest(
+            [new LoadedImageSpec("in-bios", OpenBiosFirmware.ResetVector, fragment, [], "exe-file") { SourceSha256 = Evidence }],
+            new HashSet<uint>());
+        var routes = new (string Route, Action Act)[]
+        {
+            ("whole image", () => BiosAddressGuard.RequireNoBiosImage(Manifest(("exe-file", bios.Words.ToArray())), bios)),
+            ("rom-image kind", () => BiosAddressGuard.RequireNoBiosImage(Manifest(("rom-image", fragment)), bios)),
+            ("unknown kind", () => BiosAddressGuard.RequireNoBiosImage(Manifest(("mystery", fragment)), bios)),
+            ("bios range", () => BiosAddressGuard.RequireNoBiosImage(inBiosRange, bios)),
+        };
+
+        foreach (var (route, act) in routes)
+        {
+            var thrown = Record.Exception(act);
+            thrown.Should().NotBeNull($"the {route} route refuses");
+            var leaked = System.Text.RegularExpressions.Regex.Matches(thrown!.Message, "[0-9A-F]{8}")
+                .Select(static match => match.Value)
+                .Where(biosHex.Contains)
+                .ToArray();
+            leaked.Should().BeEmpty($"the {route} refusal message holds no BIOS word");
+        }
+    }
+
+    [Fact]
     public void AWholeBiosPrefix_IsNotIdentical_SoItIsNotRefusedByIdentity()
     {
         // A shorter prefix of the BIOS is not the image either: it is a partial match, diagnosed and never refused.

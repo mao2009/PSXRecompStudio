@@ -60,8 +60,10 @@ This command:
   `kernelBooted:true` only when all hold; `bootVerified:true` additionally needs
   `titleStarted` (control left the shell for user RAM outside the shell image). Running a
   fixed number of instructions is never evidence. `--capture-at <pc>` snapshots registers
-  and recent transfers when a PC is first fetched; a stop prints PC, word, COP0, GPRs,
-  recent fetches/transfers, and the first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
+  and recent transfers when a PC is first fetched. The snapshot carries `pc`, `word` and `gpr`
+  (both withheld: `null`), and `lastTransfers` without words. A stop prints `pc`, COP0 (`sr`, `cause`,
+  `epc`, `badVAddr`), `gpr` (`null`), and `lastFetches`/`lastTransfers` whose words are `null`, plus the
+  first non-IRQ/non-SYSCALL exception (ExcCode/EPC).
   Local diagnostics for the interpreter engine (output is never committed): `--dump-ram <file>`
   writes the 2 MiB of main RAM at the `--capture-at` PC, `--dump-frame <file.ppm>` the displayed
   frame at the end (24-bit aware), `--pc-histogram <file.json>` the guest-RAM fetch counts (top PCs and
@@ -264,8 +266,13 @@ Besides the fields above (`execution` keeps the session's raw evidence):
     `region:function`; a PC maps to the nearest text symbol at or below it in
     the same region, by physical address).
   - `unsupportedOpcodes[]`: the first RI (10) / CpU (11) exception per
-    (ExcCode, major opcode) seen at the vector: faulting PC (EPC, +4 in a
-    delay slot), word, fallback fetch index.
+    (ExcCode, PC) seen at the vector: faulting PC (EPC, +4 in a delay slot),
+    `word` (always `null`: a RAM or ROM word is withheld from every public output), fallback fetch index. There is no `opcode`
+    field. An earlier export had one, the word's 6-bit opcode (`word >> 26`), a number whenever the word was present. It is derived
+    from the withheld word, so it is removed as well.
+- `gte` (`null` without an observed run): `commandsExecuted` (a count) and `lastUnsupportedCommandRecorded` (a boolean: an unsupported GTE command
+  was seen). The earlier `lastUnsupportedCommand` (a `uint?` holding that command word) is renamed to the boolean, and the command word is no longer
+  published.
 - `timings` (wall clock, not deterministic): `buildMs` (image analysis),
   `compileMs` = `codegenMs` + `gccMs`, `referenceMs` (interpreter run),
   `runMs`, `fallbackMs`, `transferMs` (copy-sync), `nativeAndHostMs` = run −
@@ -277,13 +284,20 @@ Besides the fields above (`execution` keeps the session's raw evidence):
   compared, every boundary the interpreter reached matched in the host, and
   the milestones match; null without `--differential`.
 - `differential.<pc>`: `match`, `firstMismatch` (`kind` cpu/device/ram, `name`,
-  both values; CPU before devices before RAM), `cpuMismatches[]` (PC, r1–r31,
-  HI, LO, SR, CAUSE, EPC, BadVAddr), `deviceMismatches[]` (I_STAT, I_MASK, IRQ
-  line, DMA DPCR/DICR/MADR/BCR/CHCR and IRQ, timer counter/target/IRQ, SIO0
-  IRQ, GPUSTAT, VRAM SHA-256, CD-ROM index/status/IF/IE/FIFO counts/last
-  command/mode), `ramFirstMismatch` (address, 4 KiB page, 16 bytes either side
-  in both runs), `ramMismatchBytes`, `ramMismatchPages`, both RAM SHA-256.
+  both values; CPU before devices before RAM; a RAM mismatch has `null` values),
+  `cpuMismatches[]` (PC, HI, LO, SR, CAUSE, EPC, BadVAddr, and the GPR names
+  r1–r31 with `null` values, since their values are withheld), `deviceMismatches[]`
+  (I_STAT, I_MASK, IRQ line, DMA DPCR/DICR/MADR/BCR/CHCR and IRQ, timer
+  counter/target/IRQ, SIO0 IRQ, GPUSTAT, VRAM SHA-256, CD-ROM index/status/IF/IE/FIFO
+  counts/last command/mode), `ramFirstMismatch` (`address` and 4 KiB `page` only:
+  the bytes either side are withheld), `ramMismatchBytes` (a count),
+  `ramMismatchPages`, and both RAM SHA-256 (`interpreterRamSha256`, `hostRamSha256`).
   Only side-effect-free reads are used (no timer mode, no FIFO pops).
+- The boundary snapshots (`boundaries.<pc>`, and `firstInterrupt.interpreter` /
+  `firstInterrupt.host`) carry `pc`, `atFetch`, `cpu` (every non-GPR CPU register; no
+  `r0`–`r31` keys), `gpr` (`null`), `devices`, `sr`, `cause`, `epc`, `ramSha256`,
+  `guestCycles`, `scratchpadSha256`. The earlier `instructionWord` field (the RAM word
+  at the PC) is removed. The GPR values are not exported: they are not keys of `cpu`, and `gpr` is `null`.
 - `milestoneComparison`: whether both runs reached the same milestones
   (fetch indices excluded: they count different fetches) and the
   interpreter's report. `stopAt`: the PC and whether each run reached it.
@@ -308,14 +322,23 @@ execution that a different export would show. A v1 export carries no identity an
 `outcome` (its terminal `TitleExecutionState` and `complete`). Only a run that reached a classified end (`Completed`,
 `Returned`, `RuntimeHandoff`) is planned from; an export of a run that exhausted its budget, failed, or hit an unsupported
 transfer is partial and is refused, and an export without `outcome` is malformed. The probe still writes such an export
-(with its outcome) and reports it on stderr. Each target also carries `ramWord`: the instruction word the interpreter read from guest
-RAM or ROM at that PC, observed at every fallback fetch there. It is `null` when the PC is outside RAM and ROM (the probe reads no
-word there, so a zero is never recorded for it), when a fetch could not be read, or when two fetches at the same PC read different
-words. The planner rejects a `null` `ramWord` as `ram-word-mismatch`. The planner reads a target as a candidate root only when its `ramWord`
-equals the word the EXE file places at that PC; any other target is rejected with the reason `ram-word-mismatch` and is not reported
-as a native route. This check compares what the run fetched with the file, so it can refuse a root whose native block would not run,
-but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that at run time. A `v2` export
-without `ramWord` is malformed and refused. This note records what this repository does not show. Earlier commit
+(with its outcome) and reports it on stderr. The public export carries no RAM word: no instruction word read from guest RAM or ROM is
+published (the ruling on #839). An export that contains `ramWord` is malformed and refused. The RAM word of each target is supplied only by
+the explicit local evidence (`openbios-probe --local-ram-evidence <file.json>`, format `fallback-ram-evidence/v1`), which records the word
+observed at each fallback PC in RAM, and it is bound to one export by that export file's SHA-256. The evidence is written and read only at a
+real location outside every Git work tree (`LocalRamEvidence`), so it cannot be committed with a PR or a CI artifact by mistake. The check
+resolves every symbolic link and junction on the path first (a link named outside a repository that points into it is refused), and a path
+whose real location cannot be determined is refused. The file is created exclusively, so an existing file is never replaced. The handle check that confirms where a new file went is Windows only: on
+POSIX systems the guard relies on the path checks alone. That is a documented limit. The threat model is an accidental commit, not an adversary. `fallback-roots`
+takes it with `--local-ram-evidence <file.json>`.
+`openbios-probe --dump-ram <file>` (the raw 2 MiB of RAM at `--capture-at`, a local diagnostic) is written under the same rule: a new file,
+outside every Git work tree, refused before the run when it is not. An existing file is refused as well: an earlier build overwrote it. A word is `null` when the PC is outside RAM (the probe records no word there), when a fetch
+could not be read, or when two fetches at the same PC read different words; such a target has no word. The planner reads a target as a
+candidate root only when its RAM word equals the word the EXE file places at that PC; any target without a word, or with another word, is
+rejected with the reason `ram-word-mismatch` and is not reported as a native route. Without the local evidence no target has a word, so
+no root is adopted (fail closed). The check is never skipped. This check compares what the run fetched with the file, so it can refuse a root
+whose native block would not run, but it does not prove that RAM matched the file at every block entry; the loaded-image guard does that
+at run time. This note records what this repository does not show. Earlier commit
 messages on the observed-roots branch (d164590 and 366b0c1) cite an observation from a Persona real run and loaded-code counts from
 the same work. Neither is recorded in this repository (no run log, export, or measurement is committed), so both are unverified and
 are not evidence for any result here. The `ramWord` check is a code path; its effect on any real run has not been measured. Output safety: the
@@ -940,8 +963,9 @@ packaging-time declaration (`--bios-provenance`) is recorded for comparison only
   (its own run of `InterpreterTitleExecutionEngine`) ends with `guestPc` = 2147685912 = `0x80031618`, `KernelRunningFromRam`,
   `VectorsInstalled` and `ShellEntered` all true. The record is `scratchpad/probe-2m.json`. The BIOS leaves the reset vector.
 
-**Why the `guestPc` field of the bounded run is `0xBFC00000`.** It is the artifact process's own snapshot, parsed from its stdout
-(`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`). The interpreter's fallback runs in the host, and its final state is
+**Why the `guestPc` field of the bounded run is `0xBFC00000`.** It is the artifact process's own snapshot, parsed from its stderr
+(`RecompiledHostExecutionEngine`, `ArtifactSnapshotParser`): the snapshot is written to stderr, and only for a run the parent manages
+(the `--host-snapshot` flag, PR #839 ruling). Stdout carries the guest's text and the bridge protocol only. The interpreter's fallback runs in the host, and its final state is
 not written back into that snapshot, so the field is the segment's entry state. The run's stop message above is the value to
 read. Mixed-fallback progress is therefore verified by the stop message and by the probe, not by `guestPc`.
 

@@ -415,13 +415,19 @@ public sealed class RecompiledArtifactCodeGenTests
             var compile = RunCompiler(gccPath, cPath, exePath);
             compile.ExitCode.Should().Be(0, "the self-contained generated artifact must compile");
 
-            var run = RunProcess(exePath);
-            run.ExitCode.Should().Be(5, "the process exit code must equal the stop reason (5 = unsupported transfer)");
-            run.Output.Should().Contain("termination=5");
-            run.Output.Should().Contain("pc=");
-            run.Output.Should().Contain("gpr[0]=0x00000000");
-            run.Output.Should().Contain("RSNAPSHOT_BEGIN");
-            run.Output.Should().Contain("RSNAPSHOT_END");
+            var managed = RunProcess(exePath, RecompiledArtifactCodeGen.HostSnapshotFlag, 60000);
+            managed.ExitCode.Should().Be(5, "the process exit code must equal the stop reason (5 = unsupported transfer)");
+            managed.Output.Should().Contain("termination=5");
+            managed.Output.Should().Contain("pc=");
+            managed.Output.Should().Contain("gpr[0]=0x00000000");
+            managed.Output.Should().Contain("RSNAPSHOT_BEGIN");
+            managed.Output.Should().Contain("RSNAPSHOT_END");
+
+            // PR #839 ruling: a direct launch (no --host-snapshot) prints no snapshot on stdout or stderr.
+            var (_, directStdout, directStderr) = RunProcessVerbose(exePath, string.Empty, 60000);
+            directStdout.Should().NotContain("RSNAPSHOT_", "a direct launch prints no state snapshot on stdout");
+            directStderr.Should().NotContain("RSNAPSHOT_", "a direct launch prints no state snapshot on stderr");
+            directStdout.Should().NotContain("gpr[", "a direct launch prints no GPR value");
         }
         finally
         {
@@ -481,12 +487,14 @@ public sealed class RecompiledArtifactCodeGenTests
             var compile = RunCompiler(gccPath, cPath, exePath);
             compile.ExitCode.Should().Be(0, "the bridge-capable generated artifact must compile");
 
+            // PR #839 ruling: without the parent's snapshot flag the run prints no snapshot, on stdout or stderr.
             var parentless = RunProcess(exePath);
             parentless.ExitCode.Should().Be(5, "without the opt-in flag the run stays parentless (5 = unsupported transfer)");
-            parentless.Output.Should().Contain("termination=5");
+            parentless.Output.Should().NotContain("RSNAPSHOT_", "a direct launch prints no state snapshot");
+            parentless.Output.Should().NotContain("gpr[", "a direct launch prints no GPR value");
 
-            var orderA = RunProcess(exePath, "--guest-exceptions --exact-device-time", 60000);
-            var orderB = RunProcess(exePath, "--exact-device-time --guest-exceptions", 60000);
+            var orderA = RunProcess(exePath, $"--guest-exceptions --exact-device-time {RecompiledArtifactCodeGen.HostSnapshotFlag}", 60000);
+            var orderB = RunProcess(exePath, $"--exact-device-time --guest-exceptions {RecompiledArtifactCodeGen.HostSnapshotFlag}", 60000);
             orderA.ExitCode.Should().Be(5);
             orderB.ExitCode.Should().Be(5);
             orderA.Output.Should().Be(orderB.Output, "the flags parse position-independently, so order must not change the result");
@@ -960,12 +968,13 @@ public sealed class RecompiledArtifactCodeGenTests
                 Skip.If(true, "wine not available; PE32+ x86-64 build verified but execution NOT RUN.");
             }
             var (runExit, runOut, runErr) = OperatingSystem.IsWindows()
-                ? RunProcessVerbose(exePath, "", 60000)
-                : RunProcessVerbose(runner!, exePath, 60000);
+                ? RunProcessVerbose(exePath, RecompiledArtifactCodeGen.HostSnapshotFlag, 60000)
+                : RunProcessVerbose(runner!, $"{exePath} {RecompiledArtifactCodeGen.HostSnapshotFlag}", 60000);
+            var runSnapshot = runOut + runErr; // the snapshot is on stderr; the managed run asks for it
             runExit.Should().Be(5, "the PE exit code must equal the unsupported-transfer reason (5)");
-            runOut.Should().Contain("termination=5");
-            runOut.Should().Contain("RSNAPSHOT_BEGIN");
-            runOut.Should().Contain("RSNAPSHOT_END");
+            runSnapshot.Should().Contain("termination=5");
+            runSnapshot.Should().Contain("RSNAPSHOT_BEGIN");
+            runSnapshot.Should().Contain("RSNAPSHOT_END");
         }
         finally
         {

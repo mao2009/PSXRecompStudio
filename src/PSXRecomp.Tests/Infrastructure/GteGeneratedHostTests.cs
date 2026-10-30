@@ -86,7 +86,7 @@ public sealed class GteGeneratedHostTests
     }
 
     [Fact]
-    public void AnUnimplementedGteCommand_StopsTheGeneratedHost_NamingTheCommand()
+    public void AnUnimplementedGteCommand_StopsTheGeneratedHost_WithTheConfirmedRefusal()
     {
         var reset = new Block(RomBase);
         reset.Emit(Li(T0, 0x4000_0000u), [Mtc0(T0, 12), Nop]);
@@ -103,6 +103,7 @@ public sealed class GteGeneratedHostTests
             new TitleExecutionRequest(RomBase, new uint[TitleExecutionRequest.GprCount], 0, 0, [], outerBudget: 1, segmentBudget: 200));
 
         result.DiagnosticCode.Should().Be("GTE_COMMAND_UNSUPPORTED");
-        result.DiagnosticMessage.Should().Contain("0x30");
+        // The confirmed refusal (PR #839, decision A): the fact only, no command bits (the opcode is not named either).
+        result.DiagnosticMessage.Should().Be("GTE command is not implemented.");
     }
 }

@@ -175,7 +175,7 @@ public static class PrintfService
                     case 's':
                         if (!TryReadCString(reader, value, MaxStringArgumentLength, out var text))
                         {
-                            return Fail(identity, $"'%s' pointer 0x{value:X8} is unreadable, unmapped, or has no NUL terminator within the bound");
+                            return Fail(identity, "'%s' pointer is unreadable, unmapped, or has no NUL terminator within the bound");
                         }
 
                         output.AddRange(text);
