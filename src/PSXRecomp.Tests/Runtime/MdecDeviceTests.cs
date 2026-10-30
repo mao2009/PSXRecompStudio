@@ -87,6 +87,7 @@ public sealed class MdecDeviceTests : IDisposable
         _mdec.WriteRegister(4, 0x60000000u); // enable DMA in/out
 
         // DMA1 armed first: 16 words to 0x3000, nothing decoded yet.
+        // 現在の実装を固定する。実機未検証（UNVERIFIED）。
         _dma.WriteRegister(Ps1MemoryMap.GetChannelMadr(1), 0x3000);
         _dma.WriteRegister(Ps1MemoryMap.GetChannelBcr(1), 0x00010010);
         _dma.WriteRegister(Ps1MemoryMap.GetChannelChcr(1), BlockFromDevice);
@@ -94,6 +95,7 @@ public sealed class MdecDeviceTests : IDisposable
         (_dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(1)) & StartBusy).Should().NotBe(0u, "no output yet");
 
         _mdec.WriteRegister(0, 0x28000000u | 1);
+        // 現在の実装を固定する。実機未検証（UNVERIFIED）: bit 28 は DMA0 要求が保留中のときに立つ、と実装が定めている。
         (_mdec.ReadRegister(4) & (1u << 28)).Should().NotBe(0u, "data-in request");
         _memory.Write32(0x2000, ZeroBlock);
         _dma.WriteRegister(Ps1MemoryMap.GetChannelMadr(0), 0x2000);
@@ -106,6 +108,77 @@ public sealed class MdecDeviceTests : IDisposable
         _memory.Read32(0x3000).Should().Be(0x80808080u);
         _memory.Read32(0x303C).Should().Be(0x80808080u);
         _dma.ReadRegister(Ps1MemoryMap.GetChannelMadr(1)).Should().Be(0x3040u);
+    }
+
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: コマンド 0 と 4-7 はパラメータ数 word&amp;0xFFFF で受理され、実行は何もしない。</summary>
+    [Fact]
+    public void InvalidCommandWithoutParameters_IsIgnored_AndLeavesTheDeviceIdle()
+    {
+        _mdec.WriteRegister(0, 0x00000000u); // command 0, no parameter words
+        _mdec.WriteRegister(0, 0x80000000u); // command 4, no parameter words
+
+        _mdec.IsBusy.Should().BeFalse();
+        _mdec.FifoWordCount.Should().Be(0);
+        (_mdec.ReadRegister(4) & (1u << 31)).Should().NotBe(0u, "no output was produced");
+    }
+
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: パラメータ 0 語の復号は出力を作らず、デバイスは待機しない。</summary>
+    [Fact]
+    public void MonoDecode_WithNoData_ProducesNoOutput()
+    {
+        _mdec.WriteRegister(0, 0x28000000u); // 8-bit mono decode, zero parameter words
+
+        _mdec.IsBusy.Should().BeFalse();
+        _mdec.FifoWordCount.Should().Be(0);
+    }
+
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: 不完全なマクロブロックは例外もエラーもなく出力を破棄する。</summary>
+    [Fact]
+    public void FifteenBit_ShortData_ProducesNoOutputForTheIncompleteMacroblock()
+    {
+        _mdec.WriteRegister(0, 0x3A000000u | 1); // 15-bit macroblock needs 6 blocks, but only one word is sent
+        _mdec.WriteRegister(0, ZeroBlock);
+
+        _mdec.IsBusy.Should().BeFalse("the declared word count was reached");
+        _mdec.FifoWordCount.Should().Be(0);
+    }
+
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: 出力 FIFO は語数ちょうどで空になり、空の読み出しは 0 を返す。</summary>
+    [Fact]
+    public void OutputFifo_DrainsExactlyAtItsWordCount_EmptyFifoReadReturnsZero()
+    {
+        _mdec.WriteRegister(4, 0x20000000u); // enable DMA out
+        _mdec.WriteRegister(0, 0x28000000u | 1);
+        _mdec.WriteRegister(0, ZeroBlock);
+
+        for (var i = 0; i < 15; i++) _mdec.ReadData().Should().Be(0x80808080u);
+        (_mdec.ReadRegister(4) & (1u << 27)).Should().NotBe(0u, "one word still queued");
+        (_mdec.ReadRegister(4) & (1u << 31)).Should().Be(0u, "FIFO not empty");
+
+        _mdec.ReadData().Should().Be(0x80808080u);
+        (_mdec.ReadRegister(4) & (1u << 27)).Should().Be(0u, "FIFO drained");
+        (_mdec.ReadRegister(4) & (1u << 31)).Should().NotBe(0u, "FIFO empty");
+        _mdec.ReadData().Should().Be(0u, "reading an empty FIFO returns zero");
+        _mdec.FifoWordCount.Should().Be(0);
+    }
+
+    /// <summary>現在の実装を固定する。実機未検証（UNVERIFIED）: FIFO より大きい DMA1 バーストは完了せず、語を消費しない。</summary>
+    [Fact]
+    public void Dma_OutputBurstLargerThanTheFifo_WaitsWithoutConsumingWords()
+    {
+        _dma.WriteRegister(Ps1MemoryMap.Dpcr, 0x07654321u | (1u << 3) | (1u << 7));
+        var bridge = new MdecDmaTransfer(_mdec, _dma, _memory);
+        _mdec.WriteRegister(4, 0x60000000u);
+        _mdec.WriteRegister(0, 0x28000000u | 1);
+        _mdec.WriteRegister(0, ZeroBlock); // 16 output words
+
+        _dma.WriteRegister(Ps1MemoryMap.GetChannelMadr(1), 0x3000);
+        _dma.WriteRegister(Ps1MemoryMap.GetChannelBcr(1), 0x00010011); // 17 words: one more than the FIFO holds
+        _dma.WriteRegister(Ps1MemoryMap.GetChannelChcr(1), BlockFromDevice);
+        bridge.TryTransfer();
+
+        (_dma.ReadRegister(Ps1MemoryMap.GetChannelChcr(1)) & StartBusy).Should().NotBe(0u, "the burst is not complete");
+        _mdec.FifoWordCount.Should().Be(16, "no word was consumed");
     }
 
     /// <summary>
