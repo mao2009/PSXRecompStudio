@@ -1521,7 +1521,8 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             // stderr carries the state snapshot. It is waited for within the same drain budget, measured from drainStart as stdout is; the sink
             // keeps the text read so far, so a stderr pipe still held by a grandchild does not lose a complete snapshot already written.
             // The stderr pump can lag the stdout end, so the text is read when the pump ends, not at the stdout end.
-            var stderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, drainStart);            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
+            var stderr = SinkText(stderrPump, stderrSink, outputBudgetMs, stopRecord, drainStart);
+            RecordPipeHeldAfterStop(stopToken, stopRecord, stdoutTask, stderrPump);
             return (process.ExitCode, stdout, stderr, false, true);
         }
 
