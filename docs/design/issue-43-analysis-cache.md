@@ -1,4 +1,4 @@
-# Issue #43: Incremental Analysis and Cache (design, r33)
+# Issue #43: Incremental Analysis and Cache (design, r34)
 
 - Status: **Design. No stage is cacheable.** Rule C (4.3) is the only cacheability rule: a stage is
   cacheable only when its U2 verdict, V-ID, T-IDENT, and R-G1 (2.1) all hold. R-G1 is owner-approved as mandatory
@@ -9,7 +9,7 @@
   cannot hold for any stage, and a matching gate file does not make a stage cacheable. R-G1 (2.1) applies to every candidate stage in the current pipeline, because each traces back to the image stream: each stays uncacheable until the analysis consumes the buffer that the hash covers.
 - Issue: #43 "[Analysis] Incremental Analysis & Cache" (related: #42, #39)
 - Base: `origin/main` at `2e3ecad`
-- Revision: r33. Fixes the review of `98137e3` (r32) (row OR6 in 12.22): the R-G1 evidence channel and its binding test, plus wording and ordering fixes. Earlier: r32 fixes the R-G1 consistency review of `bdcb883` (r31), mapped in 12.22 (row OR5). r31 fixed the review of `7bb935b` (rows OR2 to OR4), and r30 records the owner rulings (R-G1 of 2026-10-30, #40 D2 Option A) in OR1. Doc only; no `src/` change.
+- Revision: r34. Fixes the review of `3103df6` (r33) (row OR7 in 12.22), and corrects the OR6 row. r33 fixes the review of `98137e3` (r32) (row OR6 in 12.22): the R-G1 evidence channel and its binding test, plus wording and ordering fixes. Earlier: r32 fixes the R-G1 consistency review of `bdcb883` (r31), mapped in 12.22 (row OR5). r31 fixed the review of `7bb935b` (rows OR2 to OR4), and r30 records the owner rulings (R-G1 of 2026-10-30, #40 D2 Option A) in OR1. Doc only; no `src/` change.
   r29 addresses the review of `2b3e8fc` (r28): three findings, mapped in 12.21. The findings of `4b62055` (r27) are in 12.20, `c26abdb` (r26) in 12.19, `d336ff0` (r25) in 12.18, `dc0ab13` (r24) in 12.17, `0a5bcff` (r23) in 12.16, `e3db1c8` (r22) in 12.15, `2311b62` (r21) in 12.14, `597e1aa` (r20) in 12.13, `f4b95ab` (r19) in 12.12, `882500e` (r18) in 12.11, `5e658f5` (r17) in 12.10, `6a871a5` (r16) in 12.9, `e1afbba` (r15) in 12.8, and the findings of
   `6f1494a` (r14) are in 12.7, `d11733c` (r13) in 12.6, `d1c41ac` (r12) in 12.5, `34845dd` (r11) in 12.4, and
   `f77183e` (r10) in 12.3. The direction of r9 to r15 is not re-examined. Section 12 maps each finding to its resolution, and the resolutions are stated
@@ -656,7 +656,7 @@ differs from what the stage now computes would be used in Normal mode. That is t
 - **F2. Missing.** A miss. The stage is recomputed. No diagnostic is reported.
 - **F3. Uncacheable.** The stage is recomputed on every run, and the run reports `ANALYSIS_CACHE_UNCACHEABLE` once per
   stage. This is the code for every state in which no cacheable verdict exists: the default state before U2 runs (no gate
-  file exists), a gate file that is missing, unreadable, or mismatched, and a stage whose verdict is uncacheable. Precedence
+  file exists), a gate file that is missing, unreadable, or mismatched, a stage whose verdict is uncacheable, and a matching gate file with a cacheable verdict while V-ID, R-G1, or T-IDENT is not satisfied (precedence step 4 of 9.3). Precedence
   (9.3): this check comes second, after an unreadable MVID (which gives KEY_UNAVAILABLE), so a state without a matching gate file reports this code even when a dependency input is also
   unreadable.
 - **F4. Partial failure.** If a stage fails, no entry is written for it or for any stage below it (W5).
@@ -698,18 +698,19 @@ differs from what the stage now computes would be used in Normal mode. That is t
   implementation. The production composition root binds the production implementation only. A verdict that comes from the
   test project is never a Rule C condition and never marks a production stage cacheable.
 - **Shared service and gate (owner ruling, 2026-10-30, Issue #43 comment).** The CLI and the GUI use one analysis-cache
-  service and one gate, the Rule C gate of 4.3 (the gate file is a separate record, 9.3). There is no GUI-owned bypass and no GUI-owned key derivation: the GUI
+  service and one Rule C check of 4.3 (the gate file is a separate record, 9.3). There is no GUI-owned bypass and no GUI-owned key derivation: the GUI
   passes `discImageSha256` to the shared service and computes no digest or key itself (T-IDENT-a, 7.3). No path may skip
   Rule C. Until Rule C holds for a stage, every path is fail-closed uncacheable.
 
 Injection seams (Core types, public ports):
 
 - `IAnalysisCacheStore`: the store port (8.1). Tests pass an in-memory fake, which lives in the test project.
-- `IStageCodeIdentity`: returns, for each stage, the Rule C inputs as values: `codeIdentity`, `dependencyIdentity`, the U2 verdict for the stage (`cacheable` or `uncacheable`), the V-ID state, the T-IDENT state, and the R-G1 state (a sixth input, derived as stated in 9.3, "R-G1 state source"; it is `not implemented` until that evidence exists). The port is the single
+- `IStageCodeIdentity`: returns, for each stage, the Rule C inputs as values: `codeIdentity`, `dependencyIdentity`, the U2 verdict for the stage (`cacheable` or `uncacheable`), the V-ID state, the T-IDENT state, and the R-G1 state (a sixth input; each source is given in 9.3, "Input sources"). The port is the single
   carrier of these inputs. A stage is cacheable only when all three conditions of Rule C hold (4.3). An R-G1 state of `not implemented`, or an unknown one, makes the stage uncacheable whatever the U2 verdict says. The port does not
   decide that by itself.
-  Production binds the gate-file-backed implementation (9.3) for the first five inputs. The R-G1 state is never read from
-  the gate file and is never a constant or a default; production reads it from the R-G1 evidence record for the stage (9.3, "R-G1 state source"; T-R-G1-BIND in 7.3). Tests bind a fake.
+  The gate file is the source of the U2 verdict only (its store record, 9.3). It is not the source of `codeIdentity`,
+  `dependencyIdentity`, the V-ID state, the T-IDENT state, or the R-G1 state, and no state is a constant or a default.
+  Tests bind a fake. The production binding is covered by T-R-G1-BIND (7.3).
 - `IStageInputRecorder`: wraps an input record and counts reads per field (3.6).
 - `AnalysisCacheOptions`: `Mode` (default `Verify`), the store, the code identity provider (the `IStageCodeIdentity` that carries the Rule C inputs), the recorder, and a
   diagnostics sink.
@@ -755,7 +756,7 @@ tree; none of those exists at `2311b62`.
 | T-IDENT2 (C1 of r7) | Same executable, different disc identity | Two fixtures with the same boot executable bytes and different disc hashes (and, in a second case, a different boot path). The N11 keys differ, the second run does not reuse the first run's N11 entry, and the N11 payload contains its own disc hash and boot path. N12a is added to this test when U1 creates a candidate unit (3.5, 9.2). | **After Rule C holds for N11** (it observes reuse). The key difference alone can be checked before |
 | T-DIFF (MAJOR-1 of r7) | N12a is independent of validations | For a fixed `(report, fixture)`, vary `validations` (none, one run, two runs, different order). The N12a payload is byte-identical in every case. The document from N14 differs only in the `Differential` section. | Runs after U1 (N12a exists as a function) |
 | T-UNCACHE | Uncacheable stage writes nothing | For the default status (no gate file, F3), and with an uncacheable U2 verdict, or an R-G1 state of `not implemented`, injected through `IStageCodeIdentity` (7.1; T-R-G1-UNIMPL), each stage recomputes every run, writes no entry in Verify or Normal mode, and reports `ANALYSIS_CACHE_UNCACHEABLE` once. | Needs seams `AnalysisCacheOptions` and `IStageCodeIdentity`, and the code `ANALYSIS_CACHE_UNCACHEABLE` (none present at `2311b62`) |
-| T-R-G1-BIND (9.3, R-G1 state source) | Production binding of the R-G1 state (requirement, not run) | With no R-G1 evidence record, the production `IStageCodeIdentity` binding returns `not implemented` for R-G1 on every stage. A constant in the binding, a gate-file field, or a configuration flag cannot make it return `implemented`. A record whose stage, code identity, or MVID differs from the running build, or whose result is not a pass, also yields `not implemented`. The test does not depend on V-ID being implemented. | Needs the production binding and the evidence reader (neither present at `2311b62`); R-G1 (2.1) not implemented |
+| T-R-G1-BIND (9.3, R-G1 state source) | Production binding of the R-G1 state (requirement, not run) | With no R-G1 evidence record, the production `IStageCodeIdentity` binding returns `not implemented` for R-G1 on every stage. A constant in the binding, a gate-file field, or a configuration flag cannot make it return `implemented`. A record whose `recordDigest` does not match its content, whose stage, code identity, or MVID differs from the request or the running build, or whose result is not `pass`, also yields `not implemented`. The test does not depend on V-ID being implemented. | Needs the production binding and the evidence reader (neither present at `2311b62`); R-G1 (2.1) not implemented |
 | T-R-G1-UNIMPL (2.1, R-G1; 7.1 port) | Matching verdict with R-G1 unimplemented (requirement, not run) | With a fake `IStageCodeIdentity` that reports a cacheable U2 verdict, V-ID implemented, T-IDENT passing, and the R-G1 state `not implemented`, each candidate stage is uncacheable: it writes no entry in Verify or Normal mode, returns no hit, and reports `ANALYSIS_CACHE_UNCACHEABLE`. Verifies that a verdict alone cannot make a stage cacheable. The `not implemented` state is the one that production gives while no R-G1 evidence exists (9.3, "R-G1 state source"). A second case: a gate file that claims R-G1 `implemented` still yields `not implemented` in production. | Needs seams `IStageCodeIdentity` and `AnalysisCacheOptions`, V-ID implemented, and R-G1 (none present at `2311b62`); a test-only verdict may exercise it |
 | T-KEY-UNAVAIL (M8 of r8, MINOR-7 of r7) | Unreadable key input | Three cases, with a fake `IStageCodeIdentity`. (a) The MVID unreadable: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (precedence step 1 of 9.3). (b) A matching gate file in the fake, and the package file, `Directory.Build.props`, or the runtime version unreadable, one at a time: reports `ANALYSIS_CACHE_KEY_UNAVAILABLE` (step 3). (c) The same unreadable input with no matching gate file: reports `ANALYSIS_CACHE_UNCACHEABLE` (step 2), which shows the order. In every case the stage is uncacheable, and no constant key is produced. | Needs seam `IStageCodeIdentity` (a fake in the test project) and the code `ANALYSIS_CACHE_KEY_UNAVAILABLE` (none present at `2311b62`) |
 | T-READ | Record matches reads | Run each stage under the recorder on set-A fixtures. Every record field's read count is recorded. A zero-read field is listed as a flag for review (V6). It is not removed by this test. For N11, the record fields are those of 3.5; the N9 and N10 values that the unit computes at `:404` and `:432` are not record fields. | Runs after U1 (records exist) |
@@ -962,21 +963,42 @@ verdict is `uncacheable`. Each uncacheable verdict names the reached symbol and 
 MVID read exists in `src/` at `2311b62` (`git grep` for `ModuleVersionId`, `MetadataVersion`, and `MVID` finds none outside
 tests). **UNVERIFIED:** the read is not yet written. The host would take it from the loaded assembly's module (for example
 `ManifestModule.ModuleVersionId`), which is a reflection call that item 1 forbids inside a stage closure. The call sits in
-the host's composition root (8.1), outside every stage closure, so item 1 does not apply to it. U5 confirms the MVID. If they are equal, the host passes the six Rule C inputs (`codeIdentity`, `dependencyIdentity`, the U2 verdict from the
-gate file, the V-ID state, the T-IDENT state, and the R-G1 state derived as stated under "R-G1 state source") into
+the host's composition root (8.1), outside every stage closure, so item 1 does not apply to it. U5 confirms the MVID. If they are equal, the host passes the six Rule C inputs, from the sources given under "Input sources", into
 `IStageCodeIdentity` as a value (the single carrier of the Rule C inputs, 7.1; `AnalysisCacheOptions` holds that port). The gate file's
 verdict is one input to Rule C (4.3), not the whole rule. A stage is cacheable only when Rule C holds in full: the U2
 verdict, V-ID, R-G1, and T-IDENT. V-ID is not implemented, so until it exists every stage is uncacheable, whether or not a gate file matches. Otherwise the stage is uncacheable. A missing, unreadable, or mismatched gate file is
 uncacheable and reports `ANALYSIS_CACHE_UNCACHEABLE` (F3). In the default state no gate file exists, so the same code applies.
-**R-G1 state source (requirement, not implemented).** The R-G1 state is not a gate-file field, not a configuration flag,
-and never a constant or a default. Its only channel is an **R-G1 evidence record** for the specific stage. The R-G1 test
-suite produces the record, and it is bound to the stage, the code identity (3.3), and the running MVID (9.3). It records
-the result of the single-buffer test T-IDENT-c (7.3) for that stage. An operator does not write it, and the gate file
-cannot carry it. The production binding (`IStageCodeIdentity`, 7.1) reads the record and returns `implemented` only when
-the record's stage, code identity, and MVID match the running build and its result is a pass. Otherwise it returns
-`not implemented`. Producing and checking the record belong to the #43 implementer track, whose owner the coordinator
-assigns; this document does not assign one. The integrity check for a hand-written record has no mechanism yet
-(UNVERIFIED). Until a matching record exists for a stage, the state is `not implemented`, and the stage is uncacheable.
+**Input sources (requirement, not implemented).** No input of the six in 7.1 is a constant, a default, or a configuration
+flag. A missing record gives the state in brackets.
+- `codeIdentity`: 3.3, computed from the build. `dependencyIdentity`: 3.8.
+- The U2 verdict: the U2 output for the running MVID, which is the gate file (its store record, not a permission; Rule C (a)).
+- The V-ID state: the V-ID result record, written by the V-ID check for the stage when the supplied hash matches the
+  hashed stream. The record carries the same fields as the R-G1 record below. [`not implemented`] until V-ID exists.
+- The T-IDENT state: the T-IDENT results record, written by the T-IDENT-a, T-IDENT-b, and T-IDENT-c test runs, with the same
+  fields. [`not implemented`] until those tests run and pass.
+- The R-G1 state: the R-G1 evidence record below. [`not implemented`].
+
+**R-G1 evidence record (requirement, not implemented).** The R-G1 state is not a gate-file field and not a configuration
+flag, and it is never a constant or a default.
+- **Path (proposal).** `artifacts/analysis-cache/r-g1/<mvid>/<stage>.json`, relative to the repository root, where `<stage>`
+  is the stage identifier of 2.2. The path is fixed by convention. The binding does not take a path from configuration.
+- **Schema (proposal, `schema: 1`).** `schema`, `stage`, `mvid`, `codeIdentity` (3.3), `testId` (`T-IDENT-c`), `result`
+  (`pass` or `fail`), `producer` (the CI run or implementer-track job identifier), `inputsDigest` (SHA-256 over the R-G1 test
+  run's inputs: the test sources, the fixture set, and the code identity bytes), and `recordDigest` (SHA-256 over the
+  canonical encoding of all other fields, as in 3.7).
+- **Producer.** The R-G1 test suite (T-IDENT-c), run in CI or on the implementer track's job. It writes one record for each
+  stage it covers, after the run, with `result` set from the run. No other writer is defined.
+- **Binding check (requirement, not run).** Before it returns a state, the production binding (`IStageCodeIdentity`, 7.1):
+  (a) parses the record and rejects a `schema` other than 1; (b) recomputes `recordDigest` and rejects a mismatch; (c) rejects
+  the record unless `mvid` equals the running MVID and `codeIdentity` equals the running build's code identity; (d) rejects
+  the record unless `stage` equals the requested stage; (e) returns `implemented` only when `result` is `pass`. A rejection,
+  or a missing record, gives `not implemented`. The check does not depend on V-ID being implemented (T-R-G1-BIND, 7.3).
+- **Limit (UNVERIFIED).** `recordDigest` detects accidental or partial edits. It does not stop a deliberate rewrite, because
+  whoever can write the file can recompute the digest. A signature or a CI-only write path would be needed, and none is
+  defined (10).
+- **Owner.** The #43 implementer track, to be assigned by the coordinator. This document does not assign one.
+
+Until a matching record exists for a stage, the R-G1 state is `not implemented`, and the stage is uncacheable.
 The record does not replace V-ID or the U2 verdict: they remain separate conditions (Rule C (a) and (b)).
 
 **Precedence (one code per state).** The checks run in this order, and the first failure decides the code.
@@ -985,7 +1007,10 @@ The record does not replace V-ID or the U2 verdict: they remain separate conditi
    (F3), even when a dependency input is also unreadable.
 3. The gate file matches, and a dependency input (the package file, `Directory.Build.props`, or the runtime version) cannot be
    read. Report `ANALYSIS_CACHE_KEY_UNAVAILABLE`.
-When none of these fails, the gate file's verdict is one input to Rule C. Rule C also needs V-ID, R-G1, and T-IDENT, so until V-ID
+4. The gate file matches, every dependency input is readable, and the U2 verdict for the stage is `cacheable`, but V-ID is
+   not implemented, the R-G1 state is `not implemented`, or a T-IDENT test does not pass. Report `ANALYSIS_CACHE_UNCACHEABLE`
+   (F3) for that stage.
+When none of steps 1 to 4 fails, the gate file's verdict is one input to Rule C. Rule C also needs V-ID, R-G1, and T-IDENT, so until V-ID
 exists the stage stays uncacheable (4.3).
 
 **Invalidation.** Any change to Core changes the MVID, so every earlier gate file no longer matches, and every stage is
@@ -1018,7 +1043,7 @@ these criteria do not apply to them.
    check, not a proof. Criterion 4 is the proof.
 6. **Recording.** The output is produced for the commit under review and recorded with its MVID, in the file of 9.3.
 
-Criteria 4 and 5 are conditions of the U2 verdict (9.3), and Rule C (4.3) adds V-ID, R-G1, and T-IDENT. Until Rule C holds,
+Criteria 4 and 5 are conditions of the U2 verdict (9.3), and Rule C (4.3) adds V-ID, R-G1, and T-IDENT. The six inputs of 7.1 take their sources from 9.3 ("Input sources"); 9.4 adds no input. Until Rule C holds,
 the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rule C.
 
 ## 10. Open items (UNVERIFIED unless stated)
@@ -1039,6 +1064,7 @@ the stage stays uncacheable (6.5). There is one cacheability rule, and it is Rul
 - **V-ID.** Implement the identity verification of 4.3. It is part of Rule C (b), with R-G1. The other conditions are the U2 verdict (a) and T-IDENT-a, T-IDENT-b, and T-IDENT-c (c).
 - **R-G1 implementation (follow-up).** The single-buffer requirement of 2.1 is owner-approved as mandatory (2026-10-30, Issue #43 comment).
   It is not an open owner decision. Implementing it, and its test T-IDENT-c, is follow-up work. It is a requirement, not implemented or run, and it is needed for every candidate stage in the current pipeline (2.1, scope).
+- **R-G1 evidence record (UNVERIFIED).** The write path or signature that prevents deliberate forgery of the record is not defined (9.3, "R-G1 evidence record", limit). Not implemented; the producer track is assigned by the coordinator.
 - **T-IDENT-a, T-IDENT-b, T-IDENT-c.** Implement and run the tests of 7.3 (not run; preconditions UNVERIFIED where 7.3 marks them). Each is a condition of Rule C (c).
 - **GUI AARC002 suppression (provisional, #40 D2 Option A, 2026-10-30, under ADR-017).** Locally scoped and justified; no
   general exemption; a single narrow Studio composition-root site (`docs/architecture-matrix.md:47`); no composition logic in
@@ -1319,6 +1345,7 @@ that stage is uncacheable in every mode, and this document claims no stage is sa
 | OR3 (#40 comment, 2026-10-30, owner review of `7bb935b`, MAJOR) | D2 Option A was stated without its qualifiers, and the repeated-exception risk of `architecture-matrix.md:210` was not recorded | Resolved in r31: under ADR-017; locally scoped and justified; no general exemption; a single narrow Studio composition-root site; no composition logic in views or viewmodels; the analyzer and test must verify the single site (not built, UNVERIFIED); fallback to the owner with Host/Bootstrap option C; repeated exceptions are an open risk tied to D2 Option A | 8.1, 10 |
 | OR4 (review of `7bb935b`, MEDIUM) | §8.1 said concrete adapter wiring "is allowed" at one site, which overstates `architecture-matrix.md:47` ("may use" for a future executable) | Resolved in r31: §8.1 uses the matrix wording. Source identity (header) corrected to the r31 commit and r28 review head | 8.1, header |
 | OR5 (review of `bdcb883`, MEDIUM and LOW) | R-G1 was missing from the §9.3 precedence paragraph, from the §9 intro and V-ID bullet (which named U2, V-ID and T-IDENT as the conditions), and from the §9.4 "adds" sentence. The R-G1 state had no production source (it was not a gate-file field, and the production binding was not defined). §8.1 (two places) still said "written rationale" for `architecture-matrix.md:47`. The test-driver hash range was `102-104` in one place and `102-105` in another | Resolved in r32: all R-G1 mentions name Rule C (b) (V-ID and R-G1) and (c) (T-IDENT-a/b/c). The R-G1 state is derived from R-G1 evidence for the stage (a passing test result, or a code-path check) and is never a constant, default, or gate-file field; without that evidence it is `not implemented` and the stage is uncacheable (9.3, "R-G1 state source"; 7.1; T-R-G1-UNIMPL). The matrix wording is "explicit rationale". The driver hash is `RealRomAnalyzer.cs:102-105` everywhere | 9 (intro), 9.3, 9.4, 10 (V-ID), 7.1, 7.3, 8.1, 4.3 |
-| OR6 (review of `98137e3`, MAJOR and LOW) | The R-G1 state had no defined evidence channel, owner, or production binding test, so "derived from evidence" could be hard-coded or read from a test-output file. §4.3 had a broken sentence ("This"). §7.1 said "the Rule C gate" for the Rule C check. The header cited `git diff --stat 98bdf54 HEAD`, and that HEAD moves. Table rows OR4 and OR5 were out of order | Resolved in r33: 9.3 "R-G1 state source" defines the evidence record (produced by the R-G1 test suite for the stage, bound to the stage, the code identity, and the MVID, not written by an operator, not the gate file, not configuration), its owner (the #43 implementer track, assigned by the coordinator), and the UNVERIFIED integrity check. T-R-G1-BIND (7.3) is the production binding test, not implemented or run, and it does not depend on V-ID. U2 and V-ID stay separate conditions. The §4.3 sentence is completed. §7.1 says "Rule C gate". The header cites the fixed reviewed head `98137e3`. Rows are reordered | 4.3, 7.1, 7.3, 9.3, header, 12.22 |
+| OR6 (review of `98137e3`, MAJOR and LOW) | The R-G1 state had no defined evidence channel, owner, or production binding test, so "derived from evidence" could be hard-coded or read from a test-output file. §4.3 had a broken sentence ("This"). §7.1 said "the Rule C gate" for the Rule C check. The header cited `git diff --stat 98bdf54 HEAD`, and that HEAD moves. Table rows OR4 and OR5 were out of order | Resolved in r33: 9.3 "R-G1 state source" defines the evidence record (produced by the R-G1 test suite for the stage, bound to the stage, the code identity, and the MVID, not written by an operator, not the gate file, not configuration), its owner (the #43 implementer track, assigned by the coordinator), and the UNVERIFIED integrity check. T-R-G1-BIND (7.3) is the production binding test, not implemented or run, and it does not depend on V-ID. U2 and V-ID stay separate conditions. The §4.3 sentence is completed. The §7.1 "Rule C gate" wording was not changed in r33 (the OR6 claim was wrong); r34 changes it to "Rule C check" (OR7). The header cites the fixed reviewed head `98137e3`. Rows are reordered | 4.3, 7.1, 7.3, 9.3, header, 12.22 |
+| OR7 (review of `3103df6`, MAJOR and MEDIUM) | The R-G1 evidence record had no path, schema, producer, or check, and the integrity check had no mechanism. The V-ID and T-IDENT states were said to come from the gate-file-backed implementation, but the gate file has no such fields. §7.1 still said "the Rule C gate". The precedence list and F3 had no step for a matching gate file with a cacheable verdict and V-ID, R-G1 or T-IDENT missing, so the code was undefined for T-R-G1-UNIMPL | Resolved in r34: 9.3 "R-G1 evidence record" defines the path (`artifacts/analysis-cache/r-g1/<mvid>/<stage>.json`), the `schema: 1` fields, the producer (the R-G1 test run), and the binding checks (digest, schema, codeIdentity and MVID, stage, result `pass`), as a requirement not run; the digest limit and the missing signature are UNVERIFIED (10). 9.3 "Input sources" names each of the six sources. The gate file is the source of the U2 verdict only. Precedence step 4 and F3 give ANALYSIS_CACHE_UNCACHEABLE for that state, and T-R-G1-UNIMPL matches. §7.1 says "Rule C check". OR6 corrected | 7.1, 7.3, 9.3, 9.4, 10, F3, header, 12.22 |
 
 
