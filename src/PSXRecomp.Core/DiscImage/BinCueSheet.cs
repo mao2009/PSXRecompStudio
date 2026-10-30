@@ -147,9 +147,13 @@ public sealed class BinCueSheet
         return space < 0 ? (line, string.Empty) : (line[..space], line[(space + 1)..].Trim());
     }
 
+    /// <summary>Splits the fields of a TRACK or INDEX line; a space or a tab separates them.</summary>
+    private static string[] Fields(string rest) => rest.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+
     private static int ParseTrackNumber(string rest)
     {
-        var token = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+        var fields = Fields(rest);
+        var token = fields.Length > 0 ? fields[0] : string.Empty;
         if (!int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n is < 1 or > 99)
         {
             throw new InvalidDataException($"TRACK number is not 1-99: '{token}'.");
@@ -160,7 +164,7 @@ public sealed class BinCueSheet
 
     private static bool ParseTrackMode(string rest)
     {
-        var parts = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = Fields(rest);
         var mode = parts.Length >= 2 ? parts[1] : string.Empty;
         return mode.ToUpperInvariant() switch
         {
@@ -173,7 +177,7 @@ public sealed class BinCueSheet
     /// <remarks>INDEX 00 (pregap start) must come before INDEX 01 and must not be greater than it; equal is accepted.</remarks>
     private static void ParseIndex(string rest, ref int? index00, ref int? index01)
     {
-        var parts = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = Fields(rest);
         if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var index))
         {
             throw new InvalidDataException($"Malformed INDEX line: 'INDEX {rest}'.");

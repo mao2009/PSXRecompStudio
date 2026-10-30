@@ -190,6 +190,39 @@ public sealed class BinCueCdSectorSourceTests
     }
 
     [Fact]
+    public void Parse_TabSeparatedFields_AreAcceptedLikeSpaces()
+    {
+        // Some CUE writers separate the fields of TRACK and INDEX with tabs; they must parse as spaces do.
+        var cue = "FILE \"a.bin\" BINARY\nTRACK\t01\tMODE2/2352\nINDEX\t01\t00:02:00\n";
+
+        var sheet = BinCueSheet.Parse(cue);
+
+        sheet.Tracks.Should().Equal(new BinCueTrack(1, false, 150));
+    }
+
+    [Fact]
+    public void Parse_BareTrackKeyword_ThrowsInvalidDataNotIndexOutOfRange()
+    {
+        // A TRACK line with no number is malformed; it must report InvalidDataException, not an IndexOutOfRangeException.
+        var cue = "FILE \"a.bin\" BINARY\nTRACK\nINDEX 01 00:02:00\n";
+
+        var act = () => BinCueSheet.Parse(cue);
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*TRACK number*");
+    }
+
+    [Fact]
+    public void Parse_ByteOrderMarkBeforeFileLine_IsIgnored()
+    {
+        // The BOM is stripped per line, so it must not stop the first FILE line from being recognised.
+        var cue = "﻿FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n";
+
+        var sheet = BinCueSheet.Parse(cue);
+
+        sheet.Tracks.Should().Equal(new BinCueTrack(1, false, 150));
+    }
+
+    [Fact]
     public void Parse_NoFileLine_ThrowsInvalidData()
     {
         var act = () => BinCueSheet.Parse("REM only a comment\n");
