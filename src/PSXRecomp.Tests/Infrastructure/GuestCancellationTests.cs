@@ -1727,17 +1727,26 @@ public sealed class GuestCancellationTests
         // stop must record the stderr pipe as held.
         var shell = OperatingSystem.IsWindows() ? @"C:\Program Files\Git\usr\bin\sh.exe" : "/bin/sh";
         Skip.IfNot(File.Exists(shell), "NOT RUN: no POSIX shell to background a stderr-only holder");
+        // The child writes a marker only after the inner shell has exited, so the orphan exists when the stop is sent. A fixed delay was a
+        // race under load: the stop could arrive before the orphan started, and then no pipe is held.
+        using var temp = new TempDirectory();
+        var marker = temp.Combine("orphan-started").Replace('\\', '/');
         using var cts = new CancellationTokenSource();
         var run = Task.Run(() => RecompiledHostExecutionEngine.RunChildUntilStopped(
             shell,
-            ["-c", "sh -c 'sleep 15 >/dev/null &'; sleep 15"],
+            ["-c", $"sh -c 'sleep 15 >/dev/null &'; echo started > '{marker}'; sleep 15"],
             60_000,
             cts.Token,
             descendantsProbe: _ => Array.Empty<Process>(),
             outputBudgetMs: 2000));
 
-        // Let the orphan start, then the inner shell has exited: the child is alive and the orphan is running.
-        SpinFor(TimeSpan.FromMilliseconds(800));
+        var waited = Stopwatch.StartNew();
+        while (!File.Exists(marker) && waited.Elapsed < TimeSpan.FromSeconds(30) && !run.IsCompleted)
+        {
+            Thread.Sleep(20);
+        }
+
+        File.Exists(marker).Should().BeTrue("the child must report that the orphan has started before the stop");
         run.IsCompleted.Should().BeFalse("the child is still alive when the stop is sent");
 
         cts.Cancel();
