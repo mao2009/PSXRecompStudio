@@ -258,7 +258,7 @@ E2E tests in `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs` verify:
   (counts only, written and never read by the host); and the environment
   variable `PSXRECOMP_BIOS_ROM` at run time (H6, not a file).
 - Migration and legacy packages: a package produced before this amendment has
-  no `runtime/build-manifest.json`. The amended reader refuses it (fail closed,
+  no `runtime/build-manifest.json`. The amended reader is required to refuse it (requirement; not implemented; fail closed,
   a classified setup failure; no guest code runs). The host never generates,
   writes or repairs the carrier, so such a package must be repackaged.
 - No claim is made that a production carrier is enabled, that any acceptance
