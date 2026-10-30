@@ -307,10 +307,21 @@ public sealed record FirmwareDistributionRequest(
     string? ExpectedRomSha256 = null,
     uint InstructionBudget = uint.MaxValue,
     bool MixedFallback = true,
-    uint FallbackSegmentInstructionBudget = uint.MaxValue,
-    uint FallbackMaxTransitions = uint.MaxValue,
+    uint FallbackSegmentInstructionBudget = FirmwareDistributionRequest.DefaultFallbackSegmentInstructionBudget,
+    uint FallbackMaxTransitions = FirmwareDistributionRequest.DefaultFallbackMaxTransitions,
     TimeSpan? BuildTimeout = null,
-    string BiosProvenance = RuntimeHostManifest.BiosProvenanceSynthetic);
+    string BiosProvenance = RuntimeHostManifest.BiosProvenanceSynthetic)
+{
+    /// <summary>
+    /// The finite default per-segment fallback cap for a standalone firmware package (#820 W09). The firmware's whole
+    /// boot runs on the interpreter, so this is a safety cap, not a measured boot budget: the probe showed 2,000,000
+    /// instructions do not reach the kernel, so the value is set far above that and must be re-measured on a real BIOS.
+    /// </summary>
+    public const uint DefaultFallbackSegmentInstructionBudget = 100_000_000u;
+
+    /// <summary>The finite default artifact-to-interpreter handoff cap; the same value the run and package paths use.</summary>
+    public const uint DefaultFallbackMaxTransitions = MixedFallbackOptions.DefaultMaxTransitions;
+}
 
 /// <summary>
 /// <c>psxrecomp package --bios openbios</c>: builds a standalone distribution whose native artifact IS the BIOS

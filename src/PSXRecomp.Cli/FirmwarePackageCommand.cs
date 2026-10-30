@@ -43,8 +43,8 @@ internal static class FirmwarePackageCommand
                     arguments.SelfContained,
                     InstructionBudget: options.InstructionBudget ?? uint.MaxValue,
                     MixedFallback: arguments.MixedFallback,
-                    FallbackSegmentInstructionBudget: arguments.FallbackSegmentBudget ?? uint.MaxValue,
-                    FallbackMaxTransitions: arguments.FallbackMaxTransitions ?? uint.MaxValue,
+                    FallbackSegmentInstructionBudget: arguments.FallbackSegmentBudget ?? FirmwareDistributionRequest.DefaultFallbackSegmentInstructionBudget,
+                    FallbackMaxTransitions: arguments.FallbackMaxTransitions ?? FirmwareDistributionRequest.DefaultFallbackMaxTransitions,
                     BuildTimeout: options.BuildTimeoutSeconds is { } buildTimeoutSeconds
                         ? TimeSpan.FromSeconds(buildTimeoutSeconds)
                         : null,

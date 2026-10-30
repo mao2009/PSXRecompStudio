@@ -417,6 +417,15 @@ run. Responsibilities are split so no device behavior is duplicated:
   except a blocking call that is still `Pending` (Issue #717): each poll at the
   vector advances `BiosBlockingCallWait.PollCycles` so VBlank and other IRQs keep
   arriving while the guest waits (ADR-014 amendment).
+- **VBlank subscribers (contract, owner ruling on PR #850).** `DeviceScheduler`
+  delivers each VBlank to its subscribers in registration order. Two kinds exist.
+  A *game-execution* callback's exception is not swallowed: it propagates out of
+  `Advance`, the subscribers after it for that VBlank and the later VBlanks of that
+  call are not delivered, and the counters (VBlank count, elapsed cycles, phase) are
+  not rolled back, so they do not show how many notifications were delivered. A
+  *diagnostic* observer's exception is contained and the first one is recorded as
+  `VblankObserverFailure`; it never changes the game run. A game-execution exception is
+  never recorded as an observer failure. The probe reports a propagated exception as a failure.
 - **Device semantics stay native/Rust.** Timers advance via `PSXCore_TickTimers`
   and DMA via `PSXCore_TickDma` — or, when a CD-ROM DMA3 bridge is configured
   (as in production), via `PSXCore_TickDmaExcludingChannel(…, 3)`, because

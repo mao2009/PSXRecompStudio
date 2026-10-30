@@ -29,8 +29,29 @@ internal static class OpenBiosProbeCommand
                              "[--engine interpreter|generated-host] [--roots <file>] [--code-bytes <n>] [--differential] [--compare-at <hex-pc>]... " +
                              "[--stop-at <hex-pc>] [--symbols <nm-output>] [--load-images <manifest>] [--standalone] [--boundary-log <file.jsonl>] [--json]";
 
-    internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error)
+    /// <summary>
+    /// Test seam: wraps the boundary observer of each path, so a test can make it throw and exercise the observer-failed
+    /// report. Production passes null, which leaves the observer exactly as the boundary log writes it.
+    /// </summary>
+    internal sealed record ObserverSeam(
+        Func<Action<ulong, ulong>, Action<ulong, ulong>>? Interpreter = null,
+        Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? GeneratedHost = null,
+        Action<DeviceScheduler>? InterpreterGameCallbacks = null,
+        Action<DeviceScheduler>? GeneratedHostGameCallbacks = null);
+
+    internal static int Run(IReadOnlyList<string> args, TextWriter output, TextWriter error, ObserverSeam? observerSeam = null)
     {
+        // Issue #774 (W03): compares two boundary logs; takes no ROM.
+        if (args.Count > 0 && args[0] == "--compare-boundary-logs")
+        {
+            if (args.Count != 3)
+            {
+                error.WriteLine("usage: psxrecomp openbios-probe --compare-boundary-logs <a.jsonl> <b.jsonl>");
+                return 1;
+            }
+            return CompareBoundaryLogs(args[1], args[2], output, error);
+        }
+
         if (args.Count == 0 || args.Count > 64 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
             error.WriteLine(Usage);
@@ -168,10 +189,11 @@ internal static class OpenBiosProbeCommand
             error.WriteLine($"openbios-probe: --local-ram-evidence: {evidenceRefusal}");
             return 1;
         }
-        // Issue #774 (W03): the VBlank boundary log is taken from the interpreter's scheduler only; the host scheduler is not exposed to the probe.
-        if (boundaryLogPath is not null && engineKind != "interpreter")
+        // Issue #774 (W03): the VBlank boundary log comes from the interpreter's scheduler, or from the standalone host run's scheduler.
+        // The file-driven generated host is not compared, so it stays refused.
+        if (boundaryLogPath is not null && !(engineKind == "interpreter" || (engineKind == "generated-host" && standalone)))
         {
-            error.WriteLine("openbios-probe: --boundary-log requires --engine interpreter");
+            error.WriteLine("openbios-probe: --boundary-log requires --engine interpreter (or --engine generated-host --standalone)");
             error.WriteLine(Usage);
             return 1;
         }
@@ -241,8 +263,8 @@ internal static class OpenBiosProbeCommand
                 boundaryLog = boundaryLogPath is null ? null : new OpenBiosProbeBoundaryLog(boundaryLogPath);
                 return engineKind == "generated-host"
                     ? RunGeneratedHost(new GeneratedHostProbe(
-                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath), localRamEvidencePath), json, output, error, mdecLog)
-                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, error, retireTargetsPath, retireOutPath, mdecLog, boundaryLog);
+                        firmware, hash, disc?.Source, ReadRoots(rootsPath!), codeBytes, segments, segmentBudget, differential, compareAt, stopAt, symbols, loadImagesPath, standalone, fallbackTargetsPath, discPath is null ? null : FileSha256(discPath), localRamEvidencePath), json, output, error, mdecLog, boundaryLog, observerSeam?.GeneratedHost, observerSeam?.GeneratedHostGameCallbacks)
+                    : RunInterpreter(firmware, hash, disc?.Source, segments, segmentBudget, capturePc, dumpRamPath, dumpFramePath, histogramPath, json, output, retireTargetsPath, retireOutPath, mdecLog, boundaryLog, error, observerSeam?.Interpreter, observerSeam?.InterpreterGameCallbacks);
             }
             finally
             {
@@ -255,13 +277,92 @@ internal static class OpenBiosProbeCommand
                     error.WriteLine($"openbios-probe: warning: MDEC event log is incomplete: {failure}");
             }
         }
-        catch (Exception ex) when (
-            ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
-                or FileNotFoundException or DirectoryNotFoundException or DllNotFoundException or FormatException)
+        // Every exception that ends the run is a failed run, with its type and message on stderr and exit 1. A game-execution
+        // VBlank callback's exception (owner ruling, PR #850) propagates out of the run, so an unlisted type must not escape the probe
+        // as an unhandled crash: it is reported here, never turned into a success.
+        catch (Exception ex)
         {
             error.WriteLine($"openbios-probe: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>The engine label of the standalone run's boundary records (the label is not compared).</summary>
+    private const string StandaloneBoundaryEngine = "standalone";
+
+    /// <summary>
+    /// Issue #774 (W03): names the first boundary at which two boundary logs differ, over the boundaries both logs hold.
+    /// A boundary that only one log reached is not a mismatch; the counts show how far each run got.
+    /// </summary>
+    internal static int CompareBoundaryLogs(string leftPath, string rightPath, TextWriter output, TextWriter error,
+        Func<IEnumerable<string>, string, IReadOnlyList<OpenBiosProbeBoundaryRecord>>? parseLog = null)
+    {
+        parseLog ??= OpenBiosProbeBoundaryLog.ParseLog;
+        string[] leftLines, rightLines;
+        // Only opening and reading the two paths is covered by the path diagnostic. Every exception that can come from a
+        // path is a refusal, not a crash: an empty or invalid path (ArgumentException, ArgumentNullException), an unsupported
+        // path (NotSupportedException), a missing file or directory (FileNotFoundException, DirectoryNotFoundException, both
+        // IOException), a path too long (PathTooLongException, an IOException), or a directory or other access refusal
+        // (UnauthorizedAccessException).
+        try
+        {
+            leftLines = File.ReadAllLines(leftPath);
+            rightLines = File.ReadAllLines(rightPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+
+        IReadOnlyList<OpenBiosProbeBoundaryRecord> left, right;
+        JsonObject document;
+        int common;
+        try
+        {
+            // Parsing and comparison both run inside this try, so a defect in either is labelled rather than escaping.
+            left = parseLog(leftLines, "left");
+            right = parseLog(rightLines, "right");
+            common = Math.Min(left.Count, right.Count);
+            JsonNode? first = null;
+            if (OpenBiosProbeBoundaryLog.FirstMismatch(left, right) is { } mismatch)
+            {
+                first = new JsonObject
+                {
+                    ["index"] = mismatch.Index,
+                    ["vblank"] = left[mismatch.Index].VBlank,
+                    ["field"] = mismatch.Field,
+                };
+            }
+            document = new JsonObject
+            {
+                ["leftBoundaries"] = left.Count,
+                ["rightBoundaries"] = right.Count,
+                ["commonBoundaries"] = common,
+                ["firstMismatch"] = first,
+            };
+        }
+        catch (BoundaryLogFormatException ex)
+        {
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.Message}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            // Not a path problem: a defect in the parser or the comparison. It is reported as one, so it is neither silent
+            // nor mistaken for an unreadable file.
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: internal error while parsing or comparing ({ex.GetType().Name}): {ex.Message}");
+            return 1;
+        }
+
+        output.WriteLine(document.ToJsonString());
+        // Issue #774 (W03): no common boundary means nothing was compared. A clean exit would read as a match, so it fails.
+        if (common == 0)
+        {
+            error.WriteLine("openbios-probe: --compare-boundary-logs: commonBoundaries is 0; no boundary was compared");
+            return 1;
+        }
+        return 0;
     }
 
     /// <summary>
@@ -314,8 +415,9 @@ internal static class OpenBiosProbeCommand
         text is null ? fallback : ulong.Parse(text, NumberStyles.None, CultureInfo.InvariantCulture);
 
     private static int RunInterpreter(
-        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output, TextWriter error,
-        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null)
+        OpenBiosFirmware firmware, string hash, ICdSectorSource? disc, uint segments, uint segmentBudget, uint? capturePc, string? dumpRamPath, string? dumpFramePath, string? histogramPath, bool json, TextWriter output,
+        string? retireTargetsPath = null, string? retireOutPath = null, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null,
+        TextWriter? error = null, Func<Action<ulong, ulong>, Action<ulong, ulong>>? wrapObserver = null, Action<DeviceScheduler>? gameCallbacks = null)
     {
         var backend = new OpenBiosBootBackend(firmware, disc);
         using var engine = backend.CreateEngine();
@@ -327,10 +429,11 @@ internal static class OpenBiosProbeCommand
         {
             observed.DiagnosticDevices.Mdec.Observer = e => mdecLog.Write("interpreter", e, $"0x{lastFetch:X8}", null);
         }
-        if (boundaryLog is not null && observed?.Scheduler is { } scheduler)
+        if (boundaryLog is not null && observed is not null)
         {
-            // Issue #774 (W03): one record per VBlank, read at the boundary itself; the cycle count is the scheduler's, not the instruction count alone.
-            scheduler.VblankCallback = vblank => boundaryLog.Write(InterpreterTitleExecutionEngine.EngineName, observed.DiagnosticDevices, vblank, scheduler.ElapsedCycles);
+            // Issue #774 (W03): one record per VBlank, read at the boundary itself. The scheduler is created at load, so the engine attaches it then.
+            Action<ulong, ulong> observer = (vblank, cycles) => boundaryLog.Write(InterpreterTitleExecutionEngine.EngineName, observed.DiagnosticDevices, vblank, cycles);
+            observed.VBlankObserver = wrapObserver?.Invoke(observer) ?? observer;
         }
         // Issue #774 (B-7): the CPU state after each listed retirement position (guest cycles = retired instructions).
         var retireTargets = retireTargetsPath is null ? null : new HashSet<ulong>(File.ReadLines(retireTargetsPath)
@@ -340,8 +443,15 @@ internal static class OpenBiosProbeCommand
         var monitor = new OpenBiosBootMonitor(observed is null ? null : () => (observed.Cop0Diagnostics.Cause, observed.Cop0Diagnostics.Epc, observed.Cop0Diagnostics.BadVAddr));
         if (observed is not null)
         {
+            // Test seam (ObserverSeam.InterpreterGameCallbacks): registers game-execution callbacks once, on the first fetch after Load.
+            var gameCallbacksPending = gameCallbacks is not null;
             observed.FetchObserver = pc =>
             {
+                if (gameCallbacksPending && observed.Scheduler is { } scheduler)
+                {
+                    gameCallbacksPending = false;
+                    gameCallbacks!(scheduler);
+                }
                 lastFetch = pc;
                 monitor.OnFetch(pc);
                 if (retireTargets is not null && retireWriter is not null && retireTargets.Contains(observed.GuestCycles))
@@ -475,7 +585,14 @@ internal static class OpenBiosProbeCommand
 
         if (ramDumpRefusal is not null)
         {
-            error.WriteLine($"openbios-probe: --dump-ram: {ramDumpRefusal}");
+            error?.WriteLine($"openbios-probe: --dump-ram: {ramDumpRefusal}");
+            return 1;
+        }
+
+        // The diagnostic observer's failure is reported, never folded into success. The guest result above is unchanged.
+        if (observed?.VBlankObserverFailure is { } observerFailure)
+        {
+            error?.WriteLine($"openbios-probe: observer-failed: the VBlank observer threw at VBlank {observerFailure.VBlank} ({observerFailure.ExceptionType}: {observerFailure.Message}); the boundary log is not a clean observation.");
             return 1;
         }
 
@@ -506,7 +623,8 @@ internal static class OpenBiosProbeCommand
     /// the existing <c>--host-transfer</c> path. It changes only how the ROM is delivered to the engine, never whether
     /// the result is a verified boot.
     /// </summary>
-    private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error, OpenBiosProbeMdecLog? mdecLog = null)
+    private static int RunGeneratedHost(GeneratedHostProbe probe, bool json, TextWriter output, TextWriter error, OpenBiosProbeMdecLog? mdecLog = null, OpenBiosProbeBoundaryLog? boundaryLog = null,
+        Func<Action<PsxDeviceGraph, ulong, ulong>, Action<PsxDeviceGraph, ulong, ulong>>? wrapObserver = null, Action<DeviceScheduler>? gameCallbacks = null)
     {
         var wall = Stopwatch.StartNew();
         var clock = Stopwatch.StartNew();
@@ -591,6 +709,11 @@ internal static class OpenBiosProbeCommand
             uint? lastFallbackFetch = null;
             // Issue #773: the RAM word the interpreter fetched at each fallback PC. It goes only to the local RAM evidence (never to a public output).
             var ramWords = new FallbackRamWordLog();
+            // Issue #774 (W03): the standalone run's VBlank boundary, on the same record the interpreter writes. The test seam may wrap it.
+            Action<PsxDeviceGraph, ulong, ulong>? boundaryObserver = boundaryLog is null
+                ? null
+                : (devices, vblank, cycles) => boundaryLog.Write(StandaloneBoundaryEngine, devices, vblank, cycles);
+            var hostObserver = boundaryObserver is null ? null : wrapObserver?.Invoke(boundaryObserver) ?? boundaryObserver;
             using var engine = new RecompiledHostExecutionEngine(
                 image.Program,
                 firmware.Words,
@@ -643,6 +766,10 @@ internal static class OpenBiosProbeCommand
                     if (++transitions % 10000 == 0)
                         error.WriteLine($"openbios-probe: {transitions} artifact/interpreter handoffs, {clock.Elapsed.TotalSeconds:F0} s");
                 },
+                // Issue #774 (W03): the standalone run's VBlank boundary, on the same record the interpreter writes.
+                VBlankObserver = hostObserver,
+                // Test seam (ObserverSeam.GeneratedHostGameCallbacks): registers game-execution callbacks on the run's scheduler. Null in production.
+                OnSchedulerCreated = gameCallbacks,
             };
             hostEngine = engine;
             var compileMs = clock.Elapsed.TotalMilliseconds;
@@ -790,6 +917,11 @@ internal static class OpenBiosProbeCommand
             var node = JsonSerializer.SerializeToNode(document)!.AsObject();
             node["consistency"] = Consistency(node, boundaryPcs, probe.StopAt);
             var parityPassed = node["consistency"]?["differentialPass"]?.GetValue<bool>() ?? !probe.Differential;
+            // Issue #774 (W03): the observer's first failure, in the document as well as on stderr, so a JSON reader cannot take
+            // the run for a clean observation. Null when the observer did not fail.
+            node["vblankObserverFailure"] = hostEngine?.VBlankObserverFailure is { } observerFailure
+                ? new JsonObject { ["vblank"] = observerFailure.VBlank, ["exceptionType"] = observerFailure.ExceptionType, ["message"] = observerFailure.Message }
+                : null;
             var text = node.ToJsonString(json ? null : new JsonSerializerOptions { WriteIndented = true });
             if (!json)
             {
@@ -800,6 +932,11 @@ internal static class OpenBiosProbeCommand
             }
 
             output.WriteLine(text);
+            if (hostEngine?.VBlankObserverFailure is { } hostObserverFailure)
+            {
+                error.WriteLine($"openbios-probe: observer-failed: the VBlank observer threw at VBlank {hostObserverFailure.VBlank} ({hostObserverFailure.ExceptionType}: {hostObserverFailure.Message}); the boundary log is not a clean observation.");
+                return 1;
+            }
             return kernelBooted && parityPassed ? 0 : 2;
         }
         finally
