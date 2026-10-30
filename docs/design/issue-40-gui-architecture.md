@@ -1,6 +1,6 @@
 # Issue #40: Studio GUI Architecture and Application Boundary (Design)
 
-**Status:** Proposed (design only; no implementation in this change). D2-A adopted provisionally on 2026-10-30 (section 9; revision note in section 11).
+**Status:** Proposed (design only; no implementation in this change). D2-A adopted provisionally on 2026-10-30 (section 9; revision note in section 11). The 2026-10-30 owner rulings are owner rulings relayed in this design record, to be confirmed by the owner in recorded form (Q16 for D2; section 9 for the others).
 
 **Related Issues:** #40 (this design), #38 (host I/O ports and adapters), #75 (GUI/UX SSOT), #21 (localization), #851 (Rust/egui GameWindow PoC, scope limited to `PSXRecomp.GameWindow`)
 
@@ -41,7 +41,7 @@ Summary: **CONFIRMED** the Domain layer already owns most pipeline logic (analys
 | `PSXRecomp.Infrastructure` | Infrastructure | **CONFIRMED** `src/architecture.contract.json:5`; `docs/architecture-matrix.md:24` (Layer Definitions, Infrastructure row) |
 | `PSXRecomp.Cli` | Infrastructure (per matrix) | **CONFIRMED** `docs/architecture-matrix.md:24` lists `PSXRecomp.Cli` as an Infrastructure project; `src/PSXRecomp.Cli/CliInput.cs:34` and `:149` are `[Infrastructure]` |
 | `PSXRecomp.RuntimeHost` | Infrastructure by attribute; not in the matrix Projects column | **CONFIRMED** `src/PSXRecomp.RuntimeHost/Program.cs:23` and `src/PSXRecomp.RuntimeHost/UnverifiedIdentityProbe.cs:12` are `[Infrastructure]`; **CONFIRMED** the matrix Infrastructure row lists only `PSXRecomp.Infrastructure` and `PSXRecomp.Cli` (`docs/architecture-matrix.md:24`); **CONFIRMED** listed in `src/PSXRecompStudio.slnx:7`; **OBSERVED** it is packaged by the `package` command (`docs/development/headless-cli.md:153-158`, `:170-174`) |
-| `PSXRecomp.GameWindow` | not declared | **CONFIRMED** listed in `src/PSXRecompStudio.slnx:5`; **OBSERVED** no `[Application]` or `[Infrastructure]` attribute under `src/PSXRecomp.GameWindow`; **CONFIRMED** (props text) AARC is not enabled for it (`Directory.Build.props:41-47`; `src/PSXRecomp.GameWindow/PSXRecomp.GameWindow.csproj:1-22` sets neither property), so AARC004 is not expected to apply; **UNVERIFIED** (build) |
+| `PSXRecomp.GameWindow` | not declared | **CONFIRMED** listed in `src/PSXRecompStudio.slnx:5`; **OBSERVED** no `[Application]` or `[Infrastructure]` attribute under `src/PSXRecomp.GameWindow`; **CONFIRMED** (props text) AARC is not enabled for it (`Directory.Build.props:41-47`; `src/PSXRecomp.GameWindow/PSXRecomp.GameWindow.csproj:1-22` sets neither property), **UNVERIFIED** (build). Whether any AARC004 rule applies here is not claimed: no AARC004 source line was found (`git grep AARC004 2e3ecad -- src` is empty). |
 | `PSXRecomp.Tests`, `PSXRecompStudio.Tests` | Test | **CONFIRMED** `src/architecture.contract.json:6`; `src/PSXRecompStudio.slnx:8-9` |
 | `src/Architecture` (`PSXRecomp.Architecture` marker attributes) | attribute source, not a layer | **CONFIRMED** `src/Architecture/PSXRecompArchitectureAttributes.cs` exists; `docs/architecture-matrix.md` Architecture Attribute Contract section |
 | `PSXRecomp.Native` | outside managed layers | **CONFIRMED** `docs/architecture-matrix.md` (paragraph after the Layer Definitions table) |
@@ -155,7 +155,7 @@ Recommendation: D1 Option A for use-case orchestration (D1 remains open; this is
 
 ### 3.3 Composition roots and the Application -> Infrastructure edge (owner decision D2)
 
-**D2 status: adopted provisionally as D2-A on 2026-10-30** (**READ** Issue #40 owner comment, 2026-10-30, fetched in this session). Conditions, as ruled:
+**D2 status: adopted provisionally as D2-A on 2026-10-30** (**READ** Issue #40 owner comment, 2026-10-30, fetched in this session). This is an owner ruling relayed in the design record, to be confirmed by the owner in recorded form (Q16). Conditions, as ruled:
 
 1. a single, narrow Studio composition-root site may construct Infrastructure adapters;
 2. that site carries a locally scoped and justified `AARC002` suppression under ADR-017;
@@ -199,6 +199,7 @@ Options for D2:
 Notes:
 
 - `Launch` builds and then runs as one operation. **CONFIRMED** `src/PSXRecomp.Cli/RunCommand.cs:20-22` (single-shot; rebuilds from input). Exposing build and run as separate GUI steps requires a launcher port (D5).
+- Build and run outputs are artifacts. Their provenance contract is defined in W14 (issue #46, PR #873, head `7f91956`, `docs/design/issue-46-artifact-provenance.md`). That file is not present on this branch; it is referenced here, not restated, and is **UNVERIFIED** in this document.
 - Analysis results are the input the GUI must show for review (**READ** issue #40 body via GitHub API, "Analysis Result Viewer"). The result type carries stage status and `FailureKind`. **CONFIRMED** `src/PSXRecomp.Core/DiscImage/RomAnalysisOutcome.cs:16`, `:30-33`.
 
 ### 3.5 Async, progress and cancellation
@@ -263,7 +264,7 @@ Notes:
 - **CLI.** Target: a composition root and presentation layer only. Its `recompile`, `run` and frame-evidence paths call the same use cases as the Studio, and its duplicate handoffs (F4) are replaced by `PSXRecomp.Core.Execution.ProgramEndHandoff` (**CONFIRMED** `src/PSXRecomp.Core/Execution/ProgramEndHandoff.cs:16`). The headless doc's parity sentence (F2) becomes accurate only after the engine decision (D3).
 - **GUI-to-CLI process.** **READ** (**READ** issue #40 body, GitHub public API, read this session): the GUI may launch the CLI process as an implementation option; the issue does not require it. Recommendation: in-process use cases (D6).
 - **MCP.** No MCP project exists (F12). MCP should be a third thin adapter over the same use cases, designed in a separate issue.
-- **Tests.** GUI tests keep driving real controls (**CONFIRMED** `src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:14-15` states that the Project, Analysis, Recompile and Approval screens do not exist yet). Use-case tests run without Avalonia. The guard test is `src/PSXRecomp.Tests/HeadlessAvaloniaIndependenceTests.cs:10` (**CONFIRMED**); the rule it guards is stated in `docs/architecture/gui-ux.md:115` (**CONFIRMED**).
+- **Tests.** GUI tests keep driving real controls (**CONFIRMED** `src/PSXRecompStudio.Tests/GUIWorkflowTests.cs:14-15` states that the Project, Analysis, Recompile and Approval screens do not exist yet). Use-case tests run without Avalonia (target; **not implemented, not run**). The guard test is `src/PSXRecomp.Tests/HeadlessAvaloniaIndependenceTests.cs:10` (**CONFIRMED**); the rule it guards is stated in `docs/architecture/gui-ux.md:115` (**CONFIRMED**).
 
 ### 3.9 Headless independence
 
@@ -271,12 +272,13 @@ Notes:
 
 ### 3.10 GUI and the analysis cache (#43)
 
-Owner ruling (**READ** Issue #40 owner comment, 2026-10-30, fetched in this session). It is recorded here, not decided by this document:
+Owner ruling (**READ** Issue #40 owner comment, 2026-10-30, fetched in this session). It is an owner ruling relayed in this design record, to be confirmed by the owner in recorded form (open item in section 9). It is recorded here, not decided by this document:
 
 - The GUI may use the same cache service and results as the CLI, through shared use cases. There is no GUI-only cache, no GUI-only key derivation, and no alternate correctness policy.
 - Cache hits are disabled for every image-dependent stage until #43 Rule C passes. The ruling names the U2, V-ID, R-G1 same-buffer consumption and T-IDENT tests as part of that gate. The Rule C conditions are defined in #43 and are not restated here (**UNVERIFIED** in this document; #43 was not read in this session).
 - The GUI must display uncached or reanalysis status for those stages and must never manufacture a hit.
 - If the shared cache store is an Infrastructure adapter, its construction falls under the same single-site rule as 3.3. That site is not yet named, so where the store is constructed is an open item.
+- Cached results are artifacts. Their provenance contract is defined in W14 (issue #46, PR #873, head `7f91956`, `docs/design/issue-46-artifact-provenance.md`). That file is not present on this branch; it is referenced here, not restated, and is **UNVERIFIED** in this document.
 
 ## 4. Recommended approach
 
@@ -286,9 +288,9 @@ Incremental, each phase separately reviewable.
 |---|---|---|---|
 | 0 | This design; owner decisions D1-D11 recorded in ADR revisions (ADR-015 sketch point 2; ADR-017 needs no wording change for the one site of provisional D2-A) and the matrix revisions in 3.2 | None | Owner sign-off |
 | 1 | Replace duplicate guest-end handoffs (F4) with `ProgramEndHandoff` | None expected | Existing tests |
-| 2 | Add the shared result type, tokens, and `IProgress` plumbing to Core use cases (D1 Option A); add stop support to `InterpreterTitleExecutionEngine` (`ICancellableExecutionEngine`, `AttachCancellation`, `RequestCancel`, modeled on `RecompiledHostExecutionEngine.cs:291-306` (**CONFIRMED** `:291` `RequestCancel`, `:306` `AttachCancellation`)); move the CLI's recompile orchestration into use cases | None for CLI output; the Studio gains mid-segment stop only if D4 Option A is chosen | CLI JSON and exit-code tests unchanged; new interpreter stop tests |
-| 2b | Token wiring: pass a `CancellationToken` from the Studio's two execution entry points into `ExecutionOrchestrator.Execute` (**CONFIRMED** the current calls pass no token at `src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93` and `:126-129`; the parameter is at `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61-67`). Precondition for Phase 3's Cancel UI. | No change until a token is cancelled (default-token semantics, **UNVERIFIED** in this session) | Test: a cancelled token ends the run as `Cancelled` (`ExecutionOrchestrator.cs:73-75`) |
-| 3 | Studio: disc load through a Domain port with an Infrastructure reader (F7); Cancel and progress UI (precondition: Phase 2b); shared error panel | New UI; the first Studio construction of an Infrastructure adapter, at the single composition-root site (D2-A; not yet named, 3.3) | GUI tests drive real controls; single-site verification (D2 condition 5) in place before that construction |
+| 2 | Add the shared result type, tokens, and `IProgress` plumbing to Core use cases (D1 Option A); add stop support to `InterpreterTitleExecutionEngine` (`ICancellableExecutionEngine`, `AttachCancellation`, `RequestCancel`, modeled on `RecompiledHostExecutionEngine.cs:291-306` (**CONFIRMED** `:291` `RequestCancel`, `:306` `AttachCancellation`)); move the CLI's recompile orchestration into use cases | None for CLI output; the Studio gains mid-segment stop only if D4 Option A is chosen | CLI JSON and exit-code tests unchanged; new interpreter stop tests (**not implemented, not run**) |
+| 2b | Token wiring: pass a `CancellationToken` from the Studio's two execution entry points into `ExecutionOrchestrator.Execute` (**CONFIRMED** the current calls pass no token at `src/PSXRecompStudio/Services/TitleExecutionService.cs:92-93` and `:126-129`; the parameter is at `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:61-67`). Precondition for Phase 3's Cancel UI. | No change until a token is cancelled (default-token semantics, **UNVERIFIED** in this session) | Test (**not implemented, not run**): a cancelled token ends the run as `Cancelled` (`ExecutionOrchestrator.cs:73-75`) |
+| 3 | Studio: disc load through a Domain port with an Infrastructure reader (F7); Cancel and progress UI (precondition: Phase 2b); shared error panel | New UI; the first Studio construction of an Infrastructure adapter, at the single composition-root site (D2-A; not yet named, 3.3) | GUI tests drive real controls (**not implemented, not run**); single-site verification (D2 condition 5) in place before that construction |
 | 4 | Move `FileMemoryCardStorage` to Infrastructure (F6; clears its AARC003 suppressions, 3.3); Studio keeps only the port | None | Existing memory-card tests |
 | 5 | Engine selection (D3): if a selector is needed, the ADR-015 sketch point 2 selector (3.2 row C) sits at the single Studio composition-root site under provisional D2-A (not required under that option; section 3.3). D2-B (**UNVERIFIED** registration path) and D2-C (Host layer, fallback only) apply only if D2 is revisited; generated-host run as an explicit, labelled second action | New UI and composition | ADR amendment (D3 still open) |
 | 6 | MCP adapter over the same use cases | New surface | Separate issue |
@@ -304,13 +306,15 @@ Why this order: Phase 1 removes duplication without risk. Phase 2 creates the sh
 
 ## 6. Coordination with W17 (Rust/egui PoC, issue #851)
 
+"W17" is this document's label for the issue #851 PoC. No W17 document is present in the repository (**unverified**); the statements below rely on the issue #851 body only.
+
 Issue #851 is scoped to the GameWindow. **READ** issue #851 body: target is `PSXRecomp.GameWindow` ("Standalone実行時のゲーム表示用GUIに限り"); "Studio IDE自体のAvalonia移行は対象外"; the issue does not approve replacing the default host ("既定ホストの置換 ... を承認するものではない").
 
 Consequences for this design:
 
 - The Studio IDE stays on Avalonia (**READ** issue #851 body: IDE migration is out of scope; **READ** Issue #40 owner comment, 2026-10-30, confirms it). The Issue #40 ruling also keeps #851 Rust/egui+wgpu as a post-v0.1 isolated GameWindow research/PoC, not a default migration. The egui comparison does not affect the use-case boundary in section 3, the Studio's disc and analysis flow, or the Studio's error model.
 - The egui PoC is in Rust (**READ** issue #851 body, GitHub public API: Rust + egui + wgpu). **UNVERIFIED** that no direct call path exists; this design assumes the C# Domain use cases cannot be called directly and need IPC or FFI, as #851 items 1-2 describe (same-process FFI or local IPC with frame transport). That is a runtime-boundary decision, not a use-case decision.
-- The GameWindow path that #851 would replace uses `PackagedArtifactLiveRunner` (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`; cancel at `:109`) and the run, stop and timeout contracts (**UNVERIFIED** as described: **READ** issue #851 body cites issues #827 and #829 for them, and those contracts were not read in this session). Any PoC must keep those contracts, which the Domain stop semantics in section 3.5 also depend on.
+- The GameWindow path that #851 would replace uses `PackagedArtifactLiveRunner` (**CONFIRMED** `src/PSXRecomp.GameWindow/MainWindow.axaml.cs:69`; cancel at `:109`) and the run, stop and timeout contracts (**UNVERIFIED** as described: **READ** issue #851 body cites issues #827 and #829 for them, and those contracts were not read in this session). Any PoC must keep those contracts, which the Domain stop semantics in section 3.5 also depend on. The runtime configuration contract these run settings depend on is defined in W12 (issue #48, PR #872, head `a6027a2`, `docs/design/issue-48-runtime-config.md`). That file is not present on this branch; it is referenced here, not restated, and is **UNVERIFIED** in this document.
 - The use-case boundary in section 3 is toolkit-neutral: no Avalonia type in Core use cases. This is what keeps a future non-Avalonia host possible without rework.
 - Owner decision D9 covers the GameWindow's future; it is the only place #851 bears on this design.
 
@@ -319,7 +323,7 @@ Consequences for this design:
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | Use-case code drifts back into the view model | PREDICTED high without a checklist | 3.7 checklist; Phase 3 tests drive use cases directly |
-| Core use cases pick up host I/O or UI types | PREDICTED medium | AARC003 already forbids host APIs in Domain (**CONFIRMED** `src/architecture.contract.json:19-30`); add a no-Avalonia rule test (PREDICTED) |
+| Core use cases pick up host I/O or UI types | PREDICTED medium | AARC003 already forbids host APIs in Domain (**CONFIRMED** `src/architecture.contract.json:19-30`); add a no-Avalonia rule test (PREDICTED; **not implemented, not run**) |
 | Composition-root suppressions spread across executables | PREDICTED medium | Provisional D2-A: single-site analyzer/test (required; not yet built); fallback to D2-C if it cannot be enforced cleanly |
 | Cancellation gaps leave work running after Cancel | CONFIRMED gap (F8) | Phase 2 interpreter stop; toolchain kill is the hardest item and may stay timeout-only until D4 |
 | Studio and CLI run different engines, and results are compared as if equal | CONFIRMED today (F2) | D3; label the engine in every result |
@@ -344,10 +348,11 @@ Each decision lists options and a recommendation. The owner decides; this docume
 - Option B: a new Application project (competes with Option A). This matches issue #40's background (`Application層を共通のユースケース実行基盤とし`). **CONFIRMED** the current contract forbids the edge that would let the CLI reference it (`src/architecture.contract.json:13`), so Option B requires changing that edge. If the edge is not changed, the CLI keeps duplicate orchestration.
 - Engine-selection placement follows the provisional D2-A, not D1: if a selector is needed, it sits at the single Studio composition-root site (3.2 row C; 3.3). Its benefit is **UNVERIFIED**. D1 itself remains open.
 
-**D2. Composition root and Application -> Infrastructure wiring.** **Status: adopted provisionally as D2-A on 2026-10-30** (**READ** Issue #40 owner comment; conditions in 3.3).
+**D2. Composition root and Application -> Infrastructure wiring.** **Status: adopted provisionally as D2-A on 2026-10-30** (**READ** Issue #40 owner comment; conditions in 3.3). Owner ruling relayed in this design record; to be confirmed by the owner in recorded form (Q16).
 - D2-A (adopted provisionally): one narrow Studio composition-root site (not yet named; see 3.3) may construct Infrastructure adapters, with a locally scoped and justified `AARC002` suppression under ADR-017. No general exemption; no composition logic in views or viewmodels. The analyzer or a test must verify that the exception stays single-site; this verification does not exist yet (feasibility **UNVERIFIED**). If the single-site rule cannot be enforced cleanly, return to the owner with D2-C rather than spreading suppressions. **CONFIRMED** ADR-017:31 describes one site, so one site needs no ADR revision. A second Application-classified site would need the ADR-017 and matrix wording revised (**CONFIRMED** `docs/adr/017-managed-host-io-port-adapter-boundary.md:31`, `docs/architecture-matrix.md:47`, `:210`); it is not authorized.
 - D2-B (Domain-owned factory): not adopted; alternative only (3.3). Registration path **UNVERIFIED**.
 - D2-C (Host/Bootstrap layer): not adopted; fallback only, if the single-site rule cannot be enforced cleanly. Requires a separate architecture change (**CONFIRMED** matrix `:47`).
+- **Q16 (owner ruling confirmation, D2 Option A).** The owner's ruling for D2 Option A is: a single, narrow Studio composition-root site may construct Infrastructure adapters, carrying a locally scoped and justified `AARC002` suppression under ADR-017; fallback is D2-C (Host/Bootstrap). This ruling is relayed in this design record and is to be confirmed by the owner in recorded form. Neither the suppression nor the composition-root site exists in code: `git grep AARC002 2e3ecad -- src` is empty, and section 3.3 names no site.
 
 **D3. Which engine the Studio's Run uses, and the CLI's mixed fallback.**
 - Option A (recommended): the Studio keeps the interpreter as its default (ADR-015). Add the generated-host run as an explicit, labelled second action (Phase 5). Any engine selector sits at the single Studio composition-root site under the provisional D2-A (3.2 row C; 3.3; benefit **UNVERIFIED**). D3 itself remains open.
@@ -377,7 +382,7 @@ Each decision lists options and a recommendation. The owner decides; this docume
 **D9. GameWindow's future and the #851 outcome.**
 - **CONFIRMED** the GameWindow is a separate Avalonia app that references Infrastructure directly (`src/PSXRecomp.GameWindow/PSXRecomp.GameWindow.csproj:20`) and is listed separately in the solution (`src/PSXRecompStudio.slnx:5`). **OBSERVED** it declares no layer attribute; **CONFIRMED** (props text) the analyzer is not enabled for it (`Directory.Build.props:41-47`; build behaviour **UNVERIFIED**, section 3.3).
 - Owner decides whether it stays a separate host, is folded into the Studio, or is replaced after #851. Per #851, replacing the default host is not approved by that issue (**READ** issue #851 body, GitHub public API: 既定ホストの置換 ... を承認するものではない); that needs its own decision.
-- Owner ruling (**READ** Issue #40 owner comment, 2026-10-30): #851 Rust/egui+wgpu remains a post-v0.1 isolated GameWindow research/PoC, not a default migration. D9 otherwise stays open.
+- Owner ruling (**READ** Issue #40 owner comment, 2026-10-30): #851 Rust/egui+wgpu remains a post-v0.1 isolated GameWindow research/PoC, not a default migration. This is an owner ruling relayed in this design record, to be confirmed by the owner in recorded form. D9 otherwise stays open.
 
 **D10. Application-layer `Process` prohibition.**
 - Option A (recommended): propose adding `System.Diagnostics.Process` as an Application `forbiddenApis` entry in the contract, with a matrix row. **PREDICTED:** this would produce AARC003 errors for any current Application code that uses `Process`; none was checked (UNVERIFIED).
@@ -385,22 +390,22 @@ Each decision lists options and a recommendation. The owner decides; this docume
 
 **D11. Session and trace storage.** Issue #40 requires that important operations leave reproducible Session and Trace records (**READ** issue #40 body, GitHub public API, read this session: すべての重要操作で再現可能なSession/Trace情報を残せるようにする). Where they are stored is not designed here; the owner should assign it.
 
-**Open items not settled by the 2026-10-30 ruling.** D1, D3, D4, D5, D6, D7, D8, D9 (other than the #851 note above), D10 and D11 remain open. The ruling's GUI/cache rule (3.10) is recorded, but the cache design itself is #43's.
+**Open items not settled by the 2026-10-30 ruling.** D1, D3, D4, D5, D6, D7, D8, D9 (other than the #851 note above), D10 and D11 remain open. Q16 (confirmation in recorded form of the D2 ruling) is open. The other 2026-10-30 rulings are owner rulings relayed here and are also to be confirmed in recorded form. The ruling's GUI/cache rule (3.10) is recorded, but the cache design itself is #43's.
 
 ## 10. Verification performed for this document
 
 - Read-only survey of the files cited above at base `2e3ecad` (`src/` unchanged to HEAD; see the header). Labels CONFIRMED mean the cited line was read in this session.
 - No build, test or analyzer run. **UNVERIFIED:** that the contract, the AARC analyzer, or existing GUI tests pass at this base; feasibility of the proposed rule tests; the analyzer behaviour for `PSXRecomp.GameWindow`, which is not enabled (section 3.3; build behaviour **UNVERIFIED**) (**CONFIRMED** `PSXRecomp.RuntimeHost` is attributed `[Infrastructure]` at `src/PSXRecomp.RuntimeHost/Program.cs:23` and `src/PSXRecomp.RuntimeHost/UnverifiedIdentityProbe.cs:12`; it is not in the matrix Projects column).
 - No BIOS, ROM, disc or copyrighted content was read or included. Paths are repository-relative.
-- Re-read at the commit that adds this text (`git show <commit>:<path>`) for the D2 fix: `TitleExecutionService.cs:78,121,144,159-160`; `FileMemoryCardStorage.cs:22,166,176,212,277,304,323`; `RealRomTitleExecutionService.cs:47,68,71`; `MainWindowViewModel.cs:16-17`; `docs/adr/015-production-execution-engine-ownership.md:67-69`; `src/PSXRecomp.Tests/ArchitectureHostIoContractTests.cs:42`; `Program.cs` and `App.axaml.cs` exist (candidates only). No build or test run.
+- Cited lines were re-read at the revision commit (`git show <commit>:<path>`) for the D2 fix. Under section 0, CONFIRMED means read at base `2e3ecad`; because commits between the base and HEAD change only this document (line 7), these re-reads check the base reads and do not replace them: `TitleExecutionService.cs:78,121,144,159-160`; `FileMemoryCardStorage.cs:22,166,176,212,277,304,323`; `RealRomTitleExecutionService.cs:47,68,71`; `MainWindowViewModel.cs:16-17`; `docs/adr/015-production-execution-engine-ownership.md:67-69`; `src/PSXRecomp.Tests/ArchitectureHostIoContractTests.cs:42`; `Program.cs` and `App.axaml.cs` exist (candidates only). No build or test run.
 
 ## 11. Revision note and traceability
 
-**Revision (2026-10-30, D2 ruling).** D2-A is adopted provisionally (**READ** Issue #40 owner comment, 2026-10-30). Sections 2.2, 2.6 (F6), 3.2, 3.3, 3.5, 3.7, 3.10 (new), 4, 5, 6, 7, 8, 9 and 10 (D1, D2, D3, D7, D9, open items) are updated for consistency. The single Studio composition-root site is not yet named and is an open owner item (3.3). Citations touched in this revision were re-read at the commit that adds it (`git show <commit>:<path>`). `git diff --stat c700cd8 <commit> -- src` is empty, and `git grep -n AARC002 <commit> -- src` has no match: no AARC002 suppression exists yet. Nothing is built or run. The single-site analyzer/test is required but does not exist (**UNVERIFIED**).
+**Revision (2026-10-30, D2 ruling).** D2-A is adopted provisionally (**READ** Issue #40 owner comment, 2026-10-30). This is an owner ruling relayed in this design record, to be confirmed by the owner in recorded form (Q16). Sections 2.2, 2.6 (F6), 3.2, 3.3, 3.5, 3.7, 3.10 (new), 4, 5, 6, 7, 8, 9 and 10 (D1, D2, D3, D7, D9, open items) are updated for consistency. The single Studio composition-root site is not yet named and is an open owner item (3.3). Citations touched in this revision were re-read at the revision commit (`git show <commit>:<path>`); under section 0 they remain CONFIRMED against base `2e3ecad`. `git diff --stat c700cd8 <commit> -- src` is empty, and `git grep -n AARC002 <commit> -- src` has no match: no AARC002 suppression exists yet. Nothing is built or run. The single-site analyzer/test is required but does not exist (**UNVERIFIED**).
 
 | Ruling element (Issue #40 comment, 2026-10-30) | Where reflected | Status |
 |---|---|---|
-| D2-A provisional: single narrow Studio composition-root site; locally scoped, justified `AARC002` suppression under ADR-017; no general exemption; no composition logic in views or viewmodels; analyzer/test verifies single-site; fallback to D2-C | 3.2 row C, 3.3, 3.7, 4 (Phases 3, 5), 7, 9 (D2, D3, D7) | Provisional; verification not built |
-| GUI and #43 cache: same cache service and results as CLI via shared use cases; no GUI-only cache, key derivation or correctness policy; hits disabled for image-dependent stages until #43 Rule C; GUI shows uncached or reanalysis status | 3.10 | Ruling recorded; #43 Rule C not restated (**UNVERIFIED** here) |
-| #851 Rust/egui+wgpu: post-v0.1 isolated GameWindow research/PoC, not a default migration; Studio IDE stays on Avalonia | 6, 9 (D9) | Ruling recorded |
+| D2-A provisional: single narrow Studio composition-root site; locally scoped, justified `AARC002` suppression under ADR-017; no general exemption; no composition logic in views or viewmodels; analyzer/test verifies single-site; fallback to D2-C | 3.2 row C, 3.3, 3.7, 4 (Phases 3, 5), 7, 9 (D2, D3, D7) | Owner ruling relayed; to be confirmed in recorded form (Q16); verification not built |
+| GUI and #43 cache: same cache service and results as CLI via shared use cases; no GUI-only cache, key derivation or correctness policy; hits disabled for image-dependent stages until #43 Rule C; GUI shows uncached or reanalysis status | 3.10 | Owner ruling relayed; to be confirmed in recorded form; #43 Rule C not restated (**UNVERIFIED** here) |
+| #851 Rust/egui+wgpu: post-v0.1 isolated GameWindow research/PoC, not a default migration; Studio IDE stays on Avalonia | 6, 9 (D9) | Owner ruling relayed; to be confirmed in recorded form |
 | Other decisions (D1, D3-D11) | 9 | Open; not settled by this revision |
