@@ -10,15 +10,15 @@
 
 Every claim carries one of four labels:
 
-- **CONFIRMED**: read directly in source, docs, or test code at the cited location in this checkout.
-- **OBSERVED**: stated by an existing doc, issue text, or the GitHub API response. Not re-run in this work.
-- **PREDICTED**: a design expectation this document proposes. Not yet true.
-- **UNVERIFIED**: not checked, or checkable only by running the system or a test that does not yet exist.
+- **OBSERVED**: a fact directly observed in an execution, log, or measurement. Statements from existing docs, issue text, or GitHub API responses are read, not re-run, so they are INFERRED or UNVERIFIED here.
+- **CONFIRMED**: a fact that a reproducible verification met against an explicit expected condition, with the scope stated. This document has no run or test, so no claim here meets this definition.
+- **INFERRED**: a conclusion derived from observation or implementation. Direct verification has not been established. Reading source, docs, or tests gives INFERRED. Design expectations of this proposal are INFERRED and are said so in the sentence.
+- **UNVERIFIED**: an item for which there is not enough evidence to confirm it holds. This includes items not checked, and items checkable only by running a system or by a test that does not yet exist.
 
 Two more terms are used throughout:
 
 - **Local** output: any writer that is not the shareable projection (section 7.4). Local output may contain any field.
-- **Share-candidate** output: a field that would pass the allowlist (section 7.2) if the shareable projection emitted it. A share-candidate is not shareable until the projection emits it. **PREDICTED** (design term).
+- **Share-candidate** output: a field that would pass the allowlist (section 7.2) if the shareable projection emitted it. A share-candidate is not shareable until the projection emits it. **INFERRED** (design term).
 - **Default-deny**: a field that is not shareable until a named decision or a named read is made. Unread shapes are default-deny (Q16).
 
 ### 0.1 Issue #45 body (verbatim, from the public API `body` field)
@@ -50,9 +50,9 @@ Two more terms are used throughout:
 > - #42 Project / Workspace
 > - #44 PS1 Hardware Runtime Architecture
 
-**OBSERVED** (GitHub API, `body` field of `repos/mao2009/PSXRecompStudio/issues/45`). The body does not fix session ID or artifact ID formats, and does not mention BIOS or ROM data handling. **OBSERVED.**
+**INFERRED** (GitHub API, `body` field of `repos/mao2009/PSXRecompStudio/issues/45`). The body does not fix session ID or artifact ID formats, and does not mention BIOS or ROM data handling. **INFERRED.**
 
-**Assignees and state (GitHub API, checked for this revision):** #45 open, 0 assignees. #457 closed, 0 assignees. #49 closed, 0 assignees. #763 open, 0 assignees. #773 open, 0 assignees. #40 open, 0 assignees. #42 open, 0 assignees. #739 open. #44 closed. #786 is a pull request (closed). **OBSERVED.** No issue in this list records an owner.
+**Assignees and state (GitHub API, checked for this revision):** #45 open, 0 assignees. #457 closed, 0 assignees. #49 closed, 0 assignees. #763 open, 0 assignees. #773 open, 0 assignees. #40 open, 0 assignees. #42 open, 0 assignees. #739 open. #44 closed. #786 is a pull request (closed). **INFERRED.** No issue in this list records an owner.
 
 **Owner ruling (binding):** the full register dump is removed from the shareable diagnostic output. GPR and COP0 full dumps are local-diagnostic only and never appear in a shareable document. Section 7 implements this.
 
@@ -62,90 +62,90 @@ Two more terms are used throughout:
 
 | Element | Location | Label |
 |---|---|---|
-| `Diagnostic` record (Code, Category, Severity, Stage, Context, Evidence, Recovery; no timestamp, host, user or path) | `src/PSXRecomp.Core/Diagnostics/Diagnostic.cs:30` | CONFIRMED |
-| `DiagnosticCodes` registry (discoverability only) | `src/PSXRecomp.Core/Diagnostics/DiagnosticCodes.cs:20` | CONFIRMED |
-| `DiagnosticContextEntry` (typed `uint`/`string` key-value) | `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:12` | CONFIRMED |
-| Context key constants, including `InstructionOpcode = "opcode"` | `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:29` (class), `:38` (`InstructionOpcode`) | CONFIRMED |
-| `DiagnosticEvidenceReference` (kind + identifier; references evidence, never embeds it) | `src/PSXRecomp.Core/Diagnostics/DiagnosticEvidenceReference.cs:48` | CONFIRMED |
-| `DiagnosticJson` (deterministic, nulls written, LF) | `src/PSXRecomp.Core/Diagnostics/DiagnosticJson.cs:18` | CONFIRMED |
-| `DiagnosticComparer` (stable total order) | `src/PSXRecomp.Core/Diagnostics/DiagnosticComparer.cs:14` | CONFIRMED |
-| `DiagnosticExceptionPolicy` (process-fatal boundary, cancellation not a failure) | `src/PSXRecomp.Core/Diagnostics/DiagnosticExceptionPolicy.cs:21` | CONFIRMED |
-| Architecture contract for the above | `docs/architecture/diagnostics.md` sections 2-6 | OBSERVED |
+| `Diagnostic` record (Code, Category, Severity, Stage, Context, Evidence, Recovery; no timestamp, host, user or path) | `src/PSXRecomp.Core/Diagnostics/Diagnostic.cs:30` | INFERRED |
+| `DiagnosticCodes` registry (discoverability only) | `src/PSXRecomp.Core/Diagnostics/DiagnosticCodes.cs:20` | INFERRED |
+| `DiagnosticContextEntry` (typed `uint`/`string` key-value) | `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:12` | INFERRED |
+| Context key constants, including `InstructionOpcode = "opcode"` | `src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:29` (class), `:38` (`InstructionOpcode`) | INFERRED |
+| `DiagnosticEvidenceReference` (kind + identifier; references evidence, never embeds it) | `src/PSXRecomp.Core/Diagnostics/DiagnosticEvidenceReference.cs:48` | INFERRED |
+| `DiagnosticJson` (deterministic, nulls written, LF) | `src/PSXRecomp.Core/Diagnostics/DiagnosticJson.cs:18` | INFERRED |
+| `DiagnosticComparer` (stable total order) | `src/PSXRecomp.Core/Diagnostics/DiagnosticComparer.cs:14` | INFERRED |
+| `DiagnosticExceptionPolicy` (process-fatal boundary, cancellation not a failure) | `src/PSXRecomp.Core/Diagnostics/DiagnosticExceptionPolicy.cs:21` | INFERRED |
+| Architecture contract for the above | `docs/architecture/diagnostics.md` sections 2-6 | INFERRED |
 
-`docs/architecture/diagnostics.md` section 4 states that the full evidence and trace capture pipeline belongs to Issues #16, #45, and #132, and that the contract only defines how a diagnostic points at evidence. **OBSERVED** (`docs/architecture/diagnostics.md:86-88`).
+`docs/architecture/diagnostics.md` section 4 states that the full evidence and trace capture pipeline belongs to Issues #16, #45, and #132, and that the contract only defines how a diagnostic points at evidence. **INFERRED** (`docs/architecture/diagnostics.md:86-88`).
 
 ### 1.2 Standard execution report and bundle (`#457`, closed)
 
 | Element | Location | Label |
 |---|---|---|
-| `ExecutionDiagnosticReport` (schema `psxrecomp.execution-report.v1`; identifiers and classifications only) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:13` | CONFIRMED |
-| Report fields, in order: `Schema`, `ProductRevision`, `InputSha256`, `Title`, `Revision`, `ArtifactIdentity`, `Outcome`, `State`, `GuestPc`, `DiagnosticCode`, `SegmentBudget`, `FramebufferSha256` | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:14-25` | CONFIRMED |
-| `InputSha256` is normalised to bare, lowercase, 64-character hex (`NormalizeSha256` rejects anything else) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:53`, `:67-75` | CONFIRMED |
-| `RunCommand` sets `ArtifactIdentity` to `"sha256:" + ComputeSha256(artifactPath)`, where `ComputeSha256` returns bare lowercase hex. The prefix is added at the call site. | `src/PSXRecomp.Cli/RunCommand.cs:191`, `ComputeSha256` at `:206-210` | CONFIRMED |
-| `artifactPath` is the built artifact, resolved by `ResolveArtifactPath` | `src/PSXRecomp.Cli/RunCommand.cs:81` | CONFIRMED |
-| `inputSha256` is declared at `:52`, and assigned only inside `if (arguments.Report)` (`:54`, value at `:58` from `resolved.Sha256`) | `src/PSXRecomp.Cli/RunCommand.cs:52-58` | CONFIRMED |
-| The diagnostic bundle is written only inside `if (arguments.Report)` (`:86`); `inputSha256` is passed to `WriteDiagnosticBundle` at `:93` | `src/PSXRecomp.Cli/RunCommand.cs:86-93` | CONFIRMED |
-| The CLI passes an empty diagnostics array to the bundle writer, so the CLI bundle's `diagnostics.log` has no entries | `src/PSXRecomp.Cli/RunCommand.cs:197-201` (`Array.Empty<Diagnostic>()` at `:201`) | CONFIRMED |
-| `ExecutionDiagnosticLog` (projects diagnostics onto an allow-list of context keys, max 256 entries) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:12`, allow-list `:17-30`, filter `:78-79` | CONFIRMED |
-| `ExecutionDiagnosticLog` allows the `opcode` key (`DiagnosticContextKeys.InstructionOpcode`) as a `uint`. A value under this key is a raw instruction word. | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:28` | CONFIRMED |
-| `ExecutionDiagnosticBundleWriter.Write` serialises `report` (`:51`), `environment` whole (`:52`), and `diagnosticLog` from `FormatTail` (`:53`), and writes four entries (name constants `:18-21`) | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:16`, `:51-53`, `:18-21` | CONFIRMED |
-| `issue.md` is formatted from `report` by `ExecutionIssueMarkdown.Format` (it prints the artifact identity and input hash) | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:54`; `src/PSXRecomp.Core/Diagnostics/ExecutionIssueMarkdown.cs:36` | CONFIRMED (call); the full issue.md text was not read |
+| `ExecutionDiagnosticReport` (schema `psxrecomp.execution-report.v1`; identifiers and classifications only) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:13` | INFERRED |
+| Report fields, in order: `Schema`, `ProductRevision`, `InputSha256`, `Title`, `Revision`, `ArtifactIdentity`, `Outcome`, `State`, `GuestPc`, `DiagnosticCode`, `SegmentBudget`, `FramebufferSha256` | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:14-25` | INFERRED |
+| `InputSha256` is normalised to bare, lowercase, 64-character hex (`NormalizeSha256` rejects anything else) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:53`, `:67-75` | INFERRED |
+| `RunCommand` sets `ArtifactIdentity` to `"sha256:" + ComputeSha256(artifactPath)`, where `ComputeSha256` returns bare lowercase hex. The prefix is added at the call site. | `src/PSXRecomp.Cli/RunCommand.cs:191`, `ComputeSha256` at `:206-210` | INFERRED |
+| `artifactPath` is the built artifact, resolved by `ResolveArtifactPath` | `src/PSXRecomp.Cli/RunCommand.cs:81` | INFERRED |
+| `inputSha256` is declared at `:52`, and assigned only inside `if (arguments.Report)` (`:54`, value at `:58` from `resolved.Sha256`) | `src/PSXRecomp.Cli/RunCommand.cs:52-58` | INFERRED |
+| The diagnostic bundle is written only inside `if (arguments.Report)` (`:86`); `inputSha256` is passed to `WriteDiagnosticBundle` at `:93` | `src/PSXRecomp.Cli/RunCommand.cs:86-93` | INFERRED |
+| The CLI passes an empty diagnostics array to the bundle writer, so the CLI bundle's `diagnostics.log` has no entries | `src/PSXRecomp.Cli/RunCommand.cs:197-201` (`Array.Empty<Diagnostic>()` at `:201`) | INFERRED |
+| `ExecutionDiagnosticLog` (projects diagnostics onto an allow-list of context keys, max 256 entries) | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:12`, allow-list `:17-30`, filter `:78-79` | INFERRED |
+| `ExecutionDiagnosticLog` allows the `opcode` key (`DiagnosticContextKeys.InstructionOpcode`) as a `uint`. A value under this key is a raw instruction word. | `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:28` | INFERRED |
+| `ExecutionDiagnosticBundleWriter.Write` serialises `report` (`:51`), `environment` whole (`:52`), and `diagnosticLog` from `FormatTail` (`:53`), and writes four entries (name constants `:18-21`) | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:16`, `:51-53`, `:18-21` | INFERRED |
+| `issue.md` is formatted from `report` by `ExecutionIssueMarkdown.Format` (it prints the artifact identity and input hash) | `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:54`; `src/PSXRecomp.Core/Diagnostics/ExecutionIssueMarkdown.cs:36` | INFERRED (call); the full issue.md text was not read |
 
 ### 1.3 Runtime host diagnostic (`#763`, open)
 
 | Element | Location | Label |
 |---|---|---|
-| `RuntimeHostDiagnostic` record (per-run stop account; off by default, observation only; unknown fields are `null`, not guessed) | `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostDiagnostic.cs:24` (record starts); fields `FinalPc` through `Metrics` follow | CONFIRMED |
-| `RuntimeHostRunMetrics` record: `WallMilliseconds`, `MmioAccesses`, `TimeReports`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds`, `LastFallbackEntryPc`, `LastFallbackReturnPc`, `LastMmioPhysicalAddress`, `LastMmioWasWrite`, `FallbackInFlight`, `FallbackReturns` | `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostDiagnostic.cs:146-160` | CONFIRMED |
-| Per-run `runId` (GUID, generated once) | `src/PSXRecomp.RuntimeHost/Program.cs:198`; printed at `:210` | CONFIRMED |
-| `runId` also written into the loaded-code mismatch report (`report["runId"] = runId`) | `src/PSXRecomp.RuntimeHost/Program.cs:624` | CONFIRMED |
+| `RuntimeHostDiagnostic` record (per-run stop account; off by default, observation only; unknown fields are `null`, not guessed) | `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostDiagnostic.cs:24` (record starts); fields `FinalPc` through `Metrics` follow | INFERRED |
+| `RuntimeHostRunMetrics` record: `WallMilliseconds`, `MmioAccesses`, `TimeReports`, `FallbackTransferMilliseconds`, `FallbackInterpreterMilliseconds`, `LastFallbackEntryPc`, `LastFallbackReturnPc`, `LastMmioPhysicalAddress`, `LastMmioWasWrite`, `FallbackInFlight`, `FallbackReturns` | `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostDiagnostic.cs:146-160` | INFERRED |
+| Per-run `runId` (GUID, generated once) | `src/PSXRecomp.RuntimeHost/Program.cs:198`; printed at `:210` | INFERRED |
+| `runId` also written into the loaded-code mismatch report (`report["runId"] = runId`) | `src/PSXRecomp.RuntimeHost/Program.cs:624` | INFERRED |
 
 ### 1.4 Unit retirement trace (`#774`)
 
 | Element | Location | Label |
 |---|---|---|
-| Design and schema: JSON Lines, `v:1`, `kind` records, session and handoff identity | `docs/development/unit-trace.md`, sections "Enabling", "Identity", "Record schema" | OBSERVED |
-| `UnitTraceScope.Begin` (in-process enable for tests) and `UnitTraceRun` (child env, parent fallback file) | `src/PSXRecomp.Infrastructure/UnitTraceRun.cs:15`, `:54` | CONFIRMED |
-| Session ID generated per run as `Guid.NewGuid().ToString("N")` and passed to the child via `PSX_TRACE_SESSION` | `src/PSXRecomp.Infrastructure/UnitTraceRun.cs:88`, `:112` | CONFIRMED |
-| Native side: opt-in trace build, env `PSX_UNIT_TRACE_FILE`, `PSX_UNIT_TRACE_MAX_BYTES`, default cap `RECOMPILER_TRACE_DEFAULT_CAP`, truncation and end records | `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:79`, `:1037-1077`, `:1155-1162` | CONFIRMED |
-| Native `PSX_TRACE_SESSION` is accepted only when it is a non-empty token of at most 64 characters from `[0-9A-Za-z-]`; otherwise the session is left empty | `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:1120-1137` | CONFIRMED |
-| Joiner: `Complete` / `Partial` / `Rejected`, sequence gap checks, handoff pairing | `src/PSXRecomp.Core/Diagnostics/UnitTraceJoiner.cs:21`; status enum `:403`; segment source `:410`; `UnitTraceSegment` `:425`; `UnitTraceJoin` `:438` | CONFIRMED |
-| Native trace records carry CPU state (`gpr` x32, `hi`, `lo`, `sr`, `cause`, `epc`, `pc`) at unit end, trace build only | `unit-trace.md` "Record schema"; `CpuCheckpoint` parser `src/PSXRecomp.Core/Diagnostics/CpuCheckpoint.cs:17`, `TryParse` `:38` | OBSERVED (doc); CONFIRMED (parser) |
-| Disabled path emits byte-identical generated source | `unit-trace.md` "Enabling"; tests `HostCodeGenTests` (`UnitTrace_*`) | OBSERVED |
+| Design and schema: JSON Lines, `v:1`, `kind` records, session and handoff identity | `docs/development/unit-trace.md`, sections "Enabling", "Identity", "Record schema" | INFERRED |
+| `UnitTraceScope.Begin` (in-process enable for tests) and `UnitTraceRun` (child env, parent fallback file) | `src/PSXRecomp.Infrastructure/UnitTraceRun.cs:15`, `:54` | INFERRED |
+| Session ID generated per run as `Guid.NewGuid().ToString("N")` and passed to the child via `PSX_TRACE_SESSION` | `src/PSXRecomp.Infrastructure/UnitTraceRun.cs:88`, `:112` | INFERRED |
+| Native side: opt-in trace build, env `PSX_UNIT_TRACE_FILE`, `PSX_UNIT_TRACE_MAX_BYTES`, default cap `RECOMPILER_TRACE_DEFAULT_CAP`, truncation and end records | `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:79`, `:1037-1077`, `:1155-1162` | INFERRED |
+| Native `PSX_TRACE_SESSION` is accepted only when it is a non-empty token of at most 64 characters from `[0-9A-Za-z-]`; otherwise the session is left empty | `src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:1120-1137` | INFERRED |
+| Joiner: `Complete` / `Partial` / `Rejected`, sequence gap checks, handoff pairing | `src/PSXRecomp.Core/Diagnostics/UnitTraceJoiner.cs:21`; status enum `:403`; segment source `:410`; `UnitTraceSegment` `:425`; `UnitTraceJoin` `:438` | INFERRED |
+| Native trace records carry CPU state (`gpr` x32, `hi`, `lo`, `sr`, `cause`, `epc`, `pc`) at unit end, trace build only | `unit-trace.md` "Record schema"; `CpuCheckpoint` parser `src/PSXRecomp.Core/Diagnostics/CpuCheckpoint.cs:17`, `TryParse` `:38` | INFERRED (doc); INFERRED (parser) |
+| Disabled path emits byte-identical generated source | `unit-trace.md` "Enabling"; tests `HostCodeGenTests` (`UnitTrace_*`) | INFERRED |
 
 ### 1.5 Interpreter fetch ring and fallback diagnostics
 
 | Element | Location | Label |
 |---|---|---|
-| `ExecutionTraceSnapshot` record (fetches and transfers) | `src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:14` | CONFIRMED |
-| `ExecutionTraceRing` class: fixed-capacity fetch ring plus control-transfer ring | `src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:17`; `DefaultCapacity = 64` at `:19` | CONFIRMED |
-| The "never influences execution" statement is in the type's summary comment | `src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:11` | CONFIRMED |
-| Engine exposes the ring as `RecentTrace` and fetches the instruction word via `FetchWordForTrace` | `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:279`, `:891` | CONFIRMED |
-| `FallbackReturnDiagnostics` | `src/PSXRecomp.Core/Execution/FallbackReturnDiagnostics.cs:148` | CONFIRMED (declaration only) |
-| `MixedFallbackDiagnostics` | `src/PSXRecomp.Core/Execution/MixedFallback.cs:33` | CONFIRMED (declaration only) |
-| `HostMmioAccess(PhysicalAddress, Width, IsWrite)` | `src/PSXRecomp.Core/Execution/MixedFallback.cs:161` | CONFIRMED |
-| `ArtifactFallbackSession.Attribute`: per-entry version comparison, runs only with a transition observer | `src/PSXRecomp.Infrastructure/ArtifactFallbackSession.cs:143-160` | OBSERVED (`docs/runtime/loaded-code-identity.md:51`) |
+| `ExecutionTraceSnapshot` record (fetches and transfers) | `src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:14` | INFERRED |
+| `ExecutionTraceRing` class: fixed-capacity fetch ring plus control-transfer ring | `src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:17`; `DefaultCapacity = 64` at `:19` | INFERRED |
+| The "never influences execution" statement is in the type's summary comment | `src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:11` | INFERRED |
+| Engine exposes the ring as `RecentTrace` and fetches the instruction word via `FetchWordForTrace` | `src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:279`, `:891` | INFERRED |
+| `FallbackReturnDiagnostics` | `src/PSXRecomp.Core/Execution/FallbackReturnDiagnostics.cs:148` | INFERRED (declaration only) |
+| `MixedFallbackDiagnostics` | `src/PSXRecomp.Core/Execution/MixedFallback.cs:33` | INFERRED (declaration only) |
+| `HostMmioAccess(PhysicalAddress, Width, IsWrite)` | `src/PSXRecomp.Core/Execution/MixedFallback.cs:161` | INFERRED |
+| `ArtifactFallbackSession.Attribute`: per-entry version comparison, runs only with a transition observer | `src/PSXRecomp.Infrastructure/ArtifactFallbackSession.cs:143-160` | INFERRED (`docs/runtime/loaded-code-identity.md:51`) |
 
 ### 1.6 Loaded-code mismatch diagnostics (`#773`, open)
 
 | Element | Location | Label |
 |---|---|---|
-| `LoadedCodeMismatchDiagnostics` (bounded records, bounded compared words) | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:19`, `:25`, `:42` | CONFIRMED |
-| Per-record JSON: `pc`, `version`, `versionCount`, `comparedWords`, `ramPage`, `rejections`, `fullMatches`, `firstMismatchIndexRange`, `mismatchedWordsRange`, `ramHashChanges`, `aotSha256`, `ramSha256`, `windowStartPc`, `windowAot`, `windowRam`, `origins` | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:277-300` | CONFIRMED |
-| Mismatch record keeps a 5-word window of AOT words and RAM words at the first refusal, written as `windowAot` and `windowRam` | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:30` (`WindowRadius = 2`), `:269-273`, `:296-297` | CONFIRMED |
-| Source comment calls this "a bounded sample, not a dump of the image" | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:268` | CONFIRMED (comment) |
+| `LoadedCodeMismatchDiagnostics` (bounded records, bounded compared words) | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:19`, `:25`, `:42` | INFERRED |
+| Per-record JSON: `pc`, `version`, `versionCount`, `comparedWords`, `ramPage`, `rejections`, `fullMatches`, `firstMismatchIndexRange`, `mismatchedWordsRange`, `ramHashChanges`, `aotSha256`, `ramSha256`, `windowStartPc`, `windowAot`, `windowRam`, `origins` | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:277-300` | INFERRED |
+| Mismatch record keeps a 5-word window of AOT words and RAM words at the first refusal, written as `windowAot` and `windowRam` | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:30` (`WindowRadius = 2`), `:269-273`, `:296-297` | INFERRED |
+| Source comment calls this "a bounded sample, not a dump of the image" | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:268` | INFERRED (comment) |
 | `origins` is produced by `OriginsJson()`, whose body was not read | `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:298` (call) | UNVERIFIED (shape not read) |
 
 ### 1.7 BIOS and ROM guards
 
 | Element | Location | Label |
 |---|---|---|
-| `BiosAddressGuard` static class; `PhysicalBase = 0x1FC00000` | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:103` | CONFIRMED |
-| `IsBiosAddress` | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:113` | CONFIRMED |
-| `OverlapsBios` | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:120` | CONFIRMED |
-| `RequireNoBiosImage` (refuses BIOS code in AOT generation) | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:146` | CONFIRMED |
-| `BiosContentDiagnostic` record: counts and provenance text, no bytes | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:81` | CONFIRMED |
-| Standalone report "never names an input". The code comment cites "Issue #786 B1"; #786 is a pull request, so the label in the comment is a mislabel. | `src/PSXRecomp.RuntimeHost/Program.cs:197` | OBSERVED (comment) |
+| `BiosAddressGuard` static class; `PhysicalBase = 0x1FC00000` | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:103` | INFERRED |
+| `IsBiosAddress` | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:113` | INFERRED |
+| `OverlapsBios` | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:120` | INFERRED |
+| `RequireNoBiosImage` (refuses BIOS code in AOT generation) | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:146` | INFERRED |
+| `BiosContentDiagnostic` record: counts and provenance text, no bytes | `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:81` | INFERRED |
+| Standalone report "never names an input". The code comment cites "Issue #786 B1"; #786 is a pull request, so the label in the comment is a mislabel. | `src/PSXRecomp.RuntimeHost/Program.cs:197` | INFERRED (comment) |
 
 ### 1.8 OpenBIOS probe: writers inventoried
 
@@ -157,170 +157,170 @@ The probe is `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs`, with helpers in `src/P
 
 | Element | Location | Label |
 |---|---|---|
-| The anonymous object is serialised and written at `:419`; its fields `kind`, `backend`, `sha256`, `bootVerified`, `kernelBooted`, `milestones`, `titleStarted`, `executionState`, `guestPc`, `diagnosticCode`, `segmentsRetired`, `stop`, `captured`, `gte`, `frame` are at `:421-437` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:419` (write), `:421` (`kind`), `:423` (`sha256 = hash`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`), `:437` (`frame`) | CONFIRMED |
-| `BuildStop` builds `pc`, `sr`, `cause`, `epc`, `badVAddr`, `gpr[32]`, `lastFetches` (`Hex(e.Pc):Hex(e.Word)`, last 16), `lastTransfers` (last 16, including `From.Word`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1004-1014` (`pc`/`sr`/`cause`/`epc`/`badVAddr` at `:1010-1011`; `gpr` at `:1012`; `lastFetches` at `:1013`; `lastTransfers` at `:1014`) | CONFIRMED |
-| `BuildStop` is called with the interpreter engine's `FinalSnapshot` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:361` | CONFIRMED |
-| `captured` is built at the capture PC: `pc`, `word = ReadGuestWord(pc)` (raw instruction word), `gpr[32]`, `lastTransfers` (PCs only) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:344-350`; `word` at `:346`; `gpr` at `:347` | CONFIRMED |
-| `gte.lastUnsupportedCommand` is `Gte.LastUnsupportedCommand`, set to `command & 0x01FF_FFFF`; `gte.commandsExecuted` is a count | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:435`; `src/PSXRecomp.Core/Runtime/Gte/GteRegisterBank.cs:106`, `:115` | CONFIRMED |
-| `milestones` is an `OpenBiosBootReport` record: `ResetVectorFetched`, `KernelRunningFromRam`, `VectorsInstalled`, `ExceptionVectorExecuted`, `ShellEntered`, `ShellEnteredAtFetch`, `InterruptEntries`, `SyscallEntries`, `TitleEntryPc`, `FirstUnexpectedException`, plus `TitleStarted` and `KernelBooted` | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:10-40` (record at `:10-20`; `TitleStarted` at `:26`; `KernelBooted` at `:34`) | CONFIRMED |
-| `milestones.firstUnexpectedException` is `OpenBiosUnexpectedException(ExcCode, Epc, BadVAddr, Cause, AtFetch)` | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:40`; read by the probe at `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:808` | CONFIRMED |
-| `--capture-at <hex-pc>` option | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:59-67` | CONFIRMED |
-| The probe loads a 512 KiB OpenBIOS ROM and boots the firmware, so the interpreter fetches are expected to include BIOS-range PCs | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:201-207` (ROM load); the boot design | CONFIRMED (ROM load); PREDICTED (BIOS-range fetches) |
+| The anonymous object is serialised and written at `:419`; its fields `kind`, `backend`, `sha256`, `bootVerified`, `kernelBooted`, `milestones`, `titleStarted`, `executionState`, `guestPc`, `diagnosticCode`, `segmentsRetired`, `stop`, `captured`, `gte`, `frame` are at `:421-437` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:419` (write), `:421` (`kind`), `:423` (`sha256 = hash`), `:432` (`stop`), `:433` (`captured`), `:435` (`gte`), `:437` (`frame`) | INFERRED |
+| `BuildStop` builds `pc`, `sr`, `cause`, `epc`, `badVAddr`, `gpr[32]`, `lastFetches` (`Hex(e.Pc):Hex(e.Word)`, last 16), `lastTransfers` (last 16, including `From.Word`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1004-1014` (`pc`/`sr`/`cause`/`epc`/`badVAddr` at `:1010-1011`; `gpr` at `:1012`; `lastFetches` at `:1013`; `lastTransfers` at `:1014`) | INFERRED |
+| `BuildStop` is called with the interpreter engine's `FinalSnapshot` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:361` | INFERRED |
+| `captured` is built at the capture PC: `pc`, `word = ReadGuestWord(pc)` (raw instruction word), `gpr[32]`, `lastTransfers` (PCs only) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:344-350`; `word` at `:346`; `gpr` at `:347` | INFERRED |
+| `gte.lastUnsupportedCommand` is `Gte.LastUnsupportedCommand`, set to `command & 0x01FF_FFFF`; `gte.commandsExecuted` is a count | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:435`; `src/PSXRecomp.Core/Runtime/Gte/GteRegisterBank.cs:106`, `:115` | INFERRED |
+| `milestones` is an `OpenBiosBootReport` record: `ResetVectorFetched`, `KernelRunningFromRam`, `VectorsInstalled`, `ExceptionVectorExecuted`, `ShellEntered`, `ShellEnteredAtFetch`, `InterruptEntries`, `SyscallEntries`, `TitleEntryPc`, `FirstUnexpectedException`, plus `TitleStarted` and `KernelBooted` | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:10-40` (record at `:10-20`; `TitleStarted` at `:26`; `KernelBooted` at `:34`) | INFERRED |
+| `milestones.firstUnexpectedException` is `OpenBiosUnexpectedException(ExcCode, Epc, BadVAddr, Cause, AtFetch)` | `src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:40`; read by the probe at `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:808` | INFERRED |
+| `--capture-at <hex-pc>` option | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:59-67` | INFERRED |
+| The probe loads a 512 KiB OpenBIOS ROM and boots the firmware, so the interpreter fetches are expected to include BIOS-range PCs | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:201-207` (ROM load); the boot design | INFERRED (ROM load); INFERRED (BIOS-range fetches) |
 | Whether any value in the `--json` output lies in the BIOS range | not checked (no probe run, no captured `--json` output inspected). Q11 ruling: record a result only when it is measured; otherwise `unknown`. | unknown |
 
 **W2. Generated-host `--json` document.** The document object is built at `:663-742` and passed to the common writer, which serialises it at `:743-746` and writes it at `:755`.
 
 | Element | Location | Label |
 |---|---|---|
-| The generated-host document object (fields are classified in section 7.6) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:663-742` | CONFIRMED |
-| Common serialisation and write: `SerializeToNode`, `consistency` added, text produced, written | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:743-746`, `:755` | CONFIRMED |
-| `diagnosticMessage` is set from `result.DiagnosticMessage` (free text) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:677` | CONFIRMED |
-| `stopAt` is `{ pc, reachedByInterpreter, reachedByHost }` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:678-680` | CONFIRMED |
-| `build` carries counts (`imageInstructions`, `nativeInstructions`, `blocks`, `roots`, `staticFallbackTargets`, `symbols` as a count) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:681-689` | CONFIRMED |
-| `loadedImages[]` carries `name`, `blocks`, `nativeInstructions`, `skippedEntries` (PCs) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:690` | CONFIRMED |
-| `loadedCodeVersions` is `loadedCode.Blocks.Count` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:691` | CONFIRMED |
-| `interpretedEntries` is `observedPcs.Order()` (a PC array) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:692`; `observedPcs` at `:488-490` | CONFIRMED |
-| `precompileMilliseconds` is `buildMs + compileMs` (not rounded at this point) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:693` | CONFIRMED |
-| `atBoundary` is a dictionary keyed by PC (`Hex(b.Key)`) whose value is `new { nativeInstructions, seconds, mmioRoundTrips, timeReportRoundTrips }` (`:597-598`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:550` (dictionary), `:597` (value shape), `:694` (output) | CONFIRMED |
-| `execution` carries native and fallback counts, `topFallbackTargets` (strings of PC, counts, and a cause), and `timings = costs` (`:706`, shape not read) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:695-709` | CONFIRMED |
-| `accounting` is `accounting.Report(...)` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:710-711` | CONFIRMED |
-| `timings` is built at `:712-724` from `Math.Round(..., 1)` doubles (0.1 ms precision) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:712-724` | CONFIRMED |
-| `aot` carries `generatedCBytes` and `artifactBytes` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:725` | CONFIRMED |
-| `boundaries` is a dictionary keyed by PC whose values are `Describe()` objects | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:726`; `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107` | CONFIRMED |
-| `differential` is a dictionary keyed by PC whose values are `Compare` results, or a string for an unreached boundary | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:727-731` | CONFIRMED |
-| `referenceBoundariesMissing` is a PC array | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:732` | CONFIRMED |
-| `referenceSecondsAtBoundary` is a dictionary keyed by PC of `referenceSeconds` values (type not read here) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:733` | CONFIRMED (location); value type UNVERIFIED |
-| `firstInterrupt` is `{ interpreter: Describe(), host: Describe() }` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:734` | CONFIRMED |
-| `firstInterruptDifferential` is `Compare(referenceInterrupt, hostInterrupt)` or a string | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:735-736` | CONFIRMED |
-| `milestoneComparison` is `{ match, interpreter = referenceMilestones }` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:737-741` | CONFIRMED |
-| `ProbeGuestState.Describe()` returns `pc`, `atFetch`, `cpu` (a map of named CPU values), `devices` (a map), `instructionWord` (raw word read from RAM at PC), `sr`, `cause`, `epc`, `ramSha256`, `guestCycles`, `scratchpadSha256` | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107`; `instructionWord` at `:101`; `ramSha256` at `:104` | CONFIRMED |
-| The `cpu` map is built from a list that includes `hi`, `lo`, `sr`, `cause`, `epc`, `badvaddr` and the 31 GPR entries | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36` | CONFIRMED (GPR entries at `:35`; the six named entries at `:36`) |
-| `scratchpad_sha256` is a device digest | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:41` | CONFIRMED |
-| `vram_sha256` is a device digest | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:83` | CONFIRMED |
-| The differential emits per-field mismatch objects (`kind = "cpu"` with `interpreter` and `host` hex values) | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:117-118` | CONFIRMED |
-| The differential emits a RAM mismatch object with `address`, `page`, `contextStart`, `interpreterBytes`, `hostBytes` (16 raw RAM bytes each side) | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:138-143` | CONFIRMED |
-| The differential emits `interpreterRamSha256` and `hostRamSha256` (whole-RAM digests) | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:154-155` | CONFIRMED |
-| `accounting.unsupportedOpcodes[]`: `excCode`, `opcode`, `pc`, `word` (raw instruction word), `atFallbackFetch` | `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:195-198` | CONFIRMED |
-| Pinned by a test: `unsupported[0]["word"] == "0xFC000000"` and `unsupported[1]["opcode"] == 0x12` | `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:183`, `:185` | CONFIRMED |
+| The generated-host document object (fields are classified in section 7.6) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:663-742` | INFERRED |
+| Common serialisation and write: `SerializeToNode`, `consistency` added, text produced, written | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:743-746`, `:755` | INFERRED |
+| `diagnosticMessage` is set from `result.DiagnosticMessage` (free text) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:677` | INFERRED |
+| `stopAt` is `{ pc, reachedByInterpreter, reachedByHost }` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:678-680` | INFERRED |
+| `build` carries counts (`imageInstructions`, `nativeInstructions`, `blocks`, `roots`, `staticFallbackTargets`, `symbols` as a count) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:681-689` | INFERRED |
+| `loadedImages[]` carries `name`, `blocks`, `nativeInstructions`, `skippedEntries` (PCs) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:690` | INFERRED |
+| `loadedCodeVersions` is `loadedCode.Blocks.Count` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:691` | INFERRED |
+| `interpretedEntries` is `observedPcs.Order()` (a PC array) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:692`; `observedPcs` at `:488-490` | INFERRED |
+| `precompileMilliseconds` is `buildMs + compileMs` (not rounded at this point) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:693` | INFERRED |
+| `atBoundary` is a dictionary keyed by PC (`Hex(b.Key)`) whose value is `new { nativeInstructions, seconds, mmioRoundTrips, timeReportRoundTrips }` (`:597-598`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:550` (dictionary), `:597` (value shape), `:694` (output) | INFERRED |
+| `execution` carries native and fallback counts, `topFallbackTargets` (strings of PC, counts, and a cause), and `timings = costs` (`:706`, shape not read) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:695-709` | INFERRED |
+| `accounting` is `accounting.Report(...)` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:710-711` | INFERRED |
+| `timings` is built at `:712-724` from `Math.Round(..., 1)` doubles (0.1 ms precision) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:712-724` | INFERRED |
+| `aot` carries `generatedCBytes` and `artifactBytes` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:725` | INFERRED |
+| `boundaries` is a dictionary keyed by PC whose values are `Describe()` objects | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:726`; `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107` | INFERRED |
+| `differential` is a dictionary keyed by PC whose values are `Compare` results, or a string for an unreached boundary | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:727-731` | INFERRED |
+| `referenceBoundariesMissing` is a PC array | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:732` | INFERRED |
+| `referenceSecondsAtBoundary` is a dictionary keyed by PC of `referenceSeconds` values (type not read here) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:733` | INFERRED (location); value type UNVERIFIED |
+| `firstInterrupt` is `{ interpreter: Describe(), host: Describe() }` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:734` | INFERRED |
+| `firstInterruptDifferential` is `Compare(referenceInterrupt, hostInterrupt)` or a string | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:735-736` | INFERRED |
+| `milestoneComparison` is `{ match, interpreter = referenceMilestones }` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:737-741` | INFERRED |
+| `ProbeGuestState.Describe()` returns `pc`, `atFetch`, `cpu` (a map of named CPU values), `devices` (a map), `instructionWord` (raw word read from RAM at PC), `sr`, `cause`, `epc`, `ramSha256`, `guestCycles`, `scratchpadSha256` | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107`; `instructionWord` at `:101`; `ramSha256` at `:104` | INFERRED |
+| The `cpu` map is built from a list that includes `hi`, `lo`, `sr`, `cause`, `epc`, `badvaddr` and the 31 GPR entries | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36` | INFERRED (GPR entries at `:35`; the six named entries at `:36`) |
+| `scratchpad_sha256` is a device digest | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:41` | INFERRED |
+| `vram_sha256` is a device digest | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:83` | INFERRED |
+| The differential emits per-field mismatch objects (`kind = "cpu"` with `interpreter` and `host` hex values) | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:117-118` | INFERRED |
+| The differential emits a RAM mismatch object with `address`, `page`, `contextStart`, `interpreterBytes`, `hostBytes` (16 raw RAM bytes each side) | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:138-143` | INFERRED |
+| The differential emits `interpreterRamSha256` and `hostRamSha256` (whole-RAM digests) | `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:154-155` | INFERRED |
+| `accounting.unsupportedOpcodes[]`: `excCode`, `opcode`, `pc`, `word` (raw instruction word), `atFallbackFetch` | `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:195-198` | INFERRED |
+| Pinned by a test: `unsupported[0]["word"] == "0xFC000000"` and `unsupported[1]["opcode"] == 0x12` | `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:183`, `:185` | INFERRED |
 
 **W3. Non-JSON console output, interpreter path (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:441-450`).**
 
 | Element | Location | Label |
 |---|---|---|
-| Prints `OpenBIOS execution probe (sha256:{hash}, backend=...)` (firmware digest, `:443`), state, PC, and code | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:441-445` | CONFIRMED |
-| Prints `Stop: {JsonSerializer.Serialize(stop)}`, which includes the full `gpr[32]` and COP0 fields | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:446-449` | CONFIRMED |
-| Prints `Kernel boot milestones: {report}` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:450` | CONFIRMED |
+| Prints `OpenBIOS execution probe (sha256:{hash}, backend=...)` (firmware digest, `:443`), state, PC, and code | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:441-445` | INFERRED |
+| Prints `Stop: {JsonSerializer.Serialize(stop)}`, which includes the full `gpr[32]` and COP0 fields | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:446-449` | INFERRED |
+| Prints `Kernel boot milestones: {report}` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:450` | INFERRED |
 
 **W12. Non-JSON summary (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:749-751`, `Summarize` at `:838`).** When `--json` is not set, the document is parsed back and summarised line by line.
 
 | Element | Location | Label |
 |---|---|---|
-| The summary is written at `:749-751` from `Summarize(JsonNode.Parse(text))` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:747-751` | CONFIRMED |
-| `Summarize` prints `hotEntries[]` entries with `pc`, `symbol` (a symbol name), `reason`, `transitions`, `retiredInstructions` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:859-861` | CONFIRMED |
-| `Summarize` prints `hotPcs[]` entries with `pc`, `symbol`, `fetches`, `share` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:864-866` | CONFIRMED |
-| `Summarize` prints the differential result, and on a mismatch the `firstMismatch` JSON (may carry register or RAM values) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:874` | CONFIRMED |
-| The `hotEntries` and `hotPcs` names are used by `Summarize`; their producer was not read in this revision | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:859`, `:864` | CONFIRMED (consumer); producer UNVERIFIED |
-| The summary also prints `timings` (`:879-881`), AOT byte counts (`:882`), and `consistency.differentialPass` (`:883`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:879-884` | CONFIRMED |
+| The summary is written at `:749-751` from `Summarize(JsonNode.Parse(text))` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:747-751` | INFERRED |
+| `Summarize` prints `hotEntries[]` entries with `pc`, `symbol` (a symbol name), `reason`, `transitions`, `retiredInstructions` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:859-861` | INFERRED |
+| `Summarize` prints `hotPcs[]` entries with `pc`, `symbol`, `fetches`, `share` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:864-866` | INFERRED |
+| `Summarize` prints the differential result, and on a mismatch the `firstMismatch` JSON (may carry register or RAM values) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:874` | INFERRED |
+| The `hotEntries` and `hotPcs` names are used by `Summarize`; their producer was not read in this revision | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:859`, `:864` | INFERRED (consumer); producer UNVERIFIED |
+| The summary also prints `timings` (`:879-881`), AOT byte counts (`:882`), and `consistency.differentialPass` (`:883`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:879-884` | INFERRED |
 
 **W4. `--retire-out <file>` (JSON lines, one per fetch at a position).**
 
 | Element | Location | Label |
 |---|---|---|
-| The retirement writer is opened at `:317` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:317` | CONFIRMED |
-| Each line carries `g`, `pc`, `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc`, `pipelineClean` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:328-333` | CONFIRMED |
+| The retirement writer is opened at `:317` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:317` | INFERRED |
+| Each line carries `g`, `pc`, `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc`, `pipelineClean` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:328-333` | INFERRED |
 
 **W5. `--pc-histogram <file>` (JSON).**
 
 | Element | Location | Label |
 |---|---|---|
-| Written with `totalRamFetches`, `top` (PC plus count, top 64), and `buckets` (64-byte bucket start plus count, top 48). Comment: "Local diagnostic only" | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:368-377` | CONFIRMED |
+| Written with `totalRamFetches`, `top` (PC plus count, top 64), and `buckets` (64-byte bucket start plus count, top 48). Comment: "Local diagnostic only" | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:368-377` | INFERRED |
 
 **W6. `--dump-frame <file.ppm>` (binary PPM).**
 
 | Element | Location | Label |
 |---|---|---|
-| Writes the displayed frame as a binary PPM with 24-bit colour pixels. Comment: "Local diagnostic only (never committed)". | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:378-411` | CONFIRMED |
+| Writes the displayed frame as a binary PPM with 24-bit colour pixels. Comment: "Local diagnostic only (never committed)". | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:378-411` | INFERRED |
 
 **W7. `--dump-ram <file>` (raw 2 MiB main RAM).**
 
 | Element | Location | Label |
 |---|---|---|
-| Option, requirement, and write | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:81` (option), `:172` (requires `--capture-at`), `:337-342` (write) | CONFIRMED |
+| Option, requirement, and write | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:81` (option), `:172` (requires `--capture-at`), `:337-342` (write) | INFERRED |
 
 **W8. `--fallback-targets <file>` (fallback export JSON).**
 
 | Element | Location | Label |
 |---|---|---|
-| The export is written with `WriteAtomically` after the run | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:660`; `WriteAtomically` at `:981` | CONFIRMED |
-| The export document `BuildFallbackTargetsDocument` contains `format`, `sha256` (the firmware digest, `hash`, `:973`), `run` (`ObservedRootPlanner.RunDocument(DescribeRun(hash, manifest, discSha256, ...))`, `:974`, which includes the firmware digest and the disc digest), `outcome` (`state`, `complete`, `stopAt`, `:975`), and `targets[]` (`pc`, `cause`, `entries`, `instructions`, `lastReturnPc`, `ramWord`, `:961-969`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:952-977` | CONFIRMED |
-| `ramWord` is a raw RAM word, read by `ramWordOf` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:968` | CONFIRMED |
+| The export is written with `WriteAtomically` after the run | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:660`; `WriteAtomically` at `:981` | INFERRED |
+| The export document `BuildFallbackTargetsDocument` contains `format`, `sha256` (the firmware digest, `hash`, `:973`), `run` (`ObservedRootPlanner.RunDocument(DescribeRun(hash, manifest, discSha256, ...))`, `:974`, which includes the firmware digest and the disc digest), `outcome` (`state`, `complete`, `stopAt`, `:975`), and `targets[]` (`pc`, `cause`, `entries`, `instructions`, `lastReturnPc`, `ramWord`, `:961-969`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:952-977` | INFERRED |
+| `ramWord` is a raw RAM word, read by `ramWordOf` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:968` | INFERRED |
 
 **W9. `--mdec-events <file>` (JSON lines).**
 
 | Element | Location | Label |
 |---|---|---|
-| Each line carries `engine`, `seq`, `g`, `kind`, `value` (raw 32-bit word), `pc`, `lastFallbackFetchPc`, `command` (raw 32-bit word), `remaining`, `control` (register), `fifoWords`, `busyBefore`, `busyAfter` | `src/PSXRecomp.Cli/OpenBiosProbeMdecLog.cs:43-56` | CONFIRMED |
+| Each line carries `engine`, `seq`, `g`, `kind`, `value` (raw 32-bit word), `pc`, `lastFallbackFetchPc`, `command` (raw 32-bit word), `remaining`, `control` (register), `fifoWords`, `busyBefore`, `busyAfter` | `src/PSXRecomp.Cli/OpenBiosProbeMdecLog.cs:43-56` | INFERRED |
 
 **W10. `--boundary-log <file>` (JSON lines).**
 
 | Element | Location | Label |
 |---|---|---|
-| Each line is `Describe(engine, devices, vblank, cycles)`: device registers, `vramSha256`, and the boundary position | `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:40-56` | CONFIRMED (call and fields named by the review); the boundary-log `Describe` body (a different method from `ProbeGuestState.Describe()`, `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107`, which was read) was not read in full |
+| Each line is `Describe(engine, devices, vblank, cycles)`: device registers, `vramSha256`, and the boundary position | `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:40-56` | INFERRED (call and fields named by the review); the boundary-log `Describe` body (a different method from `ProbeGuestState.Describe()`, `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107`, which was read) was not read in full |
 
 **W11. `--list-disc <file>` (JSON).**
 
 | Element | Location | Label |
 |---|---|---|
-| Writes the disc's file listing, including file names from the disc image | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:251-289` | CONFIRMED (range); field shape not read |
+| Writes the disc's file listing, including file names from the disc image | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:251-289` | INFERRED (range); field shape not read |
 
 **W13. Standard error (`stderr`) writers.** Messages written to stderr, which may carry local paths or free text. Two `observer-failed` messages were added by #850 (`origin/main`, `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:567` as `error?.WriteLine`, and `:891`). They carry an exception type name and message, which is free text and excluded.
 
 | Element | Location | Label |
 |---|---|---|
-| Usage text and argument-validation messages, 35 `error.WriteLine` calls in total (the full list is below) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:35`, `:52`, `:63`, `:77`, `:102`, `:108`, `:120-121`, `:126-127`, `:132-133`, `:138-139`, `:147-148`, `:154`, `:160-161`, `:166-167`, `:172-173`, `:178-179`, `:190`, `:192` | CONFIRMED |
-| Argument echoes: duplicate option (`:52`), option needing a hexadecimal PC (`:63`), option needing a value (`:77`), unknown option (`:102`), option needing a positive integer (`:108`). These print argv tokens. | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:52`, `:63`, `:77`, `:102`, `:108` | CONFIRMED |
-| Path in the message for an existing fallback export (`--fallback-targets {path} already exists`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:154` | CONFIRMED |
-| Exception type and message (`ex.Message`), which may contain local paths | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:242` | CONFIRMED |
-| Warnings with the boundary or MDEC failure text | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:233`, `:235` | CONFIRMED |
-| Progress lines with fetch counts, transitions, and seconds | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:529`, `:608`, `:615` | CONFIRMED |
-| Fallback export status lines (`did not finish`, `ended in {result.State}`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:651`, `:657` | CONFIRMED |
-| The 35 `error.WriteLine` lines, grouped: `:35` (usage), `:52`, `:63`, `:77`, `:102`, `:108` (argument echoes), `:120-121`, `:126-127`, `:132-133`, `:138-139`, `:147-148`, `:154`, `:160-161`, `:166-167`, `:172-173`, `:178-179`, `:190`, `:192` (validation and usage), `:233`, `:235` (warnings), `:242` (exception), `:529`, `:608`, `:615` (progress), `:651`, `:657` (status) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:35-657` | CONFIRMED (the search result; each line is in one of the groups above) |
+| Usage text and argument-validation messages, 35 `error.WriteLine` calls in total (the full list is below) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:35`, `:52`, `:63`, `:77`, `:102`, `:108`, `:120-121`, `:126-127`, `:132-133`, `:138-139`, `:147-148`, `:154`, `:160-161`, `:166-167`, `:172-173`, `:178-179`, `:190`, `:192` | INFERRED |
+| Argument echoes: duplicate option (`:52`), option needing a hexadecimal PC (`:63`), option needing a value (`:77`), unknown option (`:102`), option needing a positive integer (`:108`). These print argv tokens. | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:52`, `:63`, `:77`, `:102`, `:108` | INFERRED |
+| Path in the message for an existing fallback export (`--fallback-targets {path} already exists`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:154` | INFERRED |
+| Exception type and message (`ex.Message`), which may contain local paths | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:242` | INFERRED |
+| Warnings with the boundary or MDEC failure text | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:233`, `:235` | INFERRED |
+| Progress lines with fetch counts, transitions, and seconds | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:529`, `:608`, `:615` | INFERRED |
+| Fallback export status lines (`did not finish`, `ended in {result.State}`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:651`, `:657` | INFERRED |
+| The 35 `error.WriteLine` lines, grouped: `:35` (usage), `:52`, `:63`, `:77`, `:102`, `:108` (argument echoes), `:120-121`, `:126-127`, `:132-133`, `:138-139`, `:147-148`, `:154`, `:160-161`, `:166-167`, `:172-173`, `:178-179`, `:190`, `:192` (validation and usage), `:233`, `:235` (warnings), `:242` (exception), `:529`, `:608`, `:615` (progress), `:651`, `:657` (status) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:35-657` | INFERRED (the search result; each line is in one of the groups above) |
 
 **W14. `--compare-boundary-logs <a.jsonl> <b.jsonl>` (#850, commit `656ed3c`; `origin/main` only, not in base `2e3ecad`).** Takes no ROM. It reads two W10 boundary logs (local inputs) and writes one JSON object to stdout. Line numbers in this table are from `origin/main`.
 
 | Element | Location | Label |
 |---|---|---|
-| Stdout document `{ leftBoundaries, rightBoundaries, commonBoundaries, firstMismatch }`, written with `output.WriteLine(document.ToJsonString())`; mode entry `CompareBoundaryLogs` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:278` (entry), `:339` (write) | CONFIRMED (origin/main) |
-| `firstMismatch` is `{ index, vblank, field }`, or `null` when no compared field differs | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs` (document built inside the `try`, before `:339`); `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:130-142` (`FirstMismatch`) | CONFIRMED (origin/main) |
-| `field` is a name from `ComparedFields()` (a record key name), not a value | `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:134-138` | CONFIRMED (origin/main) |
-| Stderr: usage (`:49`); file-access failure with `ex.Message`, which can carry a local path (`:295`); format error with `ex.Message` (`:328`); internal error with `ex.Message` (`:335`); zero-common-boundaries message (`:343`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:49`, `:295`, `:328`, `:335`, `:343` | CONFIRMED (origin/main) |
-| Exit code 1 when `commonBoundaries` is 0, after the document has been written | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:339-345` | CONFIRMED (origin/main) |
+| Stdout document `{ leftBoundaries, rightBoundaries, commonBoundaries, firstMismatch }`, written with `output.WriteLine(document.ToJsonString())`; mode entry `CompareBoundaryLogs` | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:278` (entry), `:339` (write) | INFERRED (origin/main) |
+| `firstMismatch` is `{ index, vblank, field }`, or `null` when no compared field differs | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs` (document built inside the `try`, before `:339`); `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:130-142` (`FirstMismatch`) | INFERRED (origin/main) |
+| `field` is a name from `ComparedFields()` (a record key name), not a value | `src/PSXRecomp.Cli/OpenBiosProbeBoundaryLog.cs:134-138` | INFERRED (origin/main) |
+| Stderr: usage (`:49`); file-access failure with `ex.Message`, which can carry a local path (`:295`); format error with `ex.Message` (`:328`); internal error with `ex.Message` (`:335`); zero-common-boundaries message (`:343`) | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:49`, `:295`, `:328`, `:335`, `:343` | INFERRED (origin/main) |
+| Exit code 1 when `commonBoundaries` is 0, after the document has been written | `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:339-345` | INFERRED (origin/main) |
 
 ### 1.9 Identity hashes already in use
 
 | Element | Location | Label |
 |---|---|---|
-| Input identity: SHA-256 of EXE and disc. The phrase "for provenance" in that doc is not adopted here: under owner policy 3 a hash identifies a file and does not prove provenance or legitimacy | `docs/runtime/loaded-code-identity.md:14`, `:45` | OBSERVED (the doc); policy 3 is CONFIRMED |
-| `GuardStatsScope` run ID, random 64-bit hex per child process | `src/PSXRecomp.Infrastructure/GuardStatsScope.cs:18`; `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:1345` | CONFIRMED |
-| `ObservedRunIdentity` (firmware SHA, manifest, disc SHA, probe options SHA) | `src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:46`, `:262` | CONFIRMED |
+| Input identity: SHA-256 of EXE and disc. The phrase "for provenance" in that doc is not adopted here: under owner policy 3 a hash identifies a file and does not prove provenance or legitimacy | `docs/runtime/loaded-code-identity.md:14`, `:45` | INFERRED (the doc); policy 3 is INFERRED |
+| `GuardStatsScope` run ID, random 64-bit hex per child process | `src/PSXRecomp.Infrastructure/GuardStatsScope.cs:18`; `src/PSXRecomp.Infrastructure/RecompiledHostExecutionEngine.cs:1345` | INFERRED |
+| `ObservedRunIdentity` (firmware SHA, manifest, disc SHA, probe options SHA) | `src/PSXRecomp.Core/Recompiler/ObservedRootPlanner.cs:46`, `:262` | INFERRED |
 
 ### 1.10 Gaps in the inventory
 
-- **No shared session ID.** The unit trace has a session ID. The `#457` report has none. The standalone host has a separate `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, also written at `:624`). The guard-stats scope has another run ID. **CONFIRMED.**
-- **No MMIO event stream.** `HostMmioAccess` and the `LastMmio*` metrics record only the last access. **CONFIRMED.**
-- **No GPU, SPU, CD, or DMA event stream.** Only the device interfaces exist (`src/PSXRecomp.Core/Runtime/IGuestDeviceAccess.cs`, `src/PSXRecomp.Core/Runtime/ITimer.cs`, `src/PSXRecomp.Core/Runtime/IGpu.cs`, `src/PSXRecomp.Core/Runtime/ISpu.cs`, `src/PSXRecomp.Core/Runtime/ICdRom.cs`). **OBSERVED** (file list only).
-- **No timestamps.** The deterministic JSON forms exclude time by design. **CONFIRMED** (`diagnostics.md` section 2).
+- **No shared session ID.** The unit trace has a session ID. The `#457` report has none. The standalone host has a separate `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, also written at `:624`). The guard-stats scope has another run ID. **INFERRED.**
+- **No MMIO event stream.** `HostMmioAccess` and the `LastMmio*` metrics record only the last access. **INFERRED.**
+- **No GPU, SPU, CD, or DMA event stream.** Only the device interfaces exist (`src/PSXRecomp.Core/Runtime/IGuestDeviceAccess.cs`, `src/PSXRecomp.Core/Runtime/ITimer.cs`, `src/PSXRecomp.Core/Runtime/IGpu.cs`, `src/PSXRecomp.Core/Runtime/ISpu.cs`, `src/PSXRecomp.Core/Runtime/ICdRom.cs`). **INFERRED** (file list only).
+- **No timestamps.** The deterministic JSON forms exclude time by design. **INFERRED** (`diagnostics.md` section 2).
 - **Studio GUI and CLI consumption of a trace format**: none found in this inventory. **UNVERIFIED** (no exhaustive GUI search).
 
 ## 2. Common model
 
-Four record families share one envelope. The envelope follows the existing `v:1` JSON Lines style of the unit trace, so parser patterns can be reused. **PREDICTED** (design).
+Four record families share one envelope. The envelope follows the existing `v:1` JSON Lines style of the unit trace, so parser patterns can be reused. **INFERRED** (design).
 
 What exists today versus what is new:
 
-- The unit-trace native header carries `session` (`unit-trace.md`, "Record schema"). **OBSERVED.**
-- The unit-trace fallback header carries both `session` and `stream`. **OBSERVED** (`unit-trace.md`, fallback file table).
-- The per-record `session` field on every record, and the `stream` field on native and host records, are **new** in this design. **PREDICTED.**
+- The unit-trace native header carries `session` (`unit-trace.md`, "Record schema"). **INFERRED.**
+- The unit-trace fallback header carries both `session` and `stream`. **INFERRED** (`unit-trace.md`, fallback file table).
+- The per-record `session` field on every record, and the `stream` field on native and host records, are **new** in this design. **INFERRED.**
 
 ```
 Envelope (every record):
@@ -341,23 +341,23 @@ Record families:
 | MMIO | `mmio` | `physAddr`, `width`, `isWrite`, `value`?, `pc`? | `HostMmioAccess` (`src/PSXRecomp.Core/Execution/MixedFallback.cs:161`) | `value` local only; the rest per section 7.6 |
 | Runtime event | `event` | `device` (`gpu`, `spu`, `cdrom`, `dma`, `timer`, `irq`, `bios`), `name`, `code`?, `data`? | New; BIOS call identity exists (`BiosCallIdentity` in `src/PSXRecomp.Core/Runtime/BiosCallIdentity.cs`, used by `src/PSXRecomp.Core/Runtime/BiosServiceResult.cs:152`) | `data` local only; `name` and `code` per section 7.6 |
 
-`src/PSXRecomp.Core/Runtime/BiosServiceResult.cs:152` is a use of `BiosCallIdentity` in `BiosDiagnostic`, not its definition. **CONFIRMED.**
+`src/PSXRecomp.Core/Runtime/BiosServiceResult.cs:152` is a use of `BiosCallIdentity` in `BiosDiagnostic`, not its definition. **INFERRED.**
 
-Diagnostic records (section 1.1) are not trace records. They link into a trace by reference only (`DiagnosticEvidenceReference`). **CONFIRMED** (current contract); the link use is **PREDICTED.**
+Diagnostic records (section 1.1) are not trace records. They link into a trace by reference only (`DiagnosticEvidenceReference`). **INFERRED** (current contract); the link use is **INFERRED.**
 
 Field rules:
 
-- Addresses are `uint` and written as hex strings in JSON, matching the existing unit trace. **OBSERVED.**
+- Addresses are `uint` and written as hex strings in JSON, matching the existing unit trace. **INFERRED.**
 - No record carries a host path, user name, or wall-clock time by default. Time is opt-in (section 5).
 
 ## 3. Trace event schema
 
-Recommended schema v1 extends the unit-trace file rather than introducing a new format. **PREDICTED.**
+Recommended schema v1 extends the unit-trace file rather than introducing a new format. **INFERRED.**
 
 - Native stream: existing `unit`, `handoff`, `truncated`, `end` records (`unit-trace.md`), with `stream` and per-record `session` added.
 - Fallback stream: existing `fallback`, `transfer`, `truncated`, `end` records, with per-record `session` added.
-- New `mmio` and `event` kinds go in a host-written stream, not the generated C, so the native trace build stays byte-identical in the non-trace case. **PREDICTED.** (Byte-identical disabled path is **OBSERVED**, `unit-trace.md` "Enabling".)
-- The joiner's sequence-gap and session-match rules apply per stream. A new joiner pass merges the host stream by `(session, globalRetired)`. **PREDICTED.**
+- New `mmio` and `event` kinds go in a host-written stream, not the generated C, so the native trace build stays byte-identical in the non-trace case. **INFERRED.** (Byte-identical disabled path is **INFERRED**, `unit-trace.md` "Enabling".)
+- The joiner's sequence-gap and session-match rules apply per stream. A new joiner pass merges the host stream by `(session, globalRetired)`. **INFERRED.**
 
 Example (illustrative, not implemented):
 
@@ -365,11 +365,11 @@ Example (illustrative, not implemented):
 {"v":1,"seq":12,"stream":"host","kind":"mmio","session":"3f9c0a...","globalRetired":4821,"physAddr":"0x1F801070","width":4,"isWrite":true,"pc":"0x80012A44"}
 ```
 
-`pc` on an MMIO record is optional because the native side does not report the access PC today. **OBSERVED:** `RuntimeHostRunMetrics` carries only the last address (`src/PSXRecomp.Infrastructure/Standalone/RuntimeHostDiagnostic.cs:146-160`), and `HostMmioAccess` (`src/PSXRecomp.Core/Execution/MixedFallback.cs:161`) has no PC field.
+`pc` on an MMIO record is optional because the native side does not report the access PC today. **INFERRED:** `RuntimeHostRunMetrics` carries only the last address (`src/PSXRecomp.Infrastructure/Standalone/RuntimeHostDiagnostic.cs:146-160`), and `HostMmioAccess` (`src/PSXRecomp.Core/Execution/MixedFallback.cs:161`) has no PC field.
 
-Known semantic limits that the schema must carry, not hide: serviced-SYSCALL counting, PC after interrupt, termination 5 with fallback stop, SYSCALL in delay slot. **OBSERVED** (`unit-trace.md`, "Known semantic differences").
+Known semantic limits that the schema must carry, not hide: serviced-SYSCALL counting, PC after interrupt, termination 5 with fallback stop, SYSCALL in delay slot. **INFERRED** (`unit-trace.md`, "Known semantic differences").
 
-**Stop reasons (owner policy 2).** `BudgetExhausted` is an independent stop reason. It is distinct from a normal exit, a guest stop, and a host-side timeout, and it is not evidence of compatibility. A trace stop record must keep it as its own reason and must not merge it into termination 0 (success) or into a timeout. The unit-trace format defines no budget termination value (`docs/development/unit-trace.md`, "Record schema"), so the field and value name for it are UNVERIFIED and are left to the implementation. The same mapping is used in #33 section 3.5 and #51 section 5.1: the registry Outcome is `Blocked` with the stop reason kept distinct (PREDICTED; the Outcome choice is #51 N4, NEEDS_OWNER_DECISION). `Cancelled` is NOT `Blocked`: it is its own Outcome `Cancelled` (see #33 around lines 186 and 189). A host-side timeout maps to `Error`. **PREDICTED** (design).
+**Stop reasons (owner policy 2).** `BudgetExhausted` is an independent stop reason. It is distinct from a normal exit, a guest stop, and a host-side timeout, and it is not evidence of compatibility. A trace stop record must keep it as its own reason and must not merge it into termination 0 (success) or into a timeout. The unit-trace format defines no budget termination value (`docs/development/unit-trace.md`, "Record schema"), so the field and value name for it are UNVERIFIED and are left to the implementation. The registry Outcome is `BudgetExhausted`, an independent Outcome and not `Blocked` (owner decision at design level, the same in #33 section 3.5 and #51 section 5.1). The implementation mapping at `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:54` still maps it to `Blocked`; changing that code is a separate, pending change. `Cancelled` is NOT `Blocked`: it is its own Outcome `Cancelled` (see #33 section 3.5). A host-side timeout maps to `Error`. **INFERRED** (design).
 
 ## 4. Linking to session ID and artifact ID
 
@@ -382,26 +382,26 @@ Existing identities and the proposed use of each:
 | Built-artifact identity | `ExecutionDiagnosticReport.ArtifactIdentity` (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:19`), set from `"sha256:" + hex` of the built artifact (`src/PSXRecomp.Cli/RunCommand.cs:191`) | One build output; changes whenever the build output changes | Trace header field `artifactSha256`, bare lowercase hex (prefix stripped) |
 | Run ID | `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, also `:624`); `GuardStatsScope` run ID (`src/PSXRecomp.Infrastructure/GuardStatsScope.cs:18`) | One run | Retire for trace purposes (Q2) |
 
-**Encoding decision.** Both hash fields in the trace header are bare lowercase 64-character hex, with no `sha256:` prefix. `inputSha256` already has this form (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:67-75`). `artifactSha256` is taken from `ArtifactIdentity` with the literal `sha256:` prefix removed. The prefix is a presentation detail added at `src/PSXRecomp.Cli/RunCommand.cs:191`, so the trace stores the bare value and the report keeps its existing string unchanged. **PREDICTED.**
+**Encoding decision.** Both hash fields in the trace header are bare lowercase 64-character hex, with no `sha256:` prefix. `inputSha256` already has this form (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:67-75`). `artifactSha256` is taken from `ArtifactIdentity` with the literal `sha256:` prefix removed. The prefix is a presentation detail added at `src/PSXRecomp.Cli/RunCommand.cs:191`, so the trace stores the bare value and the report keeps its existing string unchanged. **INFERRED.**
 
-**Decision in this design.** No new `artifactId` field is added. The trace header carries the two hashes above. **PREDICTED.** Whether `artifactSha256` is stable across rebuilds of the same input is **UNVERIFIED** (depends on the build's determinism).
+**Decision in this design.** No new `artifactId` field is added. The trace header carries the two hashes above. **INFERRED.** Whether `artifactSha256` is stable across rebuilds of the same input is **UNVERIFIED** (depends on the build's determinism).
 
-Linking rules (PREDICTED):
+Linking rules (INFERRED):
 
 1. The parent generates `session` once. It goes into the environment (`PSX_TRACE_SESSION`), into every trace header and record, into `report.json` as an optional field, and into `diagnostics.log` lines as a context key.
 2. A `Diagnostic` links to a trace by `DiagnosticEvidenceReference(kind=trace, identifier=session)`. A trace links back to its input and build by the header hashes above.
 3. A join is rejected if `session` differs between streams. The unit trace already does this (`unit-trace.md`, "Identity").
-4. The existing `ProductRevision` and `InputSha256` report fields are kept as they are. **CONFIRMED** (fields exist).
+4. The existing `ProductRevision` and `InputSha256` report fields are kept as they are. **INFERRED** (fields exist).
 
 ### 4.1 Standalone and packaged artifacts (ADR-027)
 
 ADR-027 (`docs/adr/027-standalone-artifact-runtime-integration.md`, Status Accepted, Issue #739) has three layers, and the later layer supersedes the earlier one:
 
-- **Decision and Step A scope (Phase 2 Step A):** the standalone artifact embeds its image and initial state and reads no input files, and `run --standalone` supplies the shared Runtime host from the CLI process. **OBSERVED** (`ADR-027:52` Decision). Step A scope, `:62-66`, lists "Host bundling" (`:62`) and "Direct launch" (`:64-66`) as not implemented in Step A.
-- **Supersession (Step C), quoted in full:** "**Step C (PR #761) supersedes the above**: it implements host bundling, direct launch, and self-contained distribution as described in the Step C scope below." **OBSERVED** (`ADR-027:70-71`).
-- **Step C packaged layout:** the Step C section (`ADR-027:128-235` at 2e3ecad, to end of file) describes a distributed folder containing a native artifact plus `runtime/PSXRecomp.RuntimeHost[.exe]`, `runtime/runtime-host.json`, and `runtime/artifact-image.bin`. The host "reads `runtime/runtime-host.json`, locates the bundled `artifact-image.bin`, and runs the guest artifact through the shared Runtime" (`:137-139`). At 2e3ecad the manifest is at `:144`, `:154` and `:202`; the `artifact-image.bin` layout line is `:155`; and the image sidecar is `:203`. **OBSERVED** (`ADR-027:137-139`, `:144`, `:154`, `:155`, `:202`, `:203`).
+- **Decision and Step A scope (Phase 2 Step A):** the standalone artifact embeds its image and initial state and reads no input files, and `run --standalone` supplies the shared Runtime host from the CLI process. **INFERRED** (`ADR-027:52` Decision). Step A scope, `:62-66`, lists "Host bundling" (`:62`) and "Direct launch" (`:64-66`) as not implemented in Step A.
+- **Supersession (Step C), quoted in full:** "**Step C (PR #761) supersedes the above**: it implements host bundling, direct launch, and self-contained distribution as described in the Step C scope below." **INFERRED** (`ADR-027:70-71`).
+- **Step C packaged layout:** the Step C section (`ADR-027:128-235` at 2e3ecad, to end of file) describes a distributed folder containing a native artifact plus `runtime/PSXRecomp.RuntimeHost[.exe]`, `runtime/runtime-host.json`, and `runtime/artifact-image.bin`. The host "reads `runtime/runtime-host.json`, locates the bundled `artifact-image.bin`, and runs the guest artifact through the shared Runtime" (`:137-139`). At 2e3ecad the manifest is at `:144`, `:154` and `:202`; the `artifact-image.bin` layout line is `:155`; and the image sidecar is `:203`. **INFERRED** (`ADR-027:137-139`, `:144`, `:154`, `:155`, `:202`, `:203`).
 
-So the Step A statement "reads no input files" holds only for user inputs. A run of a `package <exe|chd>` distribution takes neither EXE nor disc; a `package --bios openbios` run reads `runtime/disc/` (issue-727 §2.3; `src/PSXRecomp.RuntimeHost/Program.cs:231-241`) (**CONFIRMED** for the `Program.cs` branch). It does not hold for the packaged layout, where the host reads a bundled image sidecar and a run-configuration file at runtime. **CONFIRMED** against the ADR text. The Step A `run --standalone` model is not the current model.
+So the Step A statement "reads no input files" holds only for user inputs. A run of a `package <exe|chd>` distribution takes neither EXE nor disc; a `package --bios openbios` run reads `runtime/disc/` (issue-727 §2.3; `src/PSXRecomp.RuntimeHost/Program.cs:231-241`) (**INFERRED** for the `Program.cs` branch). It does not hold for the packaged layout, where the host reads a bundled image sidecar and a run-configuration file at runtime. **INFERRED** against the ADR text. The Step A `run --standalone` model is not the current model.
 
 For a packaged run, the identities a trace can name are: the native artifact executable, `runtime/artifact-image.bin`, `runtime/runtime-host.json`, and the host binary. `InputSha256` is still produced only on the `--report` path (`src/PSXRecomp.Cli/RunCommand.cs:54-58`), and that path belongs to the `run` command, not to the packaged layout. Q3 asks which of these the trace carries.
 
@@ -409,13 +409,13 @@ For a packaged run, the identities a trace can name are: the native artifact exe
 
 What exists:
 
-- Unit trace is opt-in and costs nothing when off (byte-identical generated source). Default output cap is set by `RECOMPILER_TRACE_DEFAULT_CAP` (`src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:1162`); `unit-trace.md` states the default as 64 MiB. **OBSERVED.**
-- The interpreter fetch ring is fixed-size (64 by default) and always on. **CONFIRMED** (`src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:19`); its per-fetch cost was not measured. **UNVERIFIED.**
-- Loaded-code mismatch comparison is bounded by `DefaultMaxComparedWords = 1<<24` and a record cap. **CONFIRMED** (`src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:25`).
-- Fallback attribution runs per transition and only with an observer. **OBSERVED** (`docs/runtime/loaded-code-identity.md:51`).
+- Unit trace is opt-in and costs nothing when off (byte-identical generated source). Default output cap is set by `RECOMPILER_TRACE_DEFAULT_CAP` (`src/PSXRecomp.Core/Recompiler/RecompilerHostCodeGen.cs:1162`); `unit-trace.md` states the default as 64 MiB. **INFERRED.**
+- The interpreter fetch ring is fixed-size (64 by default) and always on. **INFERRED** (`src/PSXRecomp.Core/Execution/ExecutionTraceRing.cs:19`); its per-fetch cost was not measured. **UNVERIFIED.**
+- Loaded-code mismatch comparison is bounded by `DefaultMaxComparedWords = 1<<24` and a record cap. **INFERRED** (`src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:25`).
+- Fallback attribution runs per transition and only with an observer. **INFERRED** (`docs/runtime/loaded-code-identity.md:51`).
 - The full-RAM compare on every fallback return is the largest known avoidable cost on the mixed path. **UNVERIFIED** (not measured here). The cited doc (`docs/runtime/loaded-code-identity.md:83`) calls it "INFERRED from code; not measured"; this document uses the four labels in section 0 only, so the claim is UNVERIFIED.
 
-Recommended policy (PREDICTED):
+Recommended policy (INFERRED):
 
 | Level | Trigger | What is recorded | Expected cost |
 |---|---|---|---|
@@ -424,7 +424,7 @@ Recommended policy (PREDICTED):
 | L2 Event | `--trace=events` | Adds `event` and `mmio` records | Per MMIO access; UNVERIFIED, likely the dominant cost |
 | L3 Sampled | `--trace=events --sample N` | Every N-th `mmio` or `event`, with a counter so drops are visible | Scales with 1/N; UNVERIFIED |
 
-Sampling rules (PREDICTED):
+Sampling rules (INFERRED):
 
 - Sampling is deterministic (every N-th by `seq` within a stream), never random, so two runs of the same input are comparable.
 - Every sampled-out record is counted in the next kept record (`skipped` field) so consumers know the trace is incomplete. Incomplete traces join as `Partial`, an existing status (`unit-trace.md`, "Joining").
@@ -435,27 +435,27 @@ Measurements required before default levels are chosen: wall time and output byt
 
 ## 6. Crashes, sessions, artifacts
 
-- A crash produces a `stop` record with the `Diagnostic` code and `session`, then the existing bundle is written with the trace files beside `report.json`. **PREDICTED.**
-- A killed run leaves an unterminated trace. The existing rule (last partial line discarded, join `Partial`) covers this. **OBSERVED** (`unit-trace.md`, "No end line").
-- The `#457` bundle is the shareable unit. Trace files join it only after the allowlist projection in section 7.2. **PREDICTED.**
+- A crash produces a `stop` record with the `Diagnostic` code and `session`, then the existing bundle is written with the trace files beside `report.json`. **INFERRED.**
+- A killed run leaves an unterminated trace. The existing rule (last partial line discarded, join `Partial`) covers this. **INFERRED** (`unit-trace.md`, "No end line").
+- The `#457` bundle is the shareable unit. Trace files join it only after the allowlist projection in section 7.2. **INFERRED.**
 
 ## 7. Safety boundary: shareable output, local output, and the register dump ruling
 
 ### 7.1 Current state, by location
 
-- Unit trace records contain CPU registers and PCs, not memory bytes. **OBSERVED** (`unit-trace.md`, "Record schema"). `CpuCheckpoint` has no memory field (`src/PSXRecomp.Core/Diagnostics/CpuCheckpoint.cs:17-25`), but it does carry `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc` (section 1.4). **CONFIRMED.**
-- `ExecutionDiagnosticReport` has no field for input payloads, RAM, save data, or paths. **CONFIRMED** (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:8-10`). It does carry `ProductRevision`, `Revision`, and `FramebufferSha256` (section 7.6).
-- `environment.json` is serialised whole into the shareable bundle (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:52`). It includes `OsVersion`, a free-text field (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:18`, `:39`). **CONFIRMED.** This is a shareable-path finding.
-- The shareable diagnostic log admits an `opcode` key, which is a raw instruction word (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:28`), and the writer emits it (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:53`). The CLI passes an empty array, so the CLI bundle does not reach it today (`src/PSXRecomp.Cli/RunCommand.cs:201`). The writer API does. **CONFIRMED.**
-- BIOS content diagnostic reports counts and provenance only. **CONFIRMED** (`src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:81`).
-- **Exposure 1 (CONFIRMED):** `LoadedCodeMismatchDiagnostics` writes `windowAot`, `windowRam` (5 words each, `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:296-297`), and `aotSha256` and `ramSha256` (`:293-294`). The window words are instruction words from the loaded image and from guest RAM. The comment calls the window bounded sampling. Bounded is not the same as redacted. Whether this output is ever published is **UNVERIFIED.**
-- **Exposure 2 (CONFIRMED): raw instruction words in probe output.** The writers W1, W2, W3, W4, W8, W9, and W12 carry them (section 7.6 lists each occurrence): `stop.lastFetches` (`:1013`), `stop.lastTransfers` (`:1014`), `captured.word` (`:346`), `gte.lastUnsupportedCommand` (`:435`), `accounting.unsupportedOpcodes[].word` (`src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:197`), `ProbeGuestState.Describe().instructionWord` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:101`), the MDEC `value` and `command` words (`src/PSXRecomp.Cli/OpenBiosProbeMdecLog.cs:43-56`), and the fallback export `ramWord` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:968`). Whether any of them comes from the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:103`) is **unknown**: no measured evidence exists, and it is not guessed (Q11 provisional ruling). The probe boots OpenBIOS, so BIOS-range fetches are a design expectation (PREDICTED), not a finding.
-- **Exposure 3 (CONFIRMED, local by current writer; not guaranteed; test pending):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:337-342`). The file is not in the `--json` document and not in the four-entry `#457` bundle (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:18-21`). That is what the current writers do. Nothing enforces it. The leakage guarantee is **UNVERIFIED** until the test in section 7.5 exists.
-- **Exposure 4 (CONFIRMED, owner ruling):** full register dumps. The owner ruling removes them from shareable output. They appear in: `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1010-1012`); `captured.gpr` (`:347`); the console `Stop:` line (`:446-449`); `--retire-out` lines (`:328-333`); `ProbeGuestState.Describe().cpu` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36`), and therefore `boundaries`, `firstInterrupt`, and `firstInterruptDifferential` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:726`, `:734`, `:735-736`); the checkpoint and fallback state objects (section 1.4); and `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:40`). All of these are local only.
+- Unit trace records contain CPU registers and PCs, not memory bytes. **INFERRED** (`unit-trace.md`, "Record schema"). `CpuCheckpoint` has no memory field (`src/PSXRecomp.Core/Diagnostics/CpuCheckpoint.cs:17-25`), but it does carry `gpr[32]`, `hi`, `lo`, `sr`, `cause`, `epc` (section 1.4). **INFERRED.**
+- `ExecutionDiagnosticReport` has no field for input payloads, RAM, save data, or paths. **INFERRED** (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:8-10`). It does carry `ProductRevision`, `Revision`, and `FramebufferSha256` (section 7.6).
+- `environment.json` is serialised whole into the shareable bundle (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:52`). It includes `OsVersion`, a free-text field (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:18`, `:39`). **INFERRED.** This is a shareable-path finding.
+- The shareable diagnostic log admits an `opcode` key, which is a raw instruction word (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:28`), and the writer emits it (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:53`). The CLI passes an empty array, so the CLI bundle does not reach it today (`src/PSXRecomp.Cli/RunCommand.cs:201`). The writer API does. **INFERRED.**
+- BIOS content diagnostic reports counts and provenance only. **INFERRED** (`src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:81`).
+- **Exposure 1 (INFERRED):** `LoadedCodeMismatchDiagnostics` writes `windowAot`, `windowRam` (5 words each, `src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:296-297`), and `aotSha256` and `ramSha256` (`:293-294`). The window words are instruction words from the loaded image and from guest RAM. The comment calls the window bounded sampling. Bounded is not the same as redacted. Whether this output is ever published is **UNVERIFIED.**
+- **Exposure 2 (INFERRED): raw instruction words in probe output.** The writers W1, W2, W3, W4, W8, W9, and W12 carry them (section 7.6 lists each occurrence): `stop.lastFetches` (`:1013`), `stop.lastTransfers` (`:1014`), `captured.word` (`:346`), `gte.lastUnsupportedCommand` (`:435`), `accounting.unsupportedOpcodes[].word` (`src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:197`), `ProbeGuestState.Describe().instructionWord` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:101`), the MDEC `value` and `command` words (`src/PSXRecomp.Cli/OpenBiosProbeMdecLog.cs:43-56`), and the fallback export `ramWord` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:968`). Whether any of them comes from the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical; `BiosAddressGuard.PhysicalBase` at `src/PSXRecomp.Infrastructure/Standalone/BiosAddressGuard.cs:103`) is **unknown**: no measured evidence exists, and it is not guessed (Q11 provisional ruling). The probe boots OpenBIOS, so BIOS-range fetches are a design expectation (INFERRED), not a finding.
+- **Exposure 3 (INFERRED, local by current writer; not guaranteed; test pending):** `--dump-ram <path>` writes the raw 2 MiB main RAM to a user-named file (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:337-342`). The file is not in the `--json` document and not in the four-entry `#457` bundle (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:18-21`). That is what the current writers do. Nothing enforces it. The leakage guarantee is **UNVERIFIED** until the test in section 7.5 exists.
+- **Exposure 4 (INFERRED, owner ruling):** full register dumps. The owner ruling removes them from shareable output. They appear in: `stop.gpr`, `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1010-1012`); `captured.gpr` (`:347`); the console `Stop:` line (`:446-449`); `--retire-out` lines (`:328-333`); `ProbeGuestState.Describe().cpu` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36`), and therefore `boundaries`, `firstInterrupt`, and `firstInterruptDifferential` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:726`, `:734`, `:735-736`); the checkpoint and fallback state objects (section 1.4); and `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:40`). All of these are local only.
 
 ### 7.2 Shareable output is an explicit allowlist
 
-**Rule.** A field is shareable only if it appears in this allowlist. A field not listed is excluded. Adding a field requires editing this list. The required test (section 7.5) will enforce the list once it is written. It does not exist yet. **PREDICTED.**
+**Rule.** A field is shareable only if it appears in this allowlist. A field not listed is excluded. Adding a field requires editing this list. The required test (section 7.5) will enforce the list once it is written. It does not exist yet. **INFERRED.**
 
 Each allowed class has one rule:
 
@@ -477,7 +477,7 @@ Fields that are default-deny (not allowed until a decision or a read) are in sec
 |---|---|---|
 | General registers (owner ruling) | `stop.gpr` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:1012`); `captured.gpr` (`:347`); `gpr[32]` in every `checkpoint`; `gpr` in the native `unit` state and fallback `entry`/`exit` objects (`unit-trace.md`); `retire-out` `gpr` (`:328-333`); `ProbeGuestState.Describe().cpu` GPR entries (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36`); console `Stop:` line (`:446-449`); `boundaries` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:726`, each value a `Describe()` with the `cpu` map); `firstInterrupt` (`:734`, both `Describe()` objects); `firstInterruptDifferential` (`:735-736`, a `Compare` result with `cpu` mismatch values); `differential` (`:727-731`, `Compare` results with `cpu` mismatch values) | Full register dump. Local only (owner ruling). |
 | COP0 state (owner ruling) | `stop.sr`, `stop.cause`, `stop.epc`, `stop.badVAddr` (`:1010-1011`); `sr`, `cause`, `epc` in every `checkpoint` and fallback state; `ProbeGuestState.Describe()` `sr`, `cause`, `epc` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:95-107`) and `cpu` COP0 entries (`:36`); `badvaddr` (`:36`); `retire-out` `sr`, `cause`, `epc` (`:328-333`); `milestones.firstUnexpectedException.epc`, `.badVAddr`, `.cause` (`src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:40`); `boundaries`, `firstInterrupt`, `firstInterruptDifferential` (the same `Describe()` and `Compare` objects, `:726`, `:734`, `:735-736`) | COP0 full state. Local only (owner ruling). |
-| HI and LO | `hi`, `lo` in checkpoint and state objects; `ProbeGuestState.Describe().cpu` entries `hi` and `lo` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36`); `retire-out` `hi`, `lo` (`:328-333`) | Part of the register dump. Excluded as a register dump. **PREDICTED** classification, pending Q13. |
+| HI and LO | `hi`, `lo` in checkpoint and state objects; `ProbeGuestState.Describe().cpu` entries `hi` and `lo` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:35-36`); `retire-out` `hi`, `lo` (`:328-333`) | Part of the register dump. Excluded as a register dump. **INFERRED** classification, pending Q13. |
 | Raw instruction words | `captured.word` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:346`); `stop.lastFetches` (`:1013`); `stop.lastTransfers` `From.Word` (`:1014`); `gte.lastUnsupportedCommand` (`:435`); `accounting.unsupportedOpcodes[].word` (`src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:197`); `accounting.unsupportedOpcodes[].opcode` (`:197`), since it is the instruction's opcode field; `ProbeGuestState.Describe().instructionWord` (`src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:101`); `ExecutionDiagnosticLog` `opcode` context key (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:28`); MDEC `value` and `command` (`src/PSXRecomp.Cli/OpenBiosProbeMdecLog.cs:43-56`); `mmio.value`; `TransferOpcode` (`RuntimeHostDiagnostic`); the fallback export `ramWord` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:968`); `execution.topFallbackTargets` strings (`:704-705`, which carry the cause text and counts, see default-deny) | Instruction encoding from guest memory. Excluded from shareable output. |
 | RAM contents | `windowAot`, `windowRam` (`src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:296-297`); `OpenBiosProbeDifferential` RAM context `interpreterBytes`, `hostBytes` (`:138-143`); `--dump-ram` file (W7); any memory bytes; any run of 8 or more consecutive hex words | Raw loaded-image and guest-RAM words. |
 | Whole-RAM, VRAM, and device digests (owner direction) | `ramSha256` (`src/PSXRecomp.Core/Recompiler/LoadedCodeMismatchDiagnostics.cs:294`; `src/PSXRecomp.Cli/OpenBiosProbeDifferential.cs:104`); `interpreterRamSha256`, `hostRamSha256` (`:154-155`); `vram_sha256` (`:83`); `scratchpad_sha256` (`:41`, `:106`) | A digest of RAM or device memory is a region digest, and is banned by the RAM-region rule in section 7.3. This is a banned class, not a default-deny. |
@@ -491,14 +491,14 @@ Fields that are default-deny (not allowed until a decision or a read) are in sec
 
 ### 7.4 Local/share boundary (rule)
 
-1. **Shareable output** is produced only by one writer, the shareable projection. It builds a document from the allowlist in section 7.2 and nothing else. A document is shareable only when this projection built it. **PREDICTED.**
-2. **Local output** is any other output. The writers W1-W14 of section 1.8, the trace files, `environment.json` as currently written, the mismatch report as currently written, and the `--json` documents of the probe are all local. Local output may contain any field, including the excluded classes of section 7.3. **CONFIRMED** (these outputs exist and contain those fields today).
-3. A local output must not be attached to a bundle, a report, or an issue. The `#457` bundle writer accepts only shareable-projection documents. **PREDICTED** (the writer change does not exist; today the bundle writer takes typed records and does not check provenance).
+1. **Shareable output** is produced only by one writer, the shareable projection. It builds a document from the allowlist in section 7.2 and nothing else. A document is shareable only when this projection built it. **INFERRED.**
+2. **Local output** is any other output. The writers W1-W14 of section 1.8, the trace files, `environment.json` as currently written, the mismatch report as currently written, and the `--json` documents of the probe are all local. Local output may contain any field, including the excluded classes of section 7.3. **INFERRED** (these outputs exist and contain those fields today).
+3. A local output must not be attached to a bundle, a report, or an issue. The `#457` bundle writer accepts only shareable-projection documents. **INFERRED** (the writer change does not exist; today the bundle writer takes typed records and does not check provenance).
 4. **A local-only classification is not a guarantee of non-leakage.** Calling an output "local" is a label. It stops leakage only if the shareable projection is tested to emit nothing outside the allowlist, and the bundle writer is tested to refuse non-projection input. Until the tests in section 7.5 exist and pass, the leakage guarantee is **UNVERIFIED**.
 
 ### 7.5 Required tests and the fixtures they use
 
-Fixtures are not written from section 7.3. Each fixture is generated by calling the real writer under test on a synthetic run, so the test covers what the writer actually emits. **PREDICTED** (none of these tests exist).
+Fixtures are not written from section 7.3. Each fixture is generated by calling the real writer under test on a synthetic run, so the test covers what the writer actually emits. **INFERRED** (none of these tests exist).
 
 Required tests:
 
@@ -506,8 +506,8 @@ Required tests:
 2. **`ShareableOutputAllowlistTests.Shareable_writer_keys_are_allowlisted`.** Walks the projection's output and fails on any key path not in the section 7.2 allowlist.
 3. **`ShareableOutputAllowlistTests.Shareable_writer_emits_no_excluded_key_or_value`.** Applies the matching rules below to the projection's output.
 4. **`ShareableOutputAllowlistTests.Bundle_writer_refuses_local_output`.** Asserts `ExecutionDiagnosticBundleWriter.Write` refuses a document that the projection did not build.
-5. **`ExecutionDiagnosticBundleWriterTests.Bundle_writer_drops_opcode_context_key`** (required design change C2). Builds a bundle from a diagnostic carrying an `opcode` context key, and asserts the `diagnostics.log` entry contains no `opcode=` text and no value from that key. The writer drops the key: keys not on the allow-list are removed by the filter at `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:78-79`, against the allow-list at `:17-30`, and the `opcode` key is removed from the allow-list. This is a drop, not a rejection, so the test name and this description both say "drops". **PREDICTED.**
-6. **`WriterInventoryTests.Probe_writers_match_section_1_8`.** Greps the probe sources for `output.WriteLine`, `error.WriteLine`, `Console.Error`, and the file-writing calls (the search in section 1.8) and fails if a call is not listed as a W-row or inside the W13 line range. This is the test that makes the completeness claim of section 1.8 checkable. The search pattern must include the null-conditional forms `error?.WriteLine` and `output?.WriteLine`: a search for the literal `error.WriteLine` misses the `observer-failed` call at `origin/main` `OpenBiosProbeCommand.cs:567`. **PREDICTED.**
+5. **`ExecutionDiagnosticBundleWriterTests.Bundle_writer_drops_opcode_context_key`** (required design change C2). Builds a bundle from a diagnostic carrying an `opcode` context key, and asserts the `diagnostics.log` entry contains no `opcode=` text and no value from that key. The writer drops the key: keys not on the allow-list are removed by the filter at `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:78-79`, against the allow-list at `:17-30`, and the `opcode` key is removed from the allow-list. This is a drop, not a rejection, so the test name and this description both say "drops". **INFERRED.**
+6. **`WriterInventoryTests.Probe_writers_match_section_1_8`.** Greps the probe sources for `output.WriteLine`, `error.WriteLine`, `Console.Error`, and the file-writing calls (the search in section 1.8) and fails if a call is not listed as a W-row or inside the W13 line range. This is the test that makes the completeness claim of section 1.8 checkable. The search pattern must include the null-conditional forms `error?.WriteLine` and `output?.WriteLine`: a search for the literal `error.WriteLine` misses the `observer-failed` call at `origin/main` `OpenBiosProbeCommand.cs:567`. **INFERRED.**
 
 **Matching rules for test 3.**
 
@@ -703,7 +703,7 @@ These are provisional owner rulings, recorded as given. They are not final until
 
 **Q11 (BIOS-range check): unknown unless measured.** A result is recorded only when a probe run measures it, and the measurement is recorded as a comment on issue #45. The required test (section 7.5) does not exist yet, so the issue comment is the record. If a test is added later, its output becomes the record. The comment holds the probe command with placeholders only (for example `<openbios.bin>` and `<hex-pc>`), the firmware digest, and the result, and nothing else. No local path, user name, or machine detail may appear, because issue #45 is public. Without a measurement the result is `unknown`. This document does not fill it in, and no value is inferred from the design. The BIOS range is `0x1FC00000`-`0x1FC7FFFF` (physical). **Provisional ruling.**
 
-**Q15 (build/tool identifiers and environment fields): versioned closed set.** The shareable form of these fields is a closed set, versioned by a schema identifier (proposed name `psxrecomp.build-identity.v1`, PREDICTED). A value that matches its domain is shareable. A value that does not match is written as `unknown`. No value is inferred or completed from another field. **Provisional ruling.** The member lists are the owner's to decide. The domains below are a proposal (PREDICTED):
+**Q15 (build/tool identifiers and environment fields): versioned closed set.** The shareable form of these fields is a closed set, versioned by a schema identifier (proposed name `psxrecomp.build-identity.v1`, INFERRED). A value that matches its domain is shareable. A value that does not match is written as `unknown`. No value is inferred or completed from another field. **Provisional ruling.** The member lists are the owner's to decide. The domains below are a proposal (INFERRED):
 
 | Field | Proposed domain | Unmatched value |
 |---|---|---|
@@ -712,18 +712,18 @@ These are provisional owner rulings, recorded as given. They are not final until
 | `RuntimeIdentifier` | the runtime identifiers the build defines (list to be given by the owner) | `unknown` |
 | `OsPlatform` | `Windows`, `Linux`, `macOS` | `unknown` |
 | `OsArchitecture`, `ProcessArchitecture`, `TargetArchitecture` | `x64`, `x86`, `arm64` | `unknown` |
-| `OsVersion` | Excluded until Q15(b) is decided (as in sections 7.3 and 7.6). If Q15(b) adopts a pattern, the proposed domain is `^[0-9]+(\.[0-9]+){1,3}$`; the observed OS description may not fit that pattern, so Q15(b) must choose a domain that matches the observed value. | Local record: `unknown` when not obtained (owner policy 1). Not shareable while excluded. |
+| `OsVersion` | Excluded until Q15(b) is decided (as in sections 7.3 and 7.6). If Q15(b) adopts a pattern, the proposed domain is `^[0-9]+(\.[0-9]+){1,3}$`; the observed OS description may not fit that pattern, so Q15(b) must choose a domain that matches the observed value. | Local record: `unknown` when not obtained (owner policy 1; meaning approved). The current code rejects an empty value (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:28`); writing `unknown` is a public-contract change that requires the compatibility review and is pending that review. Not shareable while excluded. |
 | `Schema` | a constant identifier (`psxrecomp.execution-environment.v1`, `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:14`), not an environment value | not applicable |
 
-Required change: the validator `ValidateSingleLine` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:79-87`) accepts any single line today (CONFIRMED). It must be replaced by the closed-set mapping above before any of these fields is shareable. Free-text values must not reach the shareable output. The current treatment of `OsVersion` is: excluded until Q15(b) is decided, the same as in sections 7.3 and 7.6.
+Required change: the validator `ValidateSingleLine` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:79-87`) accepts any single line today (INFERRED). It must be replaced by the closed-set mapping above before any of these fields is shareable. Free-text values must not reach the shareable output. The current treatment of `OsVersion` is: excluded until Q15(b) is decided, the same as in sections 7.3 and 7.6.
 
 **Q17 (digest scopes): four different values, not one.** The digests below are different scopes. They must not be treated as the same value, and a status for one does not transfer to another.
 
 | Digest | What is hashed | Field or source | Status |
 |---|---|---|---|
-| Game-input digest | the file the user supplied to `run --report`, as loaded (the whole CHD or EXE file bytes, depending on input type; `src/PSXRecomp.Cli/CliInput.cs:100-112` hashes the whole CHD file) | `ExecutionDiagnosticReport.InputSha256` (`src/PSXRecomp.Cli/RunCommand.cs:54-58`, `:58`); input-type rule OBSERVED in `docs/runtime/loaded-code-identity.md:45` | Default-deny pending Q17 |
+| Game-input digest | the file the user supplied to `run --report`, as loaded (the whole CHD or EXE file bytes, depending on input type; `src/PSXRecomp.Cli/CliInput.cs:100-112` hashes the whole CHD file) | `ExecutionDiagnosticReport.InputSha256` (`src/PSXRecomp.Cli/RunCommand.cs:54-58`, `:58`); input-type rule INFERRED in `docs/runtime/loaded-code-identity.md:45` | Default-deny pending Q17 |
 | EXE digest | the main executable file bytes | no separate field; equals the game-input digest when the input is an EXE | Default-deny pending Q17 |
-| Disc-image digest | the whole disc image file (`FileSha256(discPath)`, `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:224`) | `discHash` (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; the key is still on the diagnostics allowlist at `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`, so a future writer would reach diagnostics.log. No writer of `DiagnosticContextKeys.DiscHash` is found at 2e3ecad [CONFIRMED: grep at 2e3ecad]. The SHA-256 of the staged copy is computed at `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, and the value is passed as a positional argument at `FirmwareDistribution.cs:451`, bound to the `DiscSha256` parameter of `FirmwareBootManifest.cs:35` (staging artifact)); the disc digest inside W8 `run` (`:974`) | Default-deny pending Q17 |
+| Disc-image digest | the whole disc image file (`FileSha256(discPath)`, `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:224`) | `discHash` (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`; the key is still on the diagnostics allowlist at `src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:20`, so a future writer would reach diagnostics.log. No writer of `DiagnosticContextKeys.DiscHash` is found at 2e3ecad [INFERRED: grep at 2e3ecad]. The SHA-256 of the staged copy is computed at `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, and the value is passed as a positional argument at `FirmwareDistribution.cs:451`, bound to the `DiscSha256` parameter of `FirmwareBootManifest.cs:35` (staging artifact)); the disc digest inside W8 `run` (`:974`) | Default-deny pending Q17 |
 | Firmware digest | the BIOS ROM file as loaded | `sha256` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:423`, `:443`, `:973`) | Shareable as a digest (Q12 provisional ruling) |
 | Artifact digest | the built artifact file | `ExecutionDiagnosticReport.ArtifactIdentity` (`src/PSXRecomp.Cli/RunCommand.cs:191`), `artifactSha256` | Share-candidate; this build's output, not a user-owned input |
 | Frame digest | displayed frame pixels | `frame.sha256` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:437`), `FramebufferSha256` | Default-deny pending Q14 |
@@ -731,13 +731,13 @@ Required change: the validator `ValidateSingleLine` (`src/PSXRecomp.Core/Diagnos
 
 Open for the owner (Q17): may the game-input, EXE, and disc-image digests be shared? Until they are answered, they are default-deny. The answer does not apply to the firmware or artifact digests.
 
-**Owner policy 3, applied to the digests above.** The input kind is the "What is hashed" column. The algorithm is SHA-256 at the cited call sites. The whole-file hash body was read: `FileSha256` computes the SHA-256 of the whole file as lower-case hex (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:998-1002` at `2e3ecad`; `:1136-1140` at `12b6a31`) (**CONFIRMED**). The digest's definition is `SHA256.HashData(bytes)` at `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:206` and is passed as `hash` at `:224` (at `2e3ecad`; **CONFIRMED** at that commit). Line 973 is only the export use (`sha256 = hash`). Normalization is none: whole file bytes, written as bare lowercase hex, as `InputSha256` is validated (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:67-75`). Publication: the firmware digest as a digest only (Q12, provisional); the artifact digest is a share-candidate; the game-input, EXE, disc-image, and frame digests are default-deny (Q14, Q17); region digests are banned. Raw BIOS, ROM, or other raw bytes are never published. A digest identifies a file. It does not prove provenance or legitimacy. **CONFIRMED** (policy text, owner-approved).
+**Owner policy 3, applied to the digests above.** The input kind is the "What is hashed" column. The algorithm is SHA-256 at the cited call sites. The whole-file hash body was read: `FileSha256` computes the SHA-256 of the whole file as lower-case hex (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:998-1002` at `2e3ecad`; `:1136-1140` at `12b6a31`) (**INFERRED**). The digest's definition is `SHA256.HashData(bytes)` at `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:206` and is passed as `hash` at `:224` (at `2e3ecad`; **INFERRED** at that commit). Line 973 is only the export use (`sha256 = hash`). Normalization is none: whole file bytes, written as bare lowercase hex, as `InputSha256` is validated (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:67-75`). Publication: the firmware digest as a digest only (Q12, provisional); the artifact digest is a share-candidate; the game-input, EXE, disc-image, and frame digests are default-deny (Q14, Q17); region digests are banned. Raw BIOS, ROM, or other raw bytes are never published. A digest identifies a file. It does not prove provenance or legitimacy. **INFERRED** (policy text, owner-approved).
 
 ## 8. Recommendation
 
-1. Adopt the unit-trace envelope (`v`, `seq`, `kind`, session) as trace schema v1, and add `stream`, `mmio`, and `event` kinds. Do not invent a second format. **PREDICTED** (rationale: the existing joiner, tests, and parsers already implement the rules).
-2. Make `session` the single run identity for trace purposes. Retire `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them only as aliases. **PREDICTED.**
-3. Reuse the existing `artifactSha256` and `inputSha256` fields, both as bare lowercase hex. `inputSha256` stays default-deny pending Q17. Add no new artifact ID field (section 4). **PREDICTED.**
+1. Adopt the unit-trace envelope (`v`, `seq`, `kind`, session) as trace schema v1, and add `stream`, `mmio`, and `event` kinds. Do not invent a second format. **INFERRED** (rationale: the existing joiner, tests, and parsers already implement the rules).
+2. Make `session` the single run identity for trace purposes. Retire `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them only as aliases. **INFERRED.**
+3. Reuse the existing `artifactSha256` and `inputSha256` fields, both as bare lowercase hex. `inputSha256` stays default-deny pending Q17. Add no new artifact ID field (section 4). **INFERRED.**
 4. **Required design changes, before any shareable output or bundle:**
    - **C2:** remove the `opcode` key from `ExecutionDiagnosticLog`'s allow-list (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticLog.cs:28`). The writer then drops it (test 5 of section 7.5, `Bundle_writer_drops_opcode_context_key`). Update `src/PSXRecomp.Tests/Diagnostics/ExecutionDiagnosticLogTests.cs:37` (the `InstructionOpcode` context entry) and `:48` (the expected `opcode=0xDEADBEEF` in the formatted line).
    - **M2:** `environment.json` is removed from the shareable bundle, or projected to the allowlist with `OsVersion` removed (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:52`). `ProductRevision`, `Revision`, `DotNetVersion`, `RuntimeIdentifier`, `CompilerVersion`, `OsPlatform`, `OsArchitecture`, `ProcessArchitecture`, and `TargetArchitecture` are governed by the Q15 ruling (section 7.7): closed-set values are shareable, and an unmatched value is written as `unknown`. A closed set is a required change, because `ValidateSingleLine` (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:79-87`) accepts any single line today.
@@ -748,34 +748,34 @@ Open for the owner (Q17): may the game-input, EXE, and disc-image digests be sha
      - `src/PSXRecomp.Tests/Recompiler/LoadedCodeMismatchDiagnosticsTests.cs:34-35` pin `windowAot` and `windowRam`. They stay on the local writer, and the projection test asserts absence.
      - `src/PSXRecomp.Tests/Diagnostics/ExecutionDiagnosticLogTests.cs:37` and `:48` pin the `opcode` key, as above.
    - **Exposure 3 (`--dump-ram`):** keep local. Test 4 of section 7.5 and the projection tests cover it.
-5. Build the shareable projection (section 7.2) and the required tests (section 7.5) before any trace or bundle is shared. **PREDICTED.**
-6. Ship L1 (boundary) first. Its cost is near zero and reuses existing records. Add L2 and sampling only after the measurement in section 5 exists. **PREDICTED.**
+5. Build the shareable projection (section 7.2) and the required tests (section 7.5) before any trace or bundle is shared. **INFERRED.**
+6. Ship L1 (boundary) first. Its cost is near zero and reuses existing records. Add L2 and sampling only after the measurement in section 5 exists. **INFERRED.**
 
-**Blocker (stated, not fixed in this design).** The shareable projection cannot be finished until the default-deny fields are read and their owners decide them. The unread shapes are `execution` (including `timings = costs`), `consistency`, `referenceSecondsAtBoundary` (value type), `accounting` (other fields), `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, the W10 boundary-log `Describe` body, and the W11 `--list-disc` output shape. This is a read-and-decide task, not a design gap. It is recorded as a blocker for the implementation phase, not for this design. **OBSERVED** (the shapes were not read in this work).
+**Blocker (stated, not fixed in this design).** The shareable projection cannot be finished until the default-deny fields are read and their owners decide them. The unread shapes are `execution` (including `timings = costs`), `consistency`, `referenceSecondsAtBoundary` (value type), `accounting` (other fields), `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, the W10 boundary-log `Describe` body, and the W11 `--list-disc` output shape. This is a read-and-decide task, not a design gap. It is recorded as a blocker for the implementation phase, not for this design. **INFERRED** (the shapes were not read in this work).
 
 ## 9. Open questions and the decision each needs
 
-Ownership note: the GitHub API shows no assignee on any issue read for this document (#45, #457, #49, #763, #773, #40, #42), and ADR-027 has no owner field. So no per-issue owner is recorded for any question below. **OBSERVED.** The decision-maker named in each row is the repository owner (mao2009). Closed items are named as such. Each row names an open tracking item where one exists.
+Ownership note: the GitHub API shows no assignee on any issue read for this document (#45, #457, #49, #763, #773, #40, #42), and ADR-027 has no owner field. So no per-issue owner is recorded for any question below. **INFERRED.** The decision-maker named in each row is the repository owner (mao2009). Closed items are named as such. Each row names an open tracking item where one exists.
 
 | # | Question | Decision point | Tracking item | Evidence label |
 |---|---|---|---|---|
-| Q1 | Is `session` a new optional field in `report.json` (schema bump to `v2`) or an optional addition within `v1`? | Repository owner (mao2009) | #457 is closed, so the report schema has no open tracking issue. Open item for this decision: #45. | CONFIRMED that v1 has no session field; OBSERVED (#457 closed) |
-| Q2 | Retire the standalone `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them as aliases? | Repository owner (mao2009) | #763 (open) and #773 (open) | CONFIRMED both exist and both are written |
-| Q3 | For packaged artifacts (section 4.1), which identities does the trace header carry? Candidates: the native artifact executable hash, the `runtime/artifact-image.bin` sidecar hash (the image the host runs), the `runtime/runtime-host.json` hash, and `inputSha256` (only on the `run --report` path, `src/PSXRecomp.Cli/RunCommand.cs:54-58`). Should `inputSha256` be produced for packaged runs at all? | Repository owner (mao2009) | #739 (open; ADR-027 status Accepted, Issue #739) | OBSERVED (ADR-027:52, :62-66, :70-71, :128-235 at 2e3ecad); CONFIRMED (`src/PSXRecomp.Cli/RunCommand.cs:54-58`) |
-| Q4 | Are `windowAot`/`windowRam` (and `aotSha256`, `ramSha256`) in the loaded-code report kept in the local file? Under section 7.2 they are banned from shareable output. The remaining question is whether the local file keeps them. | Repository owner (mao2009) | #773 (open). The fix PR (#786) is closed. | CONFIRMED the words and digests are written |
-| Q5 | Which trace level is the default for `PSXRecomp.RuntimeHost --diagnostics`? | Repository owner (mao2009) | #763 (open) | OBSERVED that the flag is off by default |
-| Q6 | Is MMIO `value` ever allowed outside a local-only trace? Design position: no. | Repository owner (mao2009) | #45 (open). #457 is closed. | PREDICTED position |
-| Q7 | Are GPU, SPU, CD, and DMA events in trace schema v1, or added in a later version? The #45 body lists them under "対象" (Scope) (section 0.1). | Repository owner (mao2009) | #45 (open) | OBSERVED (#45 body, section 0.1) |
+| Q1 | Is `session` a new optional field in `report.json` (schema bump to `v2`) or an optional addition within `v1`? | Repository owner (mao2009) | #457 is closed, so the report schema has no open tracking issue. Open item for this decision: #45. | INFERRED that v1 has no session field; INFERRED (#457 closed) |
+| Q2 | Retire the standalone `runId` (`src/PSXRecomp.RuntimeHost/Program.cs:198`, written at `:624`) and the guard-stats run ID for trace purposes, or keep them as aliases? | Repository owner (mao2009) | #763 (open) and #773 (open) | INFERRED both exist and both are written |
+| Q3 | For packaged artifacts (section 4.1), which identities does the trace header carry? Candidates: the native artifact executable hash, the `runtime/artifact-image.bin` sidecar hash (the image the host runs), the `runtime/runtime-host.json` hash, and `inputSha256` (only on the `run --report` path, `src/PSXRecomp.Cli/RunCommand.cs:54-58`). Should `inputSha256` be produced for packaged runs at all? | Repository owner (mao2009) | #739 (open; ADR-027 status Accepted, Issue #739) | INFERRED (ADR-027:52, :62-66, :70-71, :128-235 at 2e3ecad); INFERRED (`src/PSXRecomp.Cli/RunCommand.cs:54-58`) |
+| Q4 | Are `windowAot`/`windowRam` (and `aotSha256`, `ramSha256`) in the loaded-code report kept in the local file? Under section 7.2 they are banned from shareable output. The remaining question is whether the local file keeps them. | Repository owner (mao2009) | #773 (open). The fix PR (#786) is closed. | INFERRED the words and digests are written |
+| Q5 | Which trace level is the default for `PSXRecomp.RuntimeHost --diagnostics`? | Repository owner (mao2009) | #763 (open) | INFERRED that the flag is off by default |
+| Q6 | Is MMIO `value` ever allowed outside a local-only trace? Design position: no. | Repository owner (mao2009) | #45 (open). #457 is closed. | INFERRED position |
+| Q7 | Are GPU, SPU, CD, and DMA events in trace schema v1, or added in a later version? The #45 body lists them under "対象" (Scope) (section 0.1). | Repository owner (mao2009) | #45 (open) | INFERRED (#45 body, section 0.1) |
 | Q8 | What is the acceptable overhead budget for L2, for example percent of wall time on one standard run? | Repository owner (mao2009) | #45 (open; completion criterion "Performance overheadとsampling方針を定義") | UNVERIFIED (no budget in repo found in this work) |
-| Q9 | Should the Studio GUI and CLI read the same JSON Lines files, or a joined summary only? | Repository owner (mao2009) | #45 (open; completion criterion "GUI/CLIで共通利用できる形式を定義"); #40 and #42 (both open) | OBSERVED (#45 body); UNVERIFIED (GUI code not searched) |
-| Q10 | May trace timestamps appear in share-ready bundles, given the determinism rule in `docs/architecture/diagnostics.md` section 5? | Repository owner (mao2009) | #49 is closed, so the diagnostics contract has no open tracking issue. Open item for this decision: #45. | CONFIRMED that the current contract excludes time; OBSERVED (#49 closed) |
+| Q9 | Should the Studio GUI and CLI read the same JSON Lines files, or a joined summary only? | Repository owner (mao2009) | #45 (open; completion criterion "GUI/CLIで共通利用できる形式を定義"); #40 and #42 (both open) | INFERRED (#45 body); UNVERIFIED (GUI code not searched) |
+| Q10 | May trace timestamps appear in share-ready bundles, given the determinism rule in `docs/architecture/diagnostics.md` section 5? | Repository owner (mao2009) | #49 is closed, so the diagnostics contract has no open tracking issue. Open item for this decision: #45. | INFERRED that the current contract excludes time; INFERRED (#49 closed) |
 | Q11 | Does any value in the shareable output lie in the BIOS range (`0x1FC00000`-`0x1FC7FFFF` physical)? The shareable output under section 7.2 contains PCs and addresses, so the check is on those. **Concrete action:** run `openbios-probe <openbios.bin> --json --capture-at <hex-pc>` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:59-67`; `--dump-ram` also requires `--capture-at`, `:172`), then, for each PC-class and address-class value in the output, mask the segment bits and test it against `0x1FC00000`-`0x1FC7FFFF`. Record the result as a comment on issue #45 (the required test does not exist yet, section 7.5), not in this document. If any such value is in range, decide whether a BIOS-range value may appear in a shareable document. Raw words are not part of the shareable output, so they are not tested for this purpose. | Repository owner (mao2009) | #45 (open) | unknown: no measured evidence; not guessed (Q11 provisional ruling) |
-| Q12 | Is a SHA-256 of the firmware file (`sha256` at `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:423`; console `:443`; fallback export `:973`) acceptable in a shareable document? (Answered provisionally: yes, as a digest.) It identifies the user's BIOS image but carries no BIOS bytes. **Provisional owner ruling: shareable as a digest only, with no raw BIOS bytes and no secrets (section 7.7).** | Repository owner (mao2009) | #45 (open) | OBSERVED (field exists); provisional ruling |
-| Q13 | Are HI and LO (section 7.3) to be shareable? The owner ruling covers GPR and COP0; this document classifies HI and LO as part of the register dump and excludes them. | Repository owner (mao2009) | #45 (open) | PREDICTED classification; the ruling does not name HI/LO |
-| Q14 | Is a digest of the displayed frame (`frame.sha256`, `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:437`; `FramebufferSha256` in `ExecutionDiagnosticReport`) acceptable in a shareable document? It is a frame digest, not a whole-artifact digest. Default-deny until decided. | Repository owner (mao2009) | #45 (open) | CONFIRMED (fields exist); default-deny (section 7.6) |
-| Q15 | Provisional owner ruling (section 7.7): build and tool identifiers and environment fields are a versioned closed set. A matched value is shareable; an unmatched value is written as `unknown` and is never inferred. Open for the owner: (a) the member lists of each value domain (section 7.7 proposes them, PREDICTED); (b) whether `OsVersion` gets a pattern domain or stays excluded. The current validator (`ValidateSingleLine`, `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:79-87`) accepts any single line, so the closed-set validator is a required change. | Repository owner (mao2009) | #45 (open) | CONFIRMED (validator accepts any single line); provisional ruling |
+| Q12 | Is a SHA-256 of the firmware file (`sha256` at `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:423`; console `:443`; fallback export `:973`) acceptable in a shareable document? (Answered provisionally: yes, as a digest.) It identifies the user's BIOS image but carries no BIOS bytes. **Provisional owner ruling: shareable as a digest only, with no raw BIOS bytes and no secrets (section 7.7).** | Repository owner (mao2009) | #45 (open) | INFERRED (field exists); provisional ruling |
+| Q13 | Are HI and LO (section 7.3) to be shareable? The owner ruling covers GPR and COP0; this document classifies HI and LO as part of the register dump and excludes them. | Repository owner (mao2009) | #45 (open) | INFERRED classification; the ruling does not name HI/LO |
+| Q14 | Is a digest of the displayed frame (`frame.sha256`, `src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:437`; `FramebufferSha256` in `ExecutionDiagnosticReport`) acceptable in a shareable document? It is a frame digest, not a whole-artifact digest. Default-deny until decided. | Repository owner (mao2009) | #45 (open) | INFERRED (fields exist); default-deny (section 7.6) |
+| Q15 | Provisional owner ruling (section 7.7): build and tool identifiers and environment fields are a versioned closed set. A matched value is shareable; an unmatched value is written as `unknown` and is never inferred. Open for the owner: (a) the member lists of each value domain (section 7.7 proposes them, INFERRED); (b) whether `OsVersion` gets a pattern domain or stays excluded. The current validator (`ValidateSingleLine`, `src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:79-87`) accepts any single line, so the closed-set validator is a required change. | Repository owner (mao2009) | #45 (open) | INFERRED (validator accepts any single line); provisional ruling |
 | Q16 | Shapes not yet read (`execution`, `consistency`, `referenceSecondsAtBoundary` value type, `accounting` other fields, `origins`, `FallbackInFlight`, `FallbackReturns`, `FallbackTargets`, the W10 boundary-log `Describe` body, and the W11 `--list-disc` output shape). Each stays default-deny until read and classified. Is that the accepted rule until the read is done? | Repository owner (mao2009) | #45 (open) | UNVERIFIED (shapes not read in this work) |
-| Q17 | Provisional owner ruling (section 7.7): the digests are different scopes and must not be treated as one value. The four are: the game-input digest (`InputSha256`, the digest of the file the user supplied to `run --report`, `src/PSXRecomp.Cli/RunCommand.cs:54-58`); the EXE digest (the main executable file); the disc-image digest (`discHash`, the disc file; no writer of `DiagnosticContextKeys.DiscHash` is found at 2e3ecad, and the disc SHA-256 is computed at `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391` and passed as `DiscSha256` at `:451`, a staging artifact); and the firmware digest (the BIOS ROM file, Q12). Open for the owner: may the game-input, EXE, and disc-image digests be shared? Until decided, they are default-deny. Today `InputSha256` is written into the `#457` bundle's `report.json` (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:16`, bundle at `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:51`), so the current bundle changes if the answer is no. | Repository owner (mao2009) | #45 (open) | NEEDS_OWNER_DECISION. OBSERVED (`InputSha256` set at `src/PSXRecomp.Cli/RunCommand.cs:58`; EXE and disc-image hashes per `docs/runtime/loaded-code-identity.md:45`) |
+| Q17 | Provisional owner ruling (section 7.7): the digests are different scopes and must not be treated as one value. The four are: the game-input digest (`InputSha256`, the digest of the file the user supplied to `run --report`, `src/PSXRecomp.Cli/RunCommand.cs:54-58`); the EXE digest (the main executable file); the disc-image digest (`discHash`, the disc file; no writer of `DiagnosticContextKeys.DiscHash` is found at 2e3ecad, and the disc SHA-256 is computed at `src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391` and passed as `DiscSha256` at `:451`, a staging artifact); and the firmware digest (the BIOS ROM file, Q12). Open for the owner: may the game-input, EXE, and disc-image digests be shared? Until decided, they are default-deny. Owner ruling on disc hashes: only hashes of publicly distributable synthetic media may be published; a hash of a commercial disc or a commercial BIOS/ROM must never be published. Today `InputSha256` is written into the `#457` bundle's `report.json` (`src/PSXRecomp.Core/Diagnostics/ExecutionDiagnosticReport.cs:16`, bundle at `src/PSXRecomp.Infrastructure/Diagnostics/ExecutionDiagnosticBundleWriter.cs:51`), so the current bundle changes if the answer is no. | Repository owner (mao2009) | #45 (open) | Owner-decision marker, not a status label. INFERRED (`InputSha256` set at `src/PSXRecomp.Cli/RunCommand.cs:58`; EXE and disc-image hashes per `docs/runtime/loaded-code-identity.md:45`) |
 
 ## 10. Limits of this document
 
