@@ -44,10 +44,10 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
     private readonly ReadOnlyMemory<byte> _bin;
 
     /// <param name="cueText">The CUE sheet text.</param>
-    /// <param name="bin">The BINARY file's bytes: a non-empty whole number of raw 2352-byte sectors, at least
+    /// <param name="bin">The BINARY file's bytes: a non-empty whole number of raw 2352-byte sectors, more than
     /// <see cref="LeadInFrames"/> of them. Referenced, not copied.</param>
     /// <exception cref="ArgumentNullException">A parameter is null.</exception>
-    /// <exception cref="ArgumentException">The file is empty, not a whole number of raw sectors, or shorter than the
+    /// <exception cref="ArgumentException">The file is empty, not a whole number of raw sectors, or not longer than the
     /// 150-sector lead-in, or the TOC is invalid (for example an INDEX 01 before 00:02:00 or at or after the end of the file).</exception>
     /// <exception cref="InvalidDataException">The CUE sheet is malformed.</exception>
     /// <exception cref="NotSupportedException">The CUE sheet uses a track mode that is not read.</exception>
@@ -61,10 +61,10 @@ public sealed class BinCueCdSectorSource : ICdSectorSource
         }
 
         var fileSectors = bin.Length / ICdSectorSource.RawSectorSize;
-        if (fileSectors < LeadInFrames)
+        if (fileSectors <= LeadInFrames)
         {
             throw new ArgumentException(
-                $"A BIN file holds {fileSectors} sectors, fewer than the {LeadInFrames}-sector lead-in before LBA 0.", nameof(bin));
+                $"A BIN file holds {fileSectors} sectors, not more than the {LeadInFrames}-sector lead-in; LBA 0 needs at least one sector after it.", nameof(bin));
         }
 
         var sheet = BinCueSheet.Parse(cueText);

@@ -90,6 +90,21 @@ public sealed class BinCueCdSectorSourceTests
     }
 
     [Fact]
+    public void Constructor_RejectsABinNoLongerThanTheLeadIn_AndAcceptsTheSmallestValidOne()
+    {
+        // LBA 0 is file index 150, so a file of exactly 150 sectors has no sector at LBA 0; 151 is the smallest that does.
+        const string oneTrack = "FILE \"g.bin\" BINARY\r\n  TRACK 01 MODE2/2352\r\n    INDEX 01 00:02:00\r\n";
+
+        var tooShort = () => new BinCueCdSectorSource(oneTrack, Bin(150));
+        tooShort.Should().Throw<ArgumentException>().WithMessage("*lead-in*");
+
+        var smallest = new BinCueCdSectorSource(oneTrack, Bin(151));
+        var destination = new byte[Raw];
+        smallest.TryReadSector(0, destination).Should().BeTrue();
+        smallest.TryReadSector(1, destination).Should().BeFalse("the lead-out is LBA 1 for a one-sector program area");
+    }
+
+    [Fact]
     public void TryReadSector_OutOfRange_ReturnsFalseAndLeavesDestinationUntouched()
     {
         var source = new BinCueCdSectorSource(TwoTrackCue, Bin(3000));
