@@ -1,16 +1,16 @@
 # Issue #727: How a generated-host artifact obtains disc sectors at run time (ADR candidate)
 
-Status: **candidate, not an accepted ADR.** It is not numbered and is not placed in `docs/adr/`. The ADR number and acceptance must be checked against the existing ADR list before any ADR is written. The owner ruling in [Section 0](#0-owner-ruling-binding) is not an approval record: Option A is NOT APPROVED (NEEDS_OWNER_DECISION). Implementation is out of scope for this candidate.
+Status: **candidate, not an accepted ADR.** It is not numbered and is not placed in `docs/adr/`. The ADR number and acceptance must be checked against the existing ADR list before any ADR is written. The review request in [Section 0](#0-review-request-not-an-approval-record) is not an approval record: Option A is NOT APPROVED (NEEDS_OWNER_DECISION). Implementation is out of scope for this candidate.
 
 Issue: [#727](https://github.com/mao2009/PSXRecompStudio/issues/727) (`[CD-ROM][Predicted]`, child of #14). Related: #10, #13, #14, #726, #730, #732, #736, #775.
 
 Base: `origin/main` at `2e3ecad`. Line numbers are at `2e3ecad`; `ScreenshotCommand.cs` and `RecompiledHostExecutionEngine.cs` differ at `12b6a31`, so their line numbers do not apply there. Verification was by reading code and docs at `2e3ecad`. **No tests were run and no legal review was performed.**
 
-## 0. Owner ruling (binding)
+## 0. Review request (not an approval record)
 
-**Status: Option A is NOT APPROVED (NEEDS_OWNER_DECISION).** A search of `docs/**/*.md` for `Option A` found no recorded approval for this option. The only other hit, `docs/adr/015-production-execution-engine-ownership.md:43` ("Option A (adopted)"), concerns execution-engine ownership, not the disc option. The points below are recorded in this candidate as the owner ruling; they are not an approval record until the owner confirms them.
+**Status: Option A is NOT APPROVED (NEEDS_OWNER_DECISION).** A search of `docs/**/*.md` for `Option A` found no recorded approval for this option. Other hits: `docs/adr/014-bios-hle-runtime-contract.md:988` (a reference to an unrelated option A in indirect-flow handling) and `docs/adr/015-production-execution-engine-ownership.md:43` ("Option A (adopted)", an execution-engine decision). None concerns the disc option. The points below are a review request for the owner; they are not an approval record until the owner confirms them.
 
-The owner decided the following for #727:
+The review request lists the following points for #727 (none is an approval record; Option A is NOT APPROVED):
 
 - **Option A, limited to the OpenBIOS verification package (NOT APPROVED, NEEDS_OWNER_DECISION).** In the current verification package, the user-owned disc may be supplied externally, with SHA-256 identity checks.
 - **Fail closed.** A hash mismatch, a missing file, or an unreadable file must stop the run.
@@ -19,11 +19,11 @@ The owner decided the following for #727:
 - **Existing `runtime/disc/` copy.** It stays as it is and must not be broken. Moving to an external reference is a separate issue, to be verified later.
 - **Hard limits.** Distribution of game-derived sectors in any project artifact is not allowed. Option B user-local generated output must not be read as blanket redistribution permission.
 
-The ruling does not number or accept an ADR. The ADR number and acceptance must be checked against the existing ADR list before one is written.
+The review request does not number or accept an ADR. The ADR number and acceptance must be checked against the existing ADR list before one is written.
 
 ## Labels
 
-- **OBSERVED**: a fact directly observed in an execution, log, or measurement. In this document it is used only for command output on repository state at this commit (directory listing, git refs after fetch).
+- **OBSERVED**: a fact directly observed in an execution, log, or measurement made in this work. No statement in this document meets that definition.
 - **CONFIRMED**: a fact that a reproducible verification met against an explicit expected condition. No claim in this document meets that definition, because all checks here are static reading of code and docs.
 - **INFERRED**: a conclusion derived from observation or implementation. Direct verification has not been established. Static reading of code and docs, and design properties of options, are INFERRED.
 - **UNVERIFIED**: an item for which there is not enough evidence to confirm it holds. This includes items resting only on the Issue body, items not run or not traced in full, and items that need a legal or owner judgement.
@@ -72,7 +72,7 @@ W04's summary holds for the files checked. **UNVERIFIED**: I did not trace every
 - The generated distribution README also documents that OpenBIOS loads the game from `runtime/disc/` through its own CD driver. **INFERRED (documented)**: this is documented intent. The run-time dependency itself is in code: the disc path is read, SHA-256 checked and opened as `disc.Source`, which feeds `FirmwareAotPlan.Build` and `ForPrebuiltArtifact` (`FirmwareDistribution.cs` lines ~671-690).
 - The distribution README text generated by `FirmwareDistribution.cs` (line ~579) says this is a **local build** and that redistribution is pending #730. **INFERRED** (generated text, not the repository `README.md`).
 
-So today's firmware path is CHD-dependent at run time, in a local build. It does not satisfy the #13 quotation. Under the owner ruling (Section 0), that dependency is allowed for the verification package only; the final artifact keeps the #13 requirement.
+So today's firmware path is CHD-dependent at run time, in a local build. It does not satisfy the #13 quotation. If Option A is approved (it is NOT APPROVED; see Section 0), that dependency would be allowed for the verification package only; the final artifact keeps the #13 requirement.
 
 ### 2.4 The CHD-independent (HLE) path reads no input files
 
@@ -127,9 +127,9 @@ These are the repository's current rules. They do not decide the architecture on
 - `docs/legal/openbios-license-audit.md` and `docs/legal/OPENBIOS-NOTICE.md`: the binary asset audit is open (`shell/blip.hit` and the font binaries are unresolved), so binary redistribution remains PENDING. **INFERRED** (as cited by `docs/REFERENCES.md`).
 - `docs/community/get-involved.md` (line 40): do not link copyrighted dumps; describe commercial evidence without uploading protected files. **INFERRED**.
 
-Consequence: the rules as written point to user-local output for option B only. The owner ruling does not extend that to blanket redistribution permission. Any project distribution of such an artifact would need asset-level review first. **INFERRED** (rules above); the conclusion is the author's reading, not a legal conclusion.
+Consequence: the rules as written point to user-local output for option B only. The Section 0 review request does not extend that to blanket redistribution permission. Any project distribution of such an artifact would need asset-level review first. **INFERRED** (rules above); the conclusion is the author's reading, not a legal conclusion.
 
-## 6. Recommendation (ruled by owner)
+## 6. Recommendation (NEEDS_OWNER_DECISION)
 
 **Option A (NOT APPROVED, NEEDS_OWNER_DECISION), limited to the OpenBIOS verification package (Section 0).** The verification package takes the user-owned disc from an external path, checked by SHA-256, and fails closed on mismatch, missing or unreadable input. Hash use: input is the whole disc image file bytes; algorithm SHA-256; normalization none; publication: not permitted, except hashes of publicly distributable synthetic media (owner decision c). Local only otherwise; the hash does not prove provenance. The final recompiled artifact must not depend on the original disc (#13). Option B is not chosen, and game-derived sectors are not distributed in any project artifact. The long-term target is the editable generated project (#775). Option C is a candidate approach for that track; it is not decided here.
 
@@ -137,23 +137,23 @@ Reasons:
 
 1. It reuses the injection point that already works (`PsxDeviceGraph` takes `ICdSectorSource`), so no new device model is needed. **INFERRED** (2.1).
 2. It is the only option that gives the OpenBIOS track sectors without shipping game-derived bytes. **UNVERIFIED**: a comparative judgement from Section 4 and the rules in Section 5, not a verified fact.
-3. It matches the existing local-build behaviour (`runtime/disc/`, SHA-verified). Under the ruling the copy stays unchanged, so external supply is an addition, and moving to a reference is a separate issue. **INFERRED** (2.3).
+3. It matches the existing local-build behaviour (`runtime/disc/`, SHA-verified). If Option A is approved, the copy stays unchanged, so external supply is an addition, and moving to a reference is a separate issue. **INFERRED** (2.3).
 4. It keeps the fail-closed behaviour of `ICdSectorSource` (absent sector is an error, not zeros). **INFERRED** (2.1).
 
 Conditions that come with A, which are part of the recommendation:
 
 - A missing disc on a path that reads sectors must fail closed, not produce an INT1 with a status byte only and no sector data (2.1, Section 3; the desktop PS-X EXE path already reaches that seam). **INFERRED** risk if not done.
-- The `runtime/disc/` copy stays as it is (ruling). Moving it to an external reference is a separate issue, to be verified later. Owner-decision marker, not a status label: whether that move is wanted.
-- The verification package depends on the disc at run time. That is allowed by the ruling for this package only. The final artifact keeps the #13 requirement (Section 0).
+- The `runtime/disc/` copy stays as it is (NEEDS_OWNER_DECISION; not settled). Moving it to an external reference is a separate issue, to be verified later. Owner-decision marker, not a status label: whether that move is wanted.
+- The verification package depends on the disc at run time. If Option A is approved, that is allowed for this package only. The final artifact keeps the #13 requirement (Section 0).
 - Fail-closed checks already exist for the `runtime/disc/` copy: a symbolic link and a SHA-256 mismatch both throw (`FirmwareDistribution.cs`, lines ~667-675). **INFERRED**. Missing and unreadable files are not separately verified here. **UNVERIFIED**.
 
 Not decided here: which real title is the first to need sector reads (#712 is the current blocker), and the choice of CHD versus raw image as the supported input.
 
-## 7. Owner decisions (ruled)
+## 7. Owner decisions (none recorded; NEEDS_OWNER_DECISION)
 
 1. **Option A: NOT APPROVED (NEEDS_OWNER_DECISION).** No recorded approval was found (see Section 0). If approved, it would cover the OpenBIOS verification package only. The disc may be supplied externally with SHA-256 identity checks, failing closed on mismatch, missing or unreadable input. The final recompiled artifact keeps the #13 requirement that it does not depend on the original disc. The #13 wording itself remains **UNVERIFIED** here, because #13 was not opened.
-2. **Ruled: option B is not chosen, and user-local output is not blanket redistribution permission.** Game-derived sectors may not be distributed in any project artifact.
-3. **Ruled: the `runtime/disc/` copy stays as it is.** Moving to an external reference is a separate issue, to be verified later.
-4. **Not decided here: the ADR number and acceptance.** No ADR is numbered or accepted in this document. At 2e3ecad the `docs/adr/` list ran from 001 to 027 (**OBSERVED** from the directory listing), so the next free number is 028 (**UNVERIFIED**). Procedure when work starts: run `git fetch origin`, then re-check `origin/main` and the `docs/adr/` of every unmerged branch (for example `git log --all --format='%h %D' --name-only -- 'docs/adr/028*'`). If 028 is taken, move up to the next free number. At this revision, `origin/main` lists 001-027 and no ref contains `docs/adr/028*` or `docs/adr/029*` (**OBSERVED** after `git fetch origin`). Another branch may claim 028 before this one is accepted, so the check must be repeated at acceptance.
+2. **NEEDS_OWNER_DECISION** (no recorded owner approval; not settled): option B is not chosen, and user-local output is not blanket redistribution permission. Game-derived sectors may not be distributed in any project artifact.
+3. **NEEDS_OWNER_DECISION** (no recorded owner approval; not settled): the `runtime/disc/` copy stays as it is. Moving to an external reference is a separate issue, to be verified later.
+4. **Not decided here: the ADR number and acceptance.** No ADR is numbered or accepted in this document. At 2e3ecad the `docs/adr/` list ran from 001 to 027 (**INFERRED** from the directory listing), so the next free number is 028 (**UNVERIFIED**). Procedure when work starts: run `git fetch origin`, then re-check `origin/main` and the `docs/adr/` of every unmerged branch (for example `git log --all --format='%h %D' --name-only -- 'docs/adr/028*'`). If 028 is taken, move up to the next free number. At this revision, `origin/main` lists 001-027 and no ref contains `docs/adr/028*` or `docs/adr/029*` (**INFERRED** from the `git fetch origin` output; not a measured run). Another branch may claim 028 before this one is accepted, so the check must be repeated at acceptance.
 
 Implementation of the verification-package change would be a separate implementation issue. It is not filed by this candidate. No legal review was performed (**UNVERIFIED**).
