@@ -2,7 +2,7 @@
 
 Tracking: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33). Related: [#16](https://github.com/mao2009/PSXRecompStudio/issues/16) (Structured Logging), [#22](https://github.com/mao2009/PSXRecompStudio/issues/22) (Memory Card interoperability), [#23](https://github.com/mao2009/PSXRecompStudio/issues/23) (review-finding feedback process per `docs/development/quality-stack.md`; the community-feedback reading is UNVERIFIED, see Q10).
 
-Status: **design only**. No code, schema file, ADR, or shared doc is changed by this document. Code evidence is taken from the worktree base `origin/main` at `2e3ecad`.
+Status: **design only**. No code, schema file, ADR, or shared doc is changed by this document. Code evidence is taken from `origin/main` at `12b6a31`. The source files cited here are identical at `2e3ecad` and `12b6a31` (checked with `git diff 2e3ecad 12b6a31`).
 
 ## Labels
 
@@ -181,7 +181,7 @@ Outcome is kept separate from Evidence and Confidence. The values are:
 |---|---|---|
 | `Pass` | Evidence exists for this binding and the scenario criteria were met. | Yes |
 | `Fail` | Evidence exists and criteria were not met. | No; may open a Known Issue |
-| `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:18-21`). | No |
+| `Blocked` | Run stopped at a known unsupported boundary. Aligns with `RecompiledArtifactOutcome.Blocked` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:18-21`). `BudgetExhausted` maps here only as an independent stop reason kept distinct from unsupported boundaries (owner policy 2): it is not Pass, not Fail, not compatibility evidence, and counts toward no level. The same mapping is used in #51 section 5.1 and in the trace schema (#866). | No |
 | `Error` | Harness or engine failure, not a guest result. Aligns with `RecompiledArtifactOutcome.Failure` (`src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:23-25`). | No; reported separately, never Pass or Fail |
 | `Cancelled` | A run was stopped by a cancellation request before a classified guest end (owner ruling; `TitleExecutionState.Cancelled`, `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:49`). | No; never Pass or Fail; reported as stopped, not as Blocked |
 | `NotRun` | Absence of evidence for this scenario and binding. | No |
@@ -251,7 +251,7 @@ A binding is the environment a result is valid for:
 Binding {
   BuildId             // new: recomp build identifier (no equivalent exists, section 2.1)
   RuntimeVersion      // new: Runtime version (no equivalent exists)
-  Os                  // ExecutionEnvironmentReport.OsPlatform, OsVersion, OsArchitecture (src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:38-40)
+  Os                  // ExecutionEnvironmentReport.OsPlatform, OsVersion, OsArchitecture (src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:38-40). OsVersion is recorded only as observed (RuntimeInformation.OSDescription, src/PSXRecomp.Infrastructure/Diagnostics/ExecutionEnvironmentCollector.cs:23); if it cannot be obtained the value is `unknown`, never a guessed value (owner policy 1). Current code throws on an empty value instead (ExecutionEnvironmentReport.cs:28), so `unknown` is NEEDS_OWNER_DECISION (contract change to `psxrecomp.execution-environment.v1`; not changed by this document)
   Gpu                 // new: backend name and driver version (absent from ExecutionEnvironmentReport)
   DotNet, RuntimeIdentifier   // from ExecutionEnvironmentReport
 }
@@ -259,7 +259,7 @@ Binding {
 
 Binding equality is exact by default. Two bindings are the same only if all of `BuildId`, `RuntimeVersion`, `Os`, `Gpu` match. [PREDICTED]
 
-Carry-forward is never implicit. When a new `BuildId` or `RuntimeVersion` appears, the previous Pass is retained as history, and the current binding starts at `NotRun` for that scenario. A carry-forward is allowed only as an explicit, labelled `Inherited` state with the source binding shown, and it never counts toward a level. [PREDICTED]
+Carry-forward is never implicit, and this design defines no carry-forward state. When a new `BuildId` or `RuntimeVersion` appears, the previous Pass is retained as history only, and the current binding starts at `NotRun` for that scenario. (An earlier draft named an `Inherited` state; it had no definition and is removed.) [PREDICTED]
 
 Why this matters: the issue requires that a "Perfect" title still detects regressions after Runtime, OS, or GPU change. A binding-scoped design gives that detection; an implicit carry-forward would hide it. [OBSERVED: issue #33 "Perfect後もRuntime/OS/GPU等の変更によるRegressionを検出可能にする"]
 
@@ -413,7 +413,7 @@ Additional conditions from the same ruling:
 
 - **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
 - **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
-- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is passed into the firmware boot manifest (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision. Under the owner ruling, a `SyntheticFixture` result may have no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The value and algorithm are UNVERIFIED. A disc SHA-256 is passed into the firmware boot manifest (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Whether any part of it may be published is the open decision (NEEDS_OWNER_DECISION). Owner policy 3 applies: a disc hash must state its input kind (whole disc image file bytes), algorithm (SHA-256), and normalization (none); publication is not allowed until this decision is made; raw disc or BIOS/ROM bytes are never published; and a hash never proves provenance or legitimacy. Under the owner ruling, a `SyntheticFixture` result may have no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
 - **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
 - **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
 - **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
@@ -424,7 +424,7 @@ Additional conditions from the same ruling:
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
 - **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`src/PSXRecompStudio/Services/TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
-- **Q15. Cancelled display label.** The label for a cell whose only non-Pass result is `Cancelled` (section 9.2, row 5) is pending the owner's decision. Until then the draft uses the placeholder `Cancelled`.
+- **Q15. Cancelled display label.** The label for a cell whose only non-Pass result is `Cancelled` (section 9.2, row 6) is pending the owner's decision. Until then the draft uses the placeholder `Cancelled`.
 - **Q16. Cancelled on binding B for regression.** If binding B holds a `Cancelled` result for a scenario that had Pass on binding A, is that a regression, `Unverified after change`, or neither? This draft says neither, and only shows it as Cancelled (section 6.2). Owner to decide.
 - **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 
