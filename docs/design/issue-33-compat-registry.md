@@ -2,7 +2,7 @@
 
 Tracking: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33). Related: [#16](https://github.com/mao2009/PSXRecompStudio/issues/16) (Structured Logging), [#22](https://github.com/mao2009/PSXRecompStudio/issues/22) (Memory Card interoperability), [#23](https://github.com/mao2009/PSXRecompStudio/issues/23) (review-finding feedback process per `docs/development/quality-stack.md`; the community-feedback reading is UNVERIFIED, see Q10).
 
-Status: **design only**. No code, schema file, ADR, or shared doc is changed by this document. Code evidence is taken from `origin/main` at `12b6a31`. The source files cited here are identical at `2e3ecad` and `12b6a31` (checked with `git diff 2e3ecad 12b6a31`).
+Status: **design only**. No code, schema file, ADR, or shared doc is changed by this document. Code evidence is taken from `origin/main` at `5d5b525`. The source files cited here are identical at `2e3ecad` and `12b6a31` (checked with `git diff 2e3ecad 12b6a31`). Between `12b6a31` and `5d5b525`, one cited file, `FirmwareBootManifest.cs`, changed (schema version 4 at lines 38 to 50 and 90 onward); the cited line 21 is outside those hunks and reads the same at both commits (checked with `git diff 12b6a31 5d5b525`).
 
 ## Labels
 
@@ -315,6 +315,8 @@ A Regression is derived, not stored by hand. Its input is `Subject = RealTitle` 
 
 A `Cancelled` result on binding B is neither a Fail nor a Pass, so it does not create a Regression by itself. How it is shown and whether it changes the Regression state is open (Q16). [INFERRED]
 
+BudgetExhausted on B is neither a regression nor Unverified after change, and counts toward neither level. [INFERRED]
+
 The derived record names both bindings and both evidence ids. [INFERRED]
 
 ## 7. Persistence
@@ -402,7 +404,7 @@ Each cell is one `(title, facet, binding)`. It is labelled by the first matching
 | 2 | No result on this binding, but a scenario in this facet has a `Pass` on another binding | `Unverified after change` | The binding changed after a Pass. The old Pass is not carried forward (section 4.4), so this cell has no Pass here. It is a label, not a level. |
 | 3 | Records exist for the facet, but none for this binding | `Not run` | The binding has not been tested for this facet. |
 | 4 | Any `Fail` result on this binding | `Fail` | Evidence exists and criteria were not met. |
-| 5 | Any `Blocked` or `Error` result on this binding, and no `Pass` | `Blocked` or `Error` | Stopped at a known boundary, or a harness or engine failure. |
+| 5 | Any `Blocked`, `Error` or `BudgetExhausted` result on this binding, and no `Pass` | `Blocked`, `Error`, or `Budget exhausted` | Stopped at a known boundary, a harness or engine failure, or an exhausted execution budget. `BudgetExhausted` is shown with its own label, not as `Blocked`. |
 | 6 | Any `Cancelled` result on this binding, and no `Pass` | `Cancelled` (label wording pending Q15) | The run was stopped and its evidence is incomplete. |
 | 7 | At least one `Pass` on this binding | the derived level from section 5 | Level 0 when no ladder rung is met. |
 
