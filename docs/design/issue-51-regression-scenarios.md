@@ -2,7 +2,7 @@
 
 Tracking: [#51](https://github.com/mao2009/PSXRecompStudio/issues/51). Related: [#33](https://github.com/mao2009/PSXRecompStudio/issues/33) (Compatibility Registry), [#42](https://github.com/mao2009/PSXRecompStudio/issues/42) (Project/Workspace), [#44](https://github.com/mao2009/PSXRecompStudio/issues/44) (PS1 Hardware Runtime Architecture), [#46](https://github.com/mao2009/PSXRecompStudio/issues/46) (Recomp Artifact & Build Management), [#49](https://github.com/mao2009/PSXRecompStudio/issues/49) (Diagnostics & Recovery).
 
-Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `5d5b525` (the cited existing source files are identical at `2e3ecad`, `12b6a31` and `5d5b525`; the two cited design documents, #33 and #45, are not in these bases). The registry input is `origin/batch2/w13-compat-registry-design`, pinned at `55d55d7` (`docs/design/issue-33-compat-registry.md`). The W13 update (`TitleKey` as `ReleaseKey`, `Cancelled` as a registry Outcome only, and `Unknown` as the only derived state) is on the remote at `55d55d7` (previously `f2ab8bb`, `05d3ec7d`, `1df9ced`, `6f52545`), which this document now pins (section 9.2).
+Status: **design only**. No code, schema file, test, ADR, or shared doc is changed by this document. Base: `origin/main` at `5d5b525` (the cited existing source files are identical at `2e3ecad`, `12b6a31` and `5d5b525`; the two cited design documents, #33 and #45, are not in these bases). The registry input is `origin/batch2/w13-compat-registry-design`, pinned at `709a762` (`docs/design/issue-33-compat-registry.md`). The W13 update (`TitleKey` as `ReleaseKey`, `Cancelled` as a registry Outcome only, and `Unknown` as the only derived state) is on the remote at `709a762` (previously `55d55d7`, `f2ab8bb`, `05d3ec7d`, `1df9ced`, `6f52545`), which this document now pins (section 9.2).
 
 ## 0. Labels and constraints
 
@@ -12,7 +12,7 @@ Status: **design only**. No code, schema file, test, ADR, or shared doc is chang
 - **UNVERIFIED**: an item for which there is not enough evidence to confirm it holds. Treated as an open item. This includes items that rest only on the issue summary (read through WebFetch) and #33 items not re-read in this worktree.
 - Owner-decision marker, not a status label: **NEEDS_OWNER_DECISION** marks a proposed change to #33 or to the result schema that the owner has not approved. These are listed in section 12 and are not part of the schema in sections 3 to 8.
 
-Hard constraints: this design stores and references verification outcomes only. It contains no BIOS, ROM, RAM, or disc image bytes, extracted title data, or copyrighted asset content. Titles appear as placeholders (`Title A`). Smoke tests use repository-authored synthetic executables only. A user-supplied real input is referenced by a bundle id in the evidence store, never by path, content, or a shared hash (section 5.2).
+Hard constraints: this design stores and references verification outcomes only. It contains no BIOS, ROM, RAM, or disc image bytes, extracted title data, or copyrighted asset content. Titles appear as placeholders (`Title A`). Smoke tests use repository-authored synthetic executables only. A user-supplied real input is referenced by a bundle id in the evidence store, never by path or content. Its hash is not shared when it is commercial input (owner ruling); a non-commercial input's hash is **NEEDS_OWNER_DECISION** (section 5.2).
 
 ## 1. Problem and scope
 
@@ -46,7 +46,7 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 
 ### 2.3 Cancelled in #33
 
-At `55d55d7`, #33 records `Cancelled` in three places: the execution-state list (section 2.1, line 60), the Outcome table (section 3.5, line 187), and the required-change list (section 9.1 item 4, line 386). Section 5.1 of this document relies on these. [INFERRED: `55d55d7` `docs/design/issue-33-compat-registry.md`]
+At `709a762`, #33 records `Cancelled` in three places: the execution-state list (section 2.1, line 60), the Outcome table (section 3.5, line 187), and the required-change list (section 9.1 item 4, line 388). Section 5.1 of this document relies on these. [INFERRED: `709a762` `docs/design/issue-33-compat-registry.md`]
 
 ## 3. Compatibility test model
 
@@ -73,7 +73,7 @@ Rules:
 - A criterion must assert an observable contract: an outcome enum value, a guest PC, a register value, a TTY byte, a frame hash, a diagnostic code. "Did not throw" is not a criterion. [INFERRED: capability matrix verification threshold]
 - A scenario that depends on a facet not yet implemented (for example, Audio output, `Not claimed` in `capabilities.md:78`) must declare `Tier = Manual` or be absent. It must not be listed as Pass. [INFERRED]
 - A `BudgetExhausted` stop is an independent stop reason (owner policy 2). It is an independent Outcome, not `Blocked` (owner decision, design level; see section 5.1 and the trace schema in `docs/design/issue-45-trace-schema.md`, #45), and it is not compatibility evidence, and never counts toward a level. A host-side timeout is `Error`, not `BudgetExhausted`.
-- **Facets versus tags.** The five #33 facet values are unchanged, and `None` is added (owner-approved). The issue's extra areas (Input, Runtime stability, CD/Disc) are catalog `Tags`, not facets. A scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [INFERRED: #33 Q14 at `55d55d7`]
+- **Facets versus tags.** The five #33 facet values are unchanged, and `None` is added (owner-approved). The issue's extra areas (Input, Runtime stability, CD/Disc) are catalog `Tags`, not facets. A scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [INFERRED: #33 Q14 at `709a762`]
 
 ## 4. Smoke-test set (synthetic fixtures)
 
@@ -120,9 +120,9 @@ The smoke tier is a required check for changes under `src/PSXRecomp.Core/Recompi
 
 ## 5. Result record
 
-**Scope rule.** Real-title evaluation takes only `ScenarioResult` records with `Subject = RealTitle`. A `SyntheticFixture` result never enters any derivation: Evidence count (#33 §4.2), Confidence (#33 §4.3), level derivation (#33 §5), Known Issue and Regression (#33 §6), and display (#33 §9). This includes a `SyntheticFixture` result that carries a `TitleKey`. [INFERRED: `55d55d7` #33 §8 (line 371) and #33 §3.2 (line 136), which name #33 §4.2, §4.3, §5, §6 and §9. Known Issues are further limited by #33 §6.1 eligibility (`55d55d7`).]
+**Scope rule.** Real-title evaluation takes only `ScenarioResult` records with `Subject = RealTitle`. A `SyntheticFixture` result never enters any derivation: Evidence count (#33 §4.2), Confidence (#33 §4.3), level derivation (#33 §5), Known Issue and Regression (#33 §6), and display (#33 §9). This includes a `SyntheticFixture` result that carries a `TitleKey`. [INFERRED: `709a762` #33 §8 (line 373) and #33 §3.2 (line 136), which name #33 §4.2, §4.3, §5, §6 and §9. Known Issues are further limited by #33 §6.1 eligibility (`709a762`).]
 
-**Outcome rule.** Evidence count is the number of distinct `EvidenceIds` referenced by `RealTitle` results with `Outcome = Pass`, grouped by `(TitleKey, Facet, ScenarioId, ScenarioVersion, Binding)` (#33 §4.2 at `55d55d7`, line 226). Results with different `ScenarioVersion` values are never summed, and no count crosses a binding. Confidence reads the same `RealTitle` results. `EvidenceRecord` has no `Outcome` field (#33 §4.1). #33 §4.2 at `55d55d7` counts `ScenarioResult` records, and this document does not assume an `EvidenceRecord.Outcome` anywhere. [INFERRED: `55d55d7` §4.1 field list and §4.2 text]
+**Outcome rule.** Evidence count is the number of distinct `EvidenceIds` referenced by `RealTitle` results with `Outcome = Pass`, grouped by `(TitleKey, Facet, ScenarioId, ScenarioVersion, Binding)` (#33 §4.2 at `709a762`, line 226). Results with different `ScenarioVersion` values are never summed, and no count crosses a binding. Confidence reads the same `RealTitle` results. `EvidenceRecord` has no `Outcome` field (#33 §4.1). #33 §4.2 at `709a762` counts `ScenarioResult` records, and this document does not assume an `EvidenceRecord.Outcome` anywhere. [INFERRED: `709a762` §4.1 field list and §4.2 text]
 
 The result record uses the #33 `ScenarioResult` (§3.4) without extra fields. Field mapping:
 
@@ -145,7 +145,7 @@ No `Schema` string or separate `ResultId` is introduced. The schema identity is 
 
 ### 5.1 Outcome
 
-Outcome values follow #33 section 3.5 at `55d55d7`, which includes the owner-approved `Cancelled` row. [INFERRED: #33 at `55d55d7`]
+Outcome values follow #33 section 3.5 at `709a762`, which includes the owner-approved `Cancelled` row. [INFERRED: #33 at `709a762`]
 
 | Outcome | Meaning | Maps from |
 |---|---|---|
@@ -162,7 +162,7 @@ Not an outcome: `Unknown` is a derived state for a title or facet with no record
 Rules:
 
 - `Blocked` is a diagnosable stop, not a defect. [INFERRED: `docs/status/capabilities.md:38`, the Blocked state definition]
-- `Error` is reported separately and is never Pass or Fail (#33 §3.5 at `55d55d7`). An errored run cannot turn a Pass into a Fail. [INFERRED]
+- `Error` is reported separately and is never Pass or Fail (#33 §3.5 at `709a762`). An errored run cannot turn a Pass into a Fail. [INFERRED]
 - `Cancelled`, `NotRun` and `Unknown` are never rendered as `Pass` or `Fail`, and never rendered as each other (#33 §3.5, owner-ruled).
 
 Stop mapping, from execution state to registry Outcome:
@@ -183,21 +183,21 @@ Stop mapping, from execution state to registry Outcome:
 ### 5.2 Evidence attachments
 
 - Attachments are referenced by SHA-256 of the captured file (log, frame, report) through `EvidenceRecord.ArtifactHash`. The attachment is stored outside the result record. [INFERRED; matches #33 §4.1]
-- For a user input, an attachment must not contain game data (no frame dumps of copyrighted art in a shared bundle). Such attachments stay local. The hash of a user input is not shared. Owner policy 3, as applied here: input kind = user-supplied game input (whole file bytes); algorithm = SHA-256; normalization = none; publication = never. A hash of a user-supplied commercial input is not shared. The owner ruling on disc hashes (#33 Q3) is that only hashes of publicly distributable synthetic media may be published, and only if (a) the medium contains no third-party copyrighted material and (b) its generation procedure is reproducible and the publication scope is stated (the conditions of #45 section 7.7). A hash of a commercial disc or a commercial BIOS/ROM must never be published. A hash never proves provenance or legitimacy. [INFERRED]
-- Frame comparison uses a hash of the frame buffer, not the frame. A frame-buffer hash from a `RealTitle` run is local-only under the same rule as the user-input hash above. [INFERRED]
+- For a user input, an attachment must not contain game data (no frame dumps of copyrighted art in a shared bundle). Such attachments stay local. The hash of a user input is not shared. Owner policy 3, as applied here: input kind = user-supplied game input (whole file bytes); algorithm = SHA-256; normalization = none; publication = never for commercial input (NOT SHAREABLE, owner ruling). For non-commercial input, publication is **NEEDS_OWNER_DECISION** (matching #45 section 7.7), and the input stays local until the owner rules. A hash of a user-supplied commercial input is not shared. The owner ruling on disc hashes (#33 Q3) is that only hashes of publicly distributable synthetic media may be published, and only if (a) the medium contains no third-party copyrighted material and (b) its generation procedure is reproducible and the publication scope is stated (the conditions of #45 section 7.7). A hash of a commercial disc or a commercial BIOS/ROM must never be published. A hash never proves provenance or legitimacy. [INFERRED]
+- Frame comparison uses a hash of the frame buffer, not the frame. A frame-buffer hash from a `RealTitle` run is local-only under the same rule as the user-input hash above (Q14, **NEEDS_OWNER_DECISION**). [INFERRED]
 
 ### 5.3 Producer and reporter class
 
-Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`. [INFERRED: #33 at `55d55d7`] Synthetic smoke runs are `Automated`. `AIPrediction` and `AnalyzerFinding` evidence can never produce a `Pass`. [INFERRED: this rule is proposed in #33 section 4.1.1, not stated as settled there]
+Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`. [INFERRED: #33 at `709a762`] Synthetic smoke runs are `Automated`. `AIPrediction` and `AnalyzerFinding` evidence can never produce a `Pass`. [INFERRED: this rule is proposed in #33 section 4.1.1, not stated as settled there]
 
 ### 5.4 Synthetic subjects
 
-- `Subject` is the #33 enum `RealTitle | SyntheticFixture` and carries no payload. [INFERRED: `55d55d7` §3.4 line 158]
+- `Subject` is the #33 enum `RealTitle | SyntheticFixture` and carries no payload. [INFERRED: `709a762` §3.4 line 158]
 - A synthetic result identifies its fixture through `ScenarioId`, which the W15 catalog maps to a `FixtureId`. The result does not carry the fixture hash or a disc hash. [INFERRED]
-- `TitleKey` may be omitted when `Subject = SyntheticFixture` and is required for `RealTitle`. [INFERRED: `55d55d7` §3.4 line 159]
-- At `55d55d7`, `TitleKey` equals `ReleaseKey` (`(Serial, Region, Revision)`). [INFERRED: `55d55d7` §3.1 line 118] This document uses that identity only for real-title results.
-- Positive filter (#33 §8 at `55d55d7`, line 371, and §3.2, line 136): a result enters a derivation only if `Subject = RealTitle`, it has a `TitleKey`, and its `Facet` is not `None`. A `SyntheticFixture` result is excluded even when it carries a `TitleKey`.
-- Fail closed: #33 §3.4 (at `55d55d7`) rejects, at write time, a result whose `Subject` is missing or unknown. Such a result is never stored, is never treated as `RealTitle` by default, and is reported as invalid. A `RealTitle` result without `TitleKey` is also invalid (#33 §3.4: mandatory for `RealTitle`). W15 adds one rule that #33 does not state: a result without `Facet` is rejected at write time (W15 rule, not in #33).
+- `TitleKey` may be omitted when `Subject = SyntheticFixture` and is required for `RealTitle`. [INFERRED: `709a762` §3.4 line 159]
+- At `709a762`, `TitleKey` equals `ReleaseKey` (`(Serial, Region, Revision)`). [INFERRED: `709a762` §3.1 line 118] This document uses that identity only for real-title results.
+- Positive filter (#33 §8 at `709a762`, line 373, and §3.2, line 136): a result enters a derivation only if `Subject = RealTitle`, it has a `TitleKey`, and its `Facet` is not `None`. A `SyntheticFixture` result is excluded even when it carries a `TitleKey`.
+- Fail closed: #33 §3.4 (at `709a762`) rejects, at write time, a result whose `Subject` is missing or unknown. Such a result is never stored, is never treated as `RealTitle` by default, and is reported as invalid. A `RealTitle` result without `TitleKey` is also invalid (#33 §3.4: mandatory for `RealTitle`). W15 adds one rule that #33 does not state: a result without `Facet` is rejected at write time (W15 rule, not in #33).
 - Owner-approved conditions (binding ruling): synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as `Pass` or `Fail`; `Unknown`, `NotRun` and `Cancelled` are distinct; #33's identity and binding rules are unchanged.
 
 ## 6. Binding
@@ -221,11 +221,12 @@ Let `R(s, b)` be the latest non-superseded result for scenario `s` on binding `b
 
 1. **Regression**: `R(s, A) = Pass` and `R(s, B)` is `Fail` or `Blocked`, for the same `Subject` and `ScenarioId`, where `B` is a later binding of the same title. [INFERRED; mirrors #33 section 6.2]
 2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B) = NotRun` (or absent) while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. This is the cell label in #33 §9.2 row 2 (label string unchanged). [INFERRED]
-   - `R(s, B) = Cancelled` is a separate input and is not handled by this rule. The current #33 draft (§6.2, `55d55d7`) says a `Cancelled` result on B is neither a Fail nor a Pass and creates no Regression by itself (Q16 open). W15 follows that draft: `Cancelled` is never reported as a regression and never as `Unverified after change`. Its cell label is #33 §9.2 row 6 (Q15 open). See N3, section 12.
+   - `R(s, B) = Cancelled` is a separate input and is not handled by this rule. The current #33 draft (§6.2, `709a762`) says a `Cancelled` result on B is neither a Fail nor a Pass and creates no Regression by itself (Q16 open). W15 follows that draft: `Cancelled` is never reported as a regression and never as `Unverified after change`. Its cell label is #33 §9.2 row 6 (Q15 open). See N3, section 12.
 3. **Synthetic regression**: the same rule applies to `SyntheticFixture` results, but the output is labelled `synthetic` and never rolls up into a title level. A synthetic regression is the primary signal of the smoke tier. [INFERRED]
 4. **Error is not a regression**: `Error` on B does not create a regression. It creates a harness alert. [INFERRED]
 5. **Scenario version change**: if `ScenarioVersion` differs between A and B, the pair is not compared. The pair is not compared, no regression record is produced, and the old Pass is kept as history (#33 §4.2 counts per `ScenarioVersion`). [INFERRED]
 6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is kept distinct from `NotRun` throughout, so rule 2 never treats it as `NotRun`. Without this, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [INFERRED]
+7. **Budget stop**: `R(s, B) = BudgetExhausted` is not a regression and not `Unverified after change`. It is shown with its own label and counted toward neither level (see #33 §9.2 and §6.2). [INFERRED]
 
 ### 7.2 Derived record
 
@@ -238,7 +239,7 @@ A regression record names: scenario id and version, `Subject`, both binding keys
 
 ## 8. Integration with the Compatibility Registry (#33)
 
-Each row names the #33 decision it depends on. If that decision changes, this section changes. All cited #33 text is at `55d55d7`.
+Each row names the #33 decision it depends on. If that decision changes, this section changes. All cited #33 text is at `709a762`.
 
 | Integration point | This design needs | #33 decision it depends on | Status |
 |---|---|---|---|
@@ -247,8 +248,8 @@ Each row names the #33 decision it depends on. If that decision changes, this se
 | Reporter class | `Maintainer`, `Automated`, `Community` | §4.1.2 | proposal |
 | Binding | exact-match binding | §4.4 and #33 Q5 | proposal; exact match is the default |
 | Level derivation | real-title results only (`Subject = RealTitle`); `Facet = None` excluded | §3.4 Subject rules; §8 derivation input rule; §3.2 `None` | owner-approved; the input filter is in #33 §3.4 |
-| Known Issue eligibility | W15 defines no Known Issue yet. Any W15 Known Issue must be `RealTitle` with a `TitleKey`, and must not cite a `SyntheticFixture` result | §6.1 | proposal; follows #33 at `55d55d7` |
-| Evidence count and Confidence | distinct `EvidenceIds` of `RealTitle` results with `Outcome = Pass` (Evidence count); `RealTitle` results only | §4.2 and §4.3 | corrected in #33 §4.2 at `55d55d7` (section 5) |
+| Known Issue eligibility | W15 defines no Known Issue yet. Any W15 Known Issue must be `RealTitle` with a `TitleKey`, and must not cite a `SyntheticFixture` result | §6.1 | proposal; follows #33 at `709a762` |
+| Evidence count and Confidence | distinct `EvidenceIds` of `RealTitle` results with `Outcome = Pass` (Evidence count); `RealTitle` results only | §4.2 and §4.3 | corrected in #33 §4.2 at `709a762` (section 5) |
 | Facets | five facets plus `None` | §3.2 and #33 Q1 | owner-approved `None` |
 | Disc binding | a disc content hash | #33 Q3 and `DiscIdentity` gap | UNVERIFIED; owner-decision marker (N2) |
 | Build identity | a `BuildId` | #33 Q6 | UNVERIFIED |
@@ -266,18 +267,18 @@ Concrete boundaries:
 
 ### 9.1 Owner-approved changes this document depends on
 
-This section is the W15 dependency list for #33. W13 does not yet cite this list; #33 at `55d55d7` has no reference to #51 or W15. If the decisions below change, this design must be revisited.
+This section is the W15 dependency list for #33. W13 does not yet cite this list; #33 at `709a762` has no reference to #51 or W15. If the decisions below change, this design must be revisited.
 
 1. `Subject` on every result, with the enum `RealTitle | SyntheticFixture` and no payload (#33 §3.4).
 2. `TitleKey` may be omitted when `Subject = SyntheticFixture` (#33 §3.4).
 3. `Facet.None` for results not attributed to any facet (#33 §3.2).
 4. A `Cancelled` row in the Outcome vocabulary, which is never Pass or Fail (#33 §3.5; §2.1 for the execution state).
 
-Conditions from the same ruling, recorded in #33 §9.1 at `55d55d7`: synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as Pass or Fail; `Unknown`, `NotRun` and `Cancelled` stay distinct; the identity and binding rules of #33 section 4 are unchanged.
+Conditions from the same ruling, recorded in #33 §9.1 at `709a762`: synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as Pass or Fail; `Unknown`, `NotRun` and `Cancelled` stay distinct; the identity and binding rules of #33 section 4 are unchanged.
 
-The six #33 decisions below were re-checked at `55d55d7` (this document's pin). For each, the #33 section it cites (§3.2, §3.5, §4.1.2, §4.4, §5, §7.2 and Q13) was read at that head, and the decision as written below matches it. The earlier check against `6f52545` is not relied on. D1 covers the `Cancelled` row (§3.5), and D4 covers `None` (§3.2). D2, D3, D5 and D6 were re-checked the same way:
+The six #33 decisions below were re-checked at `709a762` (this document's pin). For each, the #33 section it cites (§3.2, §3.5, §4.1.2, §4.4, §5, §7.2, Q1 and Q13) was read at `55d55d7`, and the decision as written below matches it. The later head `709a762` differs from `55d55d7` only in #33 line 5 and in two lines inserted after line 316 (`git diff 55d55d7 709a762`), so those sections keep their text. The earlier check against `6f52545` is not relied on. D1 covers the `Cancelled` row (§3.5), and D4 covers `None` (§3.2). D2, D3, D5 and D6 were re-checked the same way:
 
-- **D1.** Outcome vocabulary, with `NotRun` distinct from `Fail` (#33 §3.5).
+- **D1.** Outcome vocabulary, including the `Cancelled` row, with `NotRun` distinct from `Fail` (#33 §3.5).
 - **D2.** Exact binding equality, and no implicit carry-forward (#33 §4.4).
 - **D3.** Reporter classes without a required agent identity (#33 §4.1.2).
 - **D4.** The five-facet set plus `None` (#33 §3.2; #33 Q1).
@@ -286,11 +287,11 @@ The six #33 decisions below were re-checked at `55d55d7` (this document's pin). 
 
 ### 9.2 Pending W13 update, and findings for W13
 
-- **Pin.** This document is pinned to `55d55d7`, the current #33 branch head. Relative to `d0f7b93b`, `f2ab8bb` changed only the text of #33 lines 185, 255 and 417, with no line shift (`git diff d0f7b93b f2ab8bb -- docs/design/issue-33-compat-registry.md`). `55d55d7` changed only the text of #33 lines 118 and 417 (the synthetic-media conditions), with no line shift (`git diff f2ab8bb 55d55d7 -- docs/design/issue-33-compat-registry.md`). Section 13 records the check of each cited #33 line at `55d55d7`. Earlier pins, kept as history: `f2ab8bb`, `d0f7b93b`, `05d3ec7d`, `1df9ced`, `6f52545`. The change from `05d3ec7d` to `d0f7b93b` (`git diff 05d3ec7d d0f7b93b -- docs/design/issue-33-compat-registry.md`) changed only line 118 (the `TitleKey` sentence, now citing the synthetic-media disc-hash ruling) and line 417 (the Q3 wording); all other cited line numbers are unchanged. The change from `1df9ced` to `05d3ec7d` (`git diff 1df9ced 05d3ec7d -- docs/design/issue-33-compat-registry.md`): the Boot-Verified wording at line 278; §9.1 moved from after §9.2 to lines 379-393 (item 4 now at line 386, previously line 404), which shifts the §9.2 rows by +16 (row 6 now at line 406, previously line 390); Q14 moved before Q15 and Q16 (lines 428-430). The Q3 wording (line 417) and the §3.5 Outcome table (line 187) keep their line numbers. The change from `6f52545` to `1df9ced` is the #33 label-vocabulary replacement (lines 9-12), the new BudgetExhausted row (line 185), the Q3 wording (line 417) and the closing line (line 436), among other hunks (`git diff 6f52545 1df9ced`). The change from `912ae29` to `6f52545` was in #33 lines 184, 416 and 435 (the Blocked-row note in #33, the Q3 wording, the closing bullet). Earlier pin: `e7aef36`; the #33 review fixes at `912ae29` changed no cited line number. The diff from `e7aef36` changed the Error wording (reported separately), the Evidence count unit (distinct `EvidenceIds`), and added §6.1 Known Issue eligibility and the §8 derivation input rule. The earlier diff from `541c599` renumbered the §9.2 cell-label rows (`Unverified after change` is row 2, `Cancelled` is row 6, the Pass level is row 7) and reworded the level-0 text in §5 and §9.2. The earlier additions (Subject-filter scope, write-time rejection, Q15 and Q16, the §9.2 table, the corrected Evidence count) are kept.
-- **Resolved in W13 at `0756304`: §4.2 Evidence count.** #33 §4.2 now counts `ScenarioResult` records, and `EvidenceRecord` has no `Outcome` field. W15 does not assume one (section 5). [INFERRED: `55d55d7` §4.2]
-- **Resolved in W13 at `0756304`: §6.2 and §9.2.** `Unverified after change` is now row 2 of the §9.2 cell-label table, and §6.2 cites that row. W15 cites row 2 in §7.1 rule 2. [INFERRED: `55d55d7` §6.2 and §9.2]
-- **Cancelled.** At `55d55d7`, `Cancelled` still appears in the §2.1 state list (line 60) and the §9.1 item 4 list (line 386). It is not in the derived states (§3.5), where `Unknown` is the only derived state (line 192). W15 uses `Cancelled` only as an Outcome, so no W15 change is needed.
-- **Finding for W13: Q10 numbering.** This document refers to #33 Q10 as feedback intake. That is correct at `55d55d7`; the reference is kept as is.
+- **Pin.** This document is pinned to `709a762`, the current #33 branch head. Relative to `55d55d7`, `709a762` changed #33 line 5 (text only) and inserted two lines after line 316, so the lines cited at 371, 386 and 417 are now at 373, 388 and 419 (`git diff 55d55d7 709a762 -- docs/design/issue-33-compat-registry.md`). Relative to `d0f7b93b`, `f2ab8bb` changed only the text of #33 lines 185, 255 and 417, with no line shift (`git diff d0f7b93b f2ab8bb -- docs/design/issue-33-compat-registry.md`). `55d55d7` changed only the text of #33 lines 118 and 417 (the synthetic-media conditions), with no line shift (`git diff f2ab8bb 55d55d7 -- docs/design/issue-33-compat-registry.md`). Section 13 records the check of each cited #33 line at `709a762`. Earlier pins, kept as history: `55d55d7`, `f2ab8bb`, `d0f7b93b`, `05d3ec7d`, `1df9ced`, `6f52545`. The change from `05d3ec7d` to `d0f7b93b` (`git diff 05d3ec7d d0f7b93b -- docs/design/issue-33-compat-registry.md`) changed only line 118 (the `TitleKey` sentence, now citing the synthetic-media disc-hash ruling) and line 417 (the Q3 wording); all other cited line numbers are unchanged. The change from `1df9ced` to `05d3ec7d` (`git diff 1df9ced 05d3ec7d -- docs/design/issue-33-compat-registry.md`): the Boot-Verified wording at line 278; §9.1 moved from after §9.2 to lines 379-393 (item 4 now at line 386, previously line 404), which shifts the §9.2 rows by +16 (row 6 now at line 406, previously line 390); Q14 moved before Q15 and Q16 (lines 428-430). The Q3 wording (line 417) and the §3.5 Outcome table (line 187) keep their line numbers. The change from `6f52545` to `1df9ced` is the #33 label-vocabulary replacement (lines 9-12), the new BudgetExhausted row (line 185), the Q3 wording (line 417) and the closing line (line 436), among other hunks (`git diff 6f52545 1df9ced`). The change from `912ae29` to `6f52545` was in #33 lines 184, 416 and 435 (the Blocked-row note in #33, the Q3 wording, the closing bullet). Earlier pin: `e7aef36`; the #33 review fixes at `912ae29` changed no cited line number. The diff from `e7aef36` changed the Error wording (reported separately), the Evidence count unit (distinct `EvidenceIds`), and added §6.1 Known Issue eligibility and the §8 derivation input rule. The earlier diff from `541c599` renumbered the §9.2 cell-label rows (`Unverified after change` is row 2, `Cancelled` is row 6, the Pass level is row 7) and reworded the level-0 text in §5 and §9.2. The earlier additions (Subject-filter scope, write-time rejection, Q15 and Q16, the §9.2 table, the corrected Evidence count) are kept.
+- **Resolved in W13 at `0756304`: §4.2 Evidence count.** #33 §4.2 now counts `ScenarioResult` records, and `EvidenceRecord` has no `Outcome` field. W15 does not assume one (section 5). [INFERRED: `709a762` §4.2]
+- **Resolved in W13 at `0756304`: §6.2 and §9.2.** `Unverified after change` is now row 2 of the §9.2 cell-label table, and §6.2 cites that row. W15 cites row 2 in §7.1 rule 2. [INFERRED: `709a762` §6.2 and §9.2]
+- **Cancelled.** At `709a762`, `Cancelled` still appears in the §2.1 state list (line 60) and the §9.1 item 4 list (line 388). It is not in the derived states (§3.5), where `Unknown` is the only derived state (line 192). W15 uses `Cancelled` only as an Outcome, so no W15 change is needed.
+- **Finding for W13: Q10 numbering.** This document refers to #33 Q10 as feedback intake. That is correct at `709a762`; the reference is kept as is.
 
 ## 10. GUI and CLI viewing boundary (checklist item 7)
 
@@ -313,7 +314,7 @@ The six #33 decisions below were re-checked at `55d55d7` (this document's pin). 
   It would not change the pinned SHA-256 or the generated bytes. The ID is not written into the EXE: `BuildExe` takes instruction words and header fields only (`GeneratedPsxExeFixtures.cs`, method `BuildExe`). [INFERRED for the BuildExe signature; the ID-usage list is INFERRED from a grep not repeated here]. Owner decision.
 - **Q7. Smoke results storage.** Local JSONL only, or also a committed snapshot of synthetic results? A committed snapshot would churn. Proposed: local only in v1. UNVERIFIED that CI can persist between runs.
 - **Q8. natural-end-transitions host mode.** Pass condition: a recorded run of `natural-end-transitions` through the E2E path, with no host setup beyond it, reproducing `completed/success` and result value `0x42`. Until that run is recorded, the fixture is deferred and not in the smoke set. UNVERIFIED.
-- **Q9. W13 pin.** Pinned to `55d55d7` (section 9.2). Re-check `ls-remote` for later W13 pushes.
+- **Q9. W13 pin.** Pinned to `709a762` (section 9.2). Re-check `ls-remote` for later W13 pushes.
 
 ## 12. Proposals for W13 (NEEDS_OWNER_DECISION unless marked approved)
 
@@ -329,5 +330,5 @@ N1, N2, N3 and N5 are not approved and are not part of the schema in sections 3 
 
 - Design only. No build, test, or CI run was performed. [INFERRED by this change: one docs file]
 - The issue summary comes from a WebFetch of the issue page, not from `gh`, which is not authenticated. The full Japanese body was not read verbatim. [INFERRED by process]
-- Fixture facts come from `GeneratedPsxExeFixtures.cs` and `docs/development/generated-psx-exe-fixtures.md`, read in this worktree. #33 facts are from `55d55d7` (the pin in section 9.2). Each #33 line number cited here was checked against that content with `git show 55d55d7:docs/design/issue-33-compat-registry.md | sed -n 'Np'`. Other code claims are INFERRED and are not re-checked here. [INFERRED / INFERRED as labelled]
+- Fixture facts come from `GeneratedPsxExeFixtures.cs` and `docs/development/generated-psx-exe-fixtures.md`, read in this worktree. #33 facts are from `709a762` (the pin in section 9.2). Each #33 line number cited here was checked against that content with `git show 709a762:docs/design/issue-33-compat-registry.md | sed -n 'Np'`. Other code claims are INFERRED and are not re-checked here. [INFERRED / INFERRED as labelled]
 - No ROM, BIOS, disc image, or copyrighted content was read or referenced by content. [INFERRED by process]
