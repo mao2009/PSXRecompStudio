@@ -76,11 +76,14 @@ So today's firmware path is CHD-dependent at run time, in a local build. It does
 
 ADR-027 states that the standalone artifact's embedded image "reads no input files" and that the embedded artifact is generated from the exact state the run names. **CONFIRMED** (`docs/adr/027-standalone-artifact-runtime-integration.md`, Decision section). That path has no disc at run time, so its sector reads (if any) have no source. **OBSERVED**: this is why #726 can mark the gap as predicted rather than observed.
 
+**Scope of the "reads no input files" statement.** That sentence describes ADR-027 Decision (Step A, the embedded-image artifact). It does not cover the Step C package path. ADR-027 Step C (lines 70-71, "Step C (PR #761) supersedes the above", and lines 128-212) replaces the Step A scope for distribution, and the package path reads `runtime/runtime-host.json` and `runtime/artifact-image.bin` at run time. **CONFIRMED** (`docs/adr/027-standalone-artifact-runtime-integration.md`; `src/PSXRecomp.RuntimeHost/Program.cs` lines 218 and 248 read the manifest and image; `src/PSXRecomp.Infrastructure/Standalone/RuntimeHostLayout.cs` lines 42-45 define the file names). These are sidecar files, not disc bytes. Whether the Step C package path reads any disc sector is **UNVERIFIED** here and is not established by this sentence.
+
 ## 3. Runtime dependency vs CHD-independent artifact
 
 | Artifact kind | Needs disc bytes at run time? | Status |
 |---|---|---|
-| ADR-027 embedded image (CHD-independent HLE artifact) | No (reads no input files) | **CONFIRMED** (ADR-027, Decision section: "reads no input files") |
+| ADR-027 embedded image, Step A (CHD-independent HLE artifact) | No (reads no input files) | **CONFIRMED** (ADR-027, Decision section: "reads no input files") |
+| ADR-027 Step C package path (`package`, `runtime/runtime-host.json` + `artifact-image.bin`) | Reads its own sidecar files (not disc bytes). Disc sector need: **UNVERIFIED** | **CONFIRMED** (ADR-027 Step C; `RuntimeHost/Program.cs` lines 218, 248). The Step A "reads no input files" wording does not apply to this row (see 2.4). |
 | `LiveGameRunner`, `RecompiledArtifactLauncher` (no disc wiring) | No disc is wired. Whether they read input files: **UNVERIFIED** (ADR-027 does not name them). | **OBSERVED** (no disc parameter or `ICdSectorSource`) |
 | Generated host driven by `RecompiledHostExecutionEngine` with a disc supplied | Yes, through the injected source | **CONFIRMED** (wiring); **OBSERVED** for the OpenBIOS CLI paths |
 | OpenBIOS standalone distribution (`package --bios openbios`) | Yes: `runtime/disc/` sidecar copied from the user's disc | **CONFIRMED** (2.3) |
