@@ -376,14 +376,45 @@ step; ordinary builds retain their 30-second default.
 
 Historical CPU/RAM-only comparisons did not establish device-time parity. A
 Shell state match also does not prove a successful executable payload load.
-The original deterministic disc (`4f75a05f…ab27`) declares only 20 text bytes;
+The original deterministic disc (`2f9773f5…a6043`, previously `4f75a05f…ab27`)
+declares only 20 text bytes;
 pinned OpenBIOS `dev_cd_read` rejects reads not aligned to 2048 bytes and
 `loadExe` ignores that failure. It can jump to zero RAM at the entry. Preserve
 that fixture for baseline comparison, but use `-OpenBiosCompatible` for actual
 load verification: padded 2048-byte text and a terminal loop, SHA-256
-`bbae905d1caf8d01cb166224197e6c82ce326a71c7ac34502f8f38f0854d3f03`.
-C# and PowerShell builders share both pins. Verify the first loaded instruction
+`ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606` (previously
+`bbae905d…3f03`).
+C# and PowerShell builders share all pins. Verify the first loaded instruction
 and the marker as well as PC/state parity.
+
+**Disc layout change (Issue #10).** The synthetic Mode 2 Form 1 disc now starts
+with a 150-sector lead-in (MSF 00:00:00 to 00:01:74, zero user data), so ISO
+sector n is at file index n + 150 and LBA n. The header MSF of every sector equals
+its file index, and the data sectors' bytes are unchanged. The pins above were
+re-computed for this layout; the old values belong to the pre-lead-in disc.
+
+**Migration for existing firmware bundles.** A raw `.bin` disc now maps LBA L to
+file index L + 150 (`CdSectorAddress`), so this changes the sectors that the
+load-image manifest and the AOT plan read. Affected:
+`FirmwareDistribution.cs`. At packaging (about line 394 to 402) the staged disc
+and the AOT directory's `rom.roots` and `images.txt` are passed to
+`FirmwareAotPlan.Build`. That method does not write any file. It reads the two AOT
+inputs, which `scripts/openbios/prepare-aot.py` prepares and which are recorded
+with their digests in `AotInputs`, and it reads disc sectors through the LBA mapping
+(`LoadImageManifest.Read`). The run rebuilds the plan from the disc again (about line
+683). A bundle packaged before this change was built with the old mapping, so its
+recorded plan and a plan rebuilt now can disagree.
+
+Schema version 4 (`FirmwareBootManifest.CurrentSchemaVersion`) marks the new mapping.
+A schema 3 bundle is refused at load with an instruction to re-package it, so it
+cannot run against a plan built with the new mapping. The check is by version, so
+every schema 3 bundle is refused, CHD bundles included. Migration: re-package every
+firmware bundle with this build. The mapping change itself only affects raw `.bin`
+discs. A `.bin` without the
+150-sector lead-in is no longer read correctly, and a `.bin` with 150 sectors or
+fewer is rejected. CHD discs (`ChdCdSectorSource`) keep their LBA-origin frames,
+which is UNVERIFIED for production CHDs. The real-dump header MSF check stays
+UNVERIFIED.
 
 The minimal ISO retains the historical endian-field omissions (including the
 big-endian Path Table Size half) and lacks a complete ISO compliance proof

@@ -100,7 +100,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var aot = _dir.CreateSubdirectory("aot");
         _dir.WriteFile("aot/rom.roots", []);
         _dir.WriteFile("aot/images.txt", "# no RAM-placed code images\n"u8.ToArray());
-        var discPath = _dir.WriteFile("disc.bin", new byte[2352]);
+        var discPath = _dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var output = _dir.CreateSubdirectory("game");
 
         var error = new StringWriter();
@@ -495,7 +495,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         RuntimeHostPublishE2E.RequireGcc();
         var bios = BiosShapedImage();
         var biosPath = _dir.WriteFile("bios-shaped.bin", bios);
-        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = _dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var output = _dir.Combine("game");
         var (exit, error) = PackageFirmware(disc, biosPath, AotInputs("aot"), output, "synthetic");
         exit.Should().Be(0, error);
@@ -599,7 +599,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     {
         RuntimeHostPublishE2E.RequireGcc();
         var biosPath = _dir.WriteFile("bios-shaped.bin", BiosShapedImage());
-        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = _dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var output = _dir.Combine("game");
         var (exit, error) = PackageFirmware(disc, biosPath, AotInputs("aot"), output, provenance: null);
         exit.Should().Be(0, error);
@@ -621,7 +621,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         RuntimeHostPublishE2E.RequireGcc();
         var bios = BiosShapedImage();
         var biosPath = _dir.WriteFile("bios-shaped.bin", bios);
-        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = _dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         var output = _dir.Combine("game");
         var (exit, error) = PackageFirmware(
             disc, biosPath, AotInputs("aot"), output, "user-supplied",

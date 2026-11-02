@@ -666,23 +666,31 @@ public static class SyntheticDiscBuilder
         return result;
     }
 
-    /// <summary>Wraps 2048-byte ISO sectors into raw 2352-byte Mode 2 Form 1 sectors.</summary>
+    /// <summary>
+    /// Wraps 2048-byte ISO sectors into a raw 2352-byte Mode 2 Form 1 disc image from file index 0 (MSF 00:00:00): 150
+    /// lead-in sectors with zero user data, then ISO sector n at file index n + 150 (LBA n). Each sector's header MSF is
+    /// its file index, the absolute frame count of a dump that starts at 00:00:00.
+    /// </summary>
     public static byte[] Mode2Form1(byte[] iso)
     {
         ArgumentNullException.ThrowIfNull(iso);
         var sectors = iso.Length / Iso9660Reader.SectorSize;
-        var image = new byte[sectors * ICdSectorSource.RawSectorSize];
-        for (var lba = 0; lba < sectors; lba++)
+        var leadIn = CdSectorAddress.LeadInFrames;
+        var image = new byte[(leadIn + sectors) * ICdSectorSource.RawSectorSize];
+        for (var fileIndex = 0; fileIndex < leadIn + sectors; fileIndex++)
         {
-            var sector = image.AsSpan(lba * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
+            var sector = image.AsSpan(fileIndex * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
             sector.Slice(1, 10).Fill(0xFF);
-            var absolute = lba + 150;
+            var absolute = fileIndex;
             sector[12] = Bcd(absolute / 4500);
             sector[13] = Bcd(absolute / 75 % 60);
             sector[14] = Bcd(absolute % 75);
             sector[15] = 2;
             sector[18] = sector[22] = 0x08; // submode: data
-            iso.AsSpan(lba * Iso9660Reader.SectorSize, Iso9660Reader.SectorSize).CopyTo(sector[24..]);
+            if (fileIndex >= leadIn)
+            {
+                iso.AsSpan((fileIndex - leadIn) * Iso9660Reader.SectorSize, Iso9660Reader.SectorSize).CopyTo(sector[24..]);
+            }
         }
 
         return image;

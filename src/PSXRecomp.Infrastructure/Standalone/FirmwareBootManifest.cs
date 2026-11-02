@@ -38,8 +38,11 @@ public sealed record FirmwareBootManifest(
     /// <summary>
     /// Version 3 (Issue #B2) drops the ROM digest: the BIOS is never part of the distribution, so neither its bytes
     /// nor a digest of them are written at packaging time. The run reports the digest of the image it loaded.
+    /// Version 4 (Issue #10) marks the disc sector mapping: a raw image's LBA L is file index L + 150 (MSF 00:02:00). A
+    /// version 3 bundle was built with the old mapping, so its recorded AOT plan can disagree with a plan rebuilt now.
+    /// Such a bundle is refused and must be re-packaged.
     /// </summary>
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>The manifest file name, inside <c>runtime/</c>; its presence selects the firmware-boot run.</summary>
     public const string FileName = "firmware-boot.json";
@@ -87,6 +90,13 @@ public static class FirmwareBootManifestJson
 
     private static void Validate(FirmwareBootManifest m)
     {
+        if (m.SchemaVersion < FirmwareBootManifest.CurrentSchemaVersion)
+        {
+            throw new InvalidDataException(
+                $"Unsupported firmware boot manifest schema {m.SchemaVersion}; this host understands {FirmwareBootManifest.CurrentSchemaVersion}. " +
+                "The bundle was packaged before the disc sector mapping change (Issue #10); re-package the firmware bundle with this build.");
+        }
+
         if (m.SchemaVersion != FirmwareBootManifest.CurrentSchemaVersion)
         {
             throw new InvalidDataException(

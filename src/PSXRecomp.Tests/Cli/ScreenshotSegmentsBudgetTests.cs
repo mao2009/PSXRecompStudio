@@ -71,7 +71,7 @@ public sealed class ScreenshotSegmentsBudgetTests
         var romPath = Path.Combine(dir.FullPath, "spin.bin");
         File.WriteAllBytes(romPath, rom);
         var discPath = Path.Combine(dir.FullPath, "blank.bin");
-        File.WriteAllBytes(discPath, new byte[2352 * 16]);
+        File.WriteAllBytes(discPath, new byte[2352 * (PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1)]);
 
         var stdout = new StringWriter();
         ScreenshotCommand.Run(

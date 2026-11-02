@@ -328,7 +328,7 @@ public sealed class CdRomDiscDriveTests
             .AddSystemCnf(BootPath)
             .AddFile("TEST.EXE;1", SyntheticPsxExeBuilder.BuildValid())
             .Build());
-        var audio = image.AsSpan(17 * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
+        var audio = image.AsSpan(CdSectorAddress.LbaToFileIndex(17) * ICdSectorSource.RawSectorSize, ICdSectorSource.RawSectorSize);
         audio[18] = audio[22] = 0x64; // submode: real-time | form 2 | audio
         var cd = new CdRomDevice(CdRomDiscIdentity.LicensedMode2(), new RawCdSectorSource(image));
 
