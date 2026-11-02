@@ -154,4 +154,54 @@ public sealed class OpenBiosProbeObserverFailureTests
         failure["exceptionType"]!.GetValue<string>().Should().Be("InvalidOperationException");
         failure["message"]!.GetValue<string>().Should().Be("seam defect");
     }
+
+    // Synthetic firmware that executes one reserved instruction (opcode 0x3F) from RAM. It clears SR.BEV so the exception vector is
+    // 0x80000080 (the probe's accounting watches that vector), stores the word at 0x80010000, writes a spin loop at the vector, then jumps.
+    private static byte[] ReservedInstructionRom()
+    {
+        uint[] words =
+        [
+            0x40806000u,                 // mtc0 $zero, $12 (SR = 0: BEV clear)
+            I(0x0F, 0, 8, 0x8001),       // lui  $t0, 0x8001      ($t0 = 0x80010000)
+            I(0x0F, 0, 9, 0xFC00),       // lui  $t1, 0xFC00      ($t1 = 0xFC000000, a reserved instruction)
+            I(0x2B, 8, 9, 0),            // sw   $t1, 0($t0)
+            I(0x0F, 0, 10, 0x1000),      // lui  $t2, 0x1000
+            I(0x0D, 10, 10, 0xFFFF),     // ori  $t2, $t2, 0xFFFF ($t2 = 0x1000FFFF: beq $0, $0, -1)
+            I(0x0F, 0, 11, 0x8000),      // lui  $t3, 0x8000
+            I(0x0D, 11, 11, 0x0080),     // ori  $t3, $t3, 0x80   ($t3 = 0x80000080)
+            I(0x2B, 11, 10, 0),          // sw   $t2, 0($t3)
+            0x01000008u,                 // jr $t0 (a register jump: a J keeps the ROM's KSEG1 region bits and would not reach 0x80010000)
+            0,                           // delay slot
+        ];
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        for (var i = 0; i < words.Length; i++) BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        return bytes;
+    }
+
+    // PR #839 (MEDIUM): the generated-host CLI path exports 'accounting.unsupportedOpcodes'; no unit test covered that publication.
+    [Fact]
+    public void Generated_Host_UnsupportedOpcodeEntries_ExportNoWordOrOpcode()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", ReservedInstructionRom());
+        var roots = dir.WriteFile("roots.txt", []);
+
+        Run(
+            [rom, "--engine", "generated-host", "--roots", roots, "--code-bytes", "64", "--segments", "1", "--segment-budget", "600000",
+             "--standalone", "--boundary-log", dir.Combine("unsupported.jsonl"), "--json"],
+            out var output, out var error, seam: null);
+
+        output.Should().NotBeEmpty(error);
+        var entries = JsonNode.Parse(output)!["accounting"]!["unsupportedOpcodes"]!.AsArray();
+        entries.Should().NotBeEmpty("the reserved instruction at 0x80010000 must be recorded at the exception vector");
+
+        var entry = entries[0]!.AsObject();
+        entry["excCode"]!.GetValue<uint>().Should().Be(10u, "a reserved instruction is ExcCode 10");
+        entry["pc"]!.GetValue<string>().Should().Be("0x80010000");
+        // Decision A (PR #839): a RAM word and its opcode are not published; the RAM-range entry has its word withheld.
+        entry["word"].Should().BeNull("a RAM-range PC's word is withheld from public output");
+        entry.Select(static p => p.Key).Should().BeEquivalentTo(new[] { "excCode", "pc", "word", "atFallbackFetch" },
+            "an entry carries no opcode: the opcode is a field of the withheld word");
+        entries.ToJsonString().Should().NotContain("FC000000", "the reserved word must not appear in the unsupported-opcode entries");
+    }
 }
