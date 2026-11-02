@@ -6,19 +6,19 @@ Status: **design only**. No code, schema file, test, ADR, or shared doc is chang
 
 ## 0. Labels and constraints
 
-- **CONFIRMED**: read in this worktree during this work, and the text says what is claimed.
-- **OBSERVED**: taken from a repository document, a commit, a GitHub page, or a #33 section at the pinned revision. Not re-run by this author.
-- **PREDICTED**: a consequence of the design. Not implemented, not measured.
-- **UNVERIFIED**: not checked. Treated as an open item.
-- **NEEDS_OWNER_DECISION**: a proposed change to #33 or to the result schema that the owner has not approved. These are listed in section 12 and are not part of the schema in sections 3 to 8.
+- **OBSERVED**: a fact directly observed in an execution, log, or measurement. This document does not use it for statements taken from repository documents, commits, GitHub pages, or #33 text; those are INFERRED or UNVERIFIED.
+- **CONFIRMED**: a fact that a reproducible verification met against an explicit expected condition, with the scope stated. This document has no run or test, so no claim here meets this definition.
+- **INFERRED**: a conclusion derived from observation or implementation. Direct verification has not been established. Reading documents or code gives INFERRED. Design expectations of the proposal are INFERRED and are said so in the sentence.
+- **UNVERIFIED**: an item for which there is not enough evidence to confirm it holds. Treated as an open item. This includes items that rest only on the issue summary (read through WebFetch) and #33 items not re-read in this worktree.
+- Owner-decision marker, not a status label: **NEEDS_OWNER_DECISION** marks a proposed change to #33 or to the result schema that the owner has not approved. These are listed in section 12 and are not part of the schema in sections 3 to 8.
 
-Hard constraints: this design stores and references verification outcomes only. It contains no BIOS, ROM, disc image bytes, extracted title data, or copyrighted asset content. Titles appear as placeholders (`Title A`). Smoke tests use repository-authored synthetic executables only. A user-supplied real input is referenced by a bundle id in the evidence store, never by path, content, or a shared hash (section 5.2).
+Hard constraints: this design stores and references verification outcomes only. It contains no BIOS, ROM, RAM, or disc image bytes, extracted title data, or copyrighted asset content. Titles appear as placeholders (`Title A`). Smoke tests use repository-authored synthetic executables only. A user-supplied real input is referenced by a bundle id in the evidence store, never by path, content, or a shared hash (section 5.2).
 
 ## 1. Problem and scope
 
-Issue #51 asks for a mechanism that continuously checks per-title Recomp/Runtime compatibility and regressions. [OBSERVED: issue #51 page, read through a WebFetch summary, not `gh` and not verbatim. The summary's overview line says the goal is a system for continuously verifying Recomp/Runtime compatibility and Regression per title.]
+Issue #51 asks for a mechanism that continuously checks per-title Recomp/Runtime compatibility and regressions. [UNVERIFIED: issue #51 page, read through a WebFetch summary, not `gh` and not verbatim. The summary's overview line says the goal is a system for continuously verifying Recomp/Runtime compatibility and Regression per title.]
 
-The issue body, as summarized (not verbatim), lists these scope areas: Boot, Gameplay, Save/Load, CD/Disc, Audio, Graphics, Input, Runtime stability, Known issues, and Regression tracking. [OBSERVED] Its completion checklist has seven unchecked items: (1) compatibility test model, (2) test result schema, (3) linking tests to title and disc hashes, (4) automated smoke test approach, (5) regression detection approach, (6) integration with the Compatibility Registry (#33), (7) GUI/CLI result-viewing boundary. [OBSERVED]
+The issue body, as summarized (not verbatim), lists these scope areas: Boot, Gameplay, Save/Load, CD/Disc, Audio, Graphics, Input, Runtime stability, Known issues, and Regression tracking. [UNVERIFIED: issue summary] Its completion checklist has seven unchecked items: (1) compatibility test model, (2) test result schema, (3) linking tests to title and disc hashes, (4) automated smoke test approach, (5) regression detection approach, (6) integration with the Compatibility Registry (#33), (7) GUI/CLI result-viewing boundary. [UNVERIFIED: issue summary]
 
 This document covers items 1 to 6 and sketches item 7. Out of scope: a real-title test corpus, any network service, and CI wiring details (a later implementation issue).
 
@@ -26,27 +26,27 @@ This document covers items 1 to 6 and sketches item 7. Out of scope: a real-titl
 
 ### 2.1 What exists
 
-- Repository-authored synthetic PS-X EXE fixtures exist. They are generated in memory from MIPS instruction words, pinned by SHA-256, and run through the production recompiler/runtime path. [CONFIRMED: `docs/development/generated-psx-exe-fixtures.md`, "Generation contract" and "Verification"]
-- The catalog `GeneratedPsxExeFixtures.All` contains **five** fixtures: `BiosPutCharMarker`, `UnresolvedJump`, `NaturalEndWithV0`, `NaturalEndWithTransitions`, `GuestFirmwareOpenbios`. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:202-203`, with IDs at lines 94, 112, 133, 157, 184]
-- Two of the five (`BiosPutCharMarker`, `UnresolvedJump`) are consumed by name in `RecompiledArtifactE2ETests`. Two more (`NaturalEndWithV0`, `GuestFirmwareOpenbios`) are consumed by name in `RuntimeHostPublishE2E`. All five are enumerated by `GeneratedPsxExeFixtureTests` via `All`. No test asserts the expected outcome fields of `NaturalEndWithTransitions` or `GuestFirmwareOpenbios`. [CONFIRMED: `src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs:57,112,141`; `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs:50,455,493,535,679`; `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtureTests.cs:13-25,40`]
-- The fixture doc's "Current fixtures" table lists only two entries, so it is stale for the three added later. [CONFIRMED that the table lists two; OBSERVED that it is stale, since `All` lists five]
-- The fixture doc states that no generated `.exe` is checked in and that the catalog excludes Sony BIOS code and user-provided inputs. [CONFIRMED: same doc, "Legal and ownership boundary"]
-- The ID `bios-putchar-marker` names a BIOS-HLE call path, not BIOS code. The name is kept as-is; a rename is out of scope and flagged in section 11 (Q6). [CONFIRMED wording]
-- Existing smoke-style tests: `src/PSXRecompStudio.Tests/MainWindowSmokeTests.cs` (Avalonia headless window and binding checks) and `src/PSXRecomp.Tests/RustAbiSmokeTests.cs` (managed to native to Rust chain, Issue #473, `AbiVersion == 1`). [CONFIRMED: both files exist and their headers were read]
-- Capability matrix rules: a Verified row does not imply complete title compatibility, and verification requires an executable test that asserts an observable contract, not just absence of a crash. [CONFIRMED: `docs/status/capabilities.md:28`, `:55-60`]
-- Execution outcomes: `RecompiledArtifactOutcome` (`Success`, `Blocked`, `Failure`) and `TitleExecutionState`. `TitleExecutionState.Cancelled` exists (Issue #820) and `RecompiledArtifactExitCode.Classify` maps it to `RecompiledArtifactOutcome.Blocked`. [CONFIRMED: `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:47-49`; `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:59`]
-- `RecompilerExecutionStatus` has `TimedOut` (line 29) and `Cancelled` (line 35, Issue #820). [CONFIRMED: `src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:29,35`]
-- Other title identity, evidence/confidence, and environment types are as described in the #33 doc (section 2.1 there). [OBSERVED: #33 citations, not re-read in this worktree]
+- Repository-authored synthetic PS-X EXE fixtures exist. They are generated in memory from MIPS instruction words, pinned by SHA-256, and run through the production recompiler/runtime path. [INFERRED: `docs/development/generated-psx-exe-fixtures.md`, "Generation contract" and "Verification"]
+- The catalog `GeneratedPsxExeFixtures.All` contains **five** fixtures: `BiosPutCharMarker`, `UnresolvedJump`, `NaturalEndWithV0`, `NaturalEndWithTransitions`, `GuestFirmwareOpenbios`. [INFERRED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:202-203`, with IDs at lines 94, 112, 133, 157, 184]
+- Two of the five (`BiosPutCharMarker`, `UnresolvedJump`) are consumed by name in `RecompiledArtifactE2ETests`. Two more (`NaturalEndWithV0`, `GuestFirmwareOpenbios`) are consumed by name in `RuntimeHostPublishE2E`. All five are enumerated by `GeneratedPsxExeFixtureTests` via `All`. No test asserts the expected outcome fields of `NaturalEndWithTransitions` or `GuestFirmwareOpenbios`. [INFERRED: `src/PSXRecomp.Tests/E2E/RecompiledArtifactE2ETests.cs:57,112,141`; `src/PSXRecomp.Tests/E2E/RuntimeHostPublishE2E.cs:50,455,493,535,679`; `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtureTests.cs:13-25,40`]
+- The fixture doc's "Current fixtures" table lists only two entries, so it is stale for the three added later. [INFERRED that the table lists two; INFERRED that it is stale, since `All` lists five]
+- The fixture doc states that no generated `.exe` is checked in and that the catalog excludes Sony BIOS code and user-provided inputs. [INFERRED: same doc, "Legal and ownership boundary"]
+- The ID `bios-putchar-marker` names a BIOS-HLE call path, not BIOS code. The name is kept as-is; a rename is out of scope and flagged in section 11 (Q6). [INFERRED wording]
+- Existing smoke-style tests: `src/PSXRecompStudio.Tests/MainWindowSmokeTests.cs` (Avalonia headless window and binding checks) and `src/PSXRecomp.Tests/RustAbiSmokeTests.cs` (managed to native to Rust chain, Issue #473, `AbiVersion == 1`). [INFERRED: both files exist and their headers were read]
+- Capability matrix rules: a Verified row does not imply complete title compatibility, and verification requires an executable test that asserts an observable contract, not just absence of a crash. [INFERRED: `docs/status/capabilities.md:28`, `:55-60`]
+- Execution outcomes: `RecompiledArtifactOutcome` (`Success`, `Blocked`, `Failure`) and `TitleExecutionState`. `TitleExecutionState.Cancelled` exists (Issue #820) and `RecompiledArtifactExitCode.Classify` maps it to `RecompiledArtifactOutcome.Blocked`. [INFERRED: `src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:47-49`; `src/PSXRecomp.Core/Execution/RecompiledArtifactExitCode.cs:59`]
+- `RecompilerExecutionStatus` has `TimedOut` (line 29) and `Cancelled` (line 35, Issue #820). [INFERRED: `src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:29,35`]
+- Other title identity, evidence/confidence, and environment types are as described in the #33 doc (section 2.1 there). [UNVERIFIED: #33 citations, not re-read in this worktree]
 
 ### 2.2 What does not exist
 
-- No compatibility test model, result schema, or regression detector in `src`. [OBSERVED: #33 section 2.2 search; not re-run for #51 scope]
-- No GPU field in `ExecutionEnvironmentReport`, no recomp `BuildId`, and no Runtime version identifier. [OBSERVED: #33 section 2.1]
-- `DiscIdentity` has no content hash field. [OBSERVED: #33 citing `DiscIdentity.cs:10-14`]
+- No compatibility test model, result schema, or regression detector in `src`. [INFERRED: #33 section 2.2 search; not re-run for #51 scope]
+- No GPU field in `ExecutionEnvironmentReport`, no recomp `BuildId`, and no Runtime version identifier. [INFERRED: #33 section 2.1]
+- `DiscIdentity` has no content hash field. [INFERRED: #33 citing `DiscIdentity.cs:10-14`]
 
 ### 2.3 Cancelled in #33
 
-At `912ae29`, #33 records `Cancelled` in three places: the execution-state list (section 2.1, line 60), the Outcome table (section 3.5, line 186), and the required-change list (section 9.1 item 4, line 403). Section 5.1 of this document relies on these. [CONFIRMED: `912ae29` `docs/design/issue-33-compat-registry.md`]
+At `912ae29`, #33 records `Cancelled` in three places: the execution-state list (section 2.1, line 60), the Outcome table (section 3.5, line 186), and the required-change list (section 9.1 item 4, line 403). Section 5.1 of this document relies on these. [INFERRED: `912ae29` `docs/design/issue-33-compat-registry.md`]
 
 ## 3. Compatibility test model
 
@@ -70,10 +70,10 @@ ScenarioDefinition {                 // W15-local catalog entry
 
 Rules:
 
-- A criterion must assert an observable contract: an outcome enum value, a guest PC, a register value, a TTY byte, a frame hash, a diagnostic code. "Did not throw" is not a criterion. [OBSERVED: capability matrix verification threshold]
-- A scenario that depends on a facet not yet implemented (for example, Audio output, `Not claimed` in `capabilities.md:78`) must declare `Tier = Manual` or be absent. It must not be listed as Pass. [PREDICTED]
-- A `BudgetExhausted` stop is an independent stop reason (owner policy 2). It maps to `Blocked` (PREDICTED; the Outcome choice is N4, NEEDS_OWNER_DECISION) as in section 5.1 and the trace schema (`docs/design/issue-45-trace-schema.md`, #45), is not compatibility evidence, and never counts toward a level. A host-side timeout is `Error`, not `BudgetExhausted`.
-- **Facets versus tags.** The five #33 facet values are unchanged, and `None` is added (owner-approved). The issue's extra areas (Input, Runtime stability, CD/Disc) are catalog `Tags`, not facets. A scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [OBSERVED: #33 Q14 at `912ae29`]
+- A criterion must assert an observable contract: an outcome enum value, a guest PC, a register value, a TTY byte, a frame hash, a diagnostic code. "Did not throw" is not a criterion. [INFERRED: capability matrix verification threshold]
+- A scenario that depends on a facet not yet implemented (for example, Audio output, `Not claimed` in `capabilities.md:78`) must declare `Tier = Manual` or be absent. It must not be listed as Pass. [INFERRED]
+- A `BudgetExhausted` stop is an independent stop reason (owner policy 2). It is an independent Outcome, not `Blocked` (owner decision, design level; see section 5.1 and the trace schema in `docs/design/issue-45-trace-schema.md`, #45), and it is not compatibility evidence, and never counts toward a level. A host-side timeout is `Error`, not `BudgetExhausted`.
+- **Facets versus tags.** The five #33 facet values are unchanged, and `None` is added (owner-approved). The issue's extra areas (Input, Runtime stability, CD/Disc) are catalog `Tags`, not facets. A scenario with no facet of its own (for example a Runtime stop) uses `Facet = None`. This follows the facet-list question in #33 Q1, and the choice is an owner decision (section 11, Q1). Scripted-input scenarios depend on #33 Q14 for their input evidence. [INFERRED: #33 Q14 at `912ae29`]
 
 ## 4. Smoke-test set (synthetic fixtures)
 
@@ -83,19 +83,19 @@ The smoke set is the subset that runs on every change without any user input. It
 
 | Scenario ID | Subject | Criteria | Source of truth |
 |---|---|---|---|
-| `smoke.boot.synthetic-putchar` | `bios-putchar-marker` | outcome `completed/success`; S1 = `0x7777`; TTY byte `P` | catalog expected fields (CONFIRMED); consumed by `RecompiledArtifactE2ETests` (CONFIRMED) |
-| `smoke.runtime.unresolved-jump` | `unresolved-jump` | outcome `blocked/unsupported-transfer`; guest PC `0x80020000`; diagnostic `UNRESOLVED_TRANSFER` | catalog expected fields (CONFIRMED); consumed by `RecompiledArtifactE2ETests` (CONFIRMED) |
-| `smoke.runtime.natural-end-transitions` | `natural-end-transitions` | outcome `completed/success`; result value `0x42`; guest PC `EntryPc + 16` | catalog expected fields (CONFIRMED). No test asserts its expected outcome fields. It is enumerated by `GeneratedPsxExeFixtureTests` via `All`, so it gets the hash check (CONFIRMED). **Deferred (Q8): not in the smoke set until Q8 is answered.** |
-| `smoke.parse.fixture-hash` | every catalog entry | generated bytes match pinned SHA-256 | fixture test (CONFIRMED: doc "Verification") |
-| `smoke.native.rust-abi` | native staticlib | `AbiVersion == 1`; round-trip sentinel | `RustAbiSmokeTests.cs` (CONFIRMED that the test exists) |
-| `smoke.studio.window` | headless window | DataContext type; binding resolves | `MainWindowSmokeTests.cs` (CONFIRMED that the test exists) |
+| `smoke.boot.synthetic-putchar` | `bios-putchar-marker` | outcome `completed/success`; S1 = `0x7777`; TTY byte `P` | catalog expected fields (INFERRED); consumed by `RecompiledArtifactE2ETests` (INFERRED) |
+| `smoke.runtime.unresolved-jump` | `unresolved-jump` | outcome `blocked/unsupported-transfer`; guest PC `0x80020000`; diagnostic `UNRESOLVED_TRANSFER` | catalog expected fields (INFERRED); consumed by `RecompiledArtifactE2ETests` (INFERRED) |
+| `smoke.runtime.natural-end-transitions` | `natural-end-transitions` | outcome `completed/success`; result value `0x42`; guest PC `EntryPc + 16` | catalog expected fields (INFERRED). No test asserts its expected outcome fields. It is enumerated by `GeneratedPsxExeFixtureTests` via `All`, so it gets the hash check (INFERRED). **Deferred (Q8): not in the smoke set until Q8 is answered.** |
+| `smoke.parse.fixture-hash` | every catalog entry | generated bytes match pinned SHA-256 | fixture test (INFERRED: doc "Verification") |
+| `smoke.native.rust-abi` | native staticlib | `AbiVersion == 1`; round-trip sentinel | `RustAbiSmokeTests.cs` (INFERRED that the test exists) |
+| `smoke.studio.window` | headless window | DataContext type; binding resolves | `MainWindowSmokeTests.cs` (INFERRED that the test exists) |
 
 Host mode per fixture, applied to every fixture the same way:
 
-- `bios-putchar-marker` and `unresolved-jump`: run through the production recompiler/runtime path used by `RecompiledArtifactE2ETests`. [CONFIRMED]
-- `natural-end-transitions`: its source comment says it verifies "bridge mode" for non-guest-firmware cases. [CONFIRMED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:153-154`, the comment directly above the `NaturalEndWithTransitions` definition. `docs/runtime/runtime-host.md` does not tie this fixture to bridge mode; its bridge wording at line 298 is for `GuestFirmwareOpenbios`.] Whether bridge mode needs host setup beyond the E2E path is UNVERIFIED (Q8). It is deferred, as described in Selection below.
-- `natural-end-v0`: described as a "RuntimeHost-managed natural-end flow" [CONFIRMED description text]. It depends on host launch behavior that this design has not reviewed. Extended tier.
-- `guest-firmware-openbios`: exercises the `GuestFirmware=true` mode, with no HLE, at `0x1FC00000`. Its input requirements beyond the repository-authored instruction words are UNVERIFIED. Extended tier, and not enabled in CI until those are checked. [CONFIRMED description text]
+- `bios-putchar-marker` and `unresolved-jump`: run through the production recompiler/runtime path used by `RecompiledArtifactE2ETests`. [INFERRED]
+- `natural-end-transitions`: its source comment says it verifies "bridge mode" for non-guest-firmware cases. [INFERRED: `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:153-154`, the comment directly above the `NaturalEndWithTransitions` definition. `docs/runtime/runtime-host.md` does not tie this fixture to bridge mode; its bridge wording at line 298 is for `GuestFirmwareOpenbios`.] Whether bridge mode needs host setup beyond the E2E path is UNVERIFIED (Q8). It is deferred, as described in Selection below.
+- `natural-end-v0`: described as a "RuntimeHost-managed natural-end flow" [INFERRED description text]. It depends on host launch behavior that this design has not reviewed. Extended tier.
+- `guest-firmware-openbios`: exercises the `GuestFirmware=true` mode, with no HLE, at `0x1FC00000`. Its input requirements beyond the repository-authored instruction words are UNVERIFIED. Extended tier, and not enabled in CI until those are checked. [INFERRED description text]
 
 Selection:
 
@@ -105,24 +105,24 @@ Selection:
 
 Mapping to facets: `smoke.boot.*` uses `Facet = Boot`. `smoke.runtime.*` uses `Facet = None` with `Tags = [Runtime]`, so it does not count toward Boot. A classified stop (`unresolved-jump`) is a Runtime result. `smoke.parse.*` and `smoke.native.*` are infrastructure checks and produce no Compatibility result.
 
-Important: `smoke.boot.synthetic-putchar` proves that the recompiler/runtime path works on a synthetic program. It does **not** prove that any title boots. Its `Subject` is `SyntheticFixture`, and it never enters a real-title evaluation (section 5). [PREDICTED]
+Important: `smoke.boot.synthetic-putchar` proves that the recompiler/runtime path works on a synthetic program. It does **not** prove that any title boots. Its `Subject` is `SyntheticFixture`, and it never enters a real-title evaluation (section 5). [INFERRED]
 
 ### 4.2 Synthetic-fixture growth rules
 
-- New fixtures are added only as repository-authored MIPS instruction words, following the fixture doc generation contract. [CONFIRMED rule]
-- Each new fixture pins its SHA-256 and declares its expected evidence. [CONFIRMED rule]
-- A fixture must not reproduce a real title's code sequence, tables, or assets. Review checks this. [PREDICTED rule]
-- The fixture doc's table must be regenerated when fixtures are added. Its current two-row table is stale against `All`. [OBSERVED]
+- New fixtures are added only as repository-authored MIPS instruction words, following the fixture doc generation contract. [INFERRED rule]
+- Each new fixture pins its SHA-256 and declares its expected evidence. [INFERRED rule]
+- A fixture must not reproduce a real title's code sequence, tables, or assets. Review checks this. [INFERRED rule]
+- The fixture doc's table must be regenerated when fixtures are added. Its current two-row table is stale against `All`. [INFERRED]
 
 ### 4.3 Gate
 
-The smoke tier is a required check for changes under `src/PSXRecomp.Core/Recompiler`, `src/PSXRecomp.Core/Runtime`, `src/PSXRecomp.Core/Execution`, and the native crate. The exact path set is UNVERIFIED (Q5). [PREDICTED]
+The smoke tier is a required check for changes under `src/PSXRecomp.Core/Recompiler`, `src/PSXRecomp.Core/Runtime`, `src/PSXRecomp.Core/Execution`, and the native crate. The exact path set is UNVERIFIED (Q5). [INFERRED]
 
 ## 5. Result record
 
-**Scope rule.** Real-title evaluation takes only `ScenarioResult` records with `Subject = RealTitle`. A `SyntheticFixture` result never enters any derivation: Evidence count (#33 §4.2), Confidence (#33 §4.3), level derivation (#33 §5), Known Issue and Regression (#33 §6), and display (#33 §9). This includes a `SyntheticFixture` result that carries a `TitleKey`. [CONFIRMED: `912ae29` #33 §8 (line 370) and #33 §3.2 (line 136), which name #33 §4.2, §4.3, §5, §6 and §9. Known Issues are further limited by #33 §6.1 eligibility (`912ae29`).]
+**Scope rule.** Real-title evaluation takes only `ScenarioResult` records with `Subject = RealTitle`. A `SyntheticFixture` result never enters any derivation: Evidence count (#33 §4.2), Confidence (#33 §4.3), level derivation (#33 §5), Known Issue and Regression (#33 §6), and display (#33 §9). This includes a `SyntheticFixture` result that carries a `TitleKey`. [INFERRED: `912ae29` #33 §8 (line 370) and #33 §3.2 (line 136), which name #33 §4.2, §4.3, §5, §6 and §9. Known Issues are further limited by #33 §6.1 eligibility (`912ae29`).]
 
-**Outcome rule.** Evidence count is the number of distinct `EvidenceIds` referenced by `RealTitle` results with `Outcome = Pass`, grouped by `(TitleKey, Facet, ScenarioId, ScenarioVersion, Binding)` (#33 §4.2 at `912ae29`, line 225). Results with different `ScenarioVersion` values are never summed, and no count crosses a binding. Confidence reads the same `RealTitle` results. `EvidenceRecord` has no `Outcome` field (#33 §4.1). #33 §4.2 at `912ae29` counts `ScenarioResult` records, and this document does not assume an `EvidenceRecord.Outcome` anywhere. [CONFIRMED: `912ae29` §4.1 field list and §4.2 text]
+**Outcome rule.** Evidence count is the number of distinct `EvidenceIds` referenced by `RealTitle` results with `Outcome = Pass`, grouped by `(TitleKey, Facet, ScenarioId, ScenarioVersion, Binding)` (#33 §4.2 at `912ae29`, line 225). Results with different `ScenarioVersion` values are never summed, and no count crosses a binding. Confidence reads the same `RealTitle` results. `EvidenceRecord` has no `Outcome` field (#33 §4.1). #33 §4.2 at `912ae29` counts `ScenarioResult` records, and this document does not assume an `EvidenceRecord.Outcome` anywhere. [INFERRED: `912ae29` §4.1 field list and §4.2 text]
 
 The result record uses the #33 `ScenarioResult` (§3.4) without extra fields. Field mapping:
 
@@ -130,7 +130,7 @@ The result record uses the #33 `ScenarioResult` (§3.4) without extra fields. Fi
 |---|---|---|
 | `ScenarioId`, `ScenarioVersion` | `ScenarioResult.ScenarioId`, `ScenarioVersion` (§3.4) | reused |
 | `Binding` | `ScenarioResult.Binding` (§3.4), `Binding` (§4.4) | reused |
-| `Outcome` | `ScenarioResult.Outcome` (§3.4, values in §3.5) | reused; six values, section 5.1 |
+| `Outcome` | `ScenarioResult.Outcome` (§3.4, values in §3.5) | reused; seven values, section 5.1 |
 | `EvidenceIds` | `ScenarioResult.EvidenceIds` (§3.4) | reused |
 | `Facet` | `ScenarioResult.Facet` (§3.4) | **changed** (owner-approved): adds `None` (§3.2) |
 | `Subject` (`RealTitle` or `SyntheticFixture`) | `ScenarioResult.Subject` (§3.4) | **changed** (owner-approved): enum only, no payload |
@@ -141,18 +141,19 @@ The result record uses the #33 `ScenarioResult` (§3.4) without extra fields. Fi
 
 Facts such as guest PC, TTY byte, and diagnostic code are not stored in the result. They are part of the captured artifact, whose SHA-256 is `EvidenceRecord.ArtifactHash`. Adding them to the result schema is proposal N1 (section 12) and needs owner decision.
 
-No `Schema` string or separate `ResultId` is introduced. The schema identity is #33's `psxrecomp.compatibility-registry.v1`, and result identity follows #33's `EvidenceRecord.Id` content-hash scheme. [PREDICTED]
+No `Schema` string or separate `ResultId` is introduced. The schema identity is #33's `psxrecomp.compatibility-registry.v1`, and result identity follows #33's `EvidenceRecord.Id` content-hash scheme. [INFERRED]
 
 ### 5.1 Outcome
 
-Outcome values follow #33 section 3.5 at `912ae29`, which includes the owner-approved `Cancelled` row. [OBSERVED: #33 at `912ae29`]
+Outcome values follow #33 section 3.5 at `912ae29`, which includes the owner-approved `Cancelled` row. [INFERRED: #33 at `912ae29`]
 
 | Outcome | Meaning | Maps from |
 |---|---|---|
 | `Pass` | All criteria met on this binding. | criteria evaluation |
 | `Fail` | Evidence produced, a criterion not met. | criteria evaluation |
-| `Blocked` | Stopped at a known unsupported boundary. | Derived from the execution states `RuntimeHandoff` and `UnsupportedTransfer` (`RecompiledArtifactExitCode.cs:53`, `:55`). `BudgetExhausted` (`:54`) also maps here (PREDICTED; the Outcome choice is N4, NEEDS_OWNER_DECISION), but only as an independent stop reason kept distinct from unsupported boundaries (owner policy 2): it is not Pass, not Fail, not compatibility evidence, and counts toward no level (see N4, section 12). Not derived from run-level `RecompiledArtifactOutcome.Blocked`, because `Cancelled` also maps to that value (`RecompiledArtifactExitCode.cs:59`). A `Cancelled` state must never become `Blocked`. |
-| `Error` | Harness or host failure, not a guest result. | `RecompiledArtifactOutcome.Failure` (OBSERVED) |
+| `Blocked` | Stopped at a known unsupported boundary. | Derived from the execution states `RuntimeHandoff` and `UnsupportedTransfer` (`RecompiledArtifactExitCode.cs:53`, `:55`). `BudgetExhausted` is not derived here; it is its own Outcome (row below). Not derived from run-level `RecompiledArtifactOutcome.Blocked`, because `Cancelled` also maps to that value (`RecompiledArtifactExitCode.cs:59`). A `Cancelled` state must never become `Blocked`. |
+| `BudgetExhausted` | Stopped because the execution budget was exhausted before a classified guest end. An independent Outcome, not `Blocked` (owner decision, design level). Kept distinct from a normal exit, a guest stop, and a host timeout (`Error`). Not Pass, not Fail, not compatibility evidence; counts toward no level. | `TitleExecutionState.BudgetExhausted` (`TitleExecutionContract.cs:31`). The current code maps it to `Blocked` at `RecompiledArtifactExitCode.cs:54`; that mapping is a separate, pending change. |
+| `Error` | Harness or host failure, not a guest result. | `RecompiledArtifactOutcome.Failure` (INFERRED) |
 | `Cancelled` | Stopped by a cancellation request before a classified guest end. Distinct from `Blocked`, `NotRun` and `Fail`. | `TitleExecutionState.Cancelled` (`TitleExecutionContract.cs:49`). The registry maps from the title-level state, not from `RecompiledArtifactOutcome`, which folds it into `Blocked` (`RecompiledArtifactExitCode.cs:59`). |
 | `NotRun` | No attempt, or attempt produced no evidence. | run planner |
 
@@ -160,55 +161,55 @@ Not an outcome: `Unknown` is a derived state for a title or facet with no record
 
 Rules:
 
-- `Blocked` is a diagnosable stop, not a defect. [OBSERVED: `docs/status/capabilities.md:38`, the Blocked state definition]
-- `Error` is reported separately and is never Pass or Fail (#33 §3.5 at `912ae29`). An errored run cannot turn a Pass into a Fail. [PREDICTED]
+- `Blocked` is a diagnosable stop, not a defect. [INFERRED: `docs/status/capabilities.md:38`, the Blocked state definition]
+- `Error` is reported separately and is never Pass or Fail (#33 §3.5 at `912ae29`). An errored run cannot turn a Pass into a Fail. [INFERRED]
 - `Cancelled`, `NotRun` and `Unknown` are never rendered as `Pass` or `Fail`, and never rendered as each other (#33 §3.5, owner-ruled).
 
 Stop mapping, from execution state to registry Outcome:
 
 | Stop | Source | Registry Outcome | Notes |
 |---|---|---|---|
-| Completed | `TitleExecutionState.Completed` | `Pass` if criteria are met, else `Fail` | `Completed` means a classified end, not gameplay completion (OBSERVED: #33 §2.1) |
+| Completed | `TitleExecutionState.Completed` | `Pass` if criteria are met, else `Fail` | `Completed` means a classified end, not gameplay completion (INFERRED: #33 §2.1) |
 | Unsupported transfer | `TitleExecutionState.UnsupportedTransfer` | `Blocked` | Diagnosable stop. Note: `Cancelled` is also folded into `RecompiledArtifactOutcome.Blocked` (`RecompiledArtifactExitCode.cs:59`); the registry keeps `Cancelled` separate. |
 | Returned | `TitleExecutionState.Returned` | `Pass` if criteria are met, else `Fail` | Run-level `Success` (`RecompiledArtifactExitCode.cs:52`). The registry does not treat run-level `Success` as `Pass`. |
 | Runtime handoff | `TitleExecutionState.RuntimeHandoff` | `Blocked` | Run-level `Blocked` (`RecompiledArtifactExitCode.cs:53`) |
 | Runtime failure | `TitleExecutionState.RuntimeFailure` | `Error` | Run-level `Failure` (`RecompiledArtifactExitCode.cs:56`). The orchestrator sets this state at `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:208, 288, 305`. |
 | Invalid state | `TitleExecutionState.InvalidState` | `Error` | Run-level `Failure` (`RecompiledArtifactExitCode.cs:57`) |
-| Any other state | not listed above | `Error` | Default rule (W15): an unclassified state is an `Error`, never `Pass`, `Fail` or `Blocked`. [PREDICTED] |
-| Budget stop | `BudgetExhausted` / `OUTER_BUDGET_EXHAUSTED` pattern (`docs/architecture/diagnostics.md:60`; `docs/adr/019-diagnostics-and-recovery-contract.md:36`, `:91`; the Persona measured stop at `docs/status/capabilities.md:87` is one occurrence, not the pattern's source) | `Blocked` (PREDICTED; the Outcome choice is N4, NEEDS_OWNER_DECISION), with stop reason `BudgetExhausted` kept distinct | Independent stop reason (owner policy 2). Not a Pass, not a Fail, not compatibility evidence, and counts toward no level. Not the same as the host timeout (`Error`). |
-| User cancel | `RecompilerExecutionStatus.Cancelled` (`src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:35`), creating `TitleExecutionState.Cancelled` at `ExecutionOrchestrator.cs:157-159` (stop during a segment), and also at `:75` (stop before the run starts) and `:135` (stop between segments) | `Cancelled` | The run-level `RecompiledArtifactOutcome` is still `Blocked` (`RecompiledArtifactExitCode.cs:59`); the registry does not use that value. [CONFIRMED] |
-| Engine timeout | `RecompilerExecutionStatus.TimedOut` (`src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:29`) | `Error` | The orchestrator maps any non-`Completed`, non-`Cancelled` status to `RuntimeFailure` with the engine's diagnostic code or `ENGINE_FAILED` (`ExecutionOrchestrator.cs:162-171`). `RecompiledArtifactExitCode.cs:56` maps `RuntimeFailure` to `Failure`, and #33 aligns `Failure` with `Error`. [CONFIRMED for each step] |
+| Any other state | not listed above | `Error` | Default rule (W15): an unclassified state is an `Error`, never `Pass`, `Fail` or `Blocked`. [INFERRED] |
+| Budget stop | `BudgetExhausted` / `OUTER_BUDGET_EXHAUSTED` pattern (`docs/architecture/diagnostics.md:60`; `docs/adr/019-diagnostics-and-recovery-contract.md:36`, `:91`; the Persona measured stop at `docs/status/capabilities.md:87` is one occurrence, not the pattern's source) | `BudgetExhausted` (independent Outcome, owner decision at design level; not `Blocked`) | Independent Outcome (owner policy 2). Not a Pass, not a Fail, not compatibility evidence, and counts toward no level. Not the same as the host timeout (`Error`). |
+| User cancel | `RecompilerExecutionStatus.Cancelled` (`src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:35`), creating `TitleExecutionState.Cancelled` at `ExecutionOrchestrator.cs:157-159` (stop during a segment), and also at `:75` (stop before the run starts) and `:135` (stop between segments) | `Cancelled` | The run-level `RecompiledArtifactOutcome` is still `Blocked` (`RecompiledArtifactExitCode.cs:59`); the registry does not use that value. [INFERRED] |
+| Engine timeout | `RecompilerExecutionStatus.TimedOut` (`src/PSXRecomp.Core/Recompiler/RecompilerExecutionStatus.cs:29`) | `Error` | The orchestrator maps any non-`Completed`, non-`Cancelled` status to `RuntimeFailure` with the engine's diagnostic code or `ENGINE_FAILED` (`ExecutionOrchestrator.cs:162-171`). `RecompiledArtifactExitCode.cs:56` maps `RuntimeFailure` to `Failure`, and #33 aligns `Failure` with `Error`. [INFERRED for each step] |
 
 ### 5.2 Evidence attachments
 
-- Attachments are referenced by SHA-256 of the captured file (log, frame, report) through `EvidenceRecord.ArtifactHash`. The attachment is stored outside the result record. [PREDICTED; matches #33 §4.1]
-- For a user input, an attachment must not contain game data (no frame dumps of copyrighted art in a shared bundle). Such attachments stay local. The hash of a user input is not shared. Owner policy 3, as applied here: input kind = user-supplied game input (whole file bytes); algorithm = SHA-256; normalization = none; publication = not allowed until #33 Q3 is decided (NEEDS_OWNER_DECISION, N2). A hash never proves provenance or legitimacy. [PREDICTED]
-- Frame comparison uses a hash of the frame buffer, not the frame. A frame-buffer hash from a `RealTitle` run is local-only under the same rule as the user-input hash above. [PREDICTED]
+- Attachments are referenced by SHA-256 of the captured file (log, frame, report) through `EvidenceRecord.ArtifactHash`. The attachment is stored outside the result record. [INFERRED; matches #33 §4.1]
+- For a user input, an attachment must not contain game data (no frame dumps of copyrighted art in a shared bundle). Such attachments stay local. The hash of a user input is not shared. Owner policy 3, as applied here: input kind = user-supplied game input (whole file bytes); algorithm = SHA-256; normalization = none; publication = never. A hash of a user-supplied commercial input is not shared. The owner ruling on disc hashes (#33 Q3) is that only hashes of publicly distributable synthetic media may be published, and a hash of a commercial disc or a commercial BIOS/ROM must never be published. A hash never proves provenance or legitimacy. [INFERRED]
+- Frame comparison uses a hash of the frame buffer, not the frame. A frame-buffer hash from a `RealTitle` run is local-only under the same rule as the user-input hash above. [INFERRED]
 
 ### 5.3 Producer and reporter class
 
-Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`. [OBSERVED: #33 at `912ae29`] Synthetic smoke runs are `Automated`. `AIPrediction` and `AnalyzerFinding` evidence can never produce a `Pass`. [PREDICTED: this rule is proposed in #33 section 4.1.1, not stated as settled there]
+Reporter class follows #33 section 4.1.2: `Maintainer`, `Automated`, `Community`. [INFERRED: #33 at `912ae29`] Synthetic smoke runs are `Automated`. `AIPrediction` and `AnalyzerFinding` evidence can never produce a `Pass`. [INFERRED: this rule is proposed in #33 section 4.1.1, not stated as settled there]
 
 ### 5.4 Synthetic subjects
 
-- `Subject` is the #33 enum `RealTitle | SyntheticFixture` and carries no payload. [CONFIRMED: `912ae29` §3.4 line 158]
-- A synthetic result identifies its fixture through `ScenarioId`, which the W15 catalog maps to a `FixtureId`. The result does not carry the fixture hash or a disc hash. [PREDICTED]
-- `TitleKey` may be omitted when `Subject = SyntheticFixture` and is required for `RealTitle`. [CONFIRMED: `912ae29` §3.4 line 159]
-- At `912ae29`, `TitleKey` equals `ReleaseKey` (`(Serial, Region, Revision)`). [CONFIRMED: `912ae29` §3.1 line 118] This document uses that identity only for real-title results.
+- `Subject` is the #33 enum `RealTitle | SyntheticFixture` and carries no payload. [INFERRED: `912ae29` §3.4 line 158]
+- A synthetic result identifies its fixture through `ScenarioId`, which the W15 catalog maps to a `FixtureId`. The result does not carry the fixture hash or a disc hash. [INFERRED]
+- `TitleKey` may be omitted when `Subject = SyntheticFixture` and is required for `RealTitle`. [INFERRED: `912ae29` §3.4 line 159]
+- At `912ae29`, `TitleKey` equals `ReleaseKey` (`(Serial, Region, Revision)`). [INFERRED: `912ae29` §3.1 line 118] This document uses that identity only for real-title results.
 - Positive filter (#33 §8 at `912ae29`, line 370, and §3.2, line 136): a result enters a derivation only if `Subject = RealTitle`, it has a `TitleKey`, and its `Facet` is not `None`. A `SyntheticFixture` result is excluded even when it carries a `TitleKey`.
 - Fail closed: #33 §3.4 (at `912ae29`) rejects, at write time, a result whose `Subject` is missing or unknown. Such a result is never stored, is never treated as `RealTitle` by default, and is reported as invalid. A `RealTitle` result without `TitleKey` is also invalid (#33 §3.4: mandatory for `RealTitle`). W15 adds one rule that #33 does not state: a result without `Facet` is rejected at write time (W15 rule, not in #33).
 - Owner-approved conditions (binding ruling): synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as `Pass` or `Fail`; `Unknown`, `NotRun` and `Cancelled` are distinct; #33's identity and binding rules are unchanged.
 
 ## 6. Binding
 
-Every result is bound to the environment that produced it. The #33 binding is `(BuildId, RuntimeVersion, Os, Gpu, DotNet, RuntimeIdentifier)`. [OBSERVED: #33 section 4.4]
+Every result is bound to the environment that produced it. The #33 binding is `(BuildId, RuntimeVersion, Os, Gpu, DotNet, RuntimeIdentifier)`. [INFERRED: #33 section 4.4]
 
 For the smoke tier, the binding comes from the same environment source as the rest of the run. Two items are unresolved:
 
-- `BuildId` and `RuntimeVersion` do not exist in `src`. [OBSERVED: #33 section 2.1] A smoke run cannot be bound until one of them is defined. A candidate is the worktree commit plus the staged native artifact hash. This is a proposal (PREDICTED), and the choice is open question Q2.
-- GPU is absent from `ExecutionEnvironmentReport`. [OBSERVED: #33] Synthetic smoke scenarios do not need a GPU. Graphics scenarios are `Tier = Manual` until the GPU field exists. [PREDICTED]
+- `BuildId` and `RuntimeVersion` do not exist in `src`. [INFERRED: #33 section 2.1] A smoke run cannot be bound until one of them is defined. A candidate is the worktree commit plus the staged native artifact hash. This is a proposal (INFERRED), and the choice is open question Q2.
+- GPU is absent from `ExecutionEnvironmentReport`. [INFERRED: #33] Synthetic smoke scenarios do not need a GPU. Graphics scenarios are `Tier = Manual` until the GPU field exists. [INFERRED]
 
-Binding equality is exact (per #33 §4.4). A result under binding A never counts toward binding B. `OsVersion` in the binding is the observed OS description, or `unknown` when it cannot be obtained (owner policy 1). The current collector throws on an empty value instead; see #33 §4.4 and N5 (section 12). [OBSERVED design in #33, adopted here]
+Binding equality is exact (per #33 §4.4). A result under binding A never counts toward binding B. `OsVersion` in the binding is the observed OS description, or `unknown` when it cannot be obtained (owner policy 1). The meaning is owner-approved. The current code rejects an empty value, and writing `unknown` is a public-contract change that is pending the separate compatibility review (N5, section 12); it is not approved as an implementation. [INFERRED design in #33, adopted here]
 
 ## 7. Regression detection
 
@@ -218,22 +219,22 @@ Detection is derived from results. It is never typed by hand. Every rule below t
 
 Let `R(s, b)` be the latest non-superseded result for scenario `s` on binding `b`.
 
-1. **Regression**: `R(s, A) = Pass` and `R(s, B)` is `Fail` or `Blocked`, for the same `Subject` and `ScenarioId`, where `B` is a later binding of the same title. [PREDICTED; mirrors #33 section 6.2]
-2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B) = NotRun` (or absent) while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. This is the cell label in #33 §9.2 row 2 (label string unchanged). [PREDICTED]
+1. **Regression**: `R(s, A) = Pass` and `R(s, B)` is `Fail` or `Blocked`, for the same `Subject` and `ScenarioId`, where `B` is a later binding of the same title. [INFERRED; mirrors #33 section 6.2]
+2. **Unverified after change**: `R(s, A) = Pass` and `R(s, B) = NotRun` (or absent) while `B` differs from `A` in any binding field. Reported as `Unverified after change`, not as a regression. This is the cell label in #33 §9.2 row 2 (label string unchanged). [INFERRED]
    - `R(s, B) = Cancelled` is a separate input and is not handled by this rule. The current #33 draft (§6.2, `912ae29`) says a `Cancelled` result on B is neither a Fail nor a Pass and creates no Regression by itself (Q16 open). W15 follows that draft: `Cancelled` is never reported as a regression and never as `Unverified after change`. Its cell label is #33 §9.2 row 6 (Q15 open). See N3, section 12.
-3. **Synthetic regression**: the same rule applies to `SyntheticFixture` results, but the output is labelled `synthetic` and never rolls up into a title level. A synthetic regression is the primary signal of the smoke tier. [PREDICTED]
-4. **Error is not a regression**: `Error` on B does not create a regression. It creates a harness alert. [PREDICTED]
-5. **Scenario version change**: if `ScenarioVersion` differs between A and B, the pair is not compared. The pair is not compared, no regression record is produced, and the old Pass is kept as history (#33 §4.2 counts per `ScenarioVersion`). [PREDICTED]
-6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is kept distinct from `NotRun` throughout, so rule 2 never treats it as `NotRun`. Without this, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [PREDICTED]
+3. **Synthetic regression**: the same rule applies to `SyntheticFixture` results, but the output is labelled `synthetic` and never rolls up into a title level. A synthetic regression is the primary signal of the smoke tier. [INFERRED]
+4. **Error is not a regression**: `Error` on B does not create a regression. It creates a harness alert. [INFERRED]
+5. **Scenario version change**: if `ScenarioVersion` differs between A and B, the pair is not compared. The pair is not compared, no regression record is produced, and the old Pass is kept as history (#33 §4.2 counts per `ScenarioVersion`). [INFERRED]
+6. **Cancel is not a regression**: a `Cancelled` result is never Pass or Fail, so it cannot trigger rule 1 on B and cannot establish Pass on A. It is kept distinct from `NotRun` throughout, so rule 2 never treats it as `NotRun`. Without this, an operator cancel mapped to `Blocked` would be reported as a regression under rule 1 and #33 section 6.2. [INFERRED]
 
 ### 7.2 Derived record
 
-A regression record names: scenario id and version, `Subject`, both binding keys, and, for both bindings, the result's `Outcome` and `EvidenceIds`. It does not copy evidence bodies. A first-differing-fact field is not included, because facts are not in the result (section 5, N1). [PREDICTED]
+A regression record names: scenario id and version, `Subject`, both binding keys, and, for both bindings, the result's `Outcome` and `EvidenceIds`. It does not copy evidence bodies. A first-differing-fact field is not included, because facts are not in the result (section 5, N1). [INFERRED]
 
 ### 7.3 Gate behavior
 
-- Synthetic regression on the smoke tier fails the check. [PREDICTED]
-- Title-level regression does not fail repository CI in this design. It is reported to the registry and the Studio view. A release-blocking policy is open (Q4). [PREDICTED]
+- Synthetic regression on the smoke tier fails the check. [INFERRED]
+- Title-level regression does not fail repository CI in this design. It is reported to the registry and the Studio view. A release-blocking policy is open (Q4). [INFERRED]
 
 ## 8. Integration with the Compatibility Registry (#33)
 
@@ -241,7 +242,7 @@ Each row names the #33 decision it depends on. If that decision changes, this se
 
 | Integration point | This design needs | #33 decision it depends on | Status |
 |---|---|---|---|
-| Result outcome | the six outcome values | §3.5 Outcome vocabulary | owner-approved `Cancelled` row in place |
+| Result outcome | the seven outcome values | §3.5 Outcome vocabulary | owner-approved `Cancelled` row in place |
 | Evidence record | `EvidenceRecord` with `Binding`, `ArtifactHash`, `ProducedBy` | §4.1 | proposal |
 | Reporter class | `Maintainer`, `Automated`, `Community` | §4.1.2 | proposal |
 | Binding | exact-match binding | §4.4 and #33 Q5 | proposal; exact match is the default |
@@ -249,7 +250,7 @@ Each row names the #33 decision it depends on. If that decision changes, this se
 | Known Issue eligibility | W15 defines no Known Issue yet. Any W15 Known Issue must be `RealTitle` with a `TitleKey`, and must not cite a `SyntheticFixture` result | §6.1 | proposal; follows #33 at `912ae29` |
 | Evidence count and Confidence | distinct `EvidenceIds` of `RealTitle` results with `Outcome = Pass` (Evidence count); `RealTitle` results only | §4.2 and §4.3 | corrected in #33 §4.2 at `912ae29` (section 5) |
 | Facets | five facets plus `None` | §3.2 and #33 Q1 | owner-approved `None` |
-| Disc binding | a disc content hash | #33 Q3 and `DiscIdentity` gap | UNVERIFIED; NEEDS_OWNER_DECISION (N2) |
+| Disc binding | a disc content hash | #33 Q3 and `DiscIdentity` gap | UNVERIFIED; owner-decision marker (N2) |
 | Build identity | a `BuildId` | #33 Q6 | UNVERIFIED |
 | Persistence | append-only JSONL plus snapshot (Option D) | §7.2 | proposal |
 | Confidence | ordinal levels, no `Certain`, no numeric Score | §4.3 | proposal |
@@ -257,9 +258,9 @@ Each row names the #33 decision it depends on. If that decision changes, this se
 
 Concrete boundaries:
 
-- This design reuses the #33 record types, as the field table in section 5 shows, and adds no fields to the schema. Proposed additions are in section 12 and need owner decision. [PREDICTED]
-- The smoke tier writes results through `ICompatibilityStore` (#33 section 8). It does not write files directly. [PREDICTED]
-- Level derivation stays in #33's pure Core. The regression detector (section 7) is also pure: it takes two result sets and returns regression records, with no clock and no I/O. [PREDICTED, consistent with #33 section 8]
+- This design reuses the #33 record types, as the field table in section 5 shows, and adds no fields to the schema. Proposed additions are in section 12 and need owner decision. [INFERRED]
+- The smoke tier writes results through `ICompatibilityStore` (#33 section 8). It does not write files directly. [INFERRED]
+- Level derivation stays in #33's pure Core. The regression detector (section 7) is also pure: it takes two result sets and returns regression records, with no clock and no I/O. [INFERRED, consistent with #33 section 8]
 
 ## 9. Dependency list for #33 (W15 §9)
 
@@ -274,7 +275,7 @@ This section is the W15 dependency list for #33. W13 does not yet cite this list
 
 Conditions from the same ruling, recorded in #33 §9.1 at `912ae29`: synthetic results never enter a real-title compatibility evaluation; `Cancelled` never counts as Pass or Fail; `Unknown`, `NotRun` and `Cancelled` stay distinct; the identity and binding rules of #33 section 4 are unchanged.
 
-The six #33 decisions below are checked against `6f52545`. They are re-checked against `6f52545`; the Blocked-row change at #33 line 184 does not change the six outcome values. D1 covers the `Cancelled` row (§3.5), and D4 covers `None` (§3.2). D2, D3, D5 and D6 are unchanged:
+The six #33 decisions below are checked against `6f52545`. They are re-checked against `6f52545`; the #33 Blocked-row change at line 184 (BudgetExhausted now has its own row, section 5.1) does not change these six decisions. D1 covers the `Cancelled` row (§3.5), and D4 covers `None` (§3.2). D2, D3, D5 and D6 are unchanged:
 
 - **D1.** Outcome vocabulary, with `NotRun` distinct from `Fail` (#33 §3.5).
 - **D2.** Exact binding equality, and no implicit carry-forward (#33 §4.4).
@@ -285,22 +286,22 @@ The six #33 decisions below are checked against `6f52545`. They are re-checked a
 
 ### 9.2 Pending W13 update, and findings for W13
 
-- **Pin.** This document is pinned to `6f52545` (previously `912ae29`). The change from `912ae29` to `6f52545` is in #33 lines 184, 416 and 435 (the Blocked row PREDICTED marker, the Q3 wording, the closing bullet); no other #33 line changed (`git diff 912ae29 6f52545`). Earlier pin: `e7aef36`; the #33 review fixes at `912ae29` changed no cited line number. The diff from `e7aef36` changed the Error wording (reported separately), the Evidence count unit (distinct `EvidenceIds`), and added §6.1 Known Issue eligibility and the §8 derivation input rule. The earlier diff from `541c599` renumbered the §9.2 cell-label rows (`Unverified after change` is row 2, `Cancelled` is row 6, the Pass level is row 7) and reworded the level-0 text in §5 and §9.2. The earlier additions (Subject-filter scope, write-time rejection, Q15 and Q16, the §9.2 table, the corrected Evidence count) are kept. The six #33 decisions were re-checked against `6f52545`; none changed.
-- **Resolved in W13 at `0756304`: §4.2 Evidence count.** #33 §4.2 now counts `ScenarioResult` records, and `EvidenceRecord` has no `Outcome` field. W15 does not assume one (section 5). [CONFIRMED: `912ae29` §4.2]
-- **Resolved in W13 at `0756304`: §6.2 and §9.2.** `Unverified after change` is now row 2 of the §9.2 cell-label table, and §6.2 cites that row. W15 cites row 2 in §7.1 rule 2. [CONFIRMED: `912ae29` §6.2 and §9.2]
+- **Pin.** This document is pinned to `6f52545` (previously `912ae29`). The change from `912ae29` to `6f52545` is in #33 lines 184, 416 and 435 (the Blocked row PREDICTED marker, now INFERRED, the Q3 wording, the closing bullet); no other #33 line changed (`git diff 912ae29 6f52545`). Earlier pin: `e7aef36`; the #33 review fixes at `912ae29` changed no cited line number. The diff from `e7aef36` changed the Error wording (reported separately), the Evidence count unit (distinct `EvidenceIds`), and added §6.1 Known Issue eligibility and the §8 derivation input rule. The earlier diff from `541c599` renumbered the §9.2 cell-label rows (`Unverified after change` is row 2, `Cancelled` is row 6, the Pass level is row 7) and reworded the level-0 text in §5 and §9.2. The earlier additions (Subject-filter scope, write-time rejection, Q15 and Q16, the §9.2 table, the corrected Evidence count) are kept. The six #33 decisions were re-checked against `6f52545`; none changed.
+- **Resolved in W13 at `0756304`: §4.2 Evidence count.** #33 §4.2 now counts `ScenarioResult` records, and `EvidenceRecord` has no `Outcome` field. W15 does not assume one (section 5). [INFERRED: `912ae29` §4.2]
+- **Resolved in W13 at `0756304`: §6.2 and §9.2.** `Unverified after change` is now row 2 of the §9.2 cell-label table, and §6.2 cites that row. W15 cites row 2 in §7.1 rule 2. [INFERRED: `912ae29` §6.2 and §9.2]
 - **Cancelled.** At `912ae29`, `Cancelled` still appears in the §2.1 state list (line 60) and the §9.1 item 4 list (line 403). It is not in the derived states (§3.5), where `Unknown` is the only derived state (line 191). W15 uses `Cancelled` only as an Outcome, so no W15 change is needed.
 - **Finding for W13: Q10 numbering.** This document refers to #33 Q10 as feedback intake. That is correct at `912ae29`; the reference is kept as is.
 
 ## 10. GUI and CLI viewing boundary (checklist item 7)
 
-- Studio: a read-only view of the derived read model, one row per binding in use, and a badge for each regression (#33 section 9). [PREDICTED]
-- Studio must show the smoke tier separately from title levels. A synthetic Pass shown in the title grid is a defect. [PREDICTED]
-- CLI (optional, later): `compat results` and `compat regressions` subcommands that print the same derived model as JSON. No write path in v1. [PREDICTED]
-- Neither surface computes outcomes or levels itself. Both call the pure Core derivation. [PREDICTED]
+- Studio: a read-only view of the derived read model, one row per binding in use, and a badge for each regression (#33 section 9). [INFERRED]
+- Studio must show the smoke tier separately from title levels. A synthetic Pass shown in the title grid is a defect. [INFERRED]
+- CLI (optional, later): `compat results` and `compat regressions` subcommands that print the same derived model as JSON. No write path in v1. [INFERRED]
+- Neither surface computes outcomes or levels itself. Both call the pure Core derivation. [INFERRED]
 
 ## 11. Open questions
 
-- **Q1. Facets versus tags.** The issue lists Input, Runtime stability, CD/Disc, and Save/Load. This design carries Input, Runtime, and Disc as catalog tags. The overlap with #33 Q1 (facet list) and #33 Q2 (CD-ROM and streaming) is the same question, so the answer is taken from #33. Owner decision. [OBSERVED: the issue list is from the summary in section 1]
+- **Q1. Facets versus tags.** The issue lists Input, Runtime stability, CD/Disc, and Save/Load. This design carries Input, Runtime, and Disc as catalog tags. The overlap with #33 Q1 (facet list) and #33 Q2 (CD-ROM and streaming) is the same question, so the answer is taken from #33. Owner decision. [INFERRED: the issue list is from the summary in section 1]
 - **Q2. Build and binding identity for smoke runs.** Is the worktree commit plus native artifact hash acceptable as `BuildId` until #46 defines one? UNVERIFIED that #46 has a definition.
 - **Q3. Disc hash in results and shared records.** See proposal N2 (section 12). Needed for checklist item 3. Same question as #33 Q3. UNVERIFIED.
 - **Q4. Release gating.** Should a title-level regression ever block a release? Not decided. This draft only reports it.
@@ -309,7 +310,7 @@ The six #33 decisions below are checked against `6f52545`. They are re-checked a
   - the ID string at `src/PSXRecomp.Tests/E2E/GeneratedPsxExeFixtures.cs:94`, and any test that matches it by ID;
   - the fixture doc and `docs/development/showcase-demo.md:25`, which names the ID in its text.
 
-  It would not change the pinned SHA-256 or the generated bytes. The ID is not written into the EXE: `BuildExe` takes instruction words and header fields only (`GeneratedPsxExeFixtures.cs`, method `BuildExe`). [CONFIRMED for the BuildExe signature; the ID-usage list is OBSERVED from a grep not repeated here]. Owner decision.
+  It would not change the pinned SHA-256 or the generated bytes. The ID is not written into the EXE: `BuildExe` takes instruction words and header fields only (`GeneratedPsxExeFixtures.cs`, method `BuildExe`). [INFERRED for the BuildExe signature; the ID-usage list is INFERRED from a grep not repeated here]. Owner decision.
 - **Q7. Smoke results storage.** Local JSONL only, or also a committed snapshot of synthetic results? A committed snapshot would churn. Proposed: local only in v1. UNVERIFIED that CI can persist between runs.
 - **Q8. natural-end-transitions host mode.** Pass condition: a recorded run of `natural-end-transitions` through the E2E path, with no host setup beyond it, reproducing `completed/success` and result value `0x42`. Until that run is recorded, the fixture is deferred and not in the smoke set. UNVERIFIED.
 - **Q9. W13 pin.** Pinned to `6f52545` (section 9.2). Re-check `ls-remote` for later W13 pushes.
@@ -319,14 +320,14 @@ The six #33 decisions below are checked against `6f52545`. They are re-checked a
 These are not approved and are not part of the schema in sections 3 to 8.
 
 - **N1. Result facts.** Add an `ObservedFacts` list to `ScenarioResult` (guest PC, TTY byte, diagnostic code, stop reason). Without it, a regression record cannot name the first differing fact. The alternative, used by this document, is to keep these facts in the captured artifact referenced by `ArtifactHash`.
-- **N2. Disc hash in results.** Carrying a disc content hash on a `RealTitle` result conflicts with #33 Q3, which is undecided on publishing disc hashes. This needs an owner decision on Q3 before any such field is added. Synthetic results never need one.
+- **N2. Disc hash in results.** Carrying a disc content hash on a `RealTitle` result conflicts with #33 Q3, which now rules that a commercial disc hash must never be published (only hashes of publicly distributable synthetic media may be). A disc hash on a RealTitle result is therefore not added; any change needs a separate owner decision. Synthetic results never need one.
 - **N3. Cancelled label and binding-B handling (aligned with #33).** The display label of a `Cancelled` cell is #33 §9.2 row 6 (Q15). Whether a `Cancelled` result on binding B changes the Regression state is #33 §6.2 (Q16). W15 follows the current #33 draft and proposes no new field or label. Owner decision is needed only for #33 Q15 and Q16.
-- **N4. `BudgetExhausted` as its own Outcome (NEEDS_OWNER_DECISION).** The mapping to `Blocked` (section 5.1; #33 §3.5) is the closest existing value, but `Blocked` means a known unsupported boundary, and owner policy 2 requires `BudgetExhausted` to stay independent. A dedicated Outcome value would change the six-value vocabulary (#33 §3.5). Until the owner decides, the Outcome stays `Blocked` and the stop reason `BudgetExhausted` is kept in the captured artifact referenced by `ArtifactHash`; carrying it as a result field is N1.
-- **N5. `OsVersion` as `unknown` (NEEDS_OWNER_DECISION).** Owner policy 1 requires `unknown` when the OS version cannot be obtained. The collector passes `RuntimeInformation.OSDescription` (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionEnvironmentCollector.cs:23`), and `ExecutionEnvironmentReport` rejects an empty value (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:28`). Writing `unknown` changes the `psxrecomp.execution-environment.v1` output, which is a public contract. This document does not change it.
+- **N4. `BudgetExhausted` as its own Outcome (decided by the owner at design level).** `BudgetExhausted` is an independent Outcome, not `Blocked`, and the Outcome vocabulary has seven values (section 5.1; #33 §3.5). The implementation mapping at `RecompiledArtifactExitCode.cs:54` still maps it to `Blocked`; changing that code is a separate, pending change. The stop reason `BudgetExhausted` is kept in the captured artifact referenced by `ArtifactHash`; carrying it as a result field is N1.
+- **N5. `OsVersion` as `unknown` (owner-decision marker; compatibility review pending).** Owner policy 1 requires `unknown` when the OS version cannot be obtained. The collector passes `RuntimeInformation.OSDescription` (`src/PSXRecomp.Infrastructure/Diagnostics/ExecutionEnvironmentCollector.cs:23`), and `ExecutionEnvironmentReport` rejects an empty value (`src/PSXRecomp.Core/Diagnostics/ExecutionEnvironmentReport.cs:28`). The meaning of `unknown` is owner-approved. Writing `unknown` changes the `psxrecomp.execution-environment.v1` output, which is a public contract, so it requires a separate compatibility review. That change is pending the review and is not approved as an implementation. This document does not change the code.
 
 ## 13. Verification of this document
 
-- Design only. No build, test, or CI run was performed. [CONFIRMED by this change: one docs file]
-- The issue summary comes from a WebFetch of the issue page, not from `gh`, which is not authenticated. The full Japanese body was not read verbatim. [CONFIRMED by process]
-- Fixture facts come from `GeneratedPsxExeFixtures.cs` and `docs/development/generated-psx-exe-fixtures.md`, read in this worktree. #33 facts are from `6f52545` (the pin in section 9.2) and were re-read for the sections cited. Other code claims are OBSERVED and are not re-checked here. [CONFIRMED / OBSERVED as labelled]
-- No ROM, BIOS, disc image, or copyrighted content was read or referenced by content. [CONFIRMED by process]
+- Design only. No build, test, or CI run was performed. [INFERRED by this change: one docs file]
+- The issue summary comes from a WebFetch of the issue page, not from `gh`, which is not authenticated. The full Japanese body was not read verbatim. [INFERRED by process]
+- Fixture facts come from `GeneratedPsxExeFixtures.cs` and `docs/development/generated-psx-exe-fixtures.md`, read in this worktree. #33 facts are from `6f52545` (the pin in section 9.2) and were re-read for the sections cited. Other code claims are INFERRED and are not re-checked here. [INFERRED / INFERRED as labelled]
+- No ROM, BIOS, disc image, or copyrighted content was read or referenced by content. [INFERRED by process]
