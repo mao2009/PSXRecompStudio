@@ -278,7 +278,7 @@ Stable       -> Playable and no open Known Issue of severity >= major on the bin
 Highly-Verified -> Stable and Pass evidence from >= 2 reporter classes
 ```
 
-A title-level label is the **minimum** over facets in the chosen binding. A title with Boot Verified and Save at level 0 is shown as `Boot-Verified` with the Save cell labelled per section 9.2, never as "Playable". [INFERRED]
+A title-level label is the **minimum** over facets in the chosen binding. A title with Boot-Verified and Save at level 0 is shown as `Boot-Verified` with the Save cell labelled per section 9.2, never as "Playable". [INFERRED]
 
 "Perfect" is not a rung. It is defined as: every required scenario for every facet is `Pass` on the stated binding, with at least the Highly-Verified evidence threshold, and no open Known Issue. The label means "passes the currently defined scenario set", and it is versioned by the scenario catalog version. This answers the issue's point that Perfect is not absolute completeness. [INFERRED; the issue leaves names open]
 
@@ -376,6 +376,22 @@ Per title: one row per binding in use, five facet columns, each cell showing its
 
 SyntheticFixture results are never shown in a real-title view. They may appear only in a separate, labelled fixture view. `Facet.None` is never a column. [INFERRED; follows the owner ruling]
 
+### 9.1 Required #33 changes (owner ruling)
+
+The owner approved these changes to the #33 design. Each one is recorded in the sections cited:
+
+1. Add a `Subject` field to every result (`RealTitle` or `SyntheticFixture`). See section 3.4.
+2. When `Subject = SyntheticFixture`, `TitleKey` may be omitted. Binding stays required. See section 3.4.
+3. Add `Facet.None`. See section 3.2.
+4. Add a `Cancelled` row to the registry Outcome vocabulary. The execution state already exists: `TitleExecutionState.Cancelled` (`src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:49`), set by `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:75`. See sections 2.1 and 3.5.
+
+Additional conditions from the same ruling:
+
+- SyntheticFixture results must never enter a real-title compatibility evaluation (section 3.4 Subject rules; section 8 derivation input rule).
+- `Cancelled` must never count as Pass or Fail (section 3.5).
+- `Unknown`, `NotRun`, and `Cancelled` must remain distinct (section 3.5).
+- The identity and binding rules of the compatibility registry are kept unchanged (section 4).
+
 ### 9.2 Cell labels (Unknown, NotRun, Cancelled kept distinct)
 
 Each cell is one `(title, facet, binding)`. It is labelled by the first matching rule, using `Subject = RealTitle` results only:
@@ -394,27 +410,11 @@ Row 4 is the only row without a "no Pass" condition, because a failed criterion 
 
 `Unverified` is not a cell label on its own. The only cell label that contains it is `Unverified after change` (row 2), and that label needs a prior Pass on another binding. Level 0 in section 5 is also named `Unverified`, but it is a level, and the cell label comes from this table. A cell is never shown as `Unverified` or `Unverified after change` when its real state is `Unknown`, `Not run`, or `Cancelled`. [INFERRED; follows the owner ruling]
 
-### 9.1 Required #33 changes (owner ruling)
-
-The owner approved these changes to the #33 design. Each one is recorded in the sections cited:
-
-1. Add a `Subject` field to every result (`RealTitle` or `SyntheticFixture`). See section 3.4.
-2. When `Subject = SyntheticFixture`, `TitleKey` may be omitted. Binding stays required. See section 3.4.
-3. Add `Facet.None`. See section 3.2.
-4. Add a `Cancelled` row to the registry Outcome vocabulary. The execution state already exists: `TitleExecutionState.Cancelled` (`src/PSXRecomp.Core/Execution/TitleExecutionContract.cs:49`), set by `src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:75`. See sections 2.1 and 3.5.
-
-Additional conditions from the same ruling:
-
-- SyntheticFixture results must never enter a real-title compatibility evaluation (section 3.4 Subject rules; section 8 derivation input rule).
-- `Cancelled` must never count as Pass or Fail (section 3.5).
-- `Unknown`, `NotRun`, and `Cancelled` must remain distinct (section 3.5).
-- The identity and binding rules of the compatibility registry are kept unchanged (section 4).
-
 ## 10. Open questions
 
 - **Q1. Facet list.** The issue lists Gameplay, Save, Load, CD, Audio, Graphics. This draft folds Load into Save and CD into Gameplay. Owner to confirm or split.
 - **Q2. CD-ROM and streaming.** Is CD streaming a facet, a scenario, or a Runtime-level property recorded in the binding? This draft uses scenarios.
-- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The `discHash` value is UNVERIFIED, and the `DiscHash` writer's algorithm is UNVERIFIED (no writer was found). The requirement is SHA-256 (owner policy 3). A disc SHA-256 is passed into the firmware boot manifest (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Owner ruling (decision 3): only hashes of publicly distributable synthetic media may be published. A hash of a commercial disc or of a commercial BIOS/ROM must never be published. Whether any other part of this staging hash may be published is an open owner decision (owner-decision marker, not a status label). Owner policy 3 applies: a disc hash must state its input kind (whole disc image file bytes), algorithm (SHA-256), and normalization (none); publication of a commercial-media hash is never allowed, and no other disc hash is published until the open decision is made; raw disc or BIOS/ROM bytes are never published; and a hash never proves provenance or legitimacy. Under the owner ruling, a `SyntheticFixture` result may have no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
+- **Q3. Disc hash in public data.** Is a SHA-256 of a disc image acceptable in a public snapshot? `DiscIdentity` has no hash field (`src/PSXRecomp.Core/TitleIdentity/DiscIdentity.cs:10-14`). `DiagnosticContextKeys.DiscHash` declares a `discHash` key (`src/PSXRecomp.Core/Diagnostics/DiagnosticContextEntry.cs:47`), but no writer of that key was found in `src` at `2e3ecad`. The `discHash` value is UNVERIFIED, and the `DiscHash` writer's algorithm is UNVERIFIED (no writer was found). The requirement is SHA-256 (owner policy 3). A disc SHA-256 is passed into the firmware boot manifest (`src/PSXRecomp.Infrastructure/Standalone/FirmwareDistribution.cs:391`, `:451`). That is a staging artifact, not the `DiagnosticContextKeys.DiscHash` key and not public data. Owner ruling (decision 3): only hashes of publicly distributable synthetic media may be published. A hash of a commercial disc or of a commercial BIOS/ROM must never be published. disc hashes, including staging hashes, are not published except for publicly distributable synthetic media (owner decision c). Owner policy 3 applies: a disc hash must state its input kind (whole disc image file bytes), algorithm (SHA-256), and normalization (none); publication of a commercial-media hash is never allowed, and no other disc hash is published until the open decision is made; raw disc or BIOS/ROM bytes are never published; and a hash never proves provenance or legitimacy. Under the owner ruling, a `SyntheticFixture` result may have no `TitleKey` and never enters real-title evaluation (section 3.4), so the Q3 decision applies only to `RealTitle` records. A decision is needed before v1.1.
 - **Q4. Level names and thresholds.** Section 5 names are placeholders. The number of reporter classes for Highly-Verified (2 here) needs owner ruling.
 - **Q5. Binding compatibility.** Is exact binding equality the right default, or is a declared compatible range (for example, same `RuntimeVersion` minor) allowed? This draft uses exact match.
 - **Q6. Build identity.** No `BuildId` exists (section 2.1). Which artifact defines it? Candidates are the generated-host build output or the analysis manifest hash (`src/PSXRecomp.Core/DiscImage/AnalysisArtifacts/AnalysisManifestDocument.cs:42`). UNVERIFIED which is stable across rebuilds.
@@ -425,12 +425,12 @@ Additional conditions from the same ruling:
 - **Q11. ADR and SSOT.** The issue completion list asks to record the decision in SSOT/ADR. This document is not an ADR. A new ADR (next free number `028`) should be written after owner review, via the ADR skill. Not done here.
 - **Q12. Naming collision.** Should the existing `TitleExecutionRun.HasFrameEvidence` (`src/PSXRecompStudio/Services/TitleExecutionService.cs:22`) be renamed to avoid confusion with registry Evidence? This draft does not propose a rename.
 - **Q13. Scenario ownership.** Who owns the scenario catalog and its version bump process?
+- **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 - **Q15. Cancelled display label.** The label for a cell whose only non-Pass result is `Cancelled` (section 9.2, row 6) is pending the owner's decision. Until then the draft uses the placeholder `Cancelled`.
 - **Q16. Cancelled on binding B for regression.** If binding B holds a `Cancelled` result for a scenario that had Pass on binding A, is that a regression, `Unverified after change`, or neither? This draft says neither, and only shows it as Cancelled (section 6.2). Owner to decide.
-- **Q14. Input evidence for Gameplay.** Which source records the scripted input and its outcome for a Gameplay scenario: a harness-level input log, a manual observation, or a new recorder? Not decided. This is separate from Q10, which concerns feedback intake.
 
 ## 11. Verification of this document
 
 - Design only. No build or test was run. [INFERRED by this change: docs only]
 - No ROM, BIOS, or disc image was read or referenced by content. [INFERRED by process]
-- Every code citation in sections 2 to 4 was read in the worktree or confirmed by a search whose result is stated. Quoted line numbers are at `2e3ecad`; the quoted source files are identical at `2e3ecad` and `12b6a31` (verified in the previous review: the intersection of cited paths and changed files is empty). Section 7 and later rely on INFERRED labels for proposals.
+- Every code citation in sections 2 to 4 was read in the worktree or confirmed by a search whose result is stated. Quoted line numbers are at `2e3ecad`; the quoted source files are identical at `2e3ecad` and `12b6a31` ([INFERRED: recorded in the previous review; not re-run in this work]: the intersection of cited paths and changed files is empty). Section 7 and later rely on INFERRED labels for proposals.
