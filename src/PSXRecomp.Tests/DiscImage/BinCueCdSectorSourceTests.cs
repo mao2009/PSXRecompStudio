@@ -280,10 +280,11 @@ public sealed class BinCueCdSectorSourceTests
     [Fact]
     public void Ctor_IndexOneAtOrAfterFileEnd_ThrowsArgumentFromToc()
     {
-        // Track 1 at file index 150 (LBA 0) in a 150-sector file: the lead-out is LBA 0, so the start is not before it.
-        var act = () => new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:02:00\n", Bin(150));
+        // A 200-sector file has its lead-out at LBA 50 (file index 200). INDEX 01 at 00:03:00 is LBA 75, which is at or after the lead-out,
+        // so the TOC rejects it. The file is large enough to pass the size guard, so this reaches the TOC check.
+        var act = () => new BinCueCdSectorSource("FILE \"a.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:03:00\n", Bin(200));
 
-        act.Should().Throw<ArgumentException>();
+        act.Should().Throw<ArgumentException>().WithMessage("*lead-out*");
     }
 
     [Fact]
