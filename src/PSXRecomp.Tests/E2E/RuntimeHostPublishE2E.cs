@@ -129,6 +129,13 @@ public sealed class RuntimeHostPublishE2E : IDisposable
 
         // Runtime host output is classification message on stderr
         runResult.Stderr.Should().Contain("classified as Success", "stderr must indicate success");
+
+        // Assertions on the console of this direct launch. Limitation (stated, not covered here): the host forwards the artifact's stdout only
+        // in RuntimeHost launch mode (guest firmware), and this HLE package does not take that path, so these checks do not exercise the
+        // forwarding and would not catch a raw print. The filter itself is covered by ArtifactConsoleOutputTests; a real guest-firmware launch
+        // needs an OpenBIOS ROM, which this environment does not have.
+        runResult.Stdout.Should().NotContain("RHOST_", "a host-protocol line is never printed by the direct launch");
+        runResult.Stdout.Should().NotContain("RSNAPSHOT", "the state snapshot, which carries GPR values, is never printed");
     }
 
     /// <summary>

@@ -179,8 +179,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("fallbackMaxTransitions").GetUInt64().Should().Be(40);
         report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "the BIOS is never translated, so no ROM code runs natively");
         report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the BIOS runs in the interpreter fallback");
-        report.GetProperty("finalGpr").GetArrayLength().Should().Be(TitleExecutionRequest.GprCount,
-            "the firmware-run line carries the final register file for continuity checks");
+        // Decision A (PR #839): a general-purpose register value is never published, so the firmware-run line carries no GPR field.
+        report.TryGetProperty("finalGpr", out _).Should().BeFalse("no GPR value leaves the probe or the run output");
     }
 
     /// <summary>
@@ -188,10 +188,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
     /// review P2-2): a distributable disc whose SYSTEM.CNF names a real PS-X EXE. Packaging compiles the boot
     /// executable ahead of time (the <c>boot-exe</c> image and its <c>rom.roots</c>/<c>images.txt</c> are pinned as
     /// AOT inputs), and the synthetic ROM stores those exact words into RAM and calls the entry, so the whole run —
-    /// ROM blocks and the guarded game block — executes natively. The final register file proves ROM → game → ROM
-    /// control/data continuity <em>from the run's own output</em>; the game's own <c>$t0</c> (written only by the
-    /// game's final instruction, never by the post-game ROM code) is the game-block attribution inside the
-    /// aggregate native count, and <c>fallbackInstructions=0</c> shows nothing reached the interpreter. The runtime
+    /// ROM blocks and the guarded game block — executes natively. The two fallback transitions show ROM → game → ROM
+    /// control continuity from the run's own output (the register file is not published, decision A, PR #839). The runtime
     /// disc-sector load (OpenBIOS's CD driver reading the disc and <c>exec</c>-ing the EXE) is <b>not</b> part of
     /// this test: it is the separate gate recorded by the real-OpenBIOS probe. The explicit fallback budgets prove
     /// P1-1's CLI → manifest propagation; the direct host run with <c>--diagnostics</c> proves P2-1's Issue #763
@@ -268,14 +266,10 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue();
         report.GetProperty("fallbackSegmentInstructionBudget").GetUInt64().Should().Be(5000);
         report.GetProperty("fallbackMaxTransitions").GetUInt64().Should().Be(40);
-        var finalGpr = report.GetProperty("finalGpr").EnumerateArray()
-            .Select(static e => uint.Parse(e.GetString()![2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)).ToArray();
-        // Measured: the final register file is the last native transition's (the game's return), not the interpreted
-        // post-game segment's, so the firmware's own post-game markers are not read here. Control returning into the
-        // firmware is shown by the two transitions (ROM -> game -> ROM) and the fallback instructions that ran after it.
+        // Control returning into the firmware is shown by the two transitions (ROM -> game -> ROM) and the fallback
+        // instructions that ran after it. The game's register results are not published (decision A, PR #839).
         report.GetProperty("fallbackTransitions").GetUInt64().Should().Be(2, "ROM -> game -> ROM: the game is entered once and control returns to the firmware" + stderr);
         report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the interpreted firmware runs after the game returns");
-        finalGpr[(int)R3000aRegister.T0].Should().Be(3u, "the game retired its own instructions: the boot EXE's last addiu wrote its immediate");
 
         // P2-1: the Runtime host honors --diagnostics for a firmware distribution exactly as for an HLE run.
         var hostBinary = Path.Combine(runtime, RuntimeHostLayout.HostFileName(windows));

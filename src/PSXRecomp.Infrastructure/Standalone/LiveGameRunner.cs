@@ -66,6 +66,8 @@ public static class LiveGameRunner
     {
         ArgumentNullException.ThrowIfNull(slot);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        // Issue #B2 (R1 scope): refused before anything is lowered or started; the throw is synchronous.
+        BiosAddressGuard.RequireNoBiosRange("live program", loadAddress, imageWords.Count);
 
         return Task.Run(() =>
         {

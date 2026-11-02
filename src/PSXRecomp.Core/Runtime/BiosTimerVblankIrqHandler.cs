@@ -93,7 +93,7 @@ public static class BiosTimerVblankIrqHandler
             if (!deliverEvents(context, source))
             {
                 return Unsupported(
-                    $"{label} flag={flag}|event 0x{RootCounterEventClassBase + source:X8},{RootCounterEventSpec} could not be " +
+                    $"{label}|event 0x{RootCounterEventClassBase + source:X8},{RootCounterEventSpec} could not be " +
                     "delivered (default delivery fails on an unusable EvCB table or a matching enabled 1000h callback event, which is not modelled, #687; a custom delivery callback may also fail)");
             }
 

@@ -113,7 +113,7 @@ public static class BiosPadCardIrqHandler
         if (setting == BiosPadCardAutoAckSetting.NotConfigured || autoAck > 1)
         {
             return Unsupported(
-                $"{label}|the B0:5B auto-ack is {(setting == BiosPadCardAutoAckSetting.NotConfigured ? "not configured" : $"0x{autoAck:X}")} " +
+                $"{label}|the B0:5B auto-ack is {(setting == BiosPadCardAutoAckSetting.NotConfigured ? "not configured" : "outside 0 and 1")} " +
                 "(only 0 and 1 are documented; not guessed)");
         }
 
@@ -134,7 +134,7 @@ public static class BiosPadCardIrqHandler
         if (padStarted != 0 && buttonDestination != 0 &&
             !context.Writer.TryWrite(buttonDestination, BitConverter.GetBytes(DisconnectedPadButtons)))
         {
-            return Unsupported($"{label}|button_dest 0x{buttonDestination:X8} is not writable");
+            return Unsupported($"{label}|button_dest is not writable");
         }
 
         if (Handle(context.Reader, context.Interrupts) is not (BiosPadCardIrqOutcome.Acknowledged or BiosPadCardIrqOutcome.LeftPending))

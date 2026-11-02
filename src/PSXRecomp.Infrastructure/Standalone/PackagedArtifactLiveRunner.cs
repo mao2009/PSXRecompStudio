@@ -50,6 +50,9 @@ public static class PackagedArtifactLiveRunner
             imageWords[i] = BinaryPrimitives.ReadUInt32LittleEndian(imageBytes.AsSpan(i * 4));
         }
 
+        // Issue #B2 (R1 scope): the packaged image's load range, refused before anything starts.
+        BiosAddressGuard.RequireNoBiosRange("packaged image", manifest.ImageLoadAddress, imageWords.Length);
+
         var mixedFallback = manifest.MixedFallback
             ? new MixedFallbackOptions(manifest.FallbackSegmentInstructionBudget, manifest.FallbackMaxTransitions)
             : null;
