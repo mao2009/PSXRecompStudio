@@ -6,7 +6,7 @@ Status: **analysis only**. No code is changed. Code evidence is from branch `bat
 
 Labels:
 
-- **OBSERVED**: a fact directly observed in an execution, log, or measurement. In this document it is used only for measurements recorded in a cited repository document; none was re-run for this analysis.
+- **OBSERVED**: a fact directly observed in this work (an execution, log, or measurement made in this work). None was made for this analysis, so this label is not used. Facts recorded in a cited document are labelled INFERRED (recorded in document).
 - **CONFIRMED**: a fact that a reproducible verification met against an explicit expected condition. The scope is stated where each item is used. In this document only the arithmetic on the cited numbers (lines 57 and 72) meets this definition.
 - **INFERRED**: a conclusion derived from observation or implementation. Direct verification has not been established. Reading source code or design documents gives INFERRED, not CONFIRMED.
 - **UNVERIFIED**: an item for which there is not enough evidence to confirm it holds. It needs data outside the repository (the disc, the pinned ROM's ELF symbols) or a new run.
@@ -18,7 +18,7 @@ The issue asks which code writes `0x80030C44` during an OpenBIOS boot of a boot 
 Short answers:
 
 1. **0x80030C44 is inside the OpenBIOS shell image, not inside the game image.** INFERRED (`src/PSXRecomp.Core/Execution/OpenBiosBootMonitor.cs:50`, `:53`; `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:40-48`). The shell occupies `0x80030000` to `0x800450C0` (shell image plus bss, per the comment at `OpenBiosBootMonitor.cs:52`). The offset of the address in the shell is `0xC44`.
-2. **Whether the boot EXE covers `0x80030C44` is UNVERIFIED.** The entry is `0x80010000` (OBSERVED, `docs/runtime/openbios-firmware-backend.md:136`, `:196`). A text region starting at `0x80010000` reaches `0x80030C44` only if its declared size is at least `0x20C45` bytes (`0x80030C44 - 0x80010000 + 1`). The Persona header's text size is not in the repository.
+2. **Whether the boot EXE covers `0x80030C44` is UNVERIFIED.** The entry is `0x80010000` (INFERRED (recorded in document), `docs/runtime/openbios-firmware-backend.md:136`, `:196`). A text region starting at `0x80010000` reaches `0x80030C44` only if its declared size is at least `0x20C45` bytes (`0x80030C44 - 0x80010000 + 1`). The Persona header's text size is not in the repository.
 3. **The writer is not identified.** Static analysis narrows it to a short list (section 4). Identifying the writing PC and the time needs a run with a watch on that word (section 5), which is design only here.
 4. **A "not matched" verdict at this PC does not prove an overwrite.** The accounting labels any RAM PC without an AOT block as `ram-no-code-image` (`src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs:55-64`), whether or not a version was ever registered for it. INFERRED from code; the consequence is INFERRED to be the common case here.
 
@@ -29,7 +29,7 @@ Short answers:
 - The host does not load the boot EXE into RAM in the OpenBIOS engine. `OpenBiosBootBackend.CreateEngine` builds an `InterpreterTitleExecutionEngine` over the firmware words with load address `0xBFC00000` and does not pass `guestFirmware` (`src/PSXRecomp.Core/Execution/OpenBiosFirmware.cs:68-80`). The probe then calls `ExecutionOrchestrator.Execute` (`src/PSXRecomp.Cli/OpenBiosProbeCommand.cs:359`), which calls `engine.Load(request)` (`src/PSXRecomp.Core/Execution/ExecutionOrchestrator.cs:82`). INFERRED (code).
 - `InterpreterTitleExecutionEngine.Load` (`src/PSXRecomp.Core/Execution/InterpreterTitleExecutionEngine.cs:353-385`) calls `_core.Reset()` (`:364`) and then writes the firmware words through `TranslateAddress(_loadAddress)` (`:374-378`, the firmware loop; `:369-372` is the `InitialMemory` loop). `0xBFC00000` translates to physical `0x1FC00000`, the ROM window (INFERRED, code). So the OpenBIOS path does have a `Load` write, and it targets the ROM window, not the shell range at `0x00030C44`. How the native core stores a write into the ROM window is UNVERIFIED (it is not read here). Whether `_core.Reset()` clears RAM is UNVERIFIED; if it does, it is a pre-boot write (see 4.8).
 - The `guestFirmware` writes (`InterpreterTitleExecutionEngine.cs:186-193`) belong to the static `Attach` factory (`InterpreterTitleExecutionEngine.cs:172`; the `guestFirmware` branch at `:186-193`) and are not used by the OpenBIOS path (INFERRED via `OpenBiosFirmware.cs:73-80`). `request.InitialMemory` is empty on this path (`OpenBiosProbeCommand.cs:357`), so `Load` writes no RAM word from the request. The conclusion of section 0 (no RAM write at `0x80030C44` from the title path) still holds on this reading; the ROM-window behaviour above is the one step not checked.
-- OpenBIOS itself loads the EXE: its CD driver reads the disc through `CdRomDevice`, and DMA3 writes the data into RAM. `exec` then jumps to the entry. Stated in the design docs, not traced in code (UNVERIFIED in code) (`docs/runtime/openbios-firmware-backend.md:133-137`: "loads the boot EXE named by `SYSTEM.CNF` through CD reads and DMA3, and `gameMainThunk` → `exec` enters the executable's entry `0x80010000`"; the ADR says the same at `docs/adr/026-aot-ram-placed-code.md:10`). The measurement in that paragraph is OBSERVED: about 192M instructions to reach the entry with the synthetic disc (`openbios-firmware-backend.md:136`); it is not a measurement of the Persona disc.
+- OpenBIOS itself loads the EXE: its CD driver reads the disc through `CdRomDevice`, and DMA3 writes the data into RAM. `exec` then jumps to the entry. Stated in the design docs, not traced in code (UNVERIFIED in code) (`docs/runtime/openbios-firmware-backend.md:133-137`: "loads the boot EXE named by `SYSTEM.CNF` through CD reads and DMA3, and `gameMainThunk` → `exec` enters the executable's entry `0x80010000`"; the ADR says the same at `docs/adr/026-aot-ram-placed-code.md:10`). The measurement in that paragraph is INFERRED (recorded in document): about 192M instructions to reach the entry with the synthetic disc (`openbios-firmware-backend.md:136`); it is not a measurement of the Persona disc.
 - The host models the DMA3 transfer in `CdRomDmaTransfer.TryTransfer` (`src/PSXRecomp.Core/Dma/CdRomDmaTransfer.cs:80-138`). The word count is `BCR & 0xFFFF`, and a count of 0 means 0x10000 words (`CdRomDmaTransfer.cs:101-103`). It writes that many 32-bit words starting at `MADR & AddressMask` through `IMemoryBus.Write`, one word per iteration (loop at `:118-128`), with no PC in the record. INFERRED.
 - The memory bus routes RAM writes to the native core RAM (`src/PSXRecomp.Core/Dma/MemoryBus.cs:139-152`, `WriteRam` at `:184-190`). INFERRED.
 
@@ -51,10 +51,10 @@ The repository checks the text region in two places: `PsxExeTitleInput.Build` re
 
 ### 1.3 Range for the real disc
 
-- Entry `0x80010000`: OBSERVED (`openbios-firmware-backend.md:136`, `:196`; also `:404`, `:497`).
+- Entry `0x80010000`: INFERRED (recorded in document) (`openbios-firmware-backend.md:136`, `:196`; also `:404`, `:497`).
 - Text start: INFERRED to be `0x80010000` (the usual PS-X layout, and the entry is at the text start for this disc). UNVERIFIED for the Persona EXE.
 - Text size: UNVERIFIED. The repository states that the original deterministic fixture declares only 20 text bytes (`openbios-firmware-backend.md:379`) and that the pinned OpenBIOS `dev_cd_read` rejects reads not aligned to 2048 bytes, while `loadExe` ignores the failure (`:379-381`). That is a fixture, not Persona.
-- **Threshold.** With text start `0x80010000`, the text reaches the shell only if `TextSize >= 0x20C45` (134,213 bytes). Any larger declared size or any bss/data extent above `0x80010000 + 0x20C44` overlaps `0x80030C44`. CONFIRMED arithmetic.
+- **Threshold.** With text start `0x80010000`, the text reaches the shell only if `TextSize >= 0x20C45` (134,213 bytes). Any larger declared size or any bss/data extent above `0x80010000 + 0x20C44` overlaps `0x80030C44`. CONFIRMED arithmetic (scope: hand arithmetic on the quoted constant; no run).
 - **Sector rounding.** INFERRED: if the loader reads whole 2048-byte sectors (the fixture note at `:379-381` says the pinned `dev_cd_read` rejects unaligned reads, which implies whole-sector reads but does not state it), the number of bytes DMA3 writes is rounded up past the declared `TextSize`. A text size just below the threshold would then still write `0x80030C44`. UNVERIFIED for the pinned OpenBIOS.
 
 ## 2. RAM ownership between OpenBIOS and the game
@@ -69,11 +69,11 @@ Region definitions are INFERRED in `src/PSXRecomp.Cli/OpenBiosProbeAccounting.cs
 
 Consequences:
 
-- `0x80030C44` is physical `0x00030C44`, offset `0xC44` into the shell image. It is classified **shell** (CONFIRMED by the arithmetic of `OpenBiosProbeAccounting.cs:47`).
+- `0x80030C44` is physical `0x00030C44`, offset `0xC44` into the shell image. It is classified **shell** (CONFIRMED by the arithmetic of `OpenBiosProbeAccounting.cs:47`; scope: hand arithmetic on the quoted constant; no run).
 - The title detector only counts a PC as a started title when it lies in `0x80010000..0x8002FFFF` or `ShellImageEnd..0x80200000` after the shell is entered (`OpenBiosBootMonitor.cs:86`). A title, or an EXE load, over the shell's own range is **not detected** (the report's own note at `OpenBiosBootMonitor.cs:24`). INFERRED.
 - The shell is copied into RAM by OpenBIOS code, not by the host (`OpenBiosBootMonitor.cs:49` says "Where OpenBIOS (like the retail BIOS) copies its shell and calls it"; ADR-026 `:10`). INFERRED as a design statement; the copy routine is UNVERIFIED (4.1).
 - The game image is `0x80010000` to its text end, plus any data and bss, and it is expected to be disjoint from the shell. INFERRED for normal discs; the threshold in 1.3 is the test.
-- **Fallback at this PC.** OBSERVED (`openbios-firmware-backend.md:401`): one fallback segment of about 163M instructions started at `0x80030C44` in the shell region (the exact count is not in the document; the value 163,124,226 appears only in a test fixture, see below). The accounting said shell = 35 % of fallback fetches. The same document says the segment was the interpreter running shell code, not AOT (`:401`, `:498`: the shell "runs interpreted from the BIOS image"). The shell runs interpreted (OBSERVED, from the recorded run); the segment's loop is UNVERIFIED.
+- **Fallback at this PC.** INFERRED (recorded in document) (`openbios-firmware-backend.md:401`): one fallback segment of about 163M instructions started at `0x80030C44` in the shell region (the exact count is not in the document; the value 163,124,226 appears only in a test fixture, see below). The accounting said shell = 35 % of fallback fetches. The same document says the segment was the interpreter running shell code, not AOT (`:401`, `:498`: the shell "runs interpreted from the BIOS image"). The shell runs interpreted (INFERRED (recorded in document), from the recorded run); the segment's loop is UNVERIFIED.
 - `0x80030C44` appears in `src/` only as synthetic test input (repo-wide grep, excluding `bin`/`obj`): `src/PSXRecomp.Tests/Recompiler/LoadedCodeMismatchDiagnosticsTests.cs:11,28,33,91`, `src/PSXRecomp.Tests/Infrastructure/RuntimeHostDiagnosticTests.cs:290-291,310` (the count `163_124_226UL` is at `:291`), and `src/PSXRecomp.Tests/Cli/OpenBiosProbeAccountingTests.cs:34`. These fixtures are not evidence about the disc.
 
 ## 3. What "overwritten" can and cannot mean in this code
@@ -112,7 +112,7 @@ Each candidate lists the writer, the PC that would be reported, the time window,
 ### 4.4 Shell's own stores
 
 - Mechanism: a store in shell code to its own variable at offset `0xC44`, or a stray pointer in shell code.
-- PC: in `0x80030000..0x800450C0`. The shell runs interpreted (`openbios-firmware-backend.md:498`, OBSERVED from the recorded run).
+- PC: in `0x80030000..0x800450C0`. The shell runs interpreted (`openbios-firmware-backend.md:498`, INFERRED (recorded in document), from the recorded run).
 - Time: during shell execution, after `ShellEntered`.
 - Status: INFERRED possible; cannot be excluded by static analysis of the repository alone. A store in a shell PC that changes a value the shell itself reads is the signature of a legitimate shell variable.
 
@@ -178,7 +178,7 @@ For each change of the watched word at `0x80030C44` (physical `0x00030C44`): fet
 2. Whether the pinned OpenBIOS `loadExe`/`exec` writes beyond the declared text size (sector rounding, 1.3) and whether it clears bss (4.3). Needs the pinned ELF symbols and a disassembly kept out of git.
 3. The shell copy routine and its length (4.1).
 4. The expected word at `0x80030C44` and its source (3). Not in the repository.
-5. Whether the roughly 163M-instruction shell segment at `0x80030C44` (OBSERVED, `openbios-firmware-backend.md:401`) is a loop that writes the word, or an idle loop that only reads it.
+5. Whether the roughly 163M-instruction shell segment at `0x80030C44` (INFERRED (recorded in document), `openbios-firmware-backend.md:401`) is a loop that writes the word, or an idle loop that only reads it.
 6. Whether the host-side resynchronisation (4.6) can write this page in the generated-host probe. Needs the comparison in 4.6.
 7. The native core's store path for option 5.2 (location and hook point).
 
