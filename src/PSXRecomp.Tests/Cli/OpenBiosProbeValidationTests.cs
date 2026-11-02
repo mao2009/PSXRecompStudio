@@ -260,6 +260,53 @@ public sealed class OpenBiosProbeValidationTests
         JsonNode.Parse(json)!["stop"]!["lastFetches"]!.AsArray().Should().NotBeEmpty();
     }
 
+    // A RAM-range fetch: the ROM stores lui t2, 0x7E5C (0x3C0A7E5C) at 0x80030000 and jumps there. That word is in no ROM word, so a
+    // RAM word published by any output is found by its hexadecimal form.
+    private static byte[] RamJumpRom()
+    {
+        uint[] words =
+        [
+            I(0x0F, 0, 8, 0x8003),   // lui t0, 0x8003
+            I(0x0F, 0, 9, 0x3C0A),   // lui t1, 0x3C0A
+            I(0x0D, 9, 9, 0x7E5C),   // ori t1, t1, 0x7E5C
+            I(0x2B, 8, 9, 0),        // sw t1, 0(t0): the RAM word at 0x80030000
+            I(0x00, 8, 0, 0) | 0x08u, // jr t0
+            0,                       // nop (delay slot)
+        ];
+        var bytes = new byte[OpenBiosFirmware.ImageSize];
+        for (var i = 0; i < words.Length; i++) BitConverter.GetBytes(words[i]).CopyTo(bytes, i * 4);
+        return bytes;
+    }
+
+    // PR #839 (public-path guard for Decision A): a fetch in guest RAM must not publish its word on stdout, in JSON (capture and stop)
+    // or in text (the stop line). Pins the public output, not only WordFor, so a flip of the switch is caught here.
+    [Fact]
+    public void Run_RamRangeFetch_DoesNotExportTheRamWord()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", RamJumpRom());
+        string[] args = [rom, "--engine", "interpreter", "--segments", "1", "--segment-budget", "2000"];
+
+        RunProbe([.. args, "--capture-at", "80030000", "--json"], out var captureJson, out _);
+        RunProbe([.. args, "--json"], out var stopJson, out _);
+        RunProbe(args, out var text, out _);
+
+        foreach (var output in new[] { captureJson, stopJson, text })
+        {
+            output.ToUpperInvariant().Should().NotContain("3C0A7E5C", "a RAM word must not be exported from any public output");
+        }
+
+        var captured = JsonNode.Parse(captureJson)!["captured"]!;
+        captured["pc"]!.ToString().Should().Be("0x80030000", "the RAM-range fetch was reached");
+        captured["word"].Should().BeNull("a PC in guest RAM has its word withheld");
+        var lastFetches = JsonNode.Parse(stopJson)!["stop"]!["lastFetches"]!.AsArray().Select(f => f!.ToString()).ToArray();
+        // The run walks on through zeroed RAM after the jump, so the last 16 fetches are RAM fetches (0x8003xxxx); each must carry null.
+        var ramFetches = lastFetches.Where(f => f.StartsWith("0x8003", StringComparison.Ordinal)).ToArray();
+        ramFetches.Should().NotBeEmpty("the stop trace holds RAM-range fetches");
+        ramFetches.Should().OnlyContain(f => f.EndsWith(":null", StringComparison.Ordinal), "every RAM-range fetch in the stop trace has its word withheld");
+        text.Should().Contain("Stop: ", "the stop diagnostics were produced, so the path was exercised");
+    }
+
     [Theory]
     [InlineData(0xBFC00000u)] // the reset vector (KSEG1)
     [InlineData(0x9FC00000u)] // the ROM through KSEG0
