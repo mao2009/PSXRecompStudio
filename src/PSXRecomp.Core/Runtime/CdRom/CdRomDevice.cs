@@ -654,7 +654,7 @@ public sealed class CdRomDevice : ICdRom
         if (!RequireParameterCount(parameters, 0) || !RequireDisc(out var toc)) return;
 
         var track = toc.Tracks.Last(t => t.StartLba <= _position || t == toc.Tracks[0]);
-        var relative = Math.Max(0, _position - track.StartLba) - 150; // relative MSF counts from 00:00:00
+        var relative = Math.Max(0, _position - track.StartLba) - CdSectorAddress.LeadInFrames; // relative MSF counts from 00:00:00
         var (am, @as, af) = LbaToMsf(_position);
         var (rm, rs, rf) = LbaToMsf(relative);
         QueueResponse(IntAcknowledge, ToBcd(track.Number), 0x01, rm, rs, rf, am, @as, af);

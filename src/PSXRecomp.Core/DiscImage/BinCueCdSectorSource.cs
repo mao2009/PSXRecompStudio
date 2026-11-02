@@ -13,7 +13,7 @@ namespace PSXRecomp.Core.DiscImage;
 /// <list type="bullet">
 /// <item>File index: a sector's position from the start of the BINARY file. CUE MSF values (INDEX 01 and so on) count
 /// in this space, and <see cref="BinCueTrack.Index01Frames"/> is in it.</item>
-/// <item>LBA: the ICdSectorSource.cs:5 convention, LBA 0 = MSF 00:02:00. <see cref="TryReadSector"/>, <see cref="CdTrack.StartLba"/>
+/// <item>LBA: the convention in ICdSectorSource.cs, LBA 0 = MSF 00:02:00. <see cref="TryReadSector"/>, <see cref="CdTrack.StartLba"/>
 /// and <see cref="CdDiscToc.LeadOutLba"/> are in this space.</item>
 /// <item>Absolute MSF frames: LBA + 150, as the CD-ROM controller's SetLoc and GetTD report them.</item>
 /// </list>

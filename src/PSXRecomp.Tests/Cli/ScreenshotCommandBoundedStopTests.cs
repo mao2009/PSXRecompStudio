@@ -367,7 +367,7 @@ public sealed class ScreenshotCommandBoundedStopTests
         BitConverter.GetBytes(0x0BF00000u).CopyTo(rom, 0); // j 0xBFC00000
         File.WriteAllBytes(romPath, rom);
         var discPath = Path.Combine(dir, "blank.bin");
-        File.WriteAllBytes(discPath, new byte[2352 * 16]);
+        File.WriteAllBytes(discPath, new byte[2352 * (PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1)]);
         return (romPath, discPath);
     }
 
