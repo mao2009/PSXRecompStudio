@@ -58,6 +58,7 @@ public static class Program
             "screenshot" => ScreenshotCommand.Run(rest, standardOutput, standardError),
             "doctor" => Doctor(rest, standardOutput, standardError),
             "openbios-probe" => OpenBiosProbeCommand.Run(rest, standardOutput, standardError),
+            "firmware-diagnostic" => FirmwareDiagnosticCommand.Run(rest, standardOutput, standardError),
             "fallback-roots" => FallbackRootsCommand.Run(rest, standardOutput, standardError),
             "--help" or "-h" => Usage(standardOutput),
             _ => UnknownCommand(command, standardError),
