@@ -9,9 +9,9 @@ The staging directory is the ONLY directory that is uploaded as an artifact. Thi
                16 distinct byte values, so zero or 0xFF padding is never used as a probe. It also fails
                when the probe set does not cover the ROM (see MIN_PROBES and MAX_GAP below).
   manifest     runs verify, then writes provenance-manifest.json into the staging directory with the
-               provenance fields and the SHA-256 and size of every staged file (the manifest itself
-               is excluded from that list), then runs verify once more over the final staging tree.
-               The built ROM's SHA-256 is deliberately NOT written to the manifest.
+               provenance fields, the names of every staged file (the manifest itself is excluded), and the
+               SHA-256 and size of the PUBLIC_HASHED_FILES only, then runs verify once more over the final
+               staging tree. The built ROM's SHA-256 and size are deliberately NOT written to the manifest.
   diag-scan    the public-safety scan of diagnostics.json (ROM windows, absolute paths, digests, JSON).
                It applies the same probe coverage check as verify.
 
@@ -40,6 +40,12 @@ PROBE_BYTES = 64
 PROBE_STRIDE = 1024
 MIN_DISTINCT_BYTES = 16
 MANIFEST_NAME = "provenance-manifest.json"
+
+# The only staged files whose size and SHA-256 the public manifest records. The README is static text from the package
+# writer (FirmwareDistribution.Readme), with no ROM bytes, digests or counts in it.
+# Every other staged file is listed by NAME only. The package was built from the ROM (runtime/firmware/*, the AOT
+# artifact, firmware-boot.json carry ROM-derived data), and the run output is not proven ROM-free either.
+PUBLIC_HASHED_FILES = frozenset({"package/README.txt"})
 
 # Coverage thresholds for the ROM-absence check. They fail closed: below them the check cannot
 # claim coverage of the ROM and must not pass. The earlier CI run had 211 probes of 513 grid
@@ -271,19 +277,17 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         print("ROM-absence check FAILED; no manifest written.")
         return 1
     staging = args.staging.resolve()
-    rom_bytes = load_rom(args.rom)
     disc = args.disc.read_bytes()
     toolchain_sha = sha256_file(args.toolchain_zip)
     files = []
     for path in sorted(staging.rglob("*")):
         if path.is_file() and path.name != MANIFEST_NAME:
-            files.append(
-                {
-                    "path": path.relative_to(staging).as_posix(),
-                    "bytes": path.stat().st_size,
-                    "sha256": sha256_file(path),
-                }
-            )
+            rel = path.relative_to(staging).as_posix()
+            entry = {"path": rel}
+            if rel in PUBLIC_HASHED_FILES:
+                entry["bytes"] = path.stat().st_size
+                entry["sha256"] = sha256_file(path)
+            files.append(entry)
     manifest = {
         "schema": "psxrecomp-standalone-package-public/1",
         "purpose": "Verification of the launch and measurement infrastructure. Not evidence that any title boots or reaches a title screen.",
@@ -321,9 +325,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "toolchain_sha256": toolchain_sha,
             "toolchain_sha256_verified_against_pin": toolchain_sha == args.toolchain_pin,
             "toolchain_gcc_version": args.toolchain_gcc_version,
-            # The built ROM's SHA-256 is intentionally absent: a published digest of the built ROM would let
-            # anyone check a candidate ROM against it. Its size is recorded instead (a count, not a digest).
-            "built_rom_bytes": len(rom_bytes),
+            # The built ROM's SHA-256 and size are intentionally absent: a published digest or size of the built ROM
+            # would let anyone check a candidate ROM against it.
             "built_rom_uploaded": False,
             "built_rom_cached": False,
         },

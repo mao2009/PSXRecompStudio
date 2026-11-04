@@ -31,8 +31,13 @@ chmod +x "$fixture/path/"* "$fixture/explicit/"*
 export PATH="$fixture/path:$PATH"
 unset OPENBIOS_TOOLCHAIN_BIN
 export BUILD_TEST_VERSION=16.2.0
-bash "$repo/scripts/openbios/build.sh" "$fixture/src" "$fixture/out" > "$fixture/default.log"
+bash "$repo/scripts/openbios/build.sh" "$fixture/src" "$fixture/out" > "$fixture/default.log" 2>&1
 grep -q '^builder=native$' "$fixture/out/provenance.txt"
+# Public output: the built ROM's digest is neither printed nor recorded. The stub ROM is 524288 zero bytes.
+rom_digest="$(head -c 524288 /dev/zero | sha256sum | awk '{print $1}')"
+if grep -q "$rom_digest" "$fixture/default.log" "$fixture/out/provenance.txt"; then echo "FAIL: built ROM digest in public output"; exit 1; fi
+if grep -Eq '[0-9a-fA-F]{64}' "$fixture/default.log"; then echo "FAIL: a 64-hex digest is printed by build.sh"; exit 1; fi
+if grep -q '^rom_sha256=' "$fixture/out/provenance.txt"; then echo "FAIL: provenance.txt records the ROM digest"; exit 1; fi
 grep -q 'verified_version=16.2.0; archive_identity=NOT_VERIFIED' "$fixture/out/provenance.txt"
 [[ "$(cat "$BUILD_TEST_LOG")" == make ]]
 export BUILD_TEST_VERSION=15.1.0
@@ -49,4 +54,4 @@ grep -q 'toolchain=explicit GCC' "$fixture/out/provenance.txt"
 [[ "$(wc -l < "$BUILD_TEST_LOG")" -eq 2 ]]
 if bash "$repo/scripts/openbios/build.sh" --builder docker "$fixture/src" "$fixture/out" > "$fixture/docker.log" 2>&1; then exit 1; fi
 grep -q 'docker pull ghcr.io/grumpycoders/pcsx-redux-build@sha256:d9ae6cbb23a5d0d98d8c3702cc6f512698ee1670bf8d59b236b2baabe99a66e4' "$BUILD_TEST_LOG"
-echo 'PASS: native default, exact version, explicit path precedence, honest provenance, explicit pinned Docker selection (5 checks; stubbed only)'
+echo 'PASS: native default, exact version, explicit path precedence, honest provenance, no public ROM digest, explicit pinned Docker selection (stubbed only)'

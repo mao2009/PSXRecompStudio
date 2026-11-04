@@ -11,6 +11,7 @@ import json
 import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "standalone-package-verify.py"
+PREPARE_AOT = HERE.parent / "openbios" / "prepare-aot.py"
 ROM_SIZE = 524288
 
 
@@ -319,6 +321,12 @@ class ManifestTests(unittest.TestCase):
             staging = tmp / "stage"
             (staging / "package").mkdir(parents=True)
             (staging / "package" / "unrelated.bin").write_bytes(random_bytes(3002, 50000))
+            # Static README (the only hashed file) and ROM-derived-looking files (names only in the manifest).
+            (staging / "package" / "README.txt").write_text("static readme\n", encoding="utf-8")
+            (staging / "package" / "firmware").mkdir()
+            (staging / "package" / "firmware" / "rom.roots").write_bytes(random_bytes(3005, 2048))
+            (staging / "run").mkdir()
+            (staging / "run" / "diagnostics.json").write_text('{"frames": 1}', encoding="utf-8")
             disc = tmp / "disc.bin"
             disc.write_bytes(random_bytes(3003, 4096))
             toolchain = tmp / "toolchain.zip"
@@ -341,10 +349,23 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             text = (staging / "provenance-manifest.json").read_text(encoding="utf-8")
             self.assertNotIn("built_rom_sha256", text)
+            self.assertNotIn("built_rom_bytes", text)
             self.assertNotIn(hashlib.sha256(rom).hexdigest(), text)
+            self.assertNotIn(str(ROM_SIZE), text)
             data = json.loads(text)
             self.assertNotIn("built_rom_sha256", data["openbios"])
-            self.assertEqual(data["openbios"]["built_rom_bytes"], ROM_SIZE)
+            self.assertNotIn("built_rom_bytes", data["openbios"])
+            # Every staged file is named; size and SHA-256 are published only for the static README.
+            entries = {entry["path"]: entry for entry in data["files"]}
+            self.assertEqual(
+                set(entries),
+                {"package/unrelated.bin", "package/README.txt", "package/firmware/rom.roots", "run/diagnostics.json"},
+            )
+            readme = (staging / "package" / "README.txt").read_bytes()
+            self.assertEqual(entries["package/README.txt"]["sha256"], hashlib.sha256(readme).hexdigest())
+            self.assertEqual(entries["package/README.txt"]["bytes"], len(readme))
+            for path in ("package/unrelated.bin", "package/firmware/rom.roots", "run/diagnostics.json"):
+                self.assertEqual(set(entries[path]), {"path"}, f"{path}: only the name may be published")
             self.assertEqual(data["openbios"]["toolchain_sha256"], hashlib.sha256(toolchain.read_bytes()).hexdigest())
             check = data["rom_absence_check"]
             gate = load_gate()
@@ -358,6 +379,93 @@ class ManifestTests(unittest.TestCase):
             self.assertNotIn("guaranteed_detection_length", text)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def synthetic_openbios_elf(text_size: int, memcpy_size: int) -> bytes:
+    """A minimal ELF32 little-endian MIPS file with the sections and symbols prepare-aot.py reads. No ROM data."""
+    shstr = b"\0.shstrtab\0.text\0.text_memcpy\0.symtab\0.strtab\0"
+    strtab = b"\0C0Handler\0exceptionHandler\0boot_fn\0"
+
+    def name_at(table: bytes, name: bytes) -> int:
+        return table.index(b"\0" + name + b"\0") + 1
+
+    def symbol(name: int, value: int) -> bytes:
+        return struct.pack("<IIIBBH", name, value, 0, 0x12, 0, 2)  # GLOBAL FUNC in section 2
+
+    symtab = bytes(16) + symbol(name_at(strtab, b"C0Handler"), 0xBFC00100) \
+        + symbol(name_at(strtab, b"exceptionHandler"), 0xBFC00200) + symbol(name_at(strtab, b"boot_fn"), 0xBFC00010)
+    body = bytearray(52)
+    text_off = len(body)
+    body += bytes(text_size)
+    memcpy_off = len(body)
+    body += bytes(memcpy_size)
+    sym_off = len(body)
+    body += symtab
+    str_off = len(body)
+    body += strtab
+    shstr_off = len(body)
+    body += shstr
+    while len(body) % 4:
+        body += b"\0"
+    shoff = len(body)
+    sections = [
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        (name_at(shstr, b".shstrtab"), 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0),
+        (name_at(shstr, b".text"), 1, 6, 0xBFC00000, text_off, text_size, 0, 0, 4, 0),
+        (name_at(shstr, b".text_memcpy"), 1, 6, 0xBFC00000, memcpy_off, memcpy_size, 0, 0, 4, 0),
+        (name_at(shstr, b".symtab"), 2, 0, 0, sym_off, len(symtab), 5, 1, 4, 16),
+        (name_at(shstr, b".strtab"), 3, 0, 0, str_off, len(strtab), 0, 0, 1, 0),
+    ]
+    for section in sections:
+        body += struct.pack("<10I", *section)
+    header = b"\x7fELF\x01\x01\x01" + bytes(9) + struct.pack(
+        "<HHIIIIIHHHHHH", 2, 8, 1, 0xBFC00000, 0, shoff, 0, 52, 0, 0, 40, len(sections), 1
+    )
+    return bytes(header) + bytes(body[52:])
+
+
+class PrepareAotPublicOutputTests(unittest.TestCase):
+    """prepare-aot.py must not print the ROM-derived code-byte count. The count goes only to --code-bytes-out."""
+
+    TEXT, MEMCPY = 0x1234, 0x0567
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="prepare-aot-test-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_public_output_is_status_only_and_count_goes_to_file(self) -> None:
+        elf = self.tmp / "openbios.elf"
+        elf.write_bytes(synthetic_openbios_elf(self.TEXT, self.MEMCPY))
+        code_file = self.tmp / "code-bytes.txt"
+        result = subprocess.run(
+            [sys.executable, str(PREPARE_AOT), str(elf), str(self.tmp / "aot"), "--code-bytes-out", str(code_file)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "prepare-aot: ok\n")
+        code_bytes = self.TEXT + self.MEMCPY
+        self.assertEqual(code_file.read_text(encoding="ascii"), f"{code_bytes}\n")
+        for stream in (result.stdout, result.stderr):
+            self.assertNotIn(str(code_bytes), stream)
+            self.assertNotIn("--code-bytes", stream)
+        self.assertTrue((self.tmp / "aot" / "rom.roots").is_file())
+        self.assertTrue((self.tmp / "aot" / "images.txt").is_file())
+
+    def test_failure_exits_nonzero_without_a_count(self) -> None:
+        elf = self.tmp / "bad.elf"
+        elf.write_bytes(b"not an ELF file " * 8)
+        code_file = self.tmp / "code-bytes.txt"
+        result = subprocess.run(
+            [sys.executable, str(PREPARE_AOT), str(elf), str(self.tmp / "aot"), "--code-bytes-out", str(code_file)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("prepare-aot: ok", result.stdout)
+        self.assertFalse(code_file.exists())
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@ class Elf:
                     self.functions.add(value)
 
 
-def prepare(rom_path, output, disc_exes=False):
+def prepare(rom_path, output, disc_exes=False, code_bytes_out=None):
     # R1 (the canonical pipeline does not take the BIOS directly as an AOT input): no BIOS code or data is emitted as a RAM image. The kernel data, the exception
     # vectors and the shell stay in the BIOS image; the run loads them from the ROM and interprets them, as before.
     # Only the disc's executables are AOT inputs, plus the observation points that stay interpreted.
@@ -58,7 +58,10 @@ def prepare(rom_path, output, disc_exes=False):
     lines = ['boot-exe boot'] + (['disc-exes disc'] if disc_exes else [])
     lines += [f'interpret 0x{rom.symbols["C0Handler"]:X}', 'interpret 0x80000080', f'interpret 0x{rom.symbols["exceptionHandler"]:X}']
     (output / 'images.txt').write_text('\n'.join(lines) + '\n')
-    print(f'--code-bytes {text_size} --roots {output / "rom.roots"} --load-images {output / "images.txt"}')
+    # The code-byte count is derived from the ROM's ELF, so it is never printed. It goes only to the
+    # file the caller names (the CI step keeps that file outside its public upload set).
+    if code_bytes_out is not None:
+        code_bytes_out.write_text(f'{text_size}\n')
 
 
 if __name__ == '__main__':
@@ -67,5 +70,8 @@ if __name__ == '__main__':
     parser.add_argument('output', type=Path)
     parser.add_argument('--disc-exes', action='store_true',
                         help='also compile every PS-X EXE on the disc (entry-only roots; measured slower on Persona, see Issue #734)')
+    parser.add_argument('--code-bytes-out', type=Path, default=None,
+                        help='write the ROM-derived code-byte count to this file; it is never printed')
     args = parser.parse_args()
-    prepare(args.openbios_elf, args.output, args.disc_exes)
+    prepare(args.openbios_elf, args.output, args.disc_exes, args.code_bytes_out)
+    print('prepare-aot: ok')

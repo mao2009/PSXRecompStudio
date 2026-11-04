@@ -114,12 +114,9 @@ jobs:
           export OPENBIOS_TOOLCHAIN_BIN="$(cygpath -u "$TOOLCHAIN_BIN_WIN")"
           export OPENBIOS_BUILD_JOBS=2
           rm -rf "$W/openbios-out"
-          # build.sh prints the built ROM's SHA-256 (line "sha256: ...") and provenance.txt holds "rom_sha256=...".
-          # The job log is public, so every 64-hex digest in this step's output is redacted. The build's exit
-          # status still fails the step (pipefail). The files on disk are unchanged and are never uploaded.
-          bash scripts/openbios/build.sh --builder native "$W/nugget" "$W/openbios-out" 2>&1 \
-            | sed -E 's/[0-9a-fA-F]{64}/<sha256 redacted>/g'
-          sed -E 's/[0-9a-fA-F]{64}/<sha256 redacted>/g' "$W/openbios-out/provenance.txt"
+          # build.sh does not print or record the built ROM's digest (the protection is at the source, not a log
+          # filter). Its output directory lives under $WORK and is never uploaded.
+          bash scripts/openbios/build.sh --builder native "$W/nugget" "$W/openbios-out"
 
       - name: Generate synthetic disc (public generator)
         shell: pwsh
@@ -148,10 +145,17 @@ jobs:
           DISC="$(cygpath -u "$DISC_PATH")"
           rm -rf "$AOT" "$W/pkg"
           mkdir -p "$AOT"
-          line="$(python scripts/openbios/prepare-aot.py "$ELF" "$AOT" | tail -1)"
-          echo "prepare-aot: $line"
-          code_bytes="$(sed -E 's/.*--code-bytes ([0-9]+).*/\1/' <<< "$line")"
-          [[ "$code_bytes" =~ ^[0-9]+$ ]] || { echo "could not read --code-bytes from prepare-aot output"; exit 1; }
+          # prepare-aot's output is not echoed: a traceback can name local paths. Only a status is public.
+          # The ROM-derived code-byte count goes to a file under $WORK (never uploaded, never printed).
+          code_file="$W/prepare-aot-code-bytes.txt"
+          rm -f "$code_file"
+          if ! python scripts/openbios/prepare-aot.py "$ELF" "$AOT" --code-bytes-out "$code_file" >/dev/null 2>&1; then
+            echo "prepare-aot: FAILED"
+            exit 1
+          fi
+          echo "prepare-aot: ok"
+          code_bytes="$(cat "$code_file")"
+          [[ "$code_bytes" =~ ^[0-9]+$ ]] || { echo "prepare-aot: code-byte input unavailable"; exit 1; }
           dotnet run --project src/PSXRecomp.Cli/PSXRecomp.Cli.csproj --configuration Release -- \
             package "$DISC" --bios openbios --bios-rom "$ROM" --aot-dir "$AOT" --output "$PKG" \
             --code-bytes "$code_bytes" --run-timeout-seconds 60 --build-timeout-seconds 900
@@ -181,7 +185,8 @@ jobs:
           set -e
           echo "runtime host exit code: $rc"
           echo "HOST_EXIT_CODE=$rc" >> "$GITHUB_ENV"
-          ls -l "$RUN"
+          # Names only: file sizes of the host's output are not printed (they are run-derived numbers).
+          ls "$RUN"
           # Fail closed: the job is green only when the host exits 0 and produced a non-empty frame.png.
           # A failing step stops the later steps, so nothing is staged or uploaded.
           if [ "$rc" -ne 0 ]; then
@@ -192,7 +197,7 @@ jobs:
             echo "FAIL: $RUN/frame.png is missing or empty"
             exit 1
           fi
-          echo "frame.png size: $(stat -c %s "$RUN/frame.png") bytes"
+          echo "frame.png: present and non-empty"
 
       # Runs only after a failed step. It keeps the failing host's diagnostics.json, but only when the
       # public-safety scan passes (ROM windows, absolute paths, digests, JSON). It never changes the job
@@ -221,7 +226,7 @@ jobs:
             || rc=$?
           if [ "$rc" -eq 0 ] && cp "$RUN/diagnostics.json" "$DIAG/diagnostics.json"; then
             echo "safe=true" >> "$GITHUB_OUTPUT"
-            echo "diagnostics.json staged for the failure artifact ($(stat -c %s "$DIAG/diagnostics.json") bytes)"
+            echo "diagnostics.json staged for the failure artifact"
           else
             echo "diagnostics.json NOT staged (scan rc=$rc); see the counts above"
           fi
@@ -278,8 +283,8 @@ jobs:
           cp "$RUN/frame.png" "$STAGE/run/frame.png"
           python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE"
 
-      # The manifest records the built ROM's size, not its SHA-256. A published digest of the built ROM would
-      # let anyone test a candidate ROM against it, and the ROM must never be identifiable from published data.
+      # The manifest records no built-ROM size or digest, and no size or digest of any ROM-derived file (see
+      # standalone-package-verify.py manifest). A published digest or size of the ROM would let anyone test a candidate ROM.
       - name: Write provenance manifest and re-verify
         shell: bash
         env:
