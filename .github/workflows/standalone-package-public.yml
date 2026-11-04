@@ -165,13 +165,31 @@ jobs:
           mkdir -p "$RUN"
           host="$PKG/runtime/PSXRecomp.RuntimeHost.exe"
           test -f "$host"
+          # The firmware distribution needs the OpenBIOS image named at run time. It is the ROM built
+          # above, read from the runner's work directory; it is never copied into the package, the run
+          # folder or the upload set. The .NET host reads the variable directly, so it gets a Windows path.
+          # The variable is set for this command only.
+          ROM="$W/openbios-out/openbios.bin"
+          test -s "$ROM"
+          ROM_WIN="$(cygpath -w "$ROM")"
           set +e
-          (cd "$RUN" && "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json")
+          (cd "$RUN" && PSXRECOMP_BIOS_ROM="$ROM_WIN" "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json")
           rc=$?
           set -e
           echo "runtime host exit code: $rc"
           echo "HOST_EXIT_CODE=$rc" >> "$GITHUB_ENV"
           ls -l "$RUN"
+          # Fail closed: the job is green only when the host exits 0 and produced a non-empty frame.png.
+          # A failing step stops the later steps, so nothing is staged or uploaded.
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: runtime host exited $rc (expected 0); no frame is accepted"
+            exit 1
+          fi
+          if [ ! -s "$RUN/frame.png" ]; then
+            echo "FAIL: $RUN/frame.png is missing or empty"
+            exit 1
+          fi
+          echo "frame.png size: $(stat -c %s "$RUN/frame.png") bytes"
 
       - name: Stage upload set and verify ROM absence
         shell: bash
