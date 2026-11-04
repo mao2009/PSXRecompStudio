@@ -1,0 +1,216 @@
+name: Standalone Package (public inputs)
+
+# Verification route for the launch and measurement infrastructure.
+# Inputs are public source and synthetic only: OpenBIOS is built from the pinned public
+# Nugget revision, the disc comes from scripts/demo/synthetic-disc.ps1. No ROM, BIOS or
+# commercial data is used, cached or uploaded. A green run is NOT evidence that any
+# title boots or reaches a title screen.
+#
+# This workflow is separate from ci.yml and is not a required check of the CI Gate.
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-package-public:
+    name: Standalone package (public inputs)
+    # The pinned OpenBIOS toolchain (mipsel-none-elf GCC 16.2.0, see scripts/openbios/build.sh)
+    # is a Windows build, so the native build runs on a Windows runner.
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      OPENBIOS_PIN: c950e18a168944ec2d4e6d3c408fc224317483a7
+      TOOLCHAIN_URL: https://static.grumpycoder.net/pixel/mips/g++-mipsel-none-elf-16.2.0.zip
+      TOOLCHAIN_SHA256: cf84960f5624829d44b866c5f194094c21c63b30f7cbb8cf3030f1abebd52b75
+      SYNTHETIC_DISC_SHA256: ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606
+      # Everything below lives outside the checkout. Only $WORK/stage is uploaded.
+      WORK: ${{ runner.temp }}/psx
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Record tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          gcc --version | head -1
+          gcc -dumpfullversion -dumpversion
+          python --version
+          dotnet --version
+          pwsh --version
+
+      - name: Fetch pinned OpenBIOS source (Nugget)
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          src="$W/nugget"
+          rm -rf "$src"
+          mkdir -p "$src"
+          git -c core.autocrlf=false -C "$src" init -q
+          git -C "$src" remote add origin https://github.com/pcsx-redux/nugget.git
+          git -C "$src" -c core.autocrlf=false fetch -q --depth 1 origin "$OPENBIOS_PIN"
+          git -C "$src" -c core.autocrlf=false -c advice.detachedHead=false checkout -q FETCH_HEAD
+          test "$(git -C "$src" rev-parse HEAD)" = "$OPENBIOS_PIN"
+          git -C "$src" -c core.autocrlf=false submodule update --init --recursive --depth 1
+          echo "Nugget checked out at $(git -C "$src" rev-parse HEAD)"
+
+      - name: Fetch and verify pinned toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dl = Join-Path $env:WORK 'toolchain'
+          Remove-Item -Recurse -Force $dl -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          $zip = Join-Path $dl 'toolchain.zip'
+          Invoke-WebRequest -Uri $env:TOOLCHAIN_URL -OutFile $zip -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TOOLCHAIN_SHA256) { throw "toolchain SHA-256 mismatch: $actual (expected $env:TOOLCHAIN_SHA256); refusing to use it" }
+          Write-Host "toolchain archive SHA-256 verified: $actual"
+          $extract = Join-Path $dl 'gcc'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract
+          $gcc = Get-ChildItem -Path $extract -Recurse -Filter 'mipsel-none-elf-gcc.exe' | Select-Object -First 1
+          if (-not $gcc) { throw 'mipsel-none-elf-gcc.exe not found in the verified archive' }
+          "TOOLCHAIN_BIN_WIN=$($gcc.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build OpenBIOS from the pinned revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          export OPENBIOS_TOOLCHAIN_BIN="$(cygpath -u "$TOOLCHAIN_BIN_WIN")"
+          export OPENBIOS_BUILD_JOBS=2
+          rm -rf "$W/openbios-out"
+          bash scripts/openbios/build.sh --builder native "$W/nugget" "$W/openbios-out"
+          # Print the provenance file (hashes and toolchain line only; no ROM bytes).
+          cat "$W/openbios-out/provenance.txt"
+
+      - name: Generate synthetic disc (public generator)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $disc = Join-Path $env:WORK 'disc'
+          Remove-Item -Recurse -Force $disc -ErrorAction SilentlyContinue
+          & (Join-Path $env:GITHUB_WORKSPACE 'scripts/demo/synthetic-disc.ps1') -WorkDir $disc -OpenBiosCompatible
+          if ($LASTEXITCODE -ne 0) { throw "synthetic-disc.ps1 failed with exit code $LASTEXITCODE" }
+          $file = Join-Path $disc 'synthetic-disc-openbios.bin'
+          $sha = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $env:SYNTHETIC_DISC_SHA256) { throw "synthetic disc SHA-256 mismatch: $sha" }
+          "DISC_PATH=$file" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "synthetic disc SHA-256 $sha"
+
+      - name: Prepare AOT inputs and package (--bios openbios)
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          ROM="$W/openbios-out/openbios.bin"
+          ELF="$W/openbios-out/openbios.elf"
+          AOT="$W/aot"
+          PKG="$W/pkg/psxrecomp-public-openbios"
+          DISC="$(cygpath -u "$DISC_PATH")"
+          rm -rf "$AOT" "$W/pkg"
+          mkdir -p "$AOT"
+          line="$(python scripts/openbios/prepare-aot.py "$ELF" "$AOT" | tail -1)"
+          echo "prepare-aot: $line"
+          code_bytes="$(sed -E 's/.*--code-bytes ([0-9]+).*/\1/' <<< "$line")"
+          [[ "$code_bytes" =~ ^[0-9]+$ ]] || { echo "could not read --code-bytes from prepare-aot output"; exit 1; }
+          dotnet run --project src/PSXRecomp.Cli/PSXRecomp.Cli.csproj --configuration Release -- \
+            package "$DISC" --bios openbios --bios-rom "$ROM" --aot-dir "$AOT" --output "$PKG" \
+            --code-bytes "$code_bytes" --run-timeout-seconds 60 --build-timeout-seconds 900
+          find "$PKG" -type f | sort
+
+      - name: Run packaged runtime host (--frame-out, --diagnostics)
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          PKG="$W/pkg/psxrecomp-public-openbios"
+          RUN="$W/run"
+          rm -rf "$RUN"
+          mkdir -p "$RUN"
+          host="$PKG/runtime/PSXRecomp.RuntimeHost.exe"
+          test -f "$host"
+          set +e
+          (cd "$RUN" && "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json")
+          rc=$?
+          set -e
+          echo "runtime host exit code: $rc"
+          echo "HOST_EXIT_CODE=$rc" >> "$GITHUB_ENV"
+          ls -l "$RUN"
+
+      - name: Stage upload set and verify ROM absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          ROM="$W/openbios-out/openbios.bin"
+          STAGE="$W/stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/package" "$STAGE/run"
+          cp -r "$W/pkg/psxrecomp-public-openbios/." "$STAGE/package/"
+          cp -r "$W/run/." "$STAGE/run/"
+          python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE"
+
+      - name: Write provenance manifest and re-verify
+        shell: bash
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_SHA: ${{ github.sha }}
+          GH_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          ROM="$W/openbios-out/openbios.bin"
+          STAGE="$W/stage"
+          DISC="$(cygpath -u "$DISC_PATH")"
+          TC_ZIP="$W/toolchain/toolchain.zip"
+          gcc_version="$(gcc -dumpfullversion -dumpversion)"
+          gcc_line="$(gcc --version | head -1)"
+          tc_gcc_version="$("$(cygpath -u "$TOOLCHAIN_BIN_WIN")/mipsel-none-elf-gcc.exe" -dumpfullversion -dumpversion)"
+          python scripts/ci/standalone-package-verify.py manifest \
+            --rom "$ROM" --staging "$STAGE" --disc "$DISC" --toolchain-zip "$TC_ZIP" \
+            --toolchain-pin "$TOOLCHAIN_SHA256" --toolchain-url "$TOOLCHAIN_URL" \
+            --toolchain-gcc-version "$tc_gcc_version" --openbios-revision "$OPENBIOS_PIN" \
+            --checkout-sha "$GH_SHA" --pr-head-sha "$GH_PR_HEAD_SHA" --event-name "$GH_EVENT" \
+            --repository "$GH_REPOSITORY" --run-id "$GH_RUN_ID" --run-attempt "$GH_RUN_ATTEMPT" \
+            --runner-image "${ImageOS:-unknown} ${ImageVersion:-unknown}" \
+            --compiler-name gcc --compiler-version "$gcc_version" --compiler-line "$gcc_line" \
+            --host-exit-code "$HOST_EXIT_CODE"
+          {
+            echo "## Standalone package (public inputs) provenance"
+            echo ""
+            echo '```json'
+            cat "$STAGE/provenance-manifest.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified package (1-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-package-public
+          path: ${{ env.WORK }}/stage
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove built ROM from the runner
+        if: always()
+        shell: bash
+        run: |
+          W="$(cygpath -u "$WORK")"
+          rm -f "$W/openbios-out/openbios.bin" || true
