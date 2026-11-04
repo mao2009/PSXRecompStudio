@@ -82,7 +82,7 @@ class VerifyGateTests(unittest.TestCase):
         self.write_rom(rom)
         # A staged file made only of zeros, 0xFF padding and unrelated bytes. It contains the
         # ROM's zero tail window, which the old tail probe rejected.
-        (self.staging / "padded.bin").write_bytes(
+        (self.staging / "README.txt").write_bytes(
             bytes(4096) + b"\xff" * 4096 + rom[-64:] + random_bytes(9001, 5000)
         )
         result = self.run_verify()
@@ -135,7 +135,7 @@ class VerifyGateTests(unittest.TestCase):
         self.write_rom(rom)
         _, guaranteed = gate.gap_stats(gate.select_probes(rom))
         self.assertLess(4096, guaranteed)
-        (self.staging / "zeros.bin").write_bytes(rom[-4096:])
+        (self.staging / "README.txt").write_bytes(rom[-4096:])
         result = self.run_verify()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ROM-absence check PASSED.", result.stdout)
@@ -173,13 +173,14 @@ class VerifyGateTests(unittest.TestCase):
             self.assertIsNone(re.search(rf"(?<!\d){number}(?!\d)", stdout), f"ROM-derived number {number} printed")
         self.assertNotIn(hashlib.sha256(rom).hexdigest(), stdout)
 
-    def test_c_unrelated_file_passes(self) -> None:
+    def test_c_unrelated_bytes_pass_the_window_check(self) -> None:
+        # The window and SHA-256 checks do not refuse unrelated bytes. The name allowlist is tested separately
+        # (StagingAllowlistTests), so this calls the window check directly.
         self.write_rom(random_bytes(1004, ROM_SIZE))
         (self.staging / "unrelated.dll").write_bytes(random_bytes(9002, 200000))
         (self.staging / "disc.bin").write_bytes(bytes(2048) * 4)
-        result = self.run_verify()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("ROM-absence check PASSED.", result.stdout)
+        gate = load_gate()
+        self.assertEqual(gate.verify(self.rom, self.staging), [])
 
     def test_d_probe_selection_skips_zero_tail(self) -> None:
         # The module name has a hyphen, so load it by path.
@@ -319,14 +320,9 @@ class ManifestTests(unittest.TestCase):
             rom_path = tmp / "openbios.bin"
             rom_path.write_bytes(rom)
             staging = tmp / "stage"
-            (staging / "package").mkdir(parents=True)
-            (staging / "package" / "unrelated.bin").write_bytes(random_bytes(3002, 50000))
-            # Static README (the only hashed file) and ROM-derived-looking files (names only in the manifest).
-            (staging / "package" / "README.txt").write_text("static readme\n", encoding="utf-8")
-            (staging / "package" / "firmware").mkdir()
-            (staging / "package" / "firmware" / "rom.roots").write_bytes(random_bytes(3005, 2048))
-            (staging / "run").mkdir()
-            (staging / "run" / "diagnostics.json").write_text('{"frames": 1}', encoding="utf-8")
+            staging.mkdir()
+            # The allowlist: the static README is the only staged file (the manifest step writes the manifest itself).
+            (staging / "README.txt").write_text("static readme\n", encoding="utf-8")
             disc = tmp / "disc.bin"
             disc.write_bytes(random_bytes(3003, 4096))
             toolchain = tmp / "toolchain.zip"
@@ -355,17 +351,12 @@ class ManifestTests(unittest.TestCase):
             data = json.loads(text)
             self.assertNotIn("built_rom_sha256", data["openbios"])
             self.assertNotIn("built_rom_bytes", data["openbios"])
-            # Every staged file is named; size and SHA-256 are published only for the static README.
+            # The allowlisted staging holds only the README: its name, size and SHA-256 are published.
             entries = {entry["path"]: entry for entry in data["files"]}
-            self.assertEqual(
-                set(entries),
-                {"package/unrelated.bin", "package/README.txt", "package/firmware/rom.roots", "run/diagnostics.json"},
-            )
-            readme = (staging / "package" / "README.txt").read_bytes()
-            self.assertEqual(entries["package/README.txt"]["sha256"], hashlib.sha256(readme).hexdigest())
-            self.assertEqual(entries["package/README.txt"]["bytes"], len(readme))
-            for path in ("package/unrelated.bin", "package/firmware/rom.roots", "run/diagnostics.json"):
-                self.assertEqual(set(entries[path]), {"path"}, f"{path}: only the name may be published")
+            self.assertEqual(set(entries), {"README.txt"})
+            readme = (staging / "README.txt").read_bytes()
+            self.assertEqual(entries["README.txt"]["sha256"], hashlib.sha256(readme).hexdigest())
+            self.assertEqual(entries["README.txt"]["bytes"], len(readme))
             self.assertEqual(data["openbios"]["toolchain_sha256"], hashlib.sha256(toolchain.read_bytes()).hexdigest())
             check = data["rom_absence_check"]
             gate = load_gate()
@@ -466,6 +457,242 @@ class PrepareAotPublicOutputTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("prepare-aot: ok", result.stdout)
         self.assertFalse(code_file.exists())
+
+
+def make_link(target: Path, link: Path) -> None:
+    """A symbolic link, or a skip when the host does not allow creating one (Windows without developer mode)."""
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError as exc:
+        raise unittest.SkipTest(f"symbolic links are not available on this host ({type(exc).__name__}); NOT_TESTED")
+
+
+class PublicStageTests(unittest.TestCase):
+    """stage-public copies only the package README, and only after every check passes. Synthetic bytes only."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="public-stage-test-"))
+        self.package = self.tmp / "pkg"
+        self.package.mkdir()
+        self.out = self.tmp / "stage"
+        self.rom = self.tmp / "openbios.bin"
+        self.rom_bytes = random_bytes(4001, ROM_SIZE)
+        self.rom.write_bytes(self.rom_bytes)
+        self.readme = self.package / "README.txt"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_stage(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "stage-public", "--package", str(self.package),
+                "--rom", str(self.rom), "--out", str(self.out),
+                "--allow-digest", SYNTHETIC_DISC_SHA256, "--allow-digest", OPENBIOS_PIN,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def assert_refused(self, result: subprocess.CompletedProcess) -> None:
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("PUBLIC STAGING REFUSED", result.stdout)
+        self.assertFalse(self.out.exists(), "a refused stage must leave no staging directory")
+
+    def test_positive_copies_only_the_readme(self) -> None:
+        self.readme.write_text("static readme\n", encoding="utf-8")
+        (self.package / "firmware").mkdir()
+        (self.package / "firmware" / "rom.roots").write_bytes(random_bytes(4002, 2048))
+        (self.package / "runtime").mkdir()
+        (self.package / "runtime" / "PSXRecomp.RuntimeHost.exe").write_bytes(random_bytes(4003, 4096))
+        (self.package / "frame.png").write_bytes(random_bytes(4004, 4096))
+        (self.package / "diagnostics.json").write_text('{"frames": 1}', encoding="utf-8")
+        result = self.run_stage()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["README.txt"])
+        self.assertEqual((self.out / "README.txt").read_bytes(), self.readme.read_bytes())
+        # Refused package files are never named in the output.
+        for name in ("frame.png", "diagnostics.json", "rom.roots", "PSXRecomp.RuntimeHost.exe"):
+            self.assertNotIn(name, result.stdout)
+
+    def test_refuses_a_nonempty_staging_directory(self) -> None:
+        self.readme.write_text("static readme\n", encoding="utf-8")
+        self.out.mkdir()
+        (self.out / "old.txt").write_text("x", encoding="utf-8")
+        result = self.run_stage()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("must not exist, or must be empty", result.stdout)
+        self.assertEqual([p.name for p in self.out.iterdir()], ["old.txt"])
+
+    def test_refuses_a_missing_readme(self) -> None:
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_an_oversized_readme(self) -> None:
+        self.readme.write_bytes(b"a" * (64 * 1024 + 1))
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_a_rom_window_in_the_readme(self) -> None:
+        gate = load_gate()
+        _, guaranteed = gate.gap_stats(gate.select_probes(self.rom_bytes))
+        # A verbatim copy of the guaranteed detection length always contains a whole probe window.
+        self.readme.write_bytes(b"prefix " + self.rom_bytes[5000 : 5000 + guaranteed] + b" suffix")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_an_unlisted_digest_in_the_readme(self) -> None:
+        self.readme.write_text("sha " + "e" * 64 + "\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
+    def test_allows_only_the_public_pins_in_the_readme(self) -> None:
+        self.readme.write_text(f"pins {SYNTHETIC_DISC_SHA256} {OPENBIOS_PIN}\n", encoding="utf-8")
+        result = self.run_stage()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_refuses_an_absolute_windows_path_in_the_readme(self) -> None:
+        self.readme.write_text("see C:\\Users\\runner\\work\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_an_absolute_posix_path_in_the_readme(self) -> None:
+        self.readme.write_text("see /home/runner/work\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_a_non_utf8_readme(self) -> None:
+        self.readme.write_bytes(b"\xff\xfe\x00bad")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_a_symlinked_readme_outside_the_package(self) -> None:
+        outside = self.tmp / "outside.txt"
+        outside.write_text("outside\n", encoding="utf-8")
+        make_link(outside, self.readme)
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_a_symlinked_package(self) -> None:
+        real = self.tmp / "real-package"
+        real.mkdir()
+        (real / "README.txt").write_text("x\n", encoding="utf-8")
+        shutil.rmtree(self.package)
+        make_link(real, self.package)
+        self.assert_refused(self.run_stage())
+
+
+class StagingAllowlistTests(unittest.TestCase):
+    """verify and manifest refuse any staged name outside the allowlist, and never print the name."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="allowlist-test-"))
+        self.rom = self.tmp / "openbios.bin"
+        self.rom.write_bytes(random_bytes(4101, ROM_SIZE))
+        self.staging = self.tmp / "stage"
+        self.staging.mkdir()
+        (self.staging / "README.txt").write_text("static readme\n", encoding="utf-8")
+        self.disc = self.tmp / "disc.bin"
+        self.disc.write_bytes(random_bytes(4102, 4096))
+        self.toolchain = self.tmp / "toolchain.zip"
+        self.toolchain.write_bytes(random_bytes(4103, 4096))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def verify_cli(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "verify", "--rom", str(self.rom), "--staging", str(self.staging)],
+            capture_output=True,
+            text=True,
+        )
+
+    def manifest_cli(self, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "manifest", "--rom", str(self.rom), "--staging", str(self.staging),
+                "--disc", str(self.disc), "--toolchain-zip", str(self.toolchain), "--toolchain-pin", "0" * 64,
+                "--toolchain-url", "https://example.invalid/toolchain.zip", "--toolchain-gcc-version", "16.2.0",
+                "--openbios-revision", OPENBIOS_PIN, "--checkout-sha", "a" * 40, "--pr-head-sha", "b" * 40,
+                "--event-name", "pull_request", "--repository", "example/repo", "--run-id", "1", "--run-attempt", "1",
+                "--runner-image", "test image", "--compiler-name", "gcc", "--compiler-version", "1",
+                "--compiler-line", "gcc (test) 1", "--host-exit-code", "1", *extra,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_readme_only_passes(self) -> None:
+        result = self.verify_cli()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_each_unlisted_name_is_refused_and_not_printed(self) -> None:
+        for name in ("frame.png", "diagnostics.json", "PSXRecomp.RuntimeHost.exe", "firmware-boot.json", "rom.roots", "images.txt", "unrelated.bin"):
+            with self.subTest(name=name):
+                extra = self.staging / name
+                extra.write_bytes(b"x")
+                result = self.verify_cli()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("not on the public allowlist", result.stdout)
+                self.assertNotIn(name, result.stdout)
+                extra.unlink()
+
+    def test_a_subdirectory_is_refused(self) -> None:
+        (self.staging / "package").mkdir()
+        result = self.verify_cli()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("not on the public allowlist", result.stdout)
+
+    def test_a_symlink_in_staging_is_refused(self) -> None:
+        target = self.tmp / "target.txt"
+        target.write_text("t", encoding="utf-8")
+        make_link(target, self.staging / "linked.txt")
+        result = self.verify_cli()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_manifest_lists_the_readme_and_writes_the_manifest(self) -> None:
+        result = self.manifest_cli()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.staging / "provenance-manifest.json").is_file())
+
+    def test_manifest_refuses_an_extra_staged_file(self) -> None:
+        (self.staging / "frame.png").write_bytes(b"x")
+        result = self.manifest_cli()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertFalse((self.staging / "provenance-manifest.json").exists())
+
+    def test_manifest_refuses_an_absolute_path_identifier(self) -> None:
+        result = self.manifest_cli("--runner-image", "C:\\runner\\work")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("manifest contains a Windows drive path", result.stdout)
+        self.assertFalse((self.staging / "provenance-manifest.json").exists())
+
+    def test_manifest_refuses_an_unlisted_digest_value(self) -> None:
+        result = self.manifest_cli("--runner-image", "d" * 64)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("not on the public allowlist", result.stdout)
+        self.assertNotIn("d" * 64, result.stdout)
+        self.assertFalse((self.staging / "provenance-manifest.json").exists())
+
+
+class WorkflowAllowlistTests(unittest.TestCase):
+    """The public workflow stages through the allowlist and never copies the package tree or run outputs."""
+
+    WORKFLOW = HERE.parent.parent / ".github" / "workflows" / "standalone-package-public.yml"
+
+    def setUp(self) -> None:
+        self.text = self.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_no_recursive_copy_of_the_package(self) -> None:
+        self.assertNotIn("cp -r", self.text)
+
+    def test_the_stage_is_built_by_the_allowlist(self) -> None:
+        self.assertIn("stage-public", self.text)
+
+    def test_frame_and_diagnostics_are_never_copied_into_the_stage(self) -> None:
+        self.assertNotIn('cp "$RUN/frame.png"', self.text)
+        self.assertNotIn('cp "$RUN/diagnostics.json"', self.text)
+
+    def test_no_failure_diagnostics_artifact_is_uploaded(self) -> None:
+        self.assertNotIn("standalone-diagnostics-failure", self.text)
+
+    def test_only_the_verified_stage_is_uploaded(self) -> None:
+        self.assertEqual(self.text.count("actions/upload-artifact"), 1)
+
+    def test_the_package_listing_prints_relative_names_only(self) -> None:
+        self.assertNotIn('find "$PKG" -type f', self.text)
 
 
 if __name__ == "__main__":
