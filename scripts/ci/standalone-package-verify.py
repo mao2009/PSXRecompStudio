@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """ROM-absence gate and provenance manifest for the public standalone-package CI route.
 
-The staging directory is the ONLY directory that is uploaded as an artifact. This script:
+The staging directory is the ONLY directory that is uploaded as an artifact, and it is an allowlist: it may hold only the
+README and the manifest (see PUBLIC_STAGE_NAMES). This script:
 
-  verify       fails (exit 1) when any staged file is a symbolic link, has the same SHA-256 as the
+  stage-public creates a NEW staging directory holding only the package README, copied by its fixed name after the
+               ROM, digest, path and size checks pass. Nothing else in the package is copied.
+  verify       fails (exit 1) when the staging tree holds any name that is not allowlisted (including directories and
+               links), when any staged file is a symbolic link, has the same SHA-256 as the
                built OpenBIOS ROM, or contains a high-entropy 64-byte window of the ROM. Probe windows
                are taken on a 1024-byte grid over the whole ROM and kept only when they hold at least
                16 distinct byte values, so zero or 0xFF padding is never used as a probe. It also fails
@@ -41,11 +45,15 @@ PROBE_STRIDE = 1024
 MIN_DISTINCT_BYTES = 16
 MANIFEST_NAME = "provenance-manifest.json"
 
-# The only staged files whose size and SHA-256 the public manifest records. The README is static text from the package
-# writer (FirmwareDistribution.Readme), with no ROM bytes, digests or counts in it.
-# Every other staged file is listed by NAME only. The package was built from the ROM (runtime/firmware/*, the AOT
-# artifact, firmware-boot.json carry ROM-derived data), and the run output is not proven ROM-free either.
-PUBLIC_HASHED_FILES = frozenset({"package/README.txt"})
+# The public artifact is an allowlist: the README (copied from the package, the only package file that is public) and
+# the provenance manifest. Nothing else may be staged: no package tree, no executable, no AOT input, no diagnostics and no
+# frame. The package was built from the ROM (runtime/firmware/*, the AOT artifact and firmware-boot.json carry
+# ROM-derived data), and the run output is not proven ROM-free either.
+PUBLIC_README_NAME = "README.txt"
+PUBLIC_STAGE_NAMES = frozenset({PUBLIC_README_NAME, MANIFEST_NAME})
+# The README is static text from the package writer (FirmwareDistribution.Readme). Its size and SHA-256 are published.
+PUBLIC_HASHED_FILES = frozenset({PUBLIC_README_NAME})
+PUBLIC_README_MAX_BYTES = 64 * 1024
 
 # Coverage thresholds for the ROM-absence check. They fail closed: below them the check cannot
 # claim coverage of the ROM and must not pass. The earlier CI run had 211 probes of 513 grid
@@ -183,8 +191,25 @@ ABSOLUTE_PATH_PATTERNS = [
     ("POSIX user or temp path", re.compile(r"(?<![A-Za-z0-9_.~])/(?:home|Users|root|tmp|var|private|mnt|Volumes|opt)/")),
     ("Git Bash drive path", re.compile(r"(?<![A-Za-z0-9_.~])/[a-z]/(?:a|Users|home)/")),
     ("file URI", re.compile(r"file://", re.IGNORECASE)),
+    ("UNC share path", re.compile(r"\\\\[A-Za-z0-9._$-]+\\[A-Za-z0-9._$-]+")),
+    ("home-relative path", re.compile(r"(?<![A-Za-z0-9_])~[\/]")),
 ]
 DIGEST_TOKEN = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])")
+HEX_RUN = re.compile(r"[0-9A-Fa-f]{32,}")
+
+
+def unlisted_hex_runs(text: str, allowed: set[str]) -> int:
+    """Count hex runs of 32 or more digits that are not, exactly, an allowlisted identifier.
+
+    A run is taken whole: a 66-hex, 96-hex or letter-adjacent run is refused, not only a 64-hex token.
+    """
+    allowed_lower = {value.lower() for value in allowed if value}
+    return sum(1 for run in HEX_RUN.findall(text) if run.lower() not in allowed_lower)
+
+
+def rom_digest_in_text(text: str, rom_sha: str) -> bool:
+    """The ROM SHA-256 in any letter case, inside any longer hex run. The match is never printed."""
+    return rom_sha.lower() in text.lower()
 
 
 def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: list[str]) -> list[str]:
@@ -263,9 +288,108 @@ def cmd_diag_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def staging_name_violations(staging: Path) -> list[str]:
+    """The staging tree may hold only the allowlisted names: no directory, link, or any other file.
+
+    Names are never printed (a leaked name can be ROM-derived); only the count of refused entries is reported.
+    """
+    staging = staging.resolve()
+    refused = 0
+    for path in sorted(staging.rglob("*")):
+        rel = path.relative_to(staging).as_posix()
+        if path.is_dir() and not path.is_symlink():
+            refused += 1
+        elif rel not in PUBLIC_STAGE_NAMES or path.is_symlink():
+            refused += 1
+    if refused:
+        return [f"{refused} staged entr{'y' if refused == 1 else 'ies'} not on the public allowlist (names not printed)"]
+    return []
+
+
+def manifest_content_violations(text: str, allowed_digests: set[str], rom_sha: str) -> list[str]:
+    """The manifest may hold only the expected identifiers: no absolute path, no unlisted digest-shaped value."""
+    violations = []
+    for name, pattern in ABSOLUTE_PATH_PATTERNS:
+        if pattern.search(text):
+            violations.append(f"manifest contains a {name}")
+    if rom_digest_in_text(text, rom_sha):
+        violations.append("manifest contains the built ROM's SHA-256 (value not printed)")
+    unlisted = unlisted_hex_runs(text, allowed_digests)
+    if unlisted:
+        violations.append(f"manifest: {unlisted} hex value(s) not on the public allowlist (values not printed)")
+    return violations
+
+
+def stage_public(package: Path, out: Path, rom: Path, allow_digests: set[str]) -> list[str]:
+    """Create a NEW staging directory holding only the allowlisted README copied from the package.
+
+    Nothing is copied from the package except the fixed README name. Every check runs before anything is written, so a
+    refusal leaves no staging directory behind. Only counts and status codes are returned, never bytes.
+    """
+    if package.is_symlink() or not package.is_dir():
+        return ["the package directory is missing or is a symbolic link"]
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        return ["the public staging directory must not exist, or must be empty"]
+    source = package / PUBLIC_README_NAME
+    if source.is_symlink():
+        return ["the package README is a symbolic link; refused"]
+    if not source.is_file():
+        return ["the package README is missing"]
+    if not source.resolve().is_relative_to(package.resolve()):
+        return ["the package README resolves outside the package; refused"]
+    if source.stat().st_size > PUBLIC_README_MAX_BYTES:
+        return ["the package README exceeds the public size limit"]
+    data = source.read_bytes()
+    rom_bytes = load_rom(rom)
+    probes = select_probes(rom_bytes)
+    # The byte-level ROM checks run on every README, text or not.
+    violations: list[str] = []
+    if sha256_of(data) == sha256_of(rom_bytes):
+        violations.append("the package README has the built ROM's SHA-256")
+    if any(window in data for _, window in probes):
+        violations.append("the package README contains a ROM high-entropy window")
+    violations.extend(coverage_violations(probes))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return violations + ["the package README is not UTF-8 text; refused"]
+    if any(pattern.search(text) for _, pattern in ABSOLUTE_PATH_PATTERNS):
+        violations.append("the package README contains an absolute machine path")
+    if rom_digest_in_text(text, sha256_of(rom_bytes)):
+        violations.append("the package README contains the built ROM's SHA-256 (value not printed)")
+    unlisted = unlisted_hex_runs(text, allow_digests)
+    if unlisted:
+        violations.append(f"the package README: {unlisted} hex value(s) not on the public allowlist (values not printed)")
+    if violations:
+        return violations
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / PUBLIC_README_NAME, "xb") as handle:  # exclusive create: never overwrites
+        handle.write(data)
+    return []
+
+
+def cmd_stage_public(args: argparse.Namespace) -> int:
+    allow = {digest.lower() for digest in args.allow_digest if digest}
+    try:
+        violations = stage_public(args.package, args.out, args.rom, allow)
+    except (Exception, SystemExit) as exc:  # fail closed; print the exception type only
+        print(f"PUBLIC STAGING COULD NOT RUN: {type(exc).__name__}; nothing may be uploaded.")
+        return 1
+    if violations:
+        for violation in violations:
+            print(f"VIOLATION: {violation}")
+        print("PUBLIC STAGING REFUSED; nothing was staged.")
+        return 1
+    print(f"public staging: allowlisted entries {sorted(PUBLIC_STAGE_NAMES)}; the package README only is copied.")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     violations = verify(args.rom, args.staging)
-    if violations:
+    name_violations = staging_name_violations(args.staging)
+    for violation in name_violations:
+        print(f"VIOLATION: {violation}")
+    if violations or name_violations:
         print("ROM-absence check FAILED; nothing may be uploaded.")
         return 1
     print("ROM-absence check PASSED.")
@@ -273,7 +397,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_manifest(args: argparse.Namespace) -> int:
-    if verify(args.rom, args.staging):
+    if verify(args.rom, args.staging) or staging_name_violations(args.staging):
         print("ROM-absence check FAILED; no manifest written.")
         return 1
     staging = args.staging.resolve()
@@ -357,10 +481,27 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         "files": files,
     }
     out = staging / MANIFEST_NAME
-    out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    # Every identifier in the manifest is expected: the disc, toolchain, OpenBIOS pin and the git SHAs of this run.
+    allowed = {manifest["inputs"]["disc"]["sha256"], toolchain_sha, args.toolchain_pin, args.openbios_revision, args.checkout_sha}
+    allowed.update(entry["sha256"] for entry in files if "sha256" in entry)  # the README's own hash, as published
+    if args.pr_head_sha:
+        allowed.add(args.pr_head_sha)
+    content_violations = manifest_content_violations(text, allowed, sha256_of(load_rom(args.rom)))
+    if content_violations:
+        for violation in content_violations:
+            print(f"VIOLATION: {violation}")
+        print("MANIFEST REFUSED; nothing was written.")
+        return 1
+    out.write_text(text, encoding="utf-8")
     print(f"wrote {out} listing {len(files)} file(s)")
-    if verify(args.rom, staging):
-        print("ROM-absence check FAILED after writing the manifest.")
+    post_violations = verify(args.rom, staging)
+    post_names = staging_name_violations(staging)
+    for violation in post_names:
+        print(f"VIOLATION: {violation}")
+    if post_violations or post_names:
+        out.unlink()  # fail closed: the manifest is not left behind next to a refused tree
+        print("ROM-absence check FAILED after writing the manifest; the manifest was removed.")
         return 1
     print("ROM-absence check PASSED over the final staging tree.")
     return 0
@@ -369,6 +510,13 @@ def cmd_manifest(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    s = sub.add_parser("stage-public")
+    s.add_argument("--package", type=Path, required=True)
+    s.add_argument("--rom", type=Path, required=True)
+    s.add_argument("--out", type=Path, required=True)
+    s.add_argument("--allow-digest", action="append", default=[])
+    s.set_defaults(func=cmd_stage_public)
 
     v = sub.add_parser("verify")
     v.add_argument("--rom", type=Path, required=True)

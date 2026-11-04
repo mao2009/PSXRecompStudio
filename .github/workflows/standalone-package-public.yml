@@ -159,7 +159,8 @@ jobs:
           dotnet run --project src/PSXRecomp.Cli/PSXRecomp.Cli.csproj --configuration Release -- \
             package "$DISC" --bios openbios --bios-rom "$ROM" --aot-dir "$AOT" --output "$PKG" \
             --code-bytes "$code_bytes" --run-timeout-seconds 60 --build-timeout-seconds 900
-          find "$PKG" -type f | sort
+          # Relative names only: an absolute runner path is a machine path, not for the public log.
+          (cd "$PKG" && find . -type f | sort)
 
       - name: Run packaged runtime host (--frame-out, --diagnostics)
         shell: bash
@@ -199,88 +200,23 @@ jobs:
           fi
           echo "frame.png: present and non-empty"
 
-      # Runs only after a failed step. It keeps the failing host's diagnostics.json, but only when the
-      # public-safety scan passes (ROM windows, absolute paths, digests, JSON). It never changes the job
-      # result: the host step has already failed, so the job stays FAILURE. Counts only are printed.
-      - name: Scan failure diagnostics (public-safety gate)
-        id: diag
-        if: failure()
-        shell: bash
-        run: |
-          set -uo pipefail
-          W="$(cygpath -u "$WORK")"
-          RUN="$W/run"
-          DIAG="$W/diag-stage"
-          rm -rf "$DIAG"
-          mkdir -p "$DIAG"
-          if [ ! -f "$RUN/diagnostics.json" ]; then
-            echo "no diagnostics.json was written by the host; nothing to keep"
-            exit 0
-          fi
-          rc=0
-          python scripts/ci/standalone-package-verify.py diag-scan \
-            --rom "$W/openbios-out/openbios.bin" --file "$RUN/diagnostics.json" \
-            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" \
-            --forbid-prefix "$RUNNER_TEMP" --forbid-prefix "$(cygpath -u "$RUNNER_TEMP")" \
-            --forbid-prefix "$GITHUB_WORKSPACE" --forbid-prefix "$(cygpath -u "$GITHUB_WORKSPACE")" \
-            || rc=$?
-          if [ "$rc" -eq 0 ] && cp "$RUN/diagnostics.json" "$DIAG/diagnostics.json"; then
-            echo "safe=true" >> "$GITHUB_OUTPUT"
-            echo "diagnostics.json staged for the failure artifact"
-          else
-            echo "diagnostics.json NOT staged (scan rc=$rc); see the counts above"
-          fi
-          exit 0
+      # The host's diagnostics.json and frame.png stay on the runner. Neither is uploaded (the public artifact is
+      # an allowlist of the README and the manifest), so no failure artifact is produced.
 
-      - name: Upload failure diagnostics (1-day retention, only after the scan passed)
-        if: failure() && steps.diag.outputs.safe == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: standalone-diagnostics-failure
-          path: ${{ runner.temp }}/psx/diag-stage
-          retention-days: 1
-          if-no-files-found: error
-
-      # Success path: the same public-safety scan as the failure path, and it runs before anything is staged.
-      # The host exited 0, so diagnostics.json must exist, and the run folder may hold only the known files.
-      # Any violation fails this step (set -e): the stage step does not run, so nothing is uploaded.
-      - name: Scan success diagnostics (public-safety gate, fail closed)
-        shell: bash
-        run: |
-          set -euo pipefail
-          W="$(cygpath -u "$WORK")"
-          RUN="$W/run"
-          if [ ! -f "$RUN/diagnostics.json" ]; then
-            echo "FAIL: the host wrote no diagnostics.json on success; nothing may be uploaded"
-            exit 1
-          fi
-          unexpected="$(find "$RUN" -mindepth 1 -maxdepth 1 ! -name diagnostics.json ! -name frame.png | wc -l)"
-          if [ "$unexpected" -ne 0 ]; then
-            echo "FAIL: $unexpected unexpected entries in the run folder (counts only); nothing may be uploaded"
-            exit 1
-          fi
-          python scripts/ci/standalone-package-verify.py diag-scan \
-            --rom "$W/openbios-out/openbios.bin" --file "$RUN/diagnostics.json" \
-            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" \
-            --forbid-prefix "$RUNNER_TEMP" --forbid-prefix "$(cygpath -u "$RUNNER_TEMP")" \
-            --forbid-prefix "$GITHUB_WORKSPACE" --forbid-prefix "$(cygpath -u "$GITHUB_WORKSPACE")"
-          echo "success-path diagnostics scan passed; only the scanned diagnostics.json and frame.png are staged"
-
-      - name: Stage upload set and verify ROM absence
+      # The public artifact is an allowlist. stage-public creates a new staging directory and copies only the package
+      # README, by its fixed name, after the ROM, digest, path and size checks pass. Nothing else from the package is
+      # copied: no package tree, no executable, no AOT input, no firmware file, no diagnostics and no frame.
+      - name: Stage upload set (allowlist) and verify ROM absence
         shell: bash
         run: |
           set -euo pipefail
           W="$(cygpath -u "$WORK")"
           ROM="$W/openbios-out/openbios.bin"
-          RUN="$W/run"
           STAGE="$W/stage"
           rm -rf "$STAGE"
-          mkdir -p "$STAGE/package" "$STAGE/run"
-          cp -r "$W/pkg/psxrecomp-public-openbios/." "$STAGE/package/"
-          # Named copies only, never the whole run folder: diagnostics.json passed the scan step above, and
-          # frame.png is non-empty (checked in the host step). Anything else in the run folder is not uploaded.
-          cp "$RUN/diagnostics.json" "$STAGE/run/diagnostics.json"
-          cp "$RUN/frame.png" "$STAGE/run/frame.png"
+          python scripts/ci/standalone-package-verify.py stage-public \
+            --package "$W/pkg/psxrecomp-public-openbios" --rom "$ROM" --out "$STAGE" \
+            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" --allow-digest "$TOOLCHAIN_SHA256"
           python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE"
 
       # The manifest records no built-ROM size or digest, and no size or digest of any ROM-derived file (see
