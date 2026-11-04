@@ -3,13 +3,26 @@
 
 The staging directory is the ONLY directory that is uploaded as an artifact. This script:
 
-  verify    fails (exit 1) when any staged file is a symbolic link, has the same SHA-256 as the
-            built OpenBIOS ROM, or contains a high-entropy 64-byte window of the ROM. Probe windows
-            are taken on a 1024-byte grid over the whole ROM and kept only when they hold at least
-            16 distinct byte values, so zero or 0xFF padding is never used as a probe.
-  manifest  runs verify, then writes provenance-manifest.json into the staging directory with the
-            provenance fields and the SHA-256 and size of every staged file (the manifest itself
-            is excluded from that list), then runs verify once more over the final staging tree.
+  verify       fails (exit 1) when any staged file is a symbolic link, has the same SHA-256 as the
+               built OpenBIOS ROM, or contains a high-entropy 64-byte window of the ROM. Probe windows
+               are taken on a 1024-byte grid over the whole ROM and kept only when they hold at least
+               16 distinct byte values, so zero or 0xFF padding is never used as a probe. It also fails
+               when the probe set does not cover the ROM (see MIN_PROBES and MAX_GAP below).
+  manifest     runs verify, then writes provenance-manifest.json into the staging directory with the
+               provenance fields and the SHA-256 and size of every staged file (the manifest itself
+               is excluded from that list), then runs verify once more over the final staging tree.
+               The built ROM's SHA-256 is deliberately NOT written to the manifest.
+  diag-scan    the public-safety scan of diagnostics.json (ROM windows, absolute paths, digests, JSON).
+               It applies the same probe coverage check as verify.
+
+Guaranteed detection (computed from the actual probe selection, see gap_stats):
+  Let max_gap be the largest distance between consecutive kept probe offsets, with the ROM start
+  and end counted as boundaries. Any verbatim contiguous copy of the ROM of at least
+  guaranteed_length = max_gap + 63 bytes contains a whole kept probe window, and so fails.
+  Shorter copies are NOT guaranteed to be detected. Copies of low-entropy regions (zeros, 0xFF,
+  repeated patterns) are not detected by design: such windows are never probes. A copy that is
+  modified (XORed, byte-swapped, re-encoded) is not detected either. This is a check for verbatim
+  ROM bytes, not a proof that the staged tree is free of ROM-derived data.
 
 Inputs are never printed as bytes. The ROM is read only to compute its hash and to probe for its
 edges; nothing from the ROM is written anywhere.
@@ -27,6 +40,14 @@ PROBE_BYTES = 64
 PROBE_STRIDE = 1024
 MIN_DISTINCT_BYTES = 16
 MANIFEST_NAME = "provenance-manifest.json"
+
+# Coverage thresholds for the ROM-absence check. They fail closed: below them the check cannot
+# claim coverage of the ROM and must not pass. The earlier CI run had 211 probes of 513 grid
+# offsets. MIN_PROBES = 64 is under a third of that, so ordinary variation does not trip it, while a
+# ROM whose body is mostly low-entropy (few kept probes) does. MAX_GAP = 8192 is 8 grid strides, so
+# no stretch of 8192 bytes without a probe is accepted, and the guarantee is max_gap + 63 bytes.
+MIN_PROBES = 64
+MAX_GAP = 8192
 
 
 def sha256_of(data: bytes) -> str:
@@ -53,20 +74,59 @@ def select_probes(rom_bytes: bytes) -> list[tuple[int, bytes]]:
 
     The grid covers the whole ROM, plus the final window so the tail is always considered. A
     window is kept only when it holds at least MIN_DISTINCT_BYTES distinct byte values. Padding
-    (zeros, 0xFF) therefore never becomes a probe, and a staged file that merely contains padding
-    cannot fail the check. Any staged copy that contains a high-entropy grid window fails. Every
-    copy of PROBE_STRIDE + PROBE_BYTES - 1 bytes (1087) or more contains a grid window, so it fails
-    unless all of the windows it covers are low-entropy.
+    (zeros, 0xFF) therefore never becomes a probe. Which copies are detected is decided by the
+    kept offsets alone: see gap_stats for the guaranteed length.
     """
-    offsets = list(range(0, ROM_SIZE - PROBE_BYTES + 1, PROBE_STRIDE))
-    if offsets[-1] != ROM_SIZE - PROBE_BYTES:
-        offsets.append(ROM_SIZE - PROBE_BYTES)
     probes = []
-    for offset in offsets:
+    for offset in grid_offsets():
         window = rom_bytes[offset : offset + PROBE_BYTES]
         if len(set(window)) >= MIN_DISTINCT_BYTES:
             probes.append((offset, window))
     return probes
+
+
+def grid_offsets() -> list[int]:
+    """Every grid offset that is a probe candidate, including the final window."""
+    offsets = list(range(0, ROM_SIZE - PROBE_BYTES + 1, PROBE_STRIDE))
+    if offsets[-1] != ROM_SIZE - PROBE_BYTES:
+        offsets.append(ROM_SIZE - PROBE_BYTES)
+    return offsets
+
+
+def gap_stats(probes: list[tuple[int, bytes]]) -> tuple[int, int]:
+    """Return (max_gap, guaranteed_length) computed from the kept probe offsets.
+
+    The ROM start and end are boundaries. The start is -1 and the end is ROM_SIZE - PROBE_BYTES + 1,
+    so the positions strictly between two boundaries are exactly the window offsets that are not
+    probes. A verbatim copy of L ROM bytes contains a whole probe window whenever it covers L - 63
+    consecutive window offsets; those contain a kept probe whenever L - 63 > max_gap - 1, that is
+    L >= max_gap + 63. So guaranteed_length = max_gap + 63. With no probes, max_gap is the whole ROM.
+    Only verbatim copies of ROM bytes are covered; copies of low-entropy regions are not probes at all.
+    """
+    points = [-1] + [offset for offset, _ in probes] + [ROM_SIZE - PROBE_BYTES + 1]
+    max_gap = max(b - a for a, b in zip(points, points[1:]))
+    return max_gap, max_gap + PROBE_BYTES - 1
+
+
+def coverage_violations(probes: list[tuple[int, bytes]]) -> list[str]:
+    """Fail-closed coverage thresholds. Messages hold counts only, never ROM bytes."""
+    max_gap, _ = gap_stats(probes)
+    problems = []
+    if len(probes) < MIN_PROBES:
+        problems.append(f"ROM coverage: {len(probes)} probe(s) is below MIN_PROBES={MIN_PROBES}")
+    if max_gap > MAX_GAP:
+        problems.append(f"ROM coverage: max gap {max_gap} is above MAX_GAP={MAX_GAP}")
+    return problems
+
+
+def coverage_line(probes: list[tuple[int, bytes]]) -> str:
+    max_gap, guaranteed = gap_stats(probes)
+    return (
+        f"ROM probes: {len(probes)} of {len(grid_offsets())} grid offsets (stride {PROBE_STRIDE}, "
+        f"{PROBE_BYTES}-byte windows with >= {MIN_DISTINCT_BYTES} distinct values); max gap {max_gap}; "
+        f"guaranteed detection length {guaranteed} bytes; MIN_PROBES={MIN_PROBES}, MAX_GAP={MAX_GAP}. "
+        "Copies shorter than the guaranteed length, and copies of low-entropy regions, are not detected by design."
+    )
 
 
 def verify(rom: Path, staging: Path) -> list[str]:
@@ -74,7 +134,6 @@ def verify(rom: Path, staging: Path) -> list[str]:
     rom_bytes = load_rom(rom)
     rom_sha = sha256_of(rom_bytes)
     probes = select_probes(rom_bytes)
-    grid_total = len(range(0, ROM_SIZE - PROBE_BYTES + 1, PROBE_STRIDE)) + 1
     staging = staging.resolve()
     violations: list[str] = []
     if rom.resolve().is_relative_to(staging):
@@ -97,12 +156,10 @@ def verify(rom: Path, staging: Path) -> list[str]:
                 break
     if checked == 0:
         violations.append("staging directory holds no files")
-    print(f"ROM-absence check: {checked} staged file(s) scanned, ROM SHA-256 {rom_sha}")
-    print(
-        f"ROM probes: {len(probes)} high-entropy window(s) of {PROBE_BYTES} bytes "
-        f"(>= {MIN_DISTINCT_BYTES} distinct values) out of {grid_total} grid offsets "
-        f"(stride {PROBE_STRIDE}); ROM tail window has {len(set(rom_bytes[-PROBE_BYTES:]))} distinct values"
-    )
+    violations.extend(coverage_violations(probes))
+    # The ROM SHA-256 is compared, never printed: CI logs are public.
+    print(f"ROM-absence check: {checked} staged file(s) scanned")
+    print(coverage_line(probes))
     for violation in violations:
         print(f"VIOLATION: {violation}")
     return violations
@@ -136,6 +193,8 @@ def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: l
         parsed = False
         violations.append("(d) diagnostics file does not parse as JSON")
     text = data.decode("utf-8", errors="replace")
+    violations.extend(coverage_violations(probes))
+    print(coverage_line(probes))
 
     rom_hits = sum(1 for _, window in probes if window in data)
     path_hits = {name: len(pattern.findall(text)) for name, pattern in ABSOLUTE_PATH_PATTERNS}
@@ -204,6 +263,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         return 1
     staging = args.staging.resolve()
     rom_bytes = load_rom(args.rom)
+    probes = select_probes(rom_bytes)
+    max_gap, guaranteed_length = gap_stats(probes)
     disc = args.disc.read_bytes()
     toolchain_sha = sha256_file(args.toolchain_zip)
     files = []
@@ -253,7 +314,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "toolchain_sha256": toolchain_sha,
             "toolchain_sha256_verified_against_pin": toolchain_sha == args.toolchain_pin,
             "toolchain_gcc_version": args.toolchain_gcc_version,
-            "built_rom_sha256": sha256_of(rom_bytes),
+            # The built ROM's SHA-256 is intentionally absent: a published digest of the built ROM would let
+            # anyone check a candidate ROM against it. Its size is recorded instead (a count, not a digest).
             "built_rom_bytes": len(rom_bytes),
             "built_rom_uploaded": False,
             "built_rom_cached": False,
@@ -268,10 +330,17 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "probe_bytes": PROBE_BYTES,
             "probe_stride": PROBE_STRIDE,
             "min_distinct_bytes": MIN_DISTINCT_BYTES,
-            "probe_count": len(select_probes(rom_bytes)),
+            "grid_offsets": len(grid_offsets()),
+            "probe_count": len(probes),
+            "max_gap": max_gap,
+            "guaranteed_detection_length": guaranteed_length,
+            "min_probes": MIN_PROBES,
+            "max_gap_limit": MAX_GAP,
+            "limitation": "verbatim copies of at least guaranteed_detection_length bytes are detected; shorter copies and low-entropy regions are not",
             "checks": [
                 "sha256 equality",
                 "high-entropy 64-byte window search on a 1024-byte ROM grid",
+                "probe coverage thresholds (MIN_PROBES, MAX_GAP), fail closed",
                 "no symbolic links",
             ],
         },
