@@ -48,8 +48,8 @@ internal static class FirmwarePackageCommand
                     BuildTimeout: options.BuildTimeoutSeconds is { } buildTimeoutSeconds
                         ? TimeSpan.FromSeconds(buildTimeoutSeconds)
                         : null,
-                    // Issue #B2, LOW-3: the synthetic default is only the label recorded in the manifest; no decision reads it.
-                    BiosProvenance: options.BiosProvenance ?? RuntimeHostManifest.BiosProvenanceSynthetic),
+                    // Issue #B2, LOW-3: no declaration is recorded as null. The run classifies the image by digest and never reads this label.
+                    BiosProvenance: options.BiosProvenance),
                 RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             standardOutput.WriteLine($"Firmware distribution packaged: {Path.GetFullPath(arguments.OutputDirectory!)}");
             standardOutput.WriteLine($"  bios:       {BiosBackendSelection.NameOf(BiosBackendKind.OpenBios)} (real MIPS ROM; no BIOS HLE)");
