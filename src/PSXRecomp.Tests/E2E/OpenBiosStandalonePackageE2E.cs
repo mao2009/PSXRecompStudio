@@ -593,9 +593,9 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
     }
 
-    /// <summary>Issue #B2 (LOW-1): without --bios-provenance the firmware is labelled as synthetic, never as a real ROM.</summary>
+    /// <summary>Issue #B2 (LOW-1): without --bios-provenance no declaration is recorded (null), and the run never labels it as a real ROM.</summary>
     [SkippableFact]
-    public void PackageWithoutProvenance_IsLabelledOpenBiosSynthetic_ByDefault()
+    public void PackageWithoutProvenance_RecordsNoDeclaration_AndIsNeverVerified()
     {
         RuntimeHostPublishE2E.RequireGcc();
         var biosPath = _dir.WriteFile("bios-shaped.bin", BiosShapedImage());
@@ -607,7 +607,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 #pragma warning disable AARC003 // Test-layer inspection of the generated runtime manifest
         var manifest = File.ReadAllText(Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName, RuntimeHostLayout.ManifestFileName));
 #pragma warning restore AARC003
-        manifest.Should().Contain("\"biosProvenance\": \"synthetic\"", "the default declaration is the conservative one");
+        manifest.Should().Contain("\"biosProvenance\": null", "no declaration is recorded when --bios-provenance is absent");
         manifest.Should().NotContain("openbios-rom");
     }
 
