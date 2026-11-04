@@ -475,8 +475,6 @@ Measured (pinned build, synthetic disc, `--segment-budget 1000000 --segments 300
 | copy-sync time | 808 s | 0.29 s |
 | loaded-code versions / pre-compile (gcc) | — / — | 7,211 / 68 s |
 
-The historical report claimed both runs match the interpreter at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
-SHA-256) with the same milestones (111 INT, 9 SYSCALL). The remaining fallback is the four observation
 The historical AOT comparison matched CPU and RAM at `0x80030000` and `0x80010000` (GPRs, SR/CAUSE/EPC/BadVAddr, RAM
 SHA-256); it did not establish strict device/time parity. These earlier measurements
 used a different comparison contract. Both runs had the same milestones
