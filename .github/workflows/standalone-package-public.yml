@@ -27,13 +27,19 @@ jobs:
       TOOLCHAIN_URL: https://static.grumpycoder.net/pixel/mips/g++-mipsel-none-elf-16.2.0.zip
       TOOLCHAIN_SHA256: cf84960f5624829d44b866c5f194094c21c63b30f7cbb8cf3030f1abebd52b75
       SYNTHETIC_DISC_SHA256: ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606
-      # Everything below lives outside the checkout. Only $WORK/stage is uploaded.
-      WORK: ${{ runner.temp }}/psx
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # Everything below lives outside the checkout. Only $WORK/stage is uploaded.
+      # (The runner context is not available in a job-level env block, so WORK is set here.)
+      - name: Set work directory
+        shell: bash
+        env:
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: echo "WORK=$RUNNER_TEMP_DIR/psx" >> "$GITHUB_ENV"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
