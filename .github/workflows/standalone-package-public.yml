@@ -89,6 +89,13 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $extract
           $gcc = Get-ChildItem -Path $extract -Recurse -Filter 'mipsel-none-elf-gcc.exe' | Select-Object -First 1
           if (-not $gcc) { throw 'mipsel-none-elf-gcc.exe not found in the verified archive' }
+          # scripts/openbios/build.sh prepends this bin directory to PATH. Its cat/cp/echo would shadow the
+          # runner's Git Bash tools (the final `cp` of build.sh then fails on the /d/... path). They are renamed
+          # in this extracted copy only; the verified zip is unchanged and gcc/make are untouched.
+          foreach ($shadow in 'cat.exe', 'cp.exe', 'echo.exe') {
+            $p = Join-Path $gcc.Directory.FullName $shadow
+            if (Test-Path -LiteralPath $p) { Rename-Item -LiteralPath $p -NewName "$shadow.shadowed" }
+          }
           "TOOLCHAIN_BIN_WIN=$($gcc.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build OpenBIOS from the pinned revision
