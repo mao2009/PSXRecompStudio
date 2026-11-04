@@ -191,6 +191,48 @@ jobs:
           fi
           echo "frame.png size: $(stat -c %s "$RUN/frame.png") bytes"
 
+      # Runs only after a failed step. It keeps the failing host's diagnostics.json, but only when the
+      # public-safety scan passes (ROM windows, absolute paths, digests, JSON). It never changes the job
+      # result: the host step has already failed, so the job stays FAILURE. Counts only are printed.
+      - name: Scan failure diagnostics (public-safety gate)
+        id: diag
+        if: failure()
+        shell: bash
+        run: |
+          set -uo pipefail
+          W="$(cygpath -u "$WORK")"
+          RUN="$W/run"
+          DIAG="$W/diag-stage"
+          rm -rf "$DIAG"
+          mkdir -p "$DIAG"
+          if [ ! -f "$RUN/diagnostics.json" ]; then
+            echo "no diagnostics.json was written by the host; nothing to keep"
+            exit 0
+          fi
+          rc=0
+          python scripts/ci/standalone-package-verify.py diag-scan \
+            --rom "$W/openbios-out/openbios.bin" --file "$RUN/diagnostics.json" \
+            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" \
+            --forbid-prefix "$RUNNER_TEMP" --forbid-prefix "$(cygpath -u "$RUNNER_TEMP")" \
+            --forbid-prefix "$GITHUB_WORKSPACE" --forbid-prefix "$(cygpath -u "$GITHUB_WORKSPACE")" \
+            || rc=$?
+          if [ "$rc" -eq 0 ] && cp "$RUN/diagnostics.json" "$DIAG/diagnostics.json"; then
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+            echo "diagnostics.json staged for the failure artifact ($(stat -c %s "$DIAG/diagnostics.json") bytes)"
+          else
+            echo "diagnostics.json NOT staged (scan rc=$rc); see the counts above"
+          fi
+          exit 0
+
+      - name: Upload failure diagnostics (1-day retention, only after the scan passed)
+        if: failure() && steps.diag.outputs.safe == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-diagnostics-failure
+          path: ${{ runner.temp }}/psx/diag-stage
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Stage upload set and verify ROM absence
         shell: bash
         run: |

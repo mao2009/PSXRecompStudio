@@ -17,6 +17,7 @@ edges; nothing from the ROM is written anywhere.
 import argparse
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,6 +106,87 @@ def verify(rom: Path, staging: Path) -> list[str]:
     for violation in violations:
         print(f"VIOLATION: {violation}")
     return violations
+
+
+ABSOLUTE_PATH_PATTERNS = [
+    ("Windows drive path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")),
+    ("POSIX user or temp path", re.compile(r"(?<![A-Za-z0-9_.~])/(?:home|Users|root|tmp|var|private|mnt|Volumes|opt)/")),
+    ("Git Bash drive path", re.compile(r"(?<![A-Za-z0-9_.~])/[a-z]/(?:a|Users|home)/")),
+    ("file URI", re.compile(r"file://", re.IGNORECASE)),
+]
+DIGEST_TOKEN = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])")
+
+
+def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: list[str]) -> list[str]:
+    """Public-safety scan of the failure diagnostics file. Returns violations; empty means safe.
+
+    Checks: (a) no high-entropy ROM window, (b) no absolute machine path, (c) no ROM SHA-256 and
+    no digest-shaped token that is not in allow_digests, (d) the file parses as JSON. Only counts
+    are printed, never the matched text.
+    """
+    rom_bytes = load_rom(rom)
+    rom_sha = sha256_of(rom_bytes)
+    probes = select_probes(rom_bytes)
+    data = diag.read_bytes()
+    violations: list[str] = []
+    try:
+        json.loads(data.decode("utf-8"))
+        parsed = True
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        parsed = False
+        violations.append("(d) diagnostics file does not parse as JSON")
+    text = data.decode("utf-8", errors="replace")
+
+    rom_hits = sum(1 for _, window in probes if window in data)
+    path_hits = {name: len(pattern.findall(text)) for name, pattern in ABSOLUTE_PATH_PATTERNS}
+    prefix_hits = 0
+    for prefix in forbid_prefixes:
+        if not prefix:
+            continue
+        escaped = prefix.replace("\\", "\\\\")
+        prefix_hits += text.count(prefix) + (text.count(escaped) if escaped != prefix else 0)
+    digests = [token.lower() for token in DIGEST_TOKEN.findall(text)]
+    rom_sha_hits = sum(1 for token in digests if token == rom_sha)
+    unlisted = sum(1 for token in digests if token not in allow_digests)
+
+    print(f"diagnostics scan: {len(data)} byte(s); JSON parses: {'yes' if parsed else 'no'}")
+    print(f"diagnostics scan (a): ROM high-entropy window matches: {rom_hits} (of {len(probes)} probe windows)")
+    print(
+        "diagnostics scan (b): absolute machine path matches: "
+        + str(sum(path_hits.values()))
+        + " ("
+        + ", ".join(f"{name}: {count}" for name, count in path_hits.items())
+        + f"); runner temp or workspace prefix matches: {prefix_hits}"
+    )
+    print(
+        f"diagnostics scan (c): ROM SHA-256 matches: {rom_sha_hits}; digest-shaped tokens: {len(digests)}, "
+        f"not on the public allowlist: {unlisted}"
+    )
+    if rom_hits:
+        violations.append(f"(a) {rom_hits} ROM high-entropy window match(es)")
+    if sum(path_hits.values()) or prefix_hits:
+        violations.append("(b) absolute machine path or runner path present")
+    if rom_sha_hits:
+        violations.append("(c) ROM SHA-256 present")
+    if unlisted:
+        violations.append(f"(c) {unlisted} digest-shaped token(s) not on the public allowlist")
+    return violations
+
+
+def cmd_diag_scan(args: argparse.Namespace) -> int:
+    allow = {digest.lower() for digest in args.allow_digest if digest}
+    try:
+        violations = diag_scan(args.rom, args.file, allow, args.forbid_prefix)
+    except (Exception, SystemExit) as exc:  # fail closed; print the exception type only
+        print(f"DIAGNOSTICS SCAN COULD NOT RUN: {type(exc).__name__}; nothing may be uploaded.")
+        return 1
+    if violations:
+        for violation in violations:
+            print(f"VIOLATION: {violation}")
+        print("DIAGNOSTICS SCAN FAILED; nothing may be uploaded.")
+        return 1
+    print("DIAGNOSTICS SCAN PASSED.")
+    return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -215,6 +297,13 @@ def main() -> int:
     v.add_argument("--rom", type=Path, required=True)
     v.add_argument("--staging", type=Path, required=True)
     v.set_defaults(func=cmd_verify)
+
+    d = sub.add_parser("diag-scan")
+    d.add_argument("--rom", type=Path, required=True)
+    d.add_argument("--file", type=Path, required=True)
+    d.add_argument("--allow-digest", action="append", default=[])
+    d.add_argument("--forbid-prefix", action="append", default=[])
+    d.set_defaults(func=cmd_diag_scan)
 
     m = sub.add_parser("manifest")
     m.add_argument("--rom", type=Path, required=True)
