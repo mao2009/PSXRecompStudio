@@ -289,6 +289,10 @@ public static class FirmwareAotBundle
 /// </param>
 /// <param name="FallbackSegmentInstructionBudget">The per-segment interpreter fallback instruction cap (only meaningful while <paramref name="MixedFallback"/>).</param>
 /// <param name="FallbackMaxTransitions">The artifact-to-interpreter handoff cap (only meaningful while <paramref name="MixedFallback"/>).</param>
+/// <param name="BiosProvenance">
+/// The declared provenance label recorded in the runtime manifest, or null when none was declared. It is a label for
+/// comparison only: the run classifies the image by its digest, and a null declaration produces no warning.
+/// </param>
 /// <param name="BuildTimeout">
 /// The bounded per-step host-toolchain (compiler/linker) timeout for this distribution's native artifact build,
 /// or null to use <see cref="FirmwareDistributionBuilder.DefaultBuildTimeout"/>. It bounds only the compile/link
@@ -310,7 +314,7 @@ public sealed record FirmwareDistributionRequest(
     uint FallbackSegmentInstructionBudget = FirmwareDistributionRequest.DefaultFallbackSegmentInstructionBudget,
     uint FallbackMaxTransitions = FirmwareDistributionRequest.DefaultFallbackMaxTransitions,
     TimeSpan? BuildTimeout = null,
-    string BiosProvenance = RuntimeHostManifest.BiosProvenanceSynthetic)
+    string? BiosProvenance = null)
 {
     /// <summary>
     /// The finite default per-segment fallback cap for a standalone firmware package (#820 W09). The firmware's whole
