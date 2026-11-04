@@ -117,8 +117,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $disc = Join-Path $env:WORK 'disc'
           Remove-Item -Recurse -Force $disc -ErrorAction SilentlyContinue
+          # The script throws on a hash mismatch; with $ErrorActionPreference = 'Stop' that ends this step.
+          # ($LASTEXITCODE is not used: it is $null here because no native command has run.)
           & (Join-Path $env:GITHUB_WORKSPACE 'scripts/demo/synthetic-disc.ps1') -WorkDir $disc -OpenBiosCompatible
-          if ($LASTEXITCODE -ne 0) { throw "synthetic-disc.ps1 failed with exit code $LASTEXITCODE" }
           $file = Join-Path $disc 'synthetic-disc-openbios.bin'
           $sha = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($sha -ne $env:SYNTHETIC_DISC_SHA256) { throw "synthetic disc SHA-256 mismatch: $sha" }
