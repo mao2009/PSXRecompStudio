@@ -33,6 +33,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # Self-tests for the ROM-absence gate. They use seeded random data in a temp directory, never a ROM.
+      - name: Self-test ROM-absence gate (no ROM)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci/test_standalone_package_verify.py
+
       # Everything below lives outside the checkout. Only $WORK/stage is uploaded.
       # (The runner context is not available in a job-level env block, so WORK is set here.)
       - name: Set work directory

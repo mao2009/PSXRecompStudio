@@ -4,7 +4,9 @@
 The staging directory is the ONLY directory that is uploaded as an artifact. This script:
 
   verify    fails (exit 1) when any staged file is a symbolic link, has the same SHA-256 as the
-            built OpenBIOS ROM, or contains the ROM's first or last 64 bytes.
+            built OpenBIOS ROM, or contains a high-entropy 64-byte window of the ROM. Probe windows
+            are taken on a 1024-byte grid over the whole ROM and kept only when they hold at least
+            16 distinct byte values, so zero or 0xFF padding is never used as a probe.
   manifest  runs verify, then writes provenance-manifest.json into the staging directory with the
             provenance fields and the SHA-256 and size of every staged file (the manifest itself
             is excluded from that list), then runs verify once more over the final staging tree.
@@ -21,6 +23,8 @@ from pathlib import Path
 
 ROM_SIZE = 524288
 PROBE_BYTES = 64
+PROBE_STRIDE = 1024
+MIN_DISTINCT_BYTES = 16
 MANIFEST_NAME = "provenance-manifest.json"
 
 
@@ -43,11 +47,33 @@ def load_rom(rom: Path) -> bytes:
     return data
 
 
+def select_probes(rom_bytes: bytes) -> list[tuple[int, bytes]]:
+    """Return (ROM offset, window) pairs for the high-entropy probe windows.
+
+    The grid covers the whole ROM, plus the final window so the tail is always considered. A
+    window is kept only when it holds at least MIN_DISTINCT_BYTES distinct byte values. Padding
+    (zeros, 0xFF) therefore never becomes a probe, and a staged file that merely contains padding
+    cannot fail the check. Any staged copy that contains a high-entropy grid window fails. Every
+    copy of PROBE_STRIDE + PROBE_BYTES - 1 bytes (1087) or more contains a grid window, so it fails
+    unless all of the windows it covers are low-entropy.
+    """
+    offsets = list(range(0, ROM_SIZE - PROBE_BYTES + 1, PROBE_STRIDE))
+    if offsets[-1] != ROM_SIZE - PROBE_BYTES:
+        offsets.append(ROM_SIZE - PROBE_BYTES)
+    probes = []
+    for offset in offsets:
+        window = rom_bytes[offset : offset + PROBE_BYTES]
+        if len(set(window)) >= MIN_DISTINCT_BYTES:
+            probes.append((offset, window))
+    return probes
+
+
 def verify(rom: Path, staging: Path) -> list[str]:
     """Return the list of violations; an empty list means the staged tree is clean."""
     rom_bytes = load_rom(rom)
     rom_sha = sha256_of(rom_bytes)
-    head, tail = rom_bytes[:PROBE_BYTES], rom_bytes[-PROBE_BYTES:]
+    probes = select_probes(rom_bytes)
+    grid_total = len(range(0, ROM_SIZE - PROBE_BYTES + 1, PROBE_STRIDE)) + 1
     staging = staging.resolve()
     violations: list[str] = []
     if rom.resolve().is_relative_to(staging):
@@ -64,13 +90,18 @@ def verify(rom: Path, staging: Path) -> list[str]:
         data = path.read_bytes()
         if sha256_of(data) == rom_sha:
             violations.append(f"{rel}: SHA-256 equals the built OpenBIOS ROM")
-        if head in data:
-            violations.append(f"{rel}: contains the ROM's first {PROBE_BYTES} bytes")
-        if tail in data:
-            violations.append(f"{rel}: contains the ROM's last {PROBE_BYTES} bytes")
+        for offset, window in probes:
+            if window in data:
+                violations.append(f"{rel}: contains the ROM's {PROBE_BYTES}-byte high-entropy window at offset {offset}")
+                break
     if checked == 0:
         violations.append("staging directory holds no files")
     print(f"ROM-absence check: {checked} staged file(s) scanned, ROM SHA-256 {rom_sha}")
+    print(
+        f"ROM probes: {len(probes)} high-entropy window(s) of {PROBE_BYTES} bytes "
+        f"(>= {MIN_DISTINCT_BYTES} distinct values) out of {grid_total} grid offsets "
+        f"(stride {PROBE_STRIDE}); ROM tail window has {len(set(rom_bytes[-PROBE_BYTES:]))} distinct values"
+    )
     for violation in violations:
         print(f"VIOLATION: {violation}")
     return violations
@@ -153,7 +184,14 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         "rom_absence_check": {
             "result": "passed",
             "probe_bytes": PROBE_BYTES,
-            "checks": ["sha256 equality", "64-byte prefix search", "64-byte suffix search", "no symbolic links"],
+            "probe_stride": PROBE_STRIDE,
+            "min_distinct_bytes": MIN_DISTINCT_BYTES,
+            "probe_count": len(select_probes(rom_bytes)),
+            "checks": [
+                "sha256 equality",
+                "high-entropy 64-byte window search on a 1024-byte ROM grid",
+                "no symbolic links",
+            ],
         },
         "retention_days": 1,
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
