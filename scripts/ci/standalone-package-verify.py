@@ -54,8 +54,6 @@ PUBLIC_STAGE_NAMES = frozenset({PUBLIC_README_NAME, MANIFEST_NAME})
 # The README is static text from the package writer (FirmwareDistribution.Readme). Its size and SHA-256 are published.
 PUBLIC_HASHED_FILES = frozenset({PUBLIC_README_NAME})
 PUBLIC_README_MAX_BYTES = 64 * 1024
-# Staging holds at most this many entries (the README and the manifest); a larger tree is refused before it is copied.
-PUBLIC_STAGE_MAX_ENTRIES = 2
 
 # Coverage thresholds for the ROM-absence check. They fail closed: below them the check cannot
 # claim coverage of the ROM and must not pass. The earlier CI run had 211 probes of 513 grid
@@ -193,8 +191,25 @@ ABSOLUTE_PATH_PATTERNS = [
     ("POSIX user or temp path", re.compile(r"(?<![A-Za-z0-9_.~])/(?:home|Users|root|tmp|var|private|mnt|Volumes|opt)/")),
     ("Git Bash drive path", re.compile(r"(?<![A-Za-z0-9_.~])/[a-z]/(?:a|Users|home)/")),
     ("file URI", re.compile(r"file://", re.IGNORECASE)),
+    ("UNC share path", re.compile(r"\\\\[A-Za-z0-9._$-]+\\[A-Za-z0-9._$-]+")),
+    ("home-relative path", re.compile(r"(?<![A-Za-z0-9_])~[\/]")),
 ]
 DIGEST_TOKEN = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])")
+HEX_RUN = re.compile(r"[0-9A-Fa-f]{32,}")
+
+
+def unlisted_hex_runs(text: str, allowed: set[str]) -> int:
+    """Count hex runs of 32 or more digits that are not, exactly, an allowlisted identifier.
+
+    A run is taken whole: a 66-hex, 96-hex or letter-adjacent run is refused, not only a 64-hex token.
+    """
+    allowed_lower = {value.lower() for value in allowed if value}
+    return sum(1 for run in HEX_RUN.findall(text) if run.lower() not in allowed_lower)
+
+
+def rom_digest_in_text(text: str, rom_sha: str) -> bool:
+    """The ROM SHA-256 in any letter case, inside any longer hex run. The match is never printed."""
+    return rom_sha.lower() in text.lower()
 
 
 def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: list[str]) -> list[str]:
@@ -291,15 +306,17 @@ def staging_name_violations(staging: Path) -> list[str]:
     return []
 
 
-def manifest_content_violations(text: str, allowed_digests: set[str]) -> list[str]:
+def manifest_content_violations(text: str, allowed_digests: set[str], rom_sha: str) -> list[str]:
     """The manifest may hold only the expected identifiers: no absolute path, no unlisted digest-shaped value."""
     violations = []
     for name, pattern in ABSOLUTE_PATH_PATTERNS:
         if pattern.search(text):
             violations.append(f"manifest contains a {name}")
-    unlisted = {t.lower() for t in DIGEST_TOKEN.findall(text)} - {d.lower() for d in allowed_digests if d}
+    if rom_digest_in_text(text, rom_sha):
+        violations.append("manifest contains the built ROM's SHA-256 (value not printed)")
+    unlisted = unlisted_hex_runs(text, allowed_digests)
     if unlisted:
-        violations.append(f"manifest: {len(unlisted)} digest-shaped value(s) not on the public allowlist (values not printed)")
+        violations.append(f"manifest: {unlisted} hex value(s) not on the public allowlist (values not printed)")
     return violations
 
 
@@ -338,9 +355,11 @@ def stage_public(package: Path, out: Path, rom: Path, allow_digests: set[str]) -
         return violations + ["the package README is not UTF-8 text; refused"]
     if any(pattern.search(text) for _, pattern in ABSOLUTE_PATH_PATTERNS):
         violations.append("the package README contains an absolute machine path")
-    unlisted = {t.lower() for t in DIGEST_TOKEN.findall(text)} - {d.lower() for d in allow_digests if d}
+    if rom_digest_in_text(text, sha256_of(rom_bytes)):
+        violations.append("the package README contains the built ROM's SHA-256 (value not printed)")
+    unlisted = unlisted_hex_runs(text, allow_digests)
     if unlisted:
-        violations.append(f"the package README: {len(unlisted)} digest-shaped value(s) not on the public allowlist")
+        violations.append(f"the package README: {unlisted} hex value(s) not on the public allowlist (values not printed)")
     if violations:
         return violations
     out.mkdir(parents=True, exist_ok=True)
@@ -468,7 +487,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     allowed.update(entry["sha256"] for entry in files if "sha256" in entry)  # the README's own hash, as published
     if args.pr_head_sha:
         allowed.add(args.pr_head_sha)
-    content_violations = manifest_content_violations(text, allowed)
+    content_violations = manifest_content_violations(text, allowed, sha256_of(load_rom(args.rom)))
     if content_violations:
         for violation in content_violations:
             print(f"VIOLATION: {violation}")

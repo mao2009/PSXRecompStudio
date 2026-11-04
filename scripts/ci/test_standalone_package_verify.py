@@ -559,6 +559,34 @@ class PublicStageTests(unittest.TestCase):
         self.readme.write_bytes(b"\xff\xfe\x00bad")
         self.assert_refused(self.run_stage())
 
+    def test_refuses_a_hex_run_longer_than_a_digest(self) -> None:
+        # A 66-hex run is not an allowlisted identifier, even though a 64-hex prefix of it could be.
+        self.readme.write_text("run " + "ab" * 33 + "\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_a_hex_run_with_adjacent_letters(self) -> None:
+        self.readme.write_text("tag z" + "e" * 64 + "\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_the_rom_digest_in_uppercase_and_inside_a_longer_run(self) -> None:
+        rom_sha = hashlib.sha256(self.rom_bytes).hexdigest()
+        self.readme.write_text("upper " + rom_sha.upper() + "\n", encoding="utf-8")
+        result = self.run_stage()
+        self.assert_refused(result)
+        self.assertIn("built ROM's SHA-256", result.stdout)
+        self.readme.write_text("wrapped ff" + rom_sha + "\n", encoding="utf-8")
+        result = self.run_stage()
+        self.assert_refused(result)
+        self.assertIn("built ROM's SHA-256", result.stdout)
+
+    def test_refuses_a_unc_path_in_the_readme(self) -> None:
+        self.readme.write_text("see " + chr(92) * 2 + "server" + chr(92) + "share\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
+    def test_refuses_a_home_relative_path_in_the_readme(self) -> None:
+        self.readme.write_text("open ~/work\n", encoding="utf-8")
+        self.assert_refused(self.run_stage())
+
     def test_refuses_a_symlinked_readme_outside_the_package(self) -> None:
         outside = self.tmp / "outside.txt"
         outside.write_text("outside\n", encoding="utf-8")
@@ -658,6 +686,22 @@ class StagingAllowlistTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("manifest contains a Windows drive path", result.stdout)
         self.assertFalse((self.staging / "provenance-manifest.json").exists())
+
+    def test_manifest_refuses_a_hex_run_longer_than_a_digest(self) -> None:
+        result = self.manifest_cli("--runner-image", "ab" * 33)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("ab" * 33, result.stdout)
+        self.assertFalse((self.staging / "provenance-manifest.json").exists())
+
+    def test_manifest_refuses_the_rom_digest_in_uppercase_and_inside_a_longer_run(self) -> None:
+        rom_sha = hashlib.sha256(self.rom.read_bytes()).hexdigest()
+        for value in (rom_sha.upper(), "ff" + rom_sha):
+            with self.subTest(value=value[:8]):
+                result = self.manifest_cli("--runner-image", value)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("built ROM's SHA-256", result.stdout)
+                self.assertNotIn(rom_sha, result.stdout.lower())
+                self.assertFalse((self.staging / "provenance-manifest.json").exists())
 
     def test_manifest_refuses_an_unlisted_digest_value(self) -> None:
         result = self.manifest_cli("--runner-image", "d" * 64)
