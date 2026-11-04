@@ -171,7 +171,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var report = JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement;
         report.GetProperty("bios").GetString().Should().Be("openbios");
         report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic");
-        report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(rom));
+        report.TryGetProperty("romSha256", out _).Should().BeFalse("the public firmware-run line never carries a ROM digest");
+        stderr.Should().NotContain(OpenBiosRomInput.Sha256Hex(rom), "no ROM digest may reach stderr");
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "the interpreted BIOS loop ends at the fallback budget");
         report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)"); report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue("the manifest's fallback policy is reported on the firmware-run line");
@@ -441,7 +442,8 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("bios").GetString().Should().Be("openbios");
         report.GetProperty("biosMode").GetString().Should().Be("openbios-unverified",
             "the local build is not in the verified allowlist: it runs, but it is not a verified OpenBIOS run");
-        report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run reports the digest of the image it loaded");
+        report.TryGetProperty("romSha256", out _).Should().BeFalse("the public firmware-run line never carries a ROM digest");
+        line!.Should().NotContain(romSha256, "the digest of the loaded image is not published; the BIOS mode label is the public result");
         report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "no BIOS code is translated, and the timed-out run reached no native block (Issue #B2)");
         report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)");
         report.GetProperty("aotLoadedBlocks").GetInt32().Should().Be(0, "this gate loads no RAM-placed code image");
@@ -650,6 +652,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic", "the stub is classified by its own digest");
         report.GetProperty("declaredProvenance").GetString().Should().Be("user-supplied");
         stderr.Should().Contain("warning: the image was declared 'user-supplied'", "the declaration is not confirmed by the run");
-        report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(bios), "the run reports the digest of the image it loaded");
+        report.TryGetProperty("romSha256", out _).Should().BeFalse("the public firmware-run line never carries a ROM digest");
+        stderr.Should().NotContain(OpenBiosRomInput.Sha256Hex(bios), "no ROM digest may reach stderr");
     }
 }

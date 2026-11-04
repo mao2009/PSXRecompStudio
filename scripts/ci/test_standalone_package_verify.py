@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -97,8 +98,9 @@ class VerifyGateTests(unittest.TestCase):
         result = self.run_verify()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("copy.bin: contains the ROM's 64-byte high-entropy window", result.stdout)
-        # Counts only: no ROM digest or ROM bytes are printed.
-        self.assertNotIn(hashlib.sha256(rom).hexdigest(), result.stdout)
+        # Fragment leak test: the refusal names no ROM-derived number, no offset, no ROM digest and no ROM bytes.
+        self.assertNotIn("offset", result.stdout)
+        self.assert_no_rom_numbers(result.stdout, rom)
 
     def test_f_guarantee_is_exact_for_every_start(self) -> None:
         # Pure check of the bound on the real probe selection. For a copy of exactly
@@ -143,8 +145,10 @@ class VerifyGateTests(unittest.TestCase):
         (self.staging / "unrelated.bin").write_bytes(random_bytes(9010, 100000))
         result = self.run_verify()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("below MIN_PROBES=64", result.stdout)
+        self.assertIn("COVERAGE_BELOW_LIMIT", result.stdout)
+        self.assertIn("ROM coverage check: FAILED", result.stdout)
         self.assertIn("ROM-absence check FAILED", result.stdout)
+        self.assert_no_rom_numbers(result.stdout, rom)
 
     def test_i_max_gap_above_limit_fails_closed(self) -> None:
         # Random bytes at both ends and a 200 KiB zero run in the middle: enough probes, huge gap.
@@ -153,8 +157,19 @@ class VerifyGateTests(unittest.TestCase):
         (self.staging / "unrelated.bin").write_bytes(random_bytes(9011, 100000))
         result = self.run_verify()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("above MAX_GAP=8192", result.stdout)
+        self.assertIn("COVERAGE_GAP_ABOVE_LIMIT", result.stdout)
+        self.assertIn("ROM coverage check: FAILED", result.stdout)
         self.assertIn("ROM-absence check FAILED", result.stdout)
+        self.assert_no_rom_numbers(result.stdout, rom)
+
+    def assert_no_rom_numbers(self, stdout: str, rom: bytes) -> None:
+        """The public output carries no number derived from the ROM: probe count, grid size, max gap, guarantee."""
+        gate = load_gate()
+        probes = gate.select_probes(rom)
+        max_gap, guaranteed = gate.gap_stats(probes)
+        for number in {len(probes), len(gate.grid_offsets()), max_gap, guaranteed}:
+            self.assertIsNone(re.search(rf"(?<!\d){number}(?!\d)", stdout), f"ROM-derived number {number} printed")
+        self.assertNotIn(hashlib.sha256(rom).hexdigest(), stdout)
 
     def test_c_unrelated_file_passes(self) -> None:
         self.write_rom(random_bytes(1004, ROM_SIZE))
@@ -271,8 +286,25 @@ class DiagnosticsScanTests(unittest.TestCase):
         self.diag.write_text(json.dumps({"frames": 1}), encoding="utf-8")
         result = self.run_scan()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("below MIN_PROBES=64", result.stdout)
+        self.assertIn("COVERAGE_BELOW_LIMIT", result.stdout)
         self.assertNotIn("DIAGNOSTICS SCAN PASSED.", result.stdout)
+
+    def test_clean_diagnostics_refused_when_max_gap_fails(self) -> None:
+        # The CI failure case: enough probes, but a 200 KiB stretch without any. The clean file is refused, no count is printed.
+        rom = random_bytes(2003, 200000) + bytes(200000) + random_bytes(2004, ROM_SIZE - 400000)
+        self.rom.write_bytes(rom)
+        self.diag.write_text(json.dumps({"frames": 1}), encoding="utf-8")
+        result = self.run_scan()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("COVERAGE_GAP_ABOVE_LIMIT", result.stdout)
+        self.assertIn("ROM coverage check: FAILED", result.stdout)
+        self.assertIn("DIAGNOSTICS SCAN FAILED", result.stdout)
+        self.assertNotIn("DIAGNOSTICS SCAN PASSED.", result.stdout)
+        gate = load_gate()
+        probes = gate.select_probes(rom)
+        max_gap, guaranteed = gate.gap_stats(probes)
+        for number in {len(probes), max_gap, guaranteed}:
+            self.assertIsNone(re.search(rf"(?<!\d){number}(?!\d)", result.stdout), f"ROM-derived number {number} printed")
 
 
 class ManifestTests(unittest.TestCase):
@@ -316,12 +348,14 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(data["openbios"]["toolchain_sha256"], hashlib.sha256(toolchain.read_bytes()).hexdigest())
             check = data["rom_absence_check"]
             gate = load_gate()
-            max_gap, guaranteed = gate.gap_stats(gate.select_probes(rom))
-            self.assertEqual(check["max_gap"], max_gap)
-            self.assertEqual(check["guaranteed_detection_length"], guaranteed)
+            self.assertEqual(check["result"], "passed")
             self.assertEqual(check["min_probes"], gate.MIN_PROBES)
             self.assertEqual(check["max_gap_limit"], gate.MAX_GAP)
-            self.assertEqual(check["probe_count"], len(gate.select_probes(rom)))
+            # ROM-derived counts are not published: probe count, grid size, max gap and guaranteed length.
+            for derived in ("probe_count", "grid_offsets", "max_gap", "guaranteed_detection_length"):
+                self.assertNotIn(derived, check)
+            self.assertNotIn("probe_count", text)
+            self.assertNotIn("guaranteed_detection_length", text)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

@@ -229,9 +229,11 @@ public static class BiosAddressGuard
         var (varied, any) = CoveredByVariety(inputs, firmware);
         var variedBytes = varied.Count * 4;
         var anyBytes = any.Count * 4;
+        // The message is public (packaging log): a status only. The byte counts stay in the record's fields for tests and are never printed.
+        var highVarietyStatus = variedBytes > CopyThresholdBytes ? "exceeds reference" : "within reference";
+        var cumulativeStatus = anyBytes > LowVarietyThresholdBytes ? "exceeds reference" : "within reference";
         var message =
-            $"BIOS content diagnostic: {variedBytes} bytes of high-variety BIOS matches (reference {CopyThresholdBytes}), " +
-            $"{anyBytes} bytes of cumulative BIOS matches (reference {LowVarietyThresholdBytes}). " +
+            $"BIOS content diagnostic: high-variety content check {highVarietyStatus}; cumulative content check {cumulativeStatus}. " +
             "The provenance of these inputs is unknown (出所不明). Content matching is a diagnostic: it does not refuse, and a match does not show a BIOS origin.";
         return new BiosContentDiagnostic(
             variedBytes,

@@ -109,24 +109,29 @@ def gap_stats(probes: list[tuple[int, bytes]]) -> tuple[int, int]:
 
 
 def coverage_violations(probes: list[tuple[int, bytes]]) -> list[str]:
-    """Fail-closed coverage thresholds. Messages hold counts only, never ROM bytes."""
+    """Fail-closed coverage thresholds. Messages are violation codes only: no probe count, gap or ROM data.
+
+    The numbers stay out of CI output on purpose: they are derived from the ROM. Tests read them via gap_stats.
+    """
     max_gap, _ = gap_stats(probes)
     problems = []
     if len(probes) < MIN_PROBES:
-        problems.append(f"ROM coverage: {len(probes)} probe(s) is below MIN_PROBES={MIN_PROBES}")
+        problems.append("COVERAGE_BELOW_LIMIT: fewer ROM probe windows than the fail-closed minimum")
     if max_gap > MAX_GAP:
-        problems.append(f"ROM coverage: max gap {max_gap} is above MAX_GAP={MAX_GAP}")
+        problems.append("COVERAGE_GAP_ABOVE_LIMIT: a stretch of the ROM without probe windows is above the fail-closed maximum")
     return problems
 
 
-def coverage_line(probes: list[tuple[int, bytes]]) -> str:
-    max_gap, guaranteed = gap_stats(probes)
-    return (
-        f"ROM probes: {len(probes)} of {len(grid_offsets())} grid offsets (stride {PROBE_STRIDE}, "
-        f"{PROBE_BYTES}-byte windows with >= {MIN_DISTINCT_BYTES} distinct values); max gap {max_gap}; "
-        f"guaranteed detection length {guaranteed} bytes; MIN_PROBES={MIN_PROBES}, MAX_GAP={MAX_GAP}. "
-        "Copies shorter than the guaranteed length, and copies of low-entropy regions, are not detected by design."
-    )
+def coverage_status(probes: list[tuple[int, bytes]]) -> str:
+    """The coverage verdict for the public log: a status, never the probe count or the gap."""
+    if coverage_violations(probes):
+        return "ROM coverage check: FAILED (fail closed; the check cannot claim coverage of the ROM)"
+    return "ROM coverage check: PASSED"
+
+
+COVERAGE_NOTE = (
+    "Copies shorter than the guaranteed detection length, and copies of low-entropy regions, are not detected by design."
+)
 
 
 def verify(rom: Path, staging: Path) -> list[str]:
@@ -150,16 +155,18 @@ def verify(rom: Path, staging: Path) -> list[str]:
         data = path.read_bytes()
         if sha256_of(data) == rom_sha:
             violations.append(f"{rel}: SHA-256 equals the built OpenBIOS ROM")
-        for offset, window in probes:
+        for _, window in probes:
             if window in data:
-                violations.append(f"{rel}: contains the ROM's {PROBE_BYTES}-byte high-entropy window at offset {offset}")
+                # The probe offset is not printed: CI logs are public and offsets are derived from the ROM.
+                violations.append(f"{rel}: contains the ROM's {PROBE_BYTES}-byte high-entropy window")
                 break
     if checked == 0:
         violations.append("staging directory holds no files")
     violations.extend(coverage_violations(probes))
     # The ROM SHA-256 is compared, never printed: CI logs are public.
     print(f"ROM-absence check: {checked} staged file(s) scanned")
-    print(coverage_line(probes))
+    print(coverage_status(probes))
+    print(COVERAGE_NOTE)
     for violation in violations:
         print(f"VIOLATION: {violation}")
     return violations
@@ -194,9 +201,11 @@ def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: l
         violations.append("(d) diagnostics file does not parse as JSON")
     text = data.decode("utf-8", errors="replace")
     violations.extend(coverage_violations(probes))
-    print(coverage_line(probes))
+    print(coverage_status(probes))
+    print(COVERAGE_NOTE)
 
-    rom_hits = sum(1 for _, window in probes if window in data)
+    # ROM-derived results are reported as a status only: the match counts would be ROM-derived numbers in a public log.
+    rom_hit = any(window in data for _, window in probes)
     path_hits = {name: len(pattern.findall(text)) for name, pattern in ABSOLUTE_PATH_PATTERNS}
     prefix_hits = 0
     for prefix in forbid_prefixes:
@@ -205,11 +214,11 @@ def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: l
         escaped = prefix.replace("\\", "\\\\")
         prefix_hits += text.count(prefix) + (text.count(escaped) if escaped != prefix else 0)
     digests = [token.lower() for token in DIGEST_TOKEN.findall(text)]
-    rom_sha_hits = sum(1 for token in digests if token == rom_sha)
+    rom_sha_hit = any(token == rom_sha for token in digests)
     unlisted = sum(1 for token in digests if token not in allow_digests)
 
     print(f"diagnostics scan: {len(data)} byte(s); JSON parses: {'yes' if parsed else 'no'}")
-    print(f"diagnostics scan (a): ROM high-entropy window matches: {rom_hits} (of {len(probes)} probe windows)")
+    print(f"diagnostics scan (a): ROM high-entropy window check: {'FAILED' if rom_hit else 'PASSED'}")
     print(
         "diagnostics scan (b): absolute machine path matches: "
         + str(sum(path_hits.values()))
@@ -218,14 +227,14 @@ def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: l
         + f"); runner temp or workspace prefix matches: {prefix_hits}"
     )
     print(
-        f"diagnostics scan (c): ROM SHA-256 matches: {rom_sha_hits}; digest-shaped tokens: {len(digests)}, "
+        f"diagnostics scan (c): ROM SHA-256 check: {'FAILED' if rom_sha_hit else 'PASSED'}; digest-shaped tokens: {len(digests)}, "
         f"not on the public allowlist: {unlisted}"
     )
-    if rom_hits:
-        violations.append(f"(a) {rom_hits} ROM high-entropy window match(es)")
+    if rom_hit:
+        violations.append("(a) ROM high-entropy window present")
     if sum(path_hits.values()) or prefix_hits:
         violations.append("(b) absolute machine path or runner path present")
-    if rom_sha_hits:
+    if rom_sha_hit:
         violations.append("(c) ROM SHA-256 present")
     if unlisted:
         violations.append(f"(c) {unlisted} digest-shaped token(s) not on the public allowlist")
@@ -263,8 +272,6 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         return 1
     staging = args.staging.resolve()
     rom_bytes = load_rom(args.rom)
-    probes = select_probes(rom_bytes)
-    max_gap, guaranteed_length = gap_stats(probes)
     disc = args.disc.read_bytes()
     toolchain_sha = sha256_file(args.toolchain_zip)
     files = []
@@ -325,18 +332,16 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "run_command": "runtime/PSXRecomp.RuntimeHost.exe --diagnostics <path> --frame-out <path> runtime/runtime-host.json",
             "runtime_host_exit_code": args.host_exit_code,
         },
+        # Status and fixed policy only. Probe count, grid size, max gap and guaranteed length are derived from the
+        # ROM and are not published (tests read them through gap_stats).
         "rom_absence_check": {
             "result": "passed",
             "probe_bytes": PROBE_BYTES,
             "probe_stride": PROBE_STRIDE,
             "min_distinct_bytes": MIN_DISTINCT_BYTES,
-            "grid_offsets": len(grid_offsets()),
-            "probe_count": len(probes),
-            "max_gap": max_gap,
-            "guaranteed_detection_length": guaranteed_length,
             "min_probes": MIN_PROBES,
             "max_gap_limit": MAX_GAP,
-            "limitation": "verbatim copies of at least guaranteed_detection_length bytes are detected; shorter copies and low-entropy regions are not",
+            "limitation": "verbatim copies of at least the guaranteed detection length are detected; shorter copies and low-entropy regions are not",
             "checks": [
                 "sha256 equality",
                 "high-entropy 64-byte window search on a 1024-byte ROM grid",
