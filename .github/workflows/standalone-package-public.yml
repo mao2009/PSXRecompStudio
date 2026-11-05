@@ -202,7 +202,7 @@ jobs:
             exit 1
           fi
           if [ ! -s "$RUN/frame.png" ]; then
-            echo "FAIL: $RUN/frame.png is missing or empty"
+            echo "FAIL: run/frame.png is missing or empty"
             exit 1
           fi
           echo "frame.png: present and non-empty"

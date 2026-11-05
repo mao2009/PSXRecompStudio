@@ -224,7 +224,7 @@ def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: l
     rom_sha_hit = any(token == rom_sha for token in digests)
     unlisted = sum(1 for token in digests if token not in allow_digests)
 
-    print(f"diagnostics scan: {len(data)} byte(s); JSON parses: {'yes' if parsed else 'no'}")
+    print(f"diagnostics scan: JSON parses: {'yes' if parsed else 'no'}")
     print(f"diagnostics scan (a): ROM high-entropy window check: {'FAILED' if rom_hit else 'PASSED'}")
     print(
         "diagnostics scan (b): absolute machine path matches: "
@@ -291,11 +291,14 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     (stage / "package").mkdir(parents=True)
     (stage / "run").mkdir(parents=True)
     for src in sorted(package_src.rglob("*")):
+        if src.is_symlink():
+            # A link could publish the content of a denied file under an innocuous name: refuse the whole set.
+            return ["a symbolic link is not allowed in the package tree"]
         if not src.is_file() or src.name in PUBLIC_DENIED_NAMES:
             continue
         dst = stage / "package" / src.relative_to(package_src)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dst)
+        shutil.copyfile(src, dst, follow_symlinks=False)
     shutil.copyfile(frame, stage / "run" / "frame.png")
     if any(p.is_file() and p.name in PUBLIC_DENIED_NAMES for p in stage.rglob("*")):
         return ["a denied file reached the staging tree"]
