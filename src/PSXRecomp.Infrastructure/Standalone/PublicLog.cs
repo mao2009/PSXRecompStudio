@@ -153,7 +153,17 @@ public static class PublicLog
 
     /// <summary>The success line for a written frame: the size and the file name only, never the directory.</summary>
     public static string FrameWrittenLine(int width, int height, string path) =>
-        $"runtime host: frame {width}x{height} written ({Path.GetFileName(path)})";
+        $"runtime host: frame {width}x{height} written ({FileNameOf(path)})";
+
+    /// <summary>
+    /// The last path segment for either separator, so a Windows path shows only its file name on every platform. The directory is never
+    /// part of the public line.
+    /// </summary>
+    private static string FileNameOf(string path)
+    {
+        var cut = path.LastIndexOfAny(['\\', '/']);
+        return cut < 0 ? path : path[(cut + 1)..];
+    }
 
     /// <summary>
     /// The rule for any published text, whole or part of a line: an absolute machine path or a digest-shaped hex run. Shared by
