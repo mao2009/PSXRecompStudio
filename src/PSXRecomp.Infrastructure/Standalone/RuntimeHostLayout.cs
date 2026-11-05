@@ -99,7 +99,7 @@ public static class RuntimeHostLayout
         if (artifact is null || !artifact.StartsWith(ArtifactPrefix, StringComparison.Ordinal)
             || !IsPlainLeafName(artifact[ArtifactPrefix.Length..]))
         {
-            throw new InvalidDataException(
+            throw PublicRefusal.Create(PublicCodes.ArtifactPathInvalid,
                 $"The manifest's artifact path must be '{ArtifactPrefix}<file name>' (one level above runtime/); got '{artifact}'.");
         }
     }
@@ -151,7 +151,7 @@ public static class RuntimeHostLayout
 
         if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-            throw new InvalidDataException(
+            throw PublicRefusal.Create(PublicCodes.LinkRefused,
                 "The manifest directory (runtime/) must not be a symbolic link, junction or reparse point.");
         }
     }
@@ -170,7 +170,7 @@ public static class RuntimeHostLayout
         if (parent is null || !string.Equals(
                 parent.TrimEnd(Path.DirectorySeparatorChar), container.TrimEnd(Path.DirectorySeparatorChar), comparison))
         {
-            throw new InvalidDataException($"The manifest's {what} path resolves outside its permitted directory.");
+            throw PublicRefusal.Create(PublicCodes.PathOutsidePermittedDirectory, $"The manifest's {what} path resolves outside its permitted directory.");
         }
 
         var info = new FileInfo(fullPath);
@@ -181,7 +181,7 @@ public static class RuntimeHostLayout
 
         if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-            throw new InvalidDataException($"The manifest's {what} file must not be a symbolic link or reparse point.");
+            throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The manifest's {what} file must not be a symbolic link or reparse point.");
         }
 
         return fullPath;

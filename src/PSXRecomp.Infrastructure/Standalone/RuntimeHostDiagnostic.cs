@@ -43,7 +43,11 @@ public sealed record RuntimeHostDiagnostic(
     bool TimedOut,
     IReadOnlyList<MixedFallbackTarget>? FallbackTargets = null,
     string? FailureExceptionType = null,
-    RuntimeHostRunMetrics? Metrics = null)
+    RuntimeHostRunMetrics? Metrics = null,
+    // Firmware runs only (Issue #B2 audit and the final register file). Private: never on the public firmware-run line.
+    int? AotBiosBlockCount = null,
+    int? AotLoadedBlockCount = null,
+    string[]? FinalGpr = null)
 {
     /// <summary>
     /// The diagnostic for a run that ended in an exception before any orchestration result existed: only the manifest's

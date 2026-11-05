@@ -36,14 +36,14 @@ public static class RuntimeHostFrameOutput
             }
 
             PngWriter.Save(fullPath, frame.Bgra, frame.Width, frame.Height);
-            error.WriteLine($"runtime host: frame {frame.Width}x{frame.Height} written to {fullPath}");
+            error.WriteLine(PublicLog.FrameWrittenLine(frame.Width, frame.Height, fullPath));
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
         {
             // Best-effort observation: an invalid path or a frame-write failure must not change
             // the run's classified result or its exit code.
-            error.WriteLine($"runtime host: could not write the frame to {path}: {exception.Message}");
+            error.WriteLine($"runtime host: could not write the frame (code {PublicLog.CodeFor(exception)})");
             return false;
         }
     }

@@ -191,6 +191,37 @@ jobs:
           path: ${{ runner.temp }}/recompiler-differential-artifacts
           if-no-files-found: ignore
 
+  # Optional (not in the CI Gate): the Windows-specific unit contracts that the Linux job cannot exercise. Junction and
+  # Windows-path checks, the public-log policy and the sink run here. Read-only: no artifact is uploaded and no secret is used.
+  # The Windows E2E packages need gcc and a native build that this workflow does not set up on Windows, so they are not run here.
+  dotnet-windows:
+    name: .NET Windows unit contracts (optional)
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Restore
+        run: dotnet restore src/PSXRecompStudio.slnx
+
+      - name: Build tests
+        run: dotnet build src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-restore
+
+      - name: Test Windows unit contracts
+        run: >-
+          dotnet test src/PSXRecomp.Tests/PSXRecomp.Tests.csproj --configuration Release --no-build
+          --filter "FullyQualifiedName~PublicLogPolicyTests|FullyQualifiedName~PublicGuestOutputTests|FullyQualifiedName~RuntimeHostManifestPathTests|FullyQualifiedName~FirmwareRuntimeLauncherDiagnosticsTests|FullyQualifiedName~OpenBiosStandaloneSelectionTests|FullyQualifiedName~RuntimeHostLoadedCodeReportTests"
+
   gui-tests:
     name: GUI Headless Tests
     needs: changes

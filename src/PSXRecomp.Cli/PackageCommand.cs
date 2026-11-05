@@ -288,11 +288,12 @@ public static class PackageCommand
             }
             else
             {
-                standardOutput.WriteLine($"Distribution packaged: {outputDir}");
-                standardOutput.WriteLine($"  artifact:   {artifactPath}");
-                standardOutput.WriteLine($"  runtime:    {runtimeDir}");
-                standardOutput.WriteLine($"  manifest:   {Path.Combine(runtimeDir, RuntimeHostLayout.ManifestFileName)}");
-                standardOutput.WriteLine($"  README:     {Path.Combine(outputDir, RuntimeHostLayout.ReadmeFileName)}");
+                // Names and fixed relative locations only: the output directory is not echoed to the log.
+                standardOutput.WriteLine("Distribution packaged.");
+                standardOutput.WriteLine($"  artifact:   {Path.GetFileName(artifactPath)}");
+                standardOutput.WriteLine($"  runtime:    {RuntimeHostLayout.RuntimeDirectoryName}/");
+                standardOutput.WriteLine($"  manifest:   {RuntimeHostLayout.RuntimeDirectoryName}/{RuntimeHostLayout.ManifestFileName}");
+                standardOutput.WriteLine($"  README:     {RuntimeHostLayout.ReadmeFileName}");
             }
 
             return RecompiledArtifactExitCode.Success;
@@ -302,7 +303,7 @@ public static class PackageCommand
                 or UnauthorizedAccessException or IOException or InvalidDataException
                 or ArgumentException or InvalidOperationException)
         {
-            standardError.WriteLine($"psxrecomp package: {ex.Message}");
+            standardError.WriteLine(PublicLog.FailureLine("psxrecomp package", ex));
             return RecompiledArtifactExitCode.Failure;
         }
     }
