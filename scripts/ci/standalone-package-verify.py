@@ -306,7 +306,7 @@ PUBLIC_EXCLUDED_PREFIXES = ("runtime/firmware/", "runtime/disc/")
 # GCC build whose linked runtime is not verified for this route. Both stay in the internal package, which the Standalone run
 # executes unchanged. Only the upload omits them.
 PUBLIC_EXCLUDED_EXECUTABLE_SUFFIX = ".exe"
-PUBLIC_ALLOWED_FILES = frozenset({"README.txt", "runtime/runtime-host.json"})
+PUBLIC_ALLOWED_FILES = frozenset({"runtime/runtime-host.json"})
 PUBLIC_ALLOWED_PATTERNS = (
     re.compile(r"^runtime/[A-Za-z0-9._-]+\.dll$"),  # the runtime's own libraries: MIT (PSXRecomp, SharpCompress)
     re.compile(r"^runtime/PSXRecomp\.RuntimeHost\.(?:deps|runtimeconfig)\.json$"),
@@ -316,6 +316,20 @@ HOST_MANIFEST_REL = "runtime/runtime-host.json"
 # frame.png is NOT published: it is a render of a run that used the OpenBIOS image, and the fonts in that image (charset/font1.raw,
 # font2.raw) are not cleared for redistribution (docs/legal/openbios-license-audit.md, R2). It stays in the work directory. The
 # run must still produce it: the host step requires a non-empty frame, and the stage fails closed without one.
+PUBLIC_README_NAME = "README.txt"
+# The public artifact's own README. The package's README (FirmwareDistribution.Readme) describes the internal runnable package, so it is
+# never copied: it names an executable and a disc that this artifact does not contain.
+PUBLIC_README_TEXT = """PSXRecomp standalone package: PUBLIC VERIFICATION ARTIFACT (not the runnable package)
+
+This artifact contains only:
+  runtime/runtime-host.json   the run configuration, with its list of ROM block addresses removed
+  runtime/*.dll               the runtime's own libraries (MIT; see THIRD-PARTY-NOTICES.txt)
+  THIRD-PARTY-NOTICES.txt     the licenses of the files above
+  provenance-manifest.json    the files of this artifact and how they were checked
+
+It does NOT contain: any executable, the disc image, the firmware AOT inputs, the frame image, or the run diagnostics.
+It cannot be run on its own. A runnable package is produced from your own inputs with `psxrecomp package`, and is not published here.
+"""
 PUBLIC_NOTICE_NAME = "THIRD-PARTY-NOTICES.txt"
 PUBLIC_NOTICE_TEXT = """THIRD-PARTY NOTICES for the psxrecomp-public-openbios package
 
@@ -357,6 +371,8 @@ def _public_rule(rel: str, name: str) -> str:
         return "excluded"
     if name.lower().endswith(PUBLIC_EXCLUDED_EXECUTABLE_SUFFIX):
         return "excluded"
+    if rel == PUBLIC_README_NAME:
+        return "excluded"  # replaced by the public artifact's own README (PUBLIC_README_TEXT)
     if rel in PUBLIC_ALLOWED_FILES or any(pattern.match(rel) for pattern in PUBLIC_ALLOWED_PATTERNS):
         return "allowed"
     return "unlisted"
@@ -405,9 +421,9 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     if unlisted:
         return [f"{unlisted} file(s) in the package tree match no public allowlist rule; nothing is staged"]
     allowed_rels = {rel for _, rel in plan}
-    if PUBLIC_NOTICE_NAME in allowed_rels:
-        # The generated notice must never overwrite a copied file of the same name.
-        return ["the generated notice name collides with a copied file; nothing is staged"]
+    if {PUBLIC_NOTICE_NAME, PUBLIC_README_NAME} & allowed_rels:
+        # The generated files must never overwrite a copied file of the same name.
+        return ["a generated public file name collides with a copied file; nothing is staged"]
     if HOST_MANIFEST_REL not in allowed_rels:
         return ["the runtime host manifest is missing from the package tree"]
     host_manifest_text = (package_src / HOST_MANIFEST_REL).read_text(encoding="utf-8")
@@ -427,6 +443,7 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
         else:
             shutil.copyfile(src, dst, follow_symlinks=False)
     (stage / "package" / PUBLIC_NOTICE_NAME).write_text(PUBLIC_NOTICE_TEXT, encoding="utf-8")
+    (stage / "package" / PUBLIC_README_NAME).write_text(PUBLIC_README_TEXT, encoding="utf-8")
     if any(p.is_file() and p.name in PUBLIC_DENIED_NAMES for p in stage.rglob("*")):
         return ["a denied file reached the staging tree"]
     print(f"public stage: {excluded} internal file(s) excluded by policy; they stay in the work directory")
@@ -547,7 +564,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "openbios_image": {
                 "published": False,
                 "note": "built from public source; the built image is not uploaded or cached; its bytes, digest and size are not recorded",
-                "run_outputs_derived_from_it": ["the staged package executable", "run/frame.png"],
+                "run_outputs_published": "none",
             },
             "disc": {
                 "generator": "scripts/demo/synthetic-disc.ps1 -OpenBiosCompatible",
@@ -586,10 +603,22 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "built_rom_uploaded": False,
             "built_rom_cached": False,
         },
-        "package": {
+        # Internal build provenance. It describes the internal runnable package, which is NOT published: none of its executables,
+        # run outputs or diagnostics are in this artifact (see public_artifact).
+        "internal_build": {
             "command": "psxrecomp package <synthetic disc> --bios openbios --bios-rom <built ROM> --aot-dir <prepare-aot output>",
             "run_command": "runtime/PSXRecomp.RuntimeHost.exe --diagnostics <path> --frame-out <path> runtime/runtime-host.json",
             "runtime_host_exit_code": args.host_exit_code,
+            "published": False,
+        },
+        # What this artifact actually contains. The file list is the top-level "files" entry (computed from the staged tree).
+        "public_artifact": {
+            "executables": "none",
+            "frame_png": "not published",
+            "disc_image": "not published",
+            "firmware_aot_inputs": "not published",
+            "run_diagnostics": "not published",
+            "files_listed_in": "files",
         },
         # Status and fixed policy only. Probe count, grid size, max gap and guaranteed length are derived from the
         # ROM and are not published (tests read them through gap_stats).

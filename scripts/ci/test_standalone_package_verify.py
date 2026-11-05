@@ -557,6 +557,48 @@ class PublicStageTests(unittest.TestCase):
         self.assertNotIn("new-internal-report", violations[0])  # the name is never printed
         self.assertFalse(self.stage.exists())
 
+    def test_public_readme_is_generated_and_the_package_readme_is_not_copied(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        readme = (self.stage / "package" / "README.txt").read_text(encoding="utf-8")
+        self.assertIn("PUBLIC VERIFICATION ARTIFACT", readme)
+        self.assertNotEqual(readme, "static text\n")  # the package's own README is never copied
+        self.assertNotIn("PSXRecomp.RuntimeHost.exe", readme)
+        self.assertNotIn("psxrecomp-public-openbios", readme)
+        self.assertIn("does NOT contain", readme)
+        self.assertIn("disc image", readme)
+
+    def test_a_package_readme_collision_is_not_copied_over_the_public_one(self):
+        # The package README is excluded by rule, so it is never in the plan and never overwritten.
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        self.assertNotEqual((self.stage / "package" / "README.txt").read_text(encoding="utf-8"), "static text\n")
+
+    def test_manifest_separates_public_contents_from_internal_build(self):
+        staging = self.stage
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        rom = self.tmp / "rom.bin"
+        rom.write_bytes(random_bytes(9, ROM_SIZE))
+        disc = self.tmp / "disc.bin"
+        disc.write_bytes(b"synthetic disc")
+        toolchain = self.tmp / "toolchain.zip"
+        toolchain.write_bytes(b"synthetic toolchain")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "manifest", "--rom", str(rom), "--staging", str(staging), "--disc", str(disc),
+             "--toolchain-zip", str(toolchain), "--toolchain-pin", "0" * 64, "--toolchain-url", "https://example.invalid/t.zip",
+             "--toolchain-gcc-version", "0", "--openbios-revision", "synthetic", "--checkout-sha", "0" * 40,
+             "--pr-head-sha", "", "--event-name", "pull_request", "--repository", "example/synthetic", "--run-id", "1",
+             "--run-attempt", "1", "--runner-image", "synthetic", "--compiler-name", "gcc", "--compiler-version", "0",
+             "--compiler-line", "synthetic gcc", "--host-exit-code", "1"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        manifest = json.loads((staging / "provenance-manifest.json").read_text(encoding="utf-8"))
+        listed = {entry["path"] for entry in manifest["files"]}
+        self.assertEqual(listed, {"package/README.txt", "package/THIRD-PARTY-NOTICES.txt", "package/runtime/runtime-host.json",
+                                  "package/runtime/Some.Dependency.dll", "package/runtime/PSXRecomp.RuntimeHost.deps.json"})
+        self.assertEqual(manifest["public_artifact"]["executables"], "none")
+        self.assertEqual(manifest["public_artifact"]["frame_png"], "not published")
+        self.assertFalse(manifest["internal_build"]["published"])
+        self.assertNotIn("staged package executable", json.dumps(manifest))
+
     def test_executables_are_excluded_by_policy(self):
         self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
         self.assertFalse((self.stage / "package" / "psxrecomp-public-openbios.exe").exists())
