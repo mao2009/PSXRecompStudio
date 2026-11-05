@@ -161,6 +161,7 @@ public static class PublicLog
     /// </summary>
     private static string FileNameOf(string path)
     {
+        ArgumentNullException.ThrowIfNull(path);
         var cut = path.LastIndexOfAny(['\\', '/']);
         return cut < 0 ? path : path[(cut + 1)..];
     }

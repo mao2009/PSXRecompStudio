@@ -813,7 +813,15 @@ public static class FirmwareRuntimeLauncher
                     evidence?.Targets,
                     RuntimeHostRunMetrics.From(
                         wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess,
-                        engine.FallbackInFlight, engine.FallbackReturns)),
+                        engine.FallbackInFlight, engine.FallbackReturns))
+                    with
+                    {
+                        // The private stop diagnostic carries the firmware run's audit and register file from the same run as the
+                        // public line. It is written to the diagnostics file only; the public line keeps the allowlist.
+                        AotBiosBlockCount = BiosAddressGuard.BiosBlockCount(plan.Program),
+                        AotLoadedBlockCount = plan.LoadedCode.Blocks.Count(),
+                        FinalGpr = result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray(),
+                    },
                 error);
             // The public line is written from the summary's public form only: the ROM digest stays internal (see FirmwareRunSummary).
             var publicLine = new FirmwareRunSummary(
