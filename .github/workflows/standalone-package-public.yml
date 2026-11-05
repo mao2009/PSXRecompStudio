@@ -271,7 +271,7 @@ jobs:
             --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" \
             --forbid-prefix "$RUNNER_TEMP" --forbid-prefix "$(cygpath -u "$RUNNER_TEMP")" \
             --forbid-prefix "$GITHUB_WORKSPACE" --forbid-prefix "$(cygpath -u "$GITHUB_WORKSPACE")"
-          echo "success-path diagnostics scan passed; diagnostics.json is not uploaded, and only the allowlisted package and frame.png are staged"
+          echo "success-path diagnostics scan passed; diagnostics.json is not uploaded, and only the allowlisted package is staged (frame.png stays in the work directory)"
 
       - name: Stage upload set and verify ROM absence
         shell: bash

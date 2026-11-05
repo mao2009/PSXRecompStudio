@@ -317,8 +317,10 @@ PUBLIC_NOTICE_TEXT = """THIRD-PARTY NOTICES for the psxrecomp-public-openbios pa
 This package contains the following components, each under the MIT License:
 
   PSXRecomp (runtime host and libraries)   Copyright (c) 2026 mao2009
-  SharpCompress                            Copyright (c) 2014 Adam Hathcock
-  loach.PureSharp                          Copyright (c) 2026 mao2009
+  SharpCompress (shipped version 0.50.4)   Copyright (c) 2025 Adam Hathcock
+  .NET apphost (PSXRecomp.RuntimeHost.exe launcher, from dotnet/runtime)
+                                           Copyright (c) .NET Foundation and Contributors
+  loach.PureSharp                          MIT License; author as listed in its package: loach
 
 MIT License
 
@@ -394,6 +396,9 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     if unlisted:
         return [f"{unlisted} file(s) in the package tree match no public allowlist rule; nothing is staged"]
     allowed_rels = {rel for _, rel in plan}
+    if PUBLIC_NOTICE_NAME in allowed_rels:
+        # The generated notice must never overwrite a copied file of the same name.
+        return ["the generated notice name collides with a copied file; nothing is staged"]
     if "runtime/PSXRecomp.RuntimeHost.exe" not in allowed_rels or HOST_MANIFEST_REL not in allowed_rels:
         return ["the runtime host or its manifest is missing from the package tree"]
     host_manifest_text = (package_src / HOST_MANIFEST_REL).read_text(encoding="utf-8")

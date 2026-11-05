@@ -525,7 +525,8 @@ class PublicStageTests(unittest.TestCase):
         self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
         notice = (self.stage / "package" / "THIRD-PARTY-NOTICES.txt").read_text(encoding="utf-8")
         self.assertIn("SharpCompress", notice)
-        self.assertIn("Copyright (c) 2014 Adam Hathcock", notice)
+        self.assertIn("Copyright (c) 2025 Adam Hathcock", notice)
+        self.assertIn(".NET Foundation and Contributors", notice)
         self.assertIn("Permission is hereby granted", notice)
 
     def test_allowlisted_files_are_kept(self):
