@@ -338,9 +338,10 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     frame = run_dir / "frame.png"
     if not frame.is_file() or frame.stat().st_size == 0:
         return ["run/frame.png is missing or empty"]
-    # Refuse before anything is copied: a link could publish a denied file's content under an innocuous name.
-    if any(src.is_symlink() for src in package_src.rglob("*")):
-        return ["a symbolic link is not allowed in the package tree"]
+    # Refuse before anything is copied: a link could publish a denied file's content under an innocuous name. NTFS junctions
+    # are checked too, where the interpreter provides the test (Path.is_junction, Python 3.12 and later).
+    if any(src.is_symlink() or getattr(src, "is_junction", lambda: False)() for src in package_src.rglob("*")):
+        return ["a symbolic link or junction is not allowed in the package tree"]
 
     plan: list[tuple[Path, str]] = []
     unlisted = 0
@@ -387,7 +388,7 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
 
 
 # Host output filter. The runtime host's stdout and stderr are never printed raw. A line is printed only when it has one of two
-# shapes: (1) the firmware-run JSON line, with exactly the keys of PublicLog.FirmwareRunKeys and plain scalar values, or (2) a
+# shapes: (1) the firmware-run JSON line, with only keys from PublicLog.FirmwareRunKeys and plain scalar values, or (2) a
 # plain ASCII text line. Every other line is withheld and only its count is printed. Absolute paths, digests and runs of 16 or
 # more hex digits are refused in both shapes. This is a fail-closed mirror for the workflow; the PublicLog policy in the host
 # still applies at the source.
@@ -493,7 +494,15 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         "schema": "psxrecomp-standalone-package-public/1",
         "purpose": "Verification of the launch and measurement infrastructure. Not evidence that any title boots or reaches a title screen.",
         "inputs": {
-            "commercial_or_rom_data": "none",
+            # No commercial BIOS or game data is used. The OpenBIOS image is a build of public source, and it is not published:
+            # its bytes, digest and size are never written. The staged executable and frame.png are outputs of a run that used
+            # that image, and they are published as verification output only.
+            "commercial_bios_or_game_data": "none",
+            "openbios_image": {
+                "published": False,
+                "note": "built from public source; the built image is not uploaded or cached; its bytes, digest and size are not recorded",
+                "run_outputs_derived_from_it": ["the staged package executable", "run/frame.png"],
+            },
             "disc": {
                 "generator": "scripts/demo/synthetic-disc.ps1 -OpenBiosCompatible",
                 "file": "synthetic-disc-openbios.bin",

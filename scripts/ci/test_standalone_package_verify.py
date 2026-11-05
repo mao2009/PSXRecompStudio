@@ -582,7 +582,7 @@ class PublicStageTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symbolic links are not permitted on this host (NOT_TESTED)")
         self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage),
-                         ["a symbolic link is not allowed in the package tree"])
+                         ["a symbolic link or junction is not allowed in the package tree"])
         self.assertFalse(self.stage.exists() and any(self.stage.rglob("innocent.txt")))
 
     def test_cli_prints_relative_names_only_and_no_absolute_path(self):

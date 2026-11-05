@@ -238,7 +238,7 @@ jobs:
             || rc=$?
           if [ "$rc" -eq 0 ] && cp "$RUN/diagnostics.json" "$DIAG/diagnostics.json"; then
             echo "safe=true" >> "$GITHUB_OUTPUT"
-            echo "diagnostics.json staged for the failure artifact"
+            echo "diagnostics.json scan passed; the file stays in the work directory (no failure artifact is uploaded)"
           else
             echo "diagnostics.json NOT staged (scan rc=$rc); see the counts above"
           fi
@@ -271,7 +271,7 @@ jobs:
             --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" \
             --forbid-prefix "$RUNNER_TEMP" --forbid-prefix "$(cygpath -u "$RUNNER_TEMP")" \
             --forbid-prefix "$GITHUB_WORKSPACE" --forbid-prefix "$(cygpath -u "$GITHUB_WORKSPACE")"
-          echo "success-path diagnostics scan passed; only the scanned diagnostics.json and frame.png are staged"
+          echo "success-path diagnostics scan passed; diagnostics.json is not uploaded, and only the allowlisted package and frame.png are staged"
 
       - name: Stage upload set and verify ROM absence
         shell: bash
