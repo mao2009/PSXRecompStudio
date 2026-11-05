@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -272,6 +273,52 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+# The explicit public upload allowlist. The package tree is copied except for these names, which are internal to the run or carry
+# ROM-derived numbers: firmware-boot.json holds the ROM's code-byte count, bios-content-diagnostic.txt holds BIOS content counts,
+# and diagnostics.json is the Runtime host's private stop diagnostic. Each stays in the work directory: nothing is deleted there.
+PUBLIC_DENIED_NAMES = frozenset({"firmware-boot.json", "bios-content-diagnostic.txt", "diagnostics.json"})
+
+
+def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
+    """Copies the public upload set into stage. Returns fixed violation texts; an empty list means the set was staged."""
+    if not package_src.is_dir():
+        return ["the package tree is missing"]
+    frame = run_dir / "frame.png"
+    if not frame.is_file() or frame.stat().st_size == 0:
+        return ["run/frame.png is missing or empty"]
+    if stage.exists():
+        shutil.rmtree(stage)
+    (stage / "package").mkdir(parents=True)
+    (stage / "run").mkdir(parents=True)
+    for src in sorted(package_src.rglob("*")):
+        if not src.is_file() or src.name in PUBLIC_DENIED_NAMES:
+            continue
+        dst = stage / "package" / src.relative_to(package_src)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+    shutil.copyfile(frame, stage / "run" / "frame.png")
+    if any(p.is_file() and p.name in PUBLIC_DENIED_NAMES for p in stage.rglob("*")):
+        return ["a denied file reached the staging tree"]
+    return []
+
+
+def cmd_stage(args: argparse.Namespace) -> int:
+    try:
+        violations = public_stage(args.package_src, args.run_dir, args.stage)
+    except OSError:
+        # The exception text can name local paths: only the fixed line is printed.
+        print("public stage FAILED (I/O); details are not published. Nothing may be uploaded.")
+        return 1
+    if violations:
+        print("public stage FAILED; nothing may be uploaded.")
+        return 1
+    print("public stage PASSED. Staged files (relative to the stage):")
+    for path in sorted(args.stage.rglob("*")):
+        if path.is_file():
+            print(path.relative_to(args.stage).as_posix())
+    return 0
+
+
 def cmd_manifest(args: argparse.Namespace) -> int:
     if verify(args.rom, args.staging):
         print("ROM-absence check FAILED; no manifest written.")
@@ -403,6 +450,12 @@ def main() -> int:
     m.add_argument("--compiler-line", required=True)
     m.add_argument("--host-exit-code", type=int, required=True)
     m.set_defaults(func=cmd_manifest)
+
+    st = sub.add_parser("stage")
+    st.add_argument("--package-src", type=Path, required=True)
+    st.add_argument("--run-dir", type=Path, required=True)
+    st.add_argument("--stage", type=Path, required=True)
+    st.set_defaults(func=cmd_stage)
 
     args = parser.parse_args()
     return args.func(args)

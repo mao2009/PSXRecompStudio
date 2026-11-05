@@ -468,5 +468,96 @@ class PrepareAotPublicOutputTests(unittest.TestCase):
         self.assertFalse(code_file.exists())
 
 
+class PublicStageTests(unittest.TestCase):
+    """The public upload set: the explicit allowlist that the workflow's stage step uses. Synthetic trees only."""
+
+    CODE_BYTES = "37160"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="stage-test-"))
+        self.gate = load_gate()
+        self.pkg = self.tmp / "work" / "pkg"
+        self.run = self.tmp / "work" / "run"
+        self.stage = self.tmp / "work" / "stage"
+        (self.pkg / "runtime" / "firmware").mkdir(parents=True)
+        (self.pkg / "runtime" / "firmware" / "images.txt").write_text("boot-exe game\n", encoding="utf-8")
+        (self.pkg / "runtime" / "firmware-boot.json").write_text(
+            '{"codeBytes": ' + self.CODE_BYTES + ', "schema": 1}', encoding="utf-8")
+        (self.pkg / "runtime" / "bios-content-diagnostic.txt").write_text("BIOS content: matches 3\n", encoding="utf-8")
+        (self.pkg / "runtime" / "runtime-host.json").write_text("{}", encoding="utf-8")
+        (self.pkg / "README.txt").write_text("static text\n", encoding="utf-8")
+        self.run.mkdir(parents=True)
+        (self.run / "frame.png").write_bytes(b"\x89PNG-synthetic")
+        (self.run / "diagnostics.json").write_text('{"classifiedExitCode": 1, "finalGpr": []}', encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_firmware_boot_json_is_not_staged(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        self.assertFalse((self.stage / "package" / "runtime" / "firmware-boot.json").exists())
+
+    def test_no_code_byte_count_reaches_the_public_stage(self):
+        self.gate.public_stage(self.pkg, self.run, self.stage)
+        for path in self.stage.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(self.CODE_BYTES, path.read_bytes().decode("latin-1"), path.name)
+
+    def test_bios_content_diagnostic_is_not_staged(self):
+        self.gate.public_stage(self.pkg, self.run, self.stage)
+        self.assertFalse((self.stage / "package" / "runtime" / "bios-content-diagnostic.txt").exists())
+
+    def test_private_run_diagnostic_is_not_staged_but_frame_is(self):
+        self.gate.public_stage(self.pkg, self.run, self.stage)
+        self.assertFalse((self.stage / "run" / "diagnostics.json").exists())
+        self.assertTrue((self.stage / "run" / "frame.png").is_file())
+
+    def test_runtime_files_needed_for_the_package_are_kept(self):
+        self.gate.public_stage(self.pkg, self.run, self.stage)
+        self.assertTrue((self.stage / "package" / "runtime" / "runtime-host.json").is_file())
+        self.assertTrue((self.stage / "package" / "runtime" / "firmware" / "images.txt").is_file())
+        self.assertTrue((self.stage / "package" / "README.txt").is_file())
+
+    def test_internal_files_are_retained_in_the_work_directory(self):
+        self.gate.public_stage(self.pkg, self.run, self.stage)
+        self.assertTrue((self.pkg / "runtime" / "firmware-boot.json").is_file())
+        self.assertTrue((self.run / "diagnostics.json").is_file())
+
+    def test_missing_frame_fails_closed_with_a_fixed_text(self):
+        (self.run / "frame.png").unlink()
+        violations = self.gate.public_stage(self.pkg, self.run, self.stage)
+        self.assertEqual(violations, ["run/frame.png is missing or empty"])
+        self.assertFalse(self.stage.exists())
+
+    def test_missing_package_fails_closed(self):
+        violations = self.gate.public_stage(self.tmp / "absent", self.run, self.stage)
+        self.assertEqual(violations, ["the package tree is missing"])
+
+    def test_cli_prints_relative_names_only_and_no_absolute_path(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "stage", "--package-src", str(self.pkg), "--run-dir", str(self.run),
+             "--stage", str(self.stage)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(str(self.tmp), result.stdout)
+        self.assertNotIn(str(self.tmp), result.stderr)
+        self.assertIn("package/README.txt", result.stdout.replace("\\", "/"))
+        self.assertIn("run/frame.png", result.stdout.replace("\\", "/"))
+
+    def test_cli_io_failure_prints_a_fixed_line_without_paths(self):
+        blocker = self.tmp / "not-a-dir"
+        blocker.write_text("x", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "stage", "--package-src", str(self.pkg), "--run-dir", str(self.run),
+             "--stage", str(blocker / "child")],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(str(self.tmp), result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
