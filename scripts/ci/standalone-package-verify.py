@@ -286,13 +286,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
 #
 # Allowed (relative POSIX paths in the package tree):
 #   README.txt                        static text from the package writer (no ROM bytes, digests or counts)
-#   runtime/PSXRecomp.RuntimeHost.exe the runtime host
 #   runtime/runtime-host.json         the run configuration; its blockEntryPcs are emptied in the public copy (see below)
-#   <name>.exe at the package root    the generated artifact executable
-#   runtime/*.dll                     the runtime host's own dependencies
+#   runtime/*.dll                     the runtime's own libraries (MIT: PSXRecomp, SharpCompress)
 #   runtime/PSXRecomp.RuntimeHost.deps.json, runtime/PSXRecomp.RuntimeHost.runtimeconfig.json
 #
 # Excluded by policy (skipped and counted; they stay in the work directory and are never deleted):
+#   every *.exe                       the .NET apphost (Microsoft .NET Library terms) and the generated package executable
+#                                     (its linked GCC runtime is not verified for this route). Not run-contract changes: the
+#                                     internal package and the Standalone run are unchanged.
 #   firmware-boot.json                holds the ROM's code-byte count
 #   bios-content-diagnostic.txt       holds BIOS content counts
 #   diagnostics.json                  the Runtime host's private stop diagnostic
@@ -300,10 +301,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
 #   runtime/disc/**                   the disc image; the public manifest records it as not uploaded
 PUBLIC_DENIED_NAMES = frozenset({"firmware-boot.json", "bios-content-diagnostic.txt", "diagnostics.json"})
 PUBLIC_EXCLUDED_PREFIXES = ("runtime/firmware/", "runtime/disc/")
-PUBLIC_ALLOWED_FILES = frozenset({"README.txt", "runtime/PSXRecomp.RuntimeHost.exe", "runtime/runtime-host.json"})
+# Executables are excluded from the public set by policy (any *.exe, at any depth). The runtime host is a .NET apphost, which
+# is distributed under the Microsoft .NET Library license terms (SDK LICENSE.txt), and the generated package executable is a
+# GCC build whose linked runtime is not verified for this route. Both stay in the internal package, which the Standalone run
+# executes unchanged. Only the upload omits them.
+PUBLIC_EXCLUDED_EXECUTABLE_SUFFIX = ".exe"
+PUBLIC_ALLOWED_FILES = frozenset({"README.txt", "runtime/runtime-host.json"})
 PUBLIC_ALLOWED_PATTERNS = (
-    re.compile(r"^[A-Za-z0-9._-]+\.exe$"),  # a root-level file only: the pattern has no slash
-    re.compile(r"^runtime/[A-Za-z0-9._-]+\.dll$"),
+    re.compile(r"^runtime/[A-Za-z0-9._-]+\.dll$"),  # the runtime's own libraries: MIT (PSXRecomp, SharpCompress)
     re.compile(r"^runtime/PSXRecomp\.RuntimeHost\.(?:deps|runtimeconfig)\.json$"),
 )
 HOST_MANIFEST_REL = "runtime/runtime-host.json"
@@ -314,13 +319,15 @@ HOST_MANIFEST_REL = "runtime/runtime-host.json"
 PUBLIC_NOTICE_NAME = "THIRD-PARTY-NOTICES.txt"
 PUBLIC_NOTICE_TEXT = """THIRD-PARTY NOTICES for the psxrecomp-public-openbios package
 
-This package contains the following components, each under the MIT License:
+The files in this package are the runtime's libraries and text files, each under the MIT License:
 
   PSXRecomp (runtime host and libraries)   Copyright (c) 2026 mao2009
   SharpCompress (shipped version 0.50.4)   Copyright (c) 2025 Adam Hathcock
-  .NET apphost (PSXRecomp.RuntimeHost.exe launcher, from dotnet/runtime)
-                                           Copyright (c) .NET Foundation and Contributors
-  loach.PureSharp                          MIT License; author as listed in its package: loach
+
+No executable is included in this public package. The executables of the packaged runtime (the .NET apphost launcher and
+the generated package executable) are excluded from the public upload. The .NET apphost is distributed under the Microsoft
+.NET Library license terms, which are not reproduced here and are not granted by this package. The executables remain in the
+internal package and are not redistributed through this public artifact.
 
 MIT License
 
@@ -347,6 +354,8 @@ THE SOFTWARE.
 def _public_rule(rel: str, name: str) -> str:
     """'excluded', 'allowed' or 'unlisted' for one package file. Exclusions win over allowances."""
     if name in PUBLIC_DENIED_NAMES or rel.startswith(PUBLIC_EXCLUDED_PREFIXES):
+        return "excluded"
+    if name.lower().endswith(PUBLIC_EXCLUDED_EXECUTABLE_SUFFIX):
         return "excluded"
     if rel in PUBLIC_ALLOWED_FILES or any(pattern.match(rel) for pattern in PUBLIC_ALLOWED_PATTERNS):
         return "allowed"
@@ -399,8 +408,8 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     if PUBLIC_NOTICE_NAME in allowed_rels:
         # The generated notice must never overwrite a copied file of the same name.
         return ["the generated notice name collides with a copied file; nothing is staged"]
-    if "runtime/PSXRecomp.RuntimeHost.exe" not in allowed_rels or HOST_MANIFEST_REL not in allowed_rels:
-        return ["the runtime host or its manifest is missing from the package tree"]
+    if HOST_MANIFEST_REL not in allowed_rels:
+        return ["the runtime host manifest is missing from the package tree"]
     host_manifest_text = (package_src / HOST_MANIFEST_REL).read_text(encoding="utf-8")
     try:
         sanitized_host = _public_host_manifest(host_manifest_text)

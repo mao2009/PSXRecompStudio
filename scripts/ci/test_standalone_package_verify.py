@@ -526,13 +526,14 @@ class PublicStageTests(unittest.TestCase):
         notice = (self.stage / "package" / "THIRD-PARTY-NOTICES.txt").read_text(encoding="utf-8")
         self.assertIn("SharpCompress", notice)
         self.assertIn("Copyright (c) 2025 Adam Hathcock", notice)
-        self.assertIn(".NET Foundation and Contributors", notice)
+        self.assertIn("No executable is included in this public package", notice)
+        self.assertIn("Microsoft", notice)
         self.assertIn("Permission is hereby granted", notice)
 
     def test_allowlisted_files_are_kept(self):
         self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
-        for rel in ("README.txt", "psxrecomp-public-openbios.exe", "runtime/PSXRecomp.RuntimeHost.exe",
-                    "runtime/PSXRecomp.RuntimeHost.deps.json", "runtime/Some.Dependency.dll", "runtime/runtime-host.json"):
+        for rel in ("README.txt", "runtime/PSXRecomp.RuntimeHost.deps.json", "runtime/Some.Dependency.dll",
+                    "runtime/runtime-host.json"):
             self.assertTrue((self.stage / "package" / rel).is_file(), rel)
 
     def test_firmware_aot_inputs_and_disc_are_excluded_by_policy(self):
@@ -556,10 +557,16 @@ class PublicStageTests(unittest.TestCase):
         self.assertNotIn("new-internal-report", violations[0])  # the name is never printed
         self.assertFalse(self.stage.exists())
 
-    def test_missing_runtime_host_fails_closed(self):
-        (self.pkg / "runtime" / "PSXRecomp.RuntimeHost.exe").unlink()
+    def test_executables_are_excluded_by_policy(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        self.assertFalse((self.stage / "package" / "psxrecomp-public-openbios.exe").exists())
+        self.assertFalse((self.stage / "package" / "runtime" / "PSXRecomp.RuntimeHost.exe").exists())
+        self.assertFalse(any(p.suffix.lower() == ".exe" for p in self.stage.rglob("*")))
+
+    def test_missing_host_manifest_fails_closed(self):
+        (self.pkg / "runtime" / "runtime-host.json").unlink()
         self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage),
-                         ["the runtime host or its manifest is missing from the package tree"])
+                         ["the runtime host manifest is missing from the package tree"])
         self.assertFalse(self.stage.exists())
 
     def test_malformed_host_manifest_fails_closed(self):

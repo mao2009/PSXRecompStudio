@@ -284,7 +284,8 @@ jobs:
           # The public upload set is an explicit allowlist in standalone-package-verify.py (PUBLIC_ALLOWED_FILES and its patterns).
           # A file that matches no rule fails this step, and no stage is created. frame.png is not published (see the verifier):
           # it stays in the work directory. A fixed THIRD-PARTY-NOTICES.txt is written into the package.
-          # Nothing is deleted from $W: internal files stay there.
+          # Executables are excluded by policy (the .NET apphost is under Microsoft .NET Library terms, not published here). The
+          # internal package and the Standalone run are unchanged. Nothing is deleted from $W: internal files stay there.
           python scripts/ci/standalone-package-verify.py stage \
             --package-src "$W/pkg/psxrecomp-public-openbios" --run-dir "$RUN" --stage "$STAGE"
           python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE"
