@@ -324,6 +324,7 @@ PUBLIC_README_TEXT = """PSXRecomp standalone package: PUBLIC VERIFICATION ARTIFA
 This artifact contains only:
   runtime/runtime-host.json   the run configuration, with its list of ROM block addresses removed
   runtime/*.dll               the runtime's own libraries (MIT; see THIRD-PARTY-NOTICES.txt)
+  runtime/PSXRecomp.RuntimeHost.deps.json and .runtimeconfig.json, where the runtime provides them
   THIRD-PARTY-NOTICES.txt     the licenses of the files above
   provenance-manifest.json    the files of this artifact and how they were checked
 
@@ -421,8 +422,9 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     if unlisted:
         return [f"{unlisted} file(s) in the package tree match no public allowlist rule; nothing is staged"]
     allowed_rels = {rel for _, rel in plan}
-    if {PUBLIC_NOTICE_NAME, PUBLIC_README_NAME} & allowed_rels:
-        # The generated files must never overwrite a copied file of the same name.
+    if PUBLIC_NOTICE_NAME in allowed_rels:
+        # The generated notice must never overwrite a copied file of the same name. (The package README is excluded by rule
+        # before this point, so it can never be in the plan.)
         return ["a generated public file name collides with a copied file; nothing is staged"]
     if HOST_MANIFEST_REL not in allowed_rels:
         return ["the runtime host manifest is missing from the package tree"]
@@ -558,8 +560,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         "purpose": "Verification of the launch and measurement infrastructure. Not evidence that any title boots or reaches a title screen.",
         "inputs": {
             # No commercial BIOS or game data is used. The OpenBIOS image is a build of public source, and it is not published:
-            # its bytes, digest and size are never written. The staged executable and frame.png are outputs of a run that used
-            # that image, and they are published as verification output only.
+            # its bytes, digest and size are never written. The run that used that image produces the executable and frame.png,
+            # which are NOT published: the public artifact contains no executable and no frame.
             "commercial_bios_or_game_data": "none",
             "openbios_image": {
                 "published": False,
