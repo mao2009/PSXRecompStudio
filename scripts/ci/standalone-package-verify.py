@@ -286,14 +286,14 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     frame = run_dir / "frame.png"
     if not frame.is_file() or frame.stat().st_size == 0:
         return ["run/frame.png is missing or empty"]
+    # Refuse before anything is copied: a link could publish a denied file's content under an innocuous name.
+    if any(src.is_symlink() for src in package_src.rglob("*")):
+        return ["a symbolic link is not allowed in the package tree"]
     if stage.exists():
         shutil.rmtree(stage)
     (stage / "package").mkdir(parents=True)
     (stage / "run").mkdir(parents=True)
     for src in sorted(package_src.rglob("*")):
-        if src.is_symlink():
-            # A link could publish the content of a denied file under an innocuous name: refuse the whole set.
-            return ["a symbolic link is not allowed in the package tree"]
         if not src.is_file() or src.name in PUBLIC_DENIED_NAMES:
             continue
         dst = stage / "package" / src.relative_to(package_src)
