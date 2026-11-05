@@ -516,10 +516,17 @@ class PublicStageTests(unittest.TestCase):
         self.gate.public_stage(self.pkg, self.run, self.stage)
         self.assertFalse((self.stage / "package" / "runtime" / "bios-content-diagnostic.txt").exists())
 
-    def test_private_run_diagnostic_is_not_staged_but_frame_is(self):
-        self.gate.public_stage(self.pkg, self.run, self.stage)
-        self.assertFalse((self.stage / "run" / "diagnostics.json").exists())
-        self.assertTrue((self.stage / "run" / "frame.png").is_file())
+    def test_private_run_diagnostic_and_frame_are_not_staged(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        self.assertFalse((self.stage / "run").exists())
+        self.assertFalse(any(p.name in ("diagnostics.json", "frame.png") for p in self.stage.rglob("*")))
+
+    def test_third_party_notice_is_staged_and_names_the_mit_components(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        notice = (self.stage / "package" / "THIRD-PARTY-NOTICES.txt").read_text(encoding="utf-8")
+        self.assertIn("SharpCompress", notice)
+        self.assertIn("Copyright (c) 2014 Adam Hathcock", notice)
+        self.assertIn("Permission is hereby granted", notice)
 
     def test_allowlisted_files_are_kept(self):
         self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
@@ -596,7 +603,8 @@ class PublicStageTests(unittest.TestCase):
         self.assertNotIn(str(self.tmp), result.stdout)
         self.assertNotIn(str(self.tmp), result.stderr)
         self.assertIn("package/README.txt", result.stdout.replace("\\", "/"))
-        self.assertIn("run/frame.png", result.stdout.replace("\\", "/"))
+        self.assertIn("package/THIRD-PARTY-NOTICES.txt", result.stdout.replace("\\", "/"))
+        self.assertNotIn("run/frame.png", result.stdout.replace("\\", "/"))
 
     def test_cli_io_failure_prints_a_fixed_line_without_paths(self):
         blocker = self.tmp / "not-a-dir"

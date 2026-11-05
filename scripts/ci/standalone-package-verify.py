@@ -308,6 +308,39 @@ PUBLIC_ALLOWED_PATTERNS = (
 )
 HOST_MANIFEST_REL = "runtime/runtime-host.json"
 
+# frame.png is NOT published: it is a render of a run that used the OpenBIOS image, and the fonts in that image (charset/font1.raw,
+# font2.raw) are not cleared for redistribution (docs/legal/openbios-license-audit.md, R2). It stays in the work directory. The
+# run must still produce it: the host step requires a non-empty frame, and the stage fails closed without one.
+PUBLIC_NOTICE_NAME = "THIRD-PARTY-NOTICES.txt"
+PUBLIC_NOTICE_TEXT = """THIRD-PARTY NOTICES for the psxrecomp-public-openbios package
+
+This package contains the following components, each under the MIT License:
+
+  PSXRecomp (runtime host and libraries)   Copyright (c) 2026 mao2009
+  SharpCompress                            Copyright (c) 2014 Adam Hathcock
+  loach.PureSharp                          Copyright (c) 2026 mao2009
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+"""
+
 
 def _public_rule(rel: str, name: str) -> str:
     """'excluded', 'allowed' or 'unlisted' for one package file. Exclusions win over allowances."""
@@ -372,7 +405,6 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     if stage.exists():
         shutil.rmtree(stage)
     (stage / "package").mkdir(parents=True)
-    (stage / "run").mkdir(parents=True)
     for src, rel in plan:
         dst = stage / "package" / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -380,7 +412,7 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
             dst.write_text(sanitized_host, encoding="utf-8")
         else:
             shutil.copyfile(src, dst, follow_symlinks=False)
-    shutil.copyfile(frame, stage / "run" / "frame.png")
+    (stage / "package" / PUBLIC_NOTICE_NAME).write_text(PUBLIC_NOTICE_TEXT, encoding="utf-8")
     if any(p.is_file() and p.name in PUBLIC_DENIED_NAMES for p in stage.rglob("*")):
         return ["a denied file reached the staging tree"]
     print(f"public stage: {excluded} internal file(s) excluded by policy; they stay in the work directory")
