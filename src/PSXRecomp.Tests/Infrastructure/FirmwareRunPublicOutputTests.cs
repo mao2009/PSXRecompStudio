@@ -84,7 +84,10 @@ public sealed class FirmwareRunPublicOutputTests : IDisposable
         root.GetProperty("kind").GetString().Should().Be("firmware-run");
         root.GetProperty("biosMode").GetString().Should().Be(BiosProvenance.Verified);
         root.GetProperty("state").GetString().Should().Be("RuntimeFailure");
-        root.GetProperty("nativeInstructions").GetUInt64().Should().Be(42);
+        // PR 3: run counts are not published. The compatibility fields that remain keep their values.
+        root.TryGetProperty("nativeInstructions", out _).Should().BeFalse("run counts are not published");
+        root.GetProperty("mixedFallback").GetBoolean().Should().BeTrue();
+        root.GetProperty("fallbackMaxTransitions").GetUInt32().Should().Be(10);
     }
 
     [Fact]

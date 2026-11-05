@@ -129,7 +129,7 @@ public sealed class IpcProfile
         }
         catch (Exception ex)
         {
-            error.WriteLine($"runtime host: could not write IPC profile to {path}: {ex.Message}");
+            error.WriteLine($"runtime host: could not write IPC profile to {Path.GetFileName(path)} (code {PublicLog.CodeFor(ex)})");
         }
     }
 

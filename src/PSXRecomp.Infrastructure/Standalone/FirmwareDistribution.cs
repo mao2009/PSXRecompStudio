@@ -247,7 +247,7 @@ public static class FirmwareAotBundle
 
         if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-            throw new InvalidDataException($"The AOT directory must not be a symbolic link or reparse point: {root}");
+            throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The AOT directory must not be a symbolic link or reparse point: {root}");
         }
     }
 
@@ -270,7 +270,7 @@ public static class FirmwareAotBundle
                 var info = new DirectoryInfo(current);
                 if (info.Exists && (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint)))
                 {
-                    throw new InvalidDataException($"The AOT input '{what}' passes through the symbolic link or reparse point '{part}'.");
+                    throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The AOT input '{what}' passes through the symbolic link or reparse point '{part}'.");
                 }
             }
         }
@@ -278,7 +278,7 @@ public static class FirmwareAotBundle
         var file = new FileInfo(full);
         if (file.LinkTarget is not null || file.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-            throw new InvalidDataException($"The AOT input '{what}' must not be a symbolic link or reparse point.");
+            throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The AOT input '{what}' must not be a symbolic link or reparse point.");
         }
     }
 }
@@ -612,26 +612,22 @@ internal sealed record FirmwareRunSummary(
     uint? FallbackTransitions,
     string[]? FinalGpr)
 {
-    /// <summary>The public line. It holds no ROM digest, no ROM window and no ROM-derived count beyond the run's own audit fields.</summary>
+    /// <summary>
+    /// The public line, built from the explicit key allowlist <see cref="PublicLog.FirmwareRunKeys"/>. The guest PC, the
+    /// final registers, the block and instruction counts and the diagnostic message are not published: they are ROM-run
+    /// detail and can carry addresses or counts derived from the ROM. They are not written to stderr in any form.
+    /// </summary>
     public string ToPublicJson() => JsonSerializer.Serialize(new
     {
         kind = "firmware-run",
         bios = Bios,
         biosMode = BiosMode,
         declaredProvenance = DeclaredProvenance,
-        aotBiosBlocks = AotBiosBlocks,
-        aotLoadedBlocks = AotLoadedBlocks,
         state = State,
-        guestPc = GuestPc,
         diagnosticCode = DiagnosticCode,
-        diagnosticMessage = DiagnosticMessage,
         mixedFallback = MixedFallback,
         fallbackSegmentInstructionBudget = FallbackSegmentInstructionBudget,
         fallbackMaxTransitions = FallbackMaxTransitions,
-        nativeInstructions = NativeInstructions,
-        fallbackInstructions = FallbackInstructions,
-        fallbackTransitions = FallbackTransitions,
-        finalGpr = FinalGpr,
     });
 }
 
@@ -719,7 +715,7 @@ public static class FirmwareRuntimeLauncher
             var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
             {
-                throw new InvalidDataException("The disc image must not be a symbolic link.");
+                throw PublicRefusal.Create(PublicCodes.LinkRefused, "The disc image must not be a symbolic link.");
             }
 
             if (OpenBiosRomInput.Sha256HexOfFile(discPath) != boot.DiscSha256)
@@ -820,7 +816,7 @@ public static class FirmwareRuntimeLauncher
                         engine.FallbackInFlight, engine.FallbackReturns)),
                 error);
             // The public line is written from the summary's public form only: the ROM digest stays internal (see FirmwareRunSummary).
-            error.WriteLine(new FirmwareRunSummary(
+            var publicLine = new FirmwareRunSummary(
                 Bios: boot.BiosBackend,
                 BiosMode: biosClassification,
                 DeclaredProvenance: host.BiosProvenance,
@@ -840,14 +836,18 @@ public static class FirmwareRuntimeLauncher
                 FallbackTransitions: evidence?.Transitions,
                 // The final register file lets a caller verify ROM -> game -> ROM control/data continuity from the
                 // run's own output without a second engine.
-                FinalGpr: result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray()).ToPublicJson());
+                FinalGpr: result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray()).ToPublicJson();
+            // Fail closed: the line is checked against the public policy before it is written.
+            error.WriteLine(PublicLog.Refusal(publicLine, PublicLog.FirmwareRunKeys) is { } refusal
+                ? PublicLog.RefusedLine("runtime host: firmware-run", refusal)
+                : publicLine);
             return exitCode;
         }
         catch (Exception exception) when (
             exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 or InvalidOperationException or FormatException)
         {
-            error.WriteLine($"runtime host: firmware distribution: {exception.GetType().Name}: {exception.Message}");
+            error.WriteLine(PublicLog.FailureLine("runtime host: firmware distribution", exception));
             WriteDiagnostics(diagnosticsPath, () => RuntimeHostDiagnostic.FromFailure(host, SetupFailureExitCode, exception), error);
             return SetupFailureExitCode;
         }
@@ -870,7 +870,7 @@ public static class FirmwareRuntimeLauncher
         }
         catch (Exception exception)
         {
-            error.WriteLine($"runtime host: could not write diagnostics to {path}: {exception.Message}");
+            error.WriteLine($"runtime host: could not write diagnostics to {Path.GetFileName(path)} (code {PublicLog.CodeFor(exception)})");
         }
     }
 }
