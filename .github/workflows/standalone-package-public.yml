@@ -188,11 +188,15 @@ jobs:
           test -s "$ROM"
           ROM_WIN="$(cygpath -w "$ROM")"
           set +e
-          (cd "$RUN" && PSXRECOMP_BIOS_ROM="$ROM_WIN" "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json")
+          (cd "$RUN" && PSXRECOMP_BIOS_ROM="$ROM_WIN" "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json" > "$W/host-stdout.txt" 2> "$W/host-stderr.txt")
           rc=$?
           set -e
           echo "runtime host exit code: $rc"
           echo "HOST_EXIT_CODE=$rc" >> "$GITHUB_ENV"
+          # The host's stdout and stderr are never printed raw (they can carry paths, digests and ROM-run detail). Each stream goes
+          # through the public-lines filter: only the firmware-run JSON line and plain text are printed, and the rest is counted.
+          python scripts/ci/standalone-package-verify.py public-lines --file "$W/host-stdout.txt" --label stdout
+          python scripts/ci/standalone-package-verify.py public-lines --file "$W/host-stderr.txt" --label stderr
           # Names only: file sizes of the host's output are not printed (they are run-derived numbers).
           ls "$RUN"
           # Fail closed: the job is green only when the host exits 0 and produced a non-empty frame.png.
@@ -277,8 +281,9 @@ jobs:
           ROM="$W/openbios-out/openbios.bin"
           RUN="$W/run"
           STAGE="$W/stage"
-          # The public upload set is defined in standalone-package-verify.py (PUBLIC_DENIED_NAMES and the frame). It copies the
-          # package tree except the denied names, and frame.png only from the run folder. Nothing is deleted from $W.
+          # The public upload set is an explicit allowlist in standalone-package-verify.py (PUBLIC_ALLOWED_FILES and its patterns).
+          # A file that matches no rule fails this step, and no stage is created. frame.png is copied from the run folder only.
+          # Nothing is deleted from $W: internal files stay there.
           python scripts/ci/standalone-package-verify.py stage \
             --package-src "$W/pkg/psxrecomp-public-openbios" --run-dir "$RUN" --stage "$STAGE"
           python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE"

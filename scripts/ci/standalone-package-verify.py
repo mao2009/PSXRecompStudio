@@ -14,6 +14,13 @@ The staging directory is the ONLY directory that is uploaded as an artifact. Thi
                staging tree. The built ROM's SHA-256 and size are deliberately NOT written to the manifest.
   diag-scan    the public-safety scan of diagnostics.json (ROM windows, absolute paths, digests, JSON).
                It applies the same probe coverage check as verify.
+  stage        copies the public upload set by an explicit allowlist (PUBLIC_ALLOWED_FILES and the patterns). A file
+               that matches no rule is refused and no stage is created. runtime-host.json is copied with its
+               blockEntryPcs emptied: they are the ROM's static block addresses.
+  public-lines prints only the runtime host's firmware-run JSON line and plain text lines from its stdout or stderr. Any
+               other line is withheld, and only the count is printed.
+
+Any uncaught exception in a subcommand prints the exception type only: a traceback can name local paths.
 
 Guaranteed detection (computed from the actual probe selection, see gap_stats):
   Let max_gap be the largest distance between consecutive kept probe offsets, with the ROM start
@@ -72,7 +79,8 @@ def sha256_file(path: Path) -> str:
 def load_rom(rom: Path) -> bytes:
     data = rom.read_bytes()
     if len(data) != ROM_SIZE:
-        raise SystemExit(f"ROM must be {ROM_SIZE} bytes, found {len(data)}")
+        # The size of the built ROM is not printed: a published size would let anyone check a candidate ROM.
+        raise ValueError("the built ROM has an unexpected size")
     return data
 
 
@@ -273,14 +281,58 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
-# The explicit public upload allowlist. The package tree is copied except for these names, which are internal to the run or carry
-# ROM-derived numbers: firmware-boot.json holds the ROM's code-byte count, bios-content-diagnostic.txt holds BIOS content counts,
-# and diagnostics.json is the Runtime host's private stop diagnostic. Each stays in the work directory: nothing is deleted there.
+# The public upload set is an EXPLICIT ALLOWLIST over the package tree. A file that matches no rule is refused, and the stage is
+# not created, so a new file added to the package cannot be published by default.
+#
+# Allowed (relative POSIX paths in the package tree):
+#   README.txt                        static text from the package writer (no ROM bytes, digests or counts)
+#   runtime/PSXRecomp.RuntimeHost.exe the runtime host
+#   runtime/runtime-host.json         the run configuration; its blockEntryPcs are emptied in the public copy (see below)
+#   <name>.exe at the package root    the generated artifact executable
+#   runtime/*.dll                     the runtime host's own dependencies
+#   runtime/PSXRecomp.RuntimeHost.deps.json, runtime/PSXRecomp.RuntimeHost.runtimeconfig.json
+#
+# Excluded by policy (skipped and counted; they stay in the work directory and are never deleted):
+#   firmware-boot.json                holds the ROM's code-byte count
+#   bios-content-diagnostic.txt       holds BIOS content counts
+#   diagnostics.json                  the Runtime host's private stop diagnostic
+#   runtime/firmware/**               the ROM-derived AOT inputs: rom.roots holds ROM block roots, images.txt the RAM-image manifest
+#   runtime/disc/**                   the disc image; the public manifest records it as not uploaded
 PUBLIC_DENIED_NAMES = frozenset({"firmware-boot.json", "bios-content-diagnostic.txt", "diagnostics.json"})
+PUBLIC_EXCLUDED_PREFIXES = ("runtime/firmware/", "runtime/disc/")
+PUBLIC_ALLOWED_FILES = frozenset({"README.txt", "runtime/PSXRecomp.RuntimeHost.exe", "runtime/runtime-host.json"})
+PUBLIC_ALLOWED_PATTERNS = (
+    re.compile(r"^[A-Za-z0-9._-]+\.exe$"),  # a root-level file only: the pattern has no slash
+    re.compile(r"^runtime/[A-Za-z0-9._-]+\.dll$"),
+    re.compile(r"^runtime/PSXRecomp\.RuntimeHost\.(?:deps|runtimeconfig)\.json$"),
+)
+HOST_MANIFEST_REL = "runtime/runtime-host.json"
+
+
+def _public_rule(rel: str, name: str) -> str:
+    """'excluded', 'allowed' or 'unlisted' for one package file. Exclusions win over allowances."""
+    if name in PUBLIC_DENIED_NAMES or rel.startswith(PUBLIC_EXCLUDED_PREFIXES):
+        return "excluded"
+    if rel in PUBLIC_ALLOWED_FILES or any(pattern.match(rel) for pattern in PUBLIC_ALLOWED_PATTERNS):
+        return "allowed"
+    return "unlisted"
+
+
+def _public_host_manifest(text: str) -> str:
+    """The public copy of runtime-host.json. blockEntryPcs are the ROM's static block entry addresses: they are emptied here,
+    in the staged copy only. The internal manifest is unchanged, and the public copy is not used to run anything."""
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("the runtime host manifest is not a JSON object")
+    data["blockEntryPcs"] = []
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
 def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
-    """Copies the public upload set into stage. Returns fixed violation texts; an empty list means the set was staged."""
+    """Copies the public upload set into stage. Returns fixed violation texts; an empty list means the set was staged.
+
+    Every check runs before the stage is created or touched, so a refusal leaves no partial stage behind.
+    """
     if not package_src.is_dir():
         return ["the package tree is missing"]
     frame = run_dir / "frame.png"
@@ -289,20 +341,119 @@ def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
     # Refuse before anything is copied: a link could publish a denied file's content under an innocuous name.
     if any(src.is_symlink() for src in package_src.rglob("*")):
         return ["a symbolic link is not allowed in the package tree"]
+
+    plan: list[tuple[Path, str]] = []
+    unlisted = 0
+    excluded = 0
+    for src in sorted(package_src.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(package_src).as_posix()
+        rule = _public_rule(rel, src.name)
+        if rule == "excluded":
+            excluded += 1
+        elif rule == "allowed":
+            plan.append((src, rel))
+        else:
+            unlisted += 1
+    # The count is printed; the names are not, because a name of an unlisted file is not known to be public.
+    if unlisted:
+        return [f"{unlisted} file(s) in the package tree match no public allowlist rule; nothing is staged"]
+    allowed_rels = {rel for _, rel in plan}
+    if "runtime/PSXRecomp.RuntimeHost.exe" not in allowed_rels or HOST_MANIFEST_REL not in allowed_rels:
+        return ["the runtime host or its manifest is missing from the package tree"]
+    host_manifest_text = (package_src / HOST_MANIFEST_REL).read_text(encoding="utf-8")
+    try:
+        sanitized_host = _public_host_manifest(host_manifest_text)
+    except ValueError:
+        return ["the runtime host manifest could not be read for publication"]
+
     if stage.exists():
         shutil.rmtree(stage)
     (stage / "package").mkdir(parents=True)
     (stage / "run").mkdir(parents=True)
-    for src in sorted(package_src.rglob("*")):
-        if not src.is_file() or src.name in PUBLIC_DENIED_NAMES:
-            continue
-        dst = stage / "package" / src.relative_to(package_src)
+    for src, rel in plan:
+        dst = stage / "package" / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dst, follow_symlinks=False)
+        if rel == HOST_MANIFEST_REL:
+            dst.write_text(sanitized_host, encoding="utf-8")
+        else:
+            shutil.copyfile(src, dst, follow_symlinks=False)
     shutil.copyfile(frame, stage / "run" / "frame.png")
     if any(p.is_file() and p.name in PUBLIC_DENIED_NAMES for p in stage.rglob("*")):
         return ["a denied file reached the staging tree"]
+    print(f"public stage: {excluded} internal file(s) excluded by policy; they stay in the work directory")
     return []
+
+
+# Host output filter. The runtime host's stdout and stderr are never printed raw. A line is printed only when it has one of two
+# shapes: (1) the firmware-run JSON line, with exactly the keys of PublicLog.FirmwareRunKeys and plain scalar values, or (2) a
+# plain ASCII text line. Every other line is withheld and only its count is printed. Absolute paths, digests and runs of 16 or
+# more hex digits are refused in both shapes. This is a fail-closed mirror for the workflow; the PublicLog policy in the host
+# still applies at the source.
+FIRMWARE_RUN_KEYS = frozenset({
+    "kind",
+    "bios",
+    "biosMode",
+    "declaredProvenance",
+    "state",
+    "diagnosticCode",
+    "mixedFallback",
+    "fallbackSegmentInstructionBudget",
+    "fallbackMaxTransitions",
+})
+FIRMWARE_RUN_VALUE = re.compile(r"^[A-Za-z0-9_.:\-]{0,80}$")
+PLAIN_TEXT_LINE = re.compile(r"^[A-Za-z0-9 ;:()_.,=+\-\[\]]{1,200}$")
+HEX_RUN = re.compile(r"[0-9A-Fa-f]{16,}")
+
+
+def public_line_ok(line: str) -> bool:
+    if any(pattern.search(line) for _, pattern in ABSOLUTE_PATH_PATTERNS) or DIGEST_TOKEN.search(line) or HEX_RUN.search(line):
+        return False
+    if line.startswith("{"):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(obj, dict) or obj.get("kind") != "firmware-run" or not set(obj) <= FIRMWARE_RUN_KEYS:
+            return False
+        for value in obj.values():
+            if value is None or isinstance(value, (bool, int)):
+                continue
+            if isinstance(value, str) and FIRMWARE_RUN_VALUE.match(value):
+                continue
+            return False
+        return True
+    return PLAIN_TEXT_LINE.match(line) is not None
+
+
+def filter_host_output(raw: bytes) -> tuple[list[str], int]:
+    """Returns (lines that may be printed, number of withheld lines). Line breaks: CRLF, CR or LF."""
+    kept: list[str] = []
+    withheld = 0
+    for line in re.split(r"\r\n|\r|\n", raw.decode("utf-8", errors="replace")):
+        if not line.strip():
+            continue
+        if public_line_ok(line):
+            kept.append(line)
+        else:
+            withheld += 1
+    return kept, withheld
+
+
+def cmd_public_lines(args: argparse.Namespace) -> int:
+    try:
+        raw = args.file.read_bytes()
+    except OSError:
+        print(f"{args.label}: no output was written; nothing is published from it.")
+        return 0
+    kept, withheld = filter_host_output(raw)
+    print(f"--- {args.label}: public lines only ---")
+    for line in kept:
+        print(line)
+    # The count is printed, never the withheld text: it can carry paths, digests or ROM-derived data.
+    print(f"--- {args.label}: {withheld} line(s) withheld; details are not published ---")
+    return 0
 
 
 def cmd_stage(args: argparse.Namespace) -> int:
@@ -408,7 +559,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     }
     out = staging / MANIFEST_NAME
     out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"wrote {out} listing {len(files)} file(s)")
+    # The name only: the resolved path is a runner path, and runner paths are not published.
+    print(f"wrote {MANIFEST_NAME} listing {len(files)} file(s)")
     if verify(args.rom, staging):
         print("ROM-absence check FAILED after writing the manifest.")
         return 1
@@ -460,8 +612,17 @@ def main() -> int:
     st.add_argument("--stage", type=Path, required=True)
     st.set_defaults(func=cmd_stage)
 
+    pl = sub.add_parser("public-lines")
+    pl.add_argument("--file", type=Path, required=True)
+    pl.add_argument("--label", required=True)
+    pl.set_defaults(func=cmd_public_lines)
+
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Exception as exc:  # fail closed: a traceback can name local paths, so only the exception type is printed
+        print(f"{args.command} FAILED: {type(exc).__name__}; details are not published. Nothing may be uploaded.")
+        return 1
 
 
 if __name__ == "__main__":

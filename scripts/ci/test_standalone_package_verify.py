@@ -481,10 +481,19 @@ class PublicStageTests(unittest.TestCase):
         self.stage = self.tmp / "work" / "stage"
         (self.pkg / "runtime" / "firmware").mkdir(parents=True)
         (self.pkg / "runtime" / "firmware" / "images.txt").write_text("boot-exe game\n", encoding="utf-8")
+        (self.pkg / "runtime" / "firmware" / "rom.roots").write_text("0x80010000\n", encoding="utf-8")
+        (self.pkg / "runtime" / "disc").mkdir(parents=True)
+        (self.pkg / "runtime" / "disc" / "disc.bin").write_bytes(b"synthetic disc\n")
         (self.pkg / "runtime" / "firmware-boot.json").write_text(
             '{"codeBytes": ' + self.CODE_BYTES + ', "schema": 1}', encoding="utf-8")
         (self.pkg / "runtime" / "bios-content-diagnostic.txt").write_text("BIOS content: matches 3\n", encoding="utf-8")
-        (self.pkg / "runtime" / "runtime-host.json").write_text("{}", encoding="utf-8")
+        # blockEntryPcs are the ROM's static block addresses: the public copy must carry none.
+        (self.pkg / "runtime" / "runtime-host.json").write_text(
+            '{"schemaVersion": 1, "blockEntryPcs": [2147549184, 2147549188], "entryPc": 3217031168}', encoding="utf-8")
+        (self.pkg / "runtime" / "PSXRecomp.RuntimeHost.exe").write_bytes(b"MZ-synthetic-host")
+        (self.pkg / "runtime" / "PSXRecomp.RuntimeHost.deps.json").write_text("{}", encoding="utf-8")
+        (self.pkg / "runtime" / "Some.Dependency.dll").write_bytes(b"MZ-synthetic-dll")
+        (self.pkg / "psxrecomp-public-openbios.exe").write_bytes(b"MZ-synthetic-artifact")
         (self.pkg / "README.txt").write_text("static text\n", encoding="utf-8")
         self.run.mkdir(parents=True)
         (self.run / "frame.png").write_bytes(b"\x89PNG-synthetic")
@@ -512,11 +521,44 @@ class PublicStageTests(unittest.TestCase):
         self.assertFalse((self.stage / "run" / "diagnostics.json").exists())
         self.assertTrue((self.stage / "run" / "frame.png").is_file())
 
-    def test_runtime_files_needed_for_the_package_are_kept(self):
-        self.gate.public_stage(self.pkg, self.run, self.stage)
-        self.assertTrue((self.stage / "package" / "runtime" / "runtime-host.json").is_file())
-        self.assertTrue((self.stage / "package" / "runtime" / "firmware" / "images.txt").is_file())
-        self.assertTrue((self.stage / "package" / "README.txt").is_file())
+    def test_allowlisted_files_are_kept(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        for rel in ("README.txt", "psxrecomp-public-openbios.exe", "runtime/PSXRecomp.RuntimeHost.exe",
+                    "runtime/PSXRecomp.RuntimeHost.deps.json", "runtime/Some.Dependency.dll", "runtime/runtime-host.json"):
+            self.assertTrue((self.stage / "package" / rel).is_file(), rel)
+
+    def test_firmware_aot_inputs_and_disc_are_excluded_by_policy(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        self.assertFalse((self.stage / "package" / "runtime" / "firmware").exists())
+        self.assertFalse((self.stage / "package" / "runtime" / "disc").exists())
+
+    def test_block_entry_pcs_are_emptied_in_the_public_copy_only(self):
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage), [])
+        public = json.loads((self.stage / "package" / "runtime" / "runtime-host.json").read_text(encoding="utf-8"))
+        self.assertEqual(public["blockEntryPcs"], [])
+        self.assertEqual(public["entryPc"], 3217031168)  # the other fields are unchanged
+        internal = json.loads((self.pkg / "runtime" / "runtime-host.json").read_text(encoding="utf-8"))
+        self.assertEqual(internal["blockEntryPcs"], [2147549184, 2147549188])
+
+    def test_unlisted_file_fails_closed_and_no_stage_is_created(self):
+        (self.pkg / "runtime" / "new-internal-report.bin").write_bytes(b"not reviewed")
+        violations = self.gate.public_stage(self.pkg, self.run, self.stage)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("match no public allowlist rule", violations[0])
+        self.assertNotIn("new-internal-report", violations[0])  # the name is never printed
+        self.assertFalse(self.stage.exists())
+
+    def test_missing_runtime_host_fails_closed(self):
+        (self.pkg / "runtime" / "PSXRecomp.RuntimeHost.exe").unlink()
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage),
+                         ["the runtime host or its manifest is missing from the package tree"])
+        self.assertFalse(self.stage.exists())
+
+    def test_malformed_host_manifest_fails_closed(self):
+        (self.pkg / "runtime" / "runtime-host.json").write_text("[1, 2]", encoding="utf-8")
+        self.assertEqual(self.gate.public_stage(self.pkg, self.run, self.stage),
+                         ["the runtime host manifest could not be read for publication"])
+        self.assertFalse(self.stage.exists())
 
     def test_internal_files_are_retained_in_the_work_directory(self):
         self.gate.public_stage(self.pkg, self.run, self.stage)
@@ -566,6 +608,98 @@ class PublicStageTests(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(str(self.tmp), result.stdout + result.stderr)
+
+
+class PublicOutputAndErrorTests(unittest.TestCase):
+    """Host output filter, uncaught-exception wrapper and the manifest's success line. Synthetic data only."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="public-lines-test-"))
+        self.gate = load_gate()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _kept(self, raw: bytes):
+        return self.gate.filter_host_output(raw)
+
+    def test_firmware_run_line_with_the_allowed_keys_is_kept(self):
+        line = ('{"kind":"firmware-run","bios":"openbios","biosMode":"openbios-unverified","declaredProvenance":null,'
+                '"state":"RuntimeFailure","diagnosticCode":"ARTIFACT_FALLBACK_BUDGET_EXHAUSTED","mixedFallback":true,'
+                '"fallbackSegmentInstructionBudget":100000000,"fallbackMaxTransitions":100000}')
+        self.assertEqual(self._kept((line + "\n").encode()), ([line], 0))
+
+    def test_firmware_run_line_with_an_extra_key_is_withheld(self):
+        line = '{"kind":"firmware-run","bios":"openbios","guestPc":"0x80010000"}'
+        self.assertEqual(self._kept((line + "\n").encode()), ([], 1))
+
+    def test_paths_and_digests_are_withheld_in_text_lines(self):
+        raw = (b"runtime host: wrote C:\\Users\\runner\\x\n"
+               b"runtime host: opened /home/runner/x\n"
+               b"runtime host: digest " + b"ab" * 32 + b"\n"
+               b"runtime host: run 0123456789abcdef0123\n"
+               b"runtime host: ok\n")
+        kept, withheld = self._kept(raw)
+        self.assertEqual(kept, ["runtime host: ok"])
+        self.assertEqual(withheld, 4)
+
+    def test_binary_bytes_are_withheld(self):
+        kept, withheld = self._kept(bytes(range(128, 255)) + b"\n" + b"\x00\x01\x02\n")
+        self.assertEqual(kept, [])
+        self.assertEqual(withheld, 2)
+
+    def test_crlf_cr_and_lf_are_all_line_breaks(self):
+        kept, withheld = self._kept(b"alpha one\r\nbeta two\rgamma three\n")
+        self.assertEqual(kept, ["alpha one", "beta two", "gamma three"])
+        self.assertEqual(withheld, 0)
+
+    def test_a_path_split_across_a_line_break_is_still_withheld_piecewise(self):
+        # Each fragment is judged alone: a fragment that is not a path, and the next one is not either, so only plain text passes.
+        kept, withheld = self._kept(b"/home\n/runner\n")
+        self.assertEqual(kept, [])
+        self.assertEqual(withheld, 2)
+
+    def test_cli_prints_the_count_and_never_the_withheld_text(self):
+        raw_path = self.tmp / "host.txt"
+        raw_path.write_bytes(b"runtime host: wrote C:\\Users\\runner\\secret-name\nruntime host: ok\n")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "public-lines", "--file", str(raw_path), "--label", "stderr"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("runtime host: ok", result.stdout)
+        self.assertIn("1 line(s) withheld", result.stdout)
+        self.assertNotIn("secret-name", result.stdout + result.stderr)
+        self.assertNotIn("C:\\Users", result.stdout + result.stderr)
+
+    def test_an_uncaught_exception_prints_only_its_type(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "verify", "--rom", str(self.tmp / "absent-rom.bin"), "--staging", str(self.tmp)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("verify FAILED: FileNotFoundError; details are not published.", result.stdout)
+        self.assertNotIn(str(self.tmp), result.stdout + result.stderr)
+
+    def test_manifest_success_line_names_the_file_not_the_runner_path(self):
+        rom = self.tmp / "rom.bin"
+        rom.write_bytes(random_bytes(7, ROM_SIZE))
+        staging = self.tmp / "staging"
+        (staging / "package").mkdir(parents=True)
+        (staging / "package" / "README.txt").write_text("static text\n", encoding="utf-8")
+        disc = self.tmp / "disc.bin"
+        disc.write_bytes(b"synthetic disc")
+        toolchain = self.tmp / "toolchain.zip"
+        toolchain.write_bytes(b"synthetic toolchain")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "manifest", "--rom", str(rom), "--staging", str(staging), "--disc", str(disc),
+             "--toolchain-zip", str(toolchain), "--toolchain-pin", "0" * 64, "--toolchain-url", "https://example.invalid/t.zip",
+             "--toolchain-gcc-version", "0", "--openbios-revision", "synthetic", "--checkout-sha", "0" * 40,
+             "--pr-head-sha", "", "--event-name", "pull_request", "--repository", "example/synthetic", "--run-id", "1",
+             "--run-attempt", "1", "--runner-image", "synthetic", "--compiler-name", "gcc", "--compiler-version", "0",
+             "--compiler-line", "synthetic gcc", "--host-exit-code", "1"],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("wrote provenance-manifest.json listing", result.stdout)
         self.assertNotIn(str(self.tmp), result.stdout + result.stderr)
 
 
