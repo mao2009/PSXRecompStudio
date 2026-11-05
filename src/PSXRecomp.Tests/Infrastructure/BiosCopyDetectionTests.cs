@@ -57,7 +57,8 @@ public sealed class BiosCopyDetectionTests
         BiosAddressGuard.DiagnoseContent(twentyFour, bios).ExceedsHighVarietyReference.Should().BeFalse("96 bytes is at the reference");
         var over = BiosAddressGuard.DiagnoseContent(twentyFive, bios);
         over.ExceedsHighVarietyReference.Should().BeTrue();
-        over.Message.Should().Contain("100 bytes of high-variety BIOS matches");
+        over.HighVarietyBytes.Should().Be(100);
+        over.Message.Should().Contain("high-variety content check exceeds reference").And.NotContain("100");
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(twentyFive, bios))).Should().NotThrow("a content match is never a refusal");
     }
 
@@ -208,7 +209,8 @@ public sealed class BiosCopyDetectionTests
         BiosAddressGuard.DiagnoseContent(sixtyFour, bios).ExceedsAllMatchReference.Should().BeFalse("256 bytes is at the reference");
         var over = BiosAddressGuard.DiagnoseContent(sixtyFive, bios);
         over.ExceedsAllMatchReference.Should().BeTrue();
-        over.Message.Should().Contain("260 bytes of cumulative BIOS matches");
+        over.AllMatchBytes.Should().Be(260);
+        over.Message.Should().Contain("cumulative content check exceeds reference").And.NotContain("260");
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(sixtyFive, bios))).Should().NotThrow();
     }
 
@@ -226,7 +228,7 @@ public sealed class BiosCopyDetectionTests
         }
 
         var manifest = Manifest(("exe-file", words.ToArray()));
-        BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("280 bytes of cumulative BIOS matches");
+        BiosAddressGuard.DiagnoseContent(manifest, bios).AllMatchBytes.Should().Be(280);
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
     }
 
@@ -253,7 +255,7 @@ public sealed class BiosCopyDetectionTests
         var manifest = new LoadImageManifest([new LoadedImageSpec("copy-in-ram", 0x80100000u, words, [], "disc-exe") { SourceSha256 = Evidence }], new HashSet<uint>());
 
         ((Action)(() => BiosAddressGuard.RequireNoBiosImage(manifest, bios))).Should().NotThrow();
-        BiosAddressGuard.DiagnoseContent(manifest, bios).Message.Should().Contain("240 bytes of high-variety BIOS matches");
+        BiosAddressGuard.DiagnoseContent(manifest, bios).HighVarietyBytes.Should().Be(240);
     }
 
     [Fact]

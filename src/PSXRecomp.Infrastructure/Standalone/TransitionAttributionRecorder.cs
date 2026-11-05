@@ -85,7 +85,7 @@ public sealed class TransitionAttributionRecorder
         }
         catch (Exception ex)
         {
-            error.WriteLine($"runtime host: could not write transition attribution to {path}: {ex.Message}");
+            error.WriteLine($"runtime host: could not write transition attribution to {Path.GetFileName(path)} (code {PublicLog.CodeFor(ex)})");
         }
     }
 

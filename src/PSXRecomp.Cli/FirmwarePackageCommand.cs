@@ -48,19 +48,19 @@ internal static class FirmwarePackageCommand
                     BuildTimeout: options.BuildTimeoutSeconds is { } buildTimeoutSeconds
                         ? TimeSpan.FromSeconds(buildTimeoutSeconds)
                         : null,
-                    // Issue #B2, LOW-3: the synthetic default is only the label recorded in the manifest; no decision reads it.
-                    BiosProvenance: options.BiosProvenance ?? RuntimeHostManifest.BiosProvenanceSynthetic),
+                    // Issue #B2, LOW-3: no declaration is recorded as null. The run classifies the image by digest and never reads this label.
+                    BiosProvenance: options.BiosProvenance),
                 RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
-            standardOutput.WriteLine($"Firmware distribution packaged: {Path.GetFullPath(arguments.OutputDirectory!)}");
+            standardOutput.WriteLine("Firmware distribution packaged.");
             standardOutput.WriteLine($"  bios:       {BiosBackendSelection.NameOf(BiosBackendKind.OpenBios)} (real MIPS ROM; no BIOS HLE)");
-            standardOutput.WriteLine($"  artifact:   {artifact}");
+            standardOutput.WriteLine($"  artifact:   {Path.GetFileName(artifact)}");
             return 0;
         }
         catch (Exception ex) when (
             ex is BiosBackendNotImplementedException or ArgumentException or IOException or UnauthorizedAccessException
                 or InvalidDataException or InvalidOperationException or FormatException)
         {
-            standardError.WriteLine($"psxrecomp package: {ex.Message}");
+            standardError.WriteLine(PublicLog.FailureLine("psxrecomp package", ex));
             return 1;
         }
     }

@@ -82,9 +82,11 @@ public static class BiosProvenance
         }
 
         var expected = declared == "user-supplied" ? Verified : Synthetic;
+        // Only a recorded label that this build knows is echoed; a value read from a manifest is never printed.
+        var shown = declared is "user-supplied" or "synthetic" ? declared : "(unrecognised label)";
         return classified == expected
             ? null
-            : $"runtime host: warning: the image was declared '{declared}' at packaging, but at run time it is classified '{classified}'. " +
+            : $"runtime host: warning: the image was declared '{shown}' at packaging, but at run time it is classified '{classified}'. " +
               "The label follows the run-time digest; the declaration is not evidence.";
     }
 }

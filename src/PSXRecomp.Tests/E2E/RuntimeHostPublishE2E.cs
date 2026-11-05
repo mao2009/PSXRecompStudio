@@ -309,9 +309,10 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout, ["--diagnostics", diagnosticsPath]);
 
         withDiagnostics.ExitCode.Should().Be(RecompiledArtifactExitCode.Failure, $"stderr: {withDiagnostics.Stderr}");
-        withDiagnostics.Stderr.Should().Contain("guest pc unknown").And.NotContain("NullReferenceException");
+        // The public stderr never carries the guest PC (PR 3): the classification line is there, the PC is not.
+        withDiagnostics.Stderr.Should().Contain("classified as").And.NotContain("guest pc").And.NotContain("NullReferenceException");
         withoutDiagnostics.ExitCode.Should().Be(withDiagnostics.ExitCode, "diagnostics never change the classified exit code");
-        withoutDiagnostics.Stderr.Should().Contain("guest pc unknown");
+        withoutDiagnostics.Stderr.Should().Contain("classified as").And.NotContain("guest pc");
 
         var root = ReadDiagnostic(diagnosticsPath);
         root.GetProperty("timedOut").GetBoolean().Should().BeTrue();
@@ -474,7 +475,8 @@ public sealed class RuntimeHostPublishE2E : IDisposable
             var result = RuntimeHostBuildService.RunRuntimeHost(runtimeHostPath, manifestPath);
 
             result.ExitCode.Should().Be(78, $"'{tampered}': {result.Stderr}");
-            result.Stderr.Should().Contain("artifact path", $"'{tampered}' must be rejected by manifest validation, not by a failed launch");
+            result.Stderr.Should().Contain(PublicCodes.ArtifactPathInvalid, $"'{tampered}' must be rejected by manifest validation, not by a failed launch")
+                .And.NotContain("escaped", $"'{tampered}': the tampered path is never published");
         }
 #pragma warning restore AARC003
     }
@@ -505,7 +507,9 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         var result = RuntimeHostBuildService.RunRuntimeHost(hostPath, Path.Combine(link, RuntimeHostLayout.ManifestFileName));
 
         result.ExitCode.Should().Be(78, result.Stderr);
-        result.Stderr.Should().Contain("must not be a symbolic link", "rejected by path confinement, before any image read or launch");
+        // The refusal keeps its cause as a fixed public code (PR 3 regression fix); the internal message is not published.
+        result.Stderr.Should().Contain(PublicCodes.LinkRefused, "rejected by path confinement, before any image read or launch")
+            .And.NotContain("symbolic link", "the internal message is never published");
     }
 
     [Fact]

@@ -30,7 +30,19 @@ public static class Program
     /// unchanged) for HLE and firmware distributions alike. Returns the classified run result code
     /// (0 success, 1 tooling/failure, 2 runtime stop) or 78 when the manifest / runtime cannot be set up.
     /// </summary>
-    public static int Main(string[] args) => Run(args, new FileSystemIdentityProbe());
+    public static int Main(string[] args)
+    {
+        // The guest TTY sink holds an unfinished run back until it is checked: flush it on every exit path.
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => PublicGuestOutput.FlushAll();
+        try
+        {
+            return Run(args, new FileSystemIdentityProbe());
+        }
+        finally
+        {
+            PublicGuestOutput.FlushAll();
+        }
+    }
 
     /// <summary>
     /// The entry point with its identity probe supplied by the caller (the composition root passes the file system adapter; a test may pass
@@ -84,7 +96,7 @@ public static class Program
                 }
                 catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
                 {
-                    Console.Error.WriteLine($"runtime host: --loaded-code-diagnostics path is not valid: {ex.Message}");
+                    Console.Error.WriteLine($"runtime host: --loaded-code-diagnostics path is not valid (code {PublicLog.CodeFor(ex)}).");
                     WriteUsage(Console.Error);
                     return 78;
                 }
@@ -127,7 +139,7 @@ public static class Program
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
-                $"runtime host: manifest not found: {manifestPath}");
+                $"runtime host: manifest not found: {Path.GetFileName(manifestPath)}");
             return 78;
         }
 
@@ -143,7 +155,7 @@ public static class Program
             if (target is not null && OperatingSystem.IsWindows() && NamesAStream(target))
             {
                 Console.Error.WriteLine(
-                    $"runtime host: refusing report target {target}: a ':' after the drive letter names an alternate data stream (or an invalid path), and no report is written to one.");
+                    $"runtime host: refusing report target {Path.GetFileName(target)}: a ':' after the drive letter names an alternate data stream (or an invalid path), and no report is written to one.");
                 return 78;
             }
         }
@@ -159,7 +171,7 @@ public static class Program
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Console.Error.WriteLine($"runtime host: could not list the distribution's files to check the report target: {ex.Message}");
+                Console.Error.WriteLine($"runtime host: could not list the distribution's files to check the report target (code {PublicLog.CodeFor(ex)}).");
                 return 78;
             }
         }
@@ -169,7 +181,7 @@ public static class Program
         if (diagnosticsPath is not null && loadedCodeMismatchPath is not null && NamesOneFile(diagnosticsPath, loadedCodeMismatchPath, probe))
         {
             Console.Error.WriteLine(
-                $"runtime host: refusing --diagnostics {diagnosticsPath} with --loaded-code-diagnostics {loadedCodeMismatchPath}: both would be written to one file, or cannot be shown to be different files.");
+                $"runtime host: refusing --diagnostics {Path.GetFileName(diagnosticsPath)} with --loaded-code-diagnostics {Path.GetFileName(loadedCodeMismatchPath)}: both would be written to one file, or cannot be shown to be different files.");
             return 78;
         }
 
@@ -180,7 +192,7 @@ public static class Program
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
-                    $"runtime host: refusing --diagnostics {diagnosticsPath}: {conflict}");
+                    $"runtime host: refusing --diagnostics {Path.GetFileName(diagnosticsPath)}: {conflict}");
                 return 78;
             }
         }
@@ -202,7 +214,7 @@ public static class Program
             if (conflict is not null)
             {
                 Console.Error.WriteLine(
-                    $"runtime host: refusing --loaded-code-diagnostics {loadedCodeMismatchPath}: {conflict}");
+                    $"runtime host: refusing --loaded-code-diagnostics {Path.GetFileName(loadedCodeMismatchPath)}: {conflict}");
                 return 78;
             }
 
@@ -220,7 +232,7 @@ public static class Program
             if (!Directory.Exists(manifestDirectory))
             {
                 Console.Error.WriteLine(
-                    $"runtime host: manifest directory not found: {manifestDirectory}");
+                    $"runtime host: manifest directory not found: {Path.GetFileName(manifestDirectory)}");
                 return 78;
             }
 
@@ -268,7 +280,7 @@ public static class Program
             var needsBridge = !manifest.GuestFirmware;
 
             IBiosRuntime BiosRuntime(IGuestMemoryReader reader, IGuestMemoryWriter writer)
-                => new BiosHleRuntime(new ConsoleRuntimeOutputSink(), reader, writer);
+                => new BiosHleRuntime(PublicGuestOutput.Shared, reader, writer);
 
             // Mixed fallback is honored regardless of GuestFirmware.
             // For guest firmware: the artifact runs in RuntimeHost mode (no bridge)
@@ -326,7 +338,15 @@ public static class Program
                     RecompiledArtifactCodeGen.SnapshotBeginMarker,
                     StringComparison.Ordinal);
                 if (end >= 0) consoleOutput = consoleOutput[..end];
-                Console.Write(consoleOutput);
+                // The native run's guest console goes through the same checked sink as the HLE path: one policy, with control
+                // bytes escaped. The held tail is completed by PublicGuestOutput.FlushAll on every exit path.
+                var nativeGuestSink = PublicGuestOutput.Shared;
+                foreach (var guestByte in System.Text.Encoding.UTF8.GetBytes(consoleOutput))
+                {
+                    nativeGuestSink.WriteByte(guestByte);
+                }
+
+                nativeGuestSink.Flush();
             }
 
             if (frameOutPath is not null)
@@ -335,9 +355,9 @@ public static class Program
             }
 
             // A timeout or an engine failure ends the run with no snapshot: the guest pc is then unknown, not guessed.
-            var guestPc = execution.FinalSnapshot is { } snapshot ? $"0x{snapshot.PC:X8}" : "unknown";
+            // The guest PC is not published: it is run detail, kept in the private diagnostics file.
             Console.Error.WriteLine($"runtime host: classified as {result.Outcome} (state {execution.State});" +
-                $" guest pc {guestPc}, exit {result.ExitCode}");
+                $" exit {result.ExitCode}");
 
             if (diagnosticsPath is not null)
             {
@@ -361,12 +381,10 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(
-                $"runtime host: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(PublicLog.FailureLine("runtime host", ex));
             if (ex.InnerException is not null)
             {
-                Console.Error.WriteLine(
-                    $"runtime host: inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                Console.Error.WriteLine(PublicLog.FailureLine("runtime host: inner", ex.InnerException));
             }
 
             // Only the manifest's static facts exist once the run itself threw.
@@ -408,9 +426,22 @@ public static class Program
         catch (Exception ex)
         {
             // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
-            Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
+            Console.Error.WriteLine($"runtime host: could not write diagnostics to {Path.GetFileName(path)} (code {PublicLog.CodeFor(ex)})");
         }
     }
+
+    /// <summary>The fixed public code for an identity-probe refusal. The one known cause is named; any other cause is generic.</summary>
+    private static string IdentityCauseCode(string cause) =>
+        cause == PosixStatResult.StatNotExportedCause ? PublicCodes.IdentityStatNotExported : PublicCodes.IdentityUnavailable;
+
+    /// <summary>
+    /// The fixed public hint for an identity-probe refusal: our own wording, never the probe's free text. For the known cause it
+    /// names the verification minimum (glibc 2.33, unverified), so the refusal can still be diagnosed.
+    /// </summary>
+    private static string IdentityCauseHint(string cause) =>
+        cause == PosixStatResult.StatNotExportedCause
+            ? "stat is not exported by this libc; glibc 2.33 is the minimum to verify (unverified; not a support guarantee)"
+            : "the file identity could not be read";
 
     /// <summary>
     /// Issue #786 B1: the input the report target names, or null. Input protection is by path only: a file is protected because
@@ -429,7 +460,7 @@ public static class Program
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
         {
             // A target that cannot be inspected cannot be shown to be no input: refused as a classified setup failure, never thrown past the host.
-            return $"the report target {reportPath} cannot be inspected ({ex.Message}), so it cannot be shown to be no input.";
+            return $"the report target {Path.GetFileName(reportPath)} cannot be inspected (code {PublicLog.CodeFor(ex)}), so it cannot be shown to be no input.";
         }
 
         // Path comparison for every input first: a refusal by path opens no input at all.
@@ -459,9 +490,10 @@ public static class Program
         if (reportFile.Kind != FileKind.RegularFile || reportFile.Identity is not { } targetIdentity)
         {
             // The probe names the cause when it can (for example, a libc that does not export stat), so the refusal is diagnosable.
+            // Names only: the probe's free-text cause and the full path are not published (PR 3).
             return reportFile.Cause is { } cause
-                ? $"identity unavailable: {cause}; the report target {reportPath} cannot be shown to be no input."
-                : $"the report target {reportPath} is not a regular file whose identity can be read, so it cannot be shown to be no input.";
+                ? $"identity unavailable (code {IdentityCauseCode(cause)}: {IdentityCauseHint(cause)}); the report target {Path.GetFileName(reportPath)} cannot be shown to be no input."
+                : $"the report target {Path.GetFileName(reportPath)} is not a regular file whose identity can be read, so it cannot be shown to be no input.";
         }
 
         foreach (var input in candidates)
@@ -470,9 +502,10 @@ public static class Program
             if (inputFile.Kind == FileKind.Absent) continue;
             if (inputFile.Kind != FileKind.RegularFile || inputFile.Identity is not { } identity)
             {
+                // Names only, as above: no full path and no probe text in a published message.
                 return inputFile.Cause is { } inputCause
-                    ? $"identity unavailable: {inputCause}; the input {input} cannot be shown to be no input for the report target."
-                    : $"the input {input} is not a regular file whose identity can be read, so the report target cannot be shown to be no input.";
+                    ? $"identity unavailable (code {IdentityCauseCode(inputCause)}: {IdentityCauseHint(inputCause)}); the input {Path.GetFileName(input)} cannot be shown to be no input for the report target."
+                    : $"the input {Path.GetFileName(input)} is not a regular file whose identity can be read, so the report target cannot be shown to be no input.";
             }
 
             if (identity == targetIdentity) return InputConflict(input);
@@ -527,7 +560,7 @@ public static class Program
         }
     }
 
-    private static string InputConflict(string input) => $"it is the input {input}, and no report is written over an input.";
+    private static string InputConflict(string input) => $"it is the input {Path.GetFileName(input)}, and no report is written over an input.";
 
     /// <summary>
     /// The files this run reads, derived from the paths the code reads them from: the manifest, the firmware boot manifest (its
@@ -627,42 +660,7 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"runtime host: could not write loaded-code diagnostics to {path}: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Runtime output sink that writes directly to the console: printable bytes
-    /// are forwarded verbatim so boot/TTY messages are visible, and non-printable
-    /// bytes are emitted as <c>\xNN</c> escapes. Deterministic byte-for-byte
-    /// output (no buffering of the byte sequence beyond the console stream).
-    /// </summary>
-    private sealed class ConsoleRuntimeOutputSink : IRuntimeOutputSink
-    {
-        private readonly object _lock = new();
-        private readonly TextWriter _out;
-
-        public ConsoleRuntimeOutputSink() : this(Console.Out) { }
-
-        public ConsoleRuntimeOutputSink(TextWriter output) => _out = output;
-
-        public void WriteByte(byte value)
-        {
-            if (value >= 32 && value < 127)
-            {
-                lock (_lock)
-                {
-                    _out.Write((char)value);
-                }
-            }
-            else
-            {
-                lock (_lock)
-                {
-                    _out.Write("\\x");
-                    _out.Write(((int)value).ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
-                }
-            }
+            Console.Error.WriteLine($"runtime host: could not write loaded-code diagnostics to {Path.GetFileName(path)} (code {PublicLog.CodeFor(ex)})");
         }
     }
 }

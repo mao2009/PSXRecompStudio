@@ -78,7 +78,8 @@ public static class OpenBiosRomInput
         var hash = Sha256Hex(bytes);
         if (expectedSha256 is not null && !string.Equals(hash, expectedSha256, StringComparison.Ordinal))
         {
-            throw new InvalidDataException($"The OpenBIOS ROM SHA-256 {hash} does not match the expected {expectedSha256}.");
+            // Neither digest is in the message: exception text reaches the public CI log (the package step's stderr).
+            throw new InvalidDataException("The OpenBIOS ROM does not match the expected SHA-256 (digests are not printed).");
         }
 
         return (bytes, hash);
@@ -246,7 +247,7 @@ public static class FirmwareAotBundle
 
         if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-            throw new InvalidDataException($"The AOT directory must not be a symbolic link or reparse point: {root}");
+            throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The AOT directory must not be a symbolic link or reparse point: {root}");
         }
     }
 
@@ -269,7 +270,7 @@ public static class FirmwareAotBundle
                 var info = new DirectoryInfo(current);
                 if (info.Exists && (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint)))
                 {
-                    throw new InvalidDataException($"The AOT input '{what}' passes through the symbolic link or reparse point '{part}'.");
+                    throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The AOT input '{what}' passes through the symbolic link or reparse point '{part}'.");
                 }
             }
         }
@@ -277,7 +278,7 @@ public static class FirmwareAotBundle
         var file = new FileInfo(full);
         if (file.LinkTarget is not null || file.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
-            throw new InvalidDataException($"The AOT input '{what}' must not be a symbolic link or reparse point.");
+            throw PublicRefusal.Create(PublicCodes.LinkRefused, $"The AOT input '{what}' must not be a symbolic link or reparse point.");
         }
     }
 }
@@ -289,6 +290,10 @@ public static class FirmwareAotBundle
 /// </param>
 /// <param name="FallbackSegmentInstructionBudget">The per-segment interpreter fallback instruction cap (only meaningful while <paramref name="MixedFallback"/>).</param>
 /// <param name="FallbackMaxTransitions">The artifact-to-interpreter handoff cap (only meaningful while <paramref name="MixedFallback"/>).</param>
+/// <param name="BiosProvenance">
+/// The declared provenance label recorded in the runtime manifest, or null when none was declared. It is a label for
+/// comparison only: the run classifies the image by its digest, and a null declaration produces no warning.
+/// </param>
 /// <param name="BuildTimeout">
 /// The bounded per-step host-toolchain (compiler/linker) timeout for this distribution's native artifact build,
 /// or null to use <see cref="FirmwareDistributionBuilder.DefaultBuildTimeout"/>. It bounds only the compile/link
@@ -310,7 +315,7 @@ public sealed record FirmwareDistributionRequest(
     uint FallbackSegmentInstructionBudget = FirmwareDistributionRequest.DefaultFallbackSegmentInstructionBudget,
     uint FallbackMaxTransitions = FirmwareDistributionRequest.DefaultFallbackMaxTransitions,
     TimeSpan? BuildTimeout = null,
-    string BiosProvenance = RuntimeHostManifest.BiosProvenanceSynthetic)
+    string? BiosProvenance = null)
 {
     /// <summary>
     /// The finite default per-segment fallback cap for a standalone firmware package (#820 W09). The firmware's whole
@@ -574,12 +579,56 @@ public static class FirmwareDistributionBuilder
         "this directory.",
         "",
         "- The OpenBIOS ROM is NOT in this directory. Set PSXRECOMP_BIOS_ROM to the path of your own 512 KiB openbios.bin",
-        "  before launching; the run prints its SHA-256 and the BIOS mode (openbios-rom only for a user-supplied image).",
+        "  before launching; the run prints the BIOS mode (openbios-rom only for a user-supplied image), never its digest.",
         "- runtime/disc/ holds the disc image you supplied (verified by SHA-256 on every run).",
         "- This directory is a LOCAL build. OpenBIOS redistribution is pending the audit in Issue #730, and the disc",
         "  is your own copyrighted media: do not redistribute this directory.",
         "- Exit codes: 0 completed, 2 blocked (unsupported transfer or hardware), 1 tooling failure, 78 setup failure.",
         "");
+}
+
+/// <summary>
+/// The summary of one firmware run (the <c>firmware-run</c> line, Issue #732 P2-1). <see cref="RomSha256"/> is the digest of the
+/// image the run loaded: it drives the classification and the run's own after-run check, and it is never published.
+/// <see cref="ToPublicJson"/> is the only form written to stderr; it reports the classification label <c>biosMode</c>, not a digest.
+/// </summary>
+[Infrastructure]
+internal sealed record FirmwareRunSummary(
+    string Bios,
+    string BiosMode,
+    string? DeclaredProvenance,
+    string RomSha256,
+    int AotBiosBlocks,
+    int AotLoadedBlocks,
+    string State,
+    string? GuestPc,
+    string? DiagnosticCode,
+    string? DiagnosticMessage,
+    bool MixedFallback,
+    uint? FallbackSegmentInstructionBudget,
+    uint? FallbackMaxTransitions,
+    ulong? NativeInstructions,
+    ulong? FallbackInstructions,
+    uint? FallbackTransitions,
+    string[]? FinalGpr)
+{
+    /// <summary>
+    /// The public line, built from the explicit key allowlist <see cref="PublicLog.FirmwareRunKeys"/>. The guest PC, the
+    /// final registers, the block and instruction counts and the diagnostic message are not published: they are ROM-run
+    /// detail and can carry addresses or counts derived from the ROM. They are not written to stderr in any form.
+    /// </summary>
+    public string ToPublicJson() => JsonSerializer.Serialize(new
+    {
+        kind = "firmware-run",
+        bios = Bios,
+        biosMode = BiosMode,
+        declaredProvenance = DeclaredProvenance,
+        state = State,
+        diagnosticCode = DiagnosticCode,
+        mixedFallback = MixedFallback,
+        fallbackSegmentInstructionBudget = FallbackSegmentInstructionBudget,
+        fallbackMaxTransitions = FallbackMaxTransitions,
+    });
 }
 
 /// <summary>
@@ -666,7 +715,7 @@ public static class FirmwareRuntimeLauncher
             var discPath = Path.Combine(runtimeDirectory, boot.DiscFile);
             if (new FileInfo(discPath).LinkTarget is not null)
             {
-                throw new InvalidDataException("The disc image must not be a symbolic link.");
+                throw PublicRefusal.Create(PublicCodes.LinkRefused, "The disc image must not be a symbolic link.");
             }
 
             if (OpenBiosRomInput.Sha256HexOfFile(discPath) != boot.DiscSha256)
@@ -764,39 +813,49 @@ public static class FirmwareRuntimeLauncher
                     evidence?.Targets,
                     RuntimeHostRunMetrics.From(
                         wall.Elapsed.TotalMilliseconds, engine.HostRoundTrips, engine.FallbackTimings, engine.FallbackEvidence, engine.LastMmioAccess,
-                        engine.FallbackInFlight, engine.FallbackReturns)),
+                        engine.FallbackInFlight, engine.FallbackReturns))
+                    with
+                    {
+                        // The private stop diagnostic carries the firmware run's audit and register file from the same run as the
+                        // public line. It is written to the diagnostics file only; the public line keeps the allowlist.
+                        AotBiosBlockCount = BiosAddressGuard.BiosBlockCount(plan.Program),
+                        AotLoadedBlockCount = plan.LoadedCode.Blocks.Count(),
+                        FinalGpr = result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray(),
+                    },
                 error);
-            error.WriteLine(JsonSerializer.Serialize(new
-            {
-                kind = "firmware-run",
-                bios = boot.BiosBackend,
-                biosMode = biosClassification,
-                declaredProvenance = host.BiosProvenance,
-                romSha256,
+            // The public line is written from the summary's public form only: the ROM digest stays internal (see FirmwareRunSummary).
+            var publicLine = new FirmwareRunSummary(
+                Bios: boot.BiosBackend,
+                BiosMode: biosClassification,
+                DeclaredProvenance: host.BiosProvenance,
+                RomSha256: romSha256,
                 // The generation-stage audit (Issue #B2): no BIOS block is translated; loaded RAM blocks are the game's code.
-                aotBiosBlocks = BiosAddressGuard.BiosBlockCount(plan.Program),
-                aotLoadedBlocks = plan.LoadedCode.Blocks.Count(),
-                state = result.State.ToString(),
-                guestPc = result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
-                diagnosticCode = result.DiagnosticCode,
-                diagnosticMessage = result.DiagnosticMessage,
-                mixedFallback = host.MixedFallback,
-                fallbackSegmentInstructionBudget = host.MixedFallback ? host.FallbackSegmentInstructionBudget : (uint?)null,
-                fallbackMaxTransitions = host.MixedFallback ? host.FallbackMaxTransitions : (uint?)null,
-                nativeInstructions = engine.NativeRetiredInstructions,
-                fallbackInstructions = evidence?.FallbackInstructions,
-                fallbackTransitions = evidence?.Transitions,
+                AotBiosBlocks: BiosAddressGuard.BiosBlockCount(plan.Program),
+                AotLoadedBlocks: plan.LoadedCode.Blocks.Count(),
+                State: result.State.ToString(),
+                GuestPc: result.FinalSnapshot is { } s ? $"0x{s.PC:X8}" : null,
+                DiagnosticCode: result.DiagnosticCode,
+                DiagnosticMessage: result.DiagnosticMessage,
+                MixedFallback: host.MixedFallback,
+                FallbackSegmentInstructionBudget: host.MixedFallback ? host.FallbackSegmentInstructionBudget : (uint?)null,
+                FallbackMaxTransitions: host.MixedFallback ? host.FallbackMaxTransitions : (uint?)null,
+                NativeInstructions: engine.NativeRetiredInstructions,
+                FallbackInstructions: evidence?.FallbackInstructions,
+                FallbackTransitions: evidence?.Transitions,
                 // The final register file lets a caller verify ROM -> game -> ROM control/data continuity from the
                 // run's own output without a second engine.
-                finalGpr = result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray(),
-            }));
+                FinalGpr: result.FinalSnapshot?.Gpr.Select(static r => $"0x{r:X8}").ToArray()).ToPublicJson();
+            // Fail closed: the line is checked against the public policy before it is written.
+            error.WriteLine(PublicLog.Refusal(publicLine, PublicLog.FirmwareRunKeys) is { } refusal
+                ? PublicLog.RefusedLine("runtime host: firmware-run", refusal)
+                : publicLine);
             return exitCode;
         }
         catch (Exception exception) when (
             exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
                 or InvalidOperationException or FormatException)
         {
-            error.WriteLine($"runtime host: firmware distribution: {exception.GetType().Name}: {exception.Message}");
+            error.WriteLine(PublicLog.FailureLine("runtime host: firmware distribution", exception));
             WriteDiagnostics(diagnosticsPath, () => RuntimeHostDiagnostic.FromFailure(host, SetupFailureExitCode, exception), error);
             return SetupFailureExitCode;
         }
@@ -819,7 +878,7 @@ public static class FirmwareRuntimeLauncher
         }
         catch (Exception exception)
         {
-            error.WriteLine($"runtime host: could not write diagnostics to {path}: {exception.Message}");
+            error.WriteLine($"runtime host: could not write diagnostics to {Path.GetFileName(path)} (code {PublicLog.CodeFor(exception)})");
         }
     }
 }
