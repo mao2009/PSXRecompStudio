@@ -273,6 +273,12 @@ public static class PackageCommand
                 WriteReadme(outputDir, guestFirmware, mixedFallback, binaryName);
             }
 
+            ArtifactBuildManifest.WriteHle(
+                runtimeDir,
+                Path.GetFileName(artifactPath),
+                File.ReadAllBytes(artifactPath),
+                File.ReadAllBytes(Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName)));
+
             if (arguments.Json)
             {
                 var json = CliJson.Serialize(
