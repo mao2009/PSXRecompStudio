@@ -982,6 +982,9 @@ internal static class OpenBiosProbeCommand
         yield return $"OpenBIOS generated-host probe: {document["executionState"]} ({document["diagnosticCode"]}); kernelBooted={document["kernelBooted"]}, titleStarted={document["titleStarted"]}, standalone={document["standalone"]}";
         yield return $"Instructions: native {native["instructions"]} ({native["region"]?.ToString() ?? "unattributed"}); fallback {fallback["retiredInstructions"]} retired, " +
                      $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
+        var pingPong = transitions["pingPong"]!;
+        yield return $"Ping-pong (Issue #773): {pingPong["shortReturns"]} of {pingPong["returned"]} returns retire at most {pingPong["shortSegmentThreshold"]} instructions " +
+                     $"({Percent(pingPong["shortReturnShare"])} of all transitions), {pingPong["shortReturnsRetired"]} retired";
         yield return "Regions (fallback fetches / transitions): " + string.Join(", ", a["regions"]!.AsArray()
             .Select(r => $"{r!["region"]} {Percent(r["fallbackFetchShare"])}/{Percent(r["transitionShare"])}"));
         foreach (var r in transitions["byReason"]!.AsArray())
