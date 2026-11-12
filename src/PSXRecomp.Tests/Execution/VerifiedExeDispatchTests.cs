@@ -4,6 +4,11 @@ using PSXRecomp.Core.Recompiler;
 
 namespace PSXRecomp.Tests.Execution;
 
+/// <summary>
+/// Synthetic-only coverage for the <see cref="VerifiedExeDispatch"/> scaffolding
+/// (Issue #734): no production call sites exist yet, so nothing here proves real
+/// Persona/interpreter parity. Wiring into the engine is follow-up work.
+/// </summary>
 [Test]
 public sealed class VerifiedExeDispatchTests
 {
@@ -23,8 +28,9 @@ public sealed class VerifiedExeDispatchTests
     [Fact]
     public void Dispatch_HitsVerifiedNative_WhenRamEqualsAot()
     {
-        var (table, ram) = Build(Nop, Nop);
-        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", 2);
+        var words = new uint[] { Nop, Nop };
+        var (table, ram) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
         var hit = dispatch.TryDispatch(Load, Reader(ram));
         Assert.NotNull(hit);
         Assert.Equal(1ul, dispatch.NativeHits);
@@ -34,10 +40,34 @@ public sealed class VerifiedExeDispatchTests
     [Fact]
     public void Dispatch_ForbidsPcOnlyTransition_WhenBytesDiffer()
     {
-        var (table, ram) = Build(Nop, Nop);
+        var words = new uint[] { Nop, Nop };
+        var (table, ram) = Build(words);
         ram[0] = 0xDEADBEEFu; // address reuse with different bytes
-        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", 2);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
         Assert.Null(dispatch.TryDispatch(Load, Reader(ram)));
+        Assert.Equal(1ul, dispatch.Fallbacks);
+        Assert.Equal(0ul, dispatch.NativeHits);
+    }
+
+    [Fact]
+    public void Dispatch_RejectsPartialSpanMatch_BeyondFirstBlock()
+    {
+        // F1 regression: a single fused block match must not prove the full span.
+        var words = new uint[] { Nop, Nop };
+        var (table, ram) = Build(words);
+        ram[1] = 0xDEADBEEFu; // second word of the span differs
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
+        Assert.Null(dispatch.TryDispatch(Load, Reader(ram)));
+        Assert.Equal(0ul, dispatch.NativeHits);
+    }
+
+    [Fact]
+    public void Dispatch_ReaderFailure_FallsClosed()
+    {
+        var words = new uint[] { Nop, Nop };
+        var (table, _) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
+        Assert.Null(dispatch.TryDispatch(Load, _ => throw new InvalidOperationException("no RAM")));
         Assert.Equal(1ul, dispatch.Fallbacks);
         Assert.Equal(0ul, dispatch.NativeHits);
     }
@@ -45,8 +75,9 @@ public sealed class VerifiedExeDispatchTests
     [Fact]
     public void Dispatch_FallsBack_OutsideLoadRange()
     {
-        var (table, ram) = Build(Nop, Nop);
-        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", 2);
+        var words = new uint[] { Nop, Nop };
+        var (table, ram) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
         Assert.Null(dispatch.TryDispatch(Load + 0x1000u, Reader(ram)));
         Assert.Null(dispatch.TryDispatch(Load + 1u, Reader(ram))); // unaligned
     }
@@ -54,8 +85,9 @@ public sealed class VerifiedExeDispatchTests
     [Fact]
     public void RamWrite_InvalidatesMapping_UntilReverified()
     {
-        var (table, ram) = Build(Nop, Nop);
-        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", 2);
+        var words = new uint[] { Nop, Nop };
+        var (table, ram) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
         Assert.NotNull(dispatch.TryDispatch(Load, Reader(ram)));
         FallbackReturnCheck.TryRamOffset(Load, out var phys);
         dispatch.NotifyRamWrite(phys, 4); // store into verified span
@@ -66,10 +98,35 @@ public sealed class VerifiedExeDispatchTests
     }
 
     [Fact]
+    public void RamWrite_WraparoundEnd_StillInvalidates()
+    {
+        var words = new uint[] { Nop, Nop };
+        var (table, _) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
+        FallbackReturnCheck.TryRamOffset(Load, out var phys);
+        dispatch.NotifyRamWrite(phys, uint.MaxValue); // saturating end covers the span
+        Assert.Equal(1ul, dispatch.Invalidations);
+        Assert.Equal(0ul, dispatch.NativeHits);
+    }
+
+    [Fact]
+    public void Reverify_CountsSingleAttempt()
+    {
+        var words = new uint[] { Nop, Nop };
+        var (table, ram) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
+        Assert.NotNull(dispatch.Reverify(Load, Reader(ram)));
+        Assert.Equal(1ul, dispatch.DispatchAttempts);
+        Assert.Equal(1ul, dispatch.NativeHits);
+        Assert.Equal(0ul, dispatch.Fallbacks);
+    }
+
+    [Fact]
     public void Transitions_CountBothDirections()
     {
-        var (table, ram) = Build(Nop, Nop);
-        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", 2);
+        var words = new uint[] { Nop, Nop };
+        var (table, _) = Build(words);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
         dispatch.NoteNativeToInterpreter();
         dispatch.NoteNativeToInterpreter();
         dispatch.NoteInterpreterToNative();
@@ -78,21 +135,20 @@ public sealed class VerifiedExeDispatchTests
     }
 
     [Fact]
-    public void InterpreterParity_RegsRamIrq_MatchNativeFixture()
+    public void SyntheticOnly_StateShape_MatchesFixture()
     {
-        // Same synthetic EXE through interpreter and through the verified table:
-        // entry state, RAM bytes and IRQ-free retirement must agree.
+        // Synthetic-only: checks the fixture's state shape, not real engine parity.
         var words = new uint[] { Nop };
         var (table, _) = Build(words);
         var ram = (uint[])words.Clone();
-        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", 1);
+        var dispatch = new VerifiedExeDispatch(table, Load, Load, "exe-sha", words);
         var hit = dispatch.TryDispatch(Load, Reader(ram));
         Assert.NotNull(hit);
         Assert.Equal(hit!.Words, ram.AsEnumerable()); // RAM identity == AOT words
         var cpu = new FallbackCpuState(new uint[32], 0, 0, Load, 0, 0, 0);
         Assert.Equal(Load, cpu.Pc);
         Assert.Equal(32, cpu.Gpr.Count);
-        // No IRQ modelled in this slice: Cause/Epc stay zero on both paths.
+        // No IRQ modelled in this synthetic slice: Cause/Epc stay zero.
         Assert.Equal(0u, cpu.Cause);
     }
 }

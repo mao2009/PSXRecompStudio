@@ -5,6 +5,9 @@ namespace PSXRecomp.Core.Execution;
 
 /// <summary>
 /// Verified AOT dispatch for one OpenBIOS-loaded PS-X EXE (Issue #734).
+/// Scaffolding: this type has no production call sites yet; wiring it into
+/// <c>RecompiledHostExecutionEngine</c>/<c>ArtifactFallbackSession</c> is follow-up
+/// work. It exists so the verification rules are reviewed and tested in isolation.
 /// Wraps <see cref="LoadedCodeTable.Match"/> with the rules the issue requires:
 /// <list type="bullet">
 /// <item>guest PC alone is never identity: dispatch requires the full registered
@@ -21,24 +24,27 @@ public sealed class VerifiedExeDispatch
     private readonly uint _loadAddress;
     private readonly uint _entryPc;
     private readonly string _imageId;
-    private readonly int _wordCount;
+    private readonly uint[] _expectedWords;
     private bool _invalidated;
 
-    public VerifiedExeDispatch(LoadedCodeTable table, uint loadAddress, uint entryPc, string imageId, int wordCount)
+    public VerifiedExeDispatch(
+        LoadedCodeTable table, uint loadAddress, uint entryPc, string imageId, IReadOnlyList<uint> expectedWords)
     {
         ArgumentNullException.ThrowIfNull(table);
         ArgumentException.ThrowIfNullOrWhiteSpace(imageId);
-        if (wordCount <= 0) throw new ArgumentOutOfRangeException(nameof(wordCount));
+        ArgumentNullException.ThrowIfNull(expectedWords);
+        if (expectedWords.Count == 0) throw new ArgumentOutOfRangeException(nameof(expectedWords));
         _table = table;
         _loadAddress = loadAddress;
         _entryPc = entryPc;
         _imageId = imageId;
-        _wordCount = wordCount;
+        _expectedWords = expectedWords.ToArray();
     }
 
     public uint LoadAddress => _loadAddress;
     public uint EntryPc => _entryPc;
     public string ImageId => _imageId;
+    public int WordCount => _expectedWords.Length;
     public ulong DispatchAttempts { get; private set; }
     public ulong NativeHits { get; private set; }
     public ulong Fallbacks { get; private set; }
@@ -48,22 +54,24 @@ public sealed class VerifiedExeDispatch
 
     public bool InLoadRange(uint pc)
     {
-        var end = (ulong)_loadAddress + (ulong)_wordCount * 4ul;
-        return pc >= _loadAddress && pc < end && (pc & 3u) == 0;
+        var end = (ulong)_loadAddress + (ulong)_expectedWords.Length * 4ul;
+        return pc >= _loadAddress && (ulong)pc < end && (pc & 3u) == 0;
     }
 
     /// <summary>
     /// Marks RAM written at [physicalStart, physicalStart+byteCount); any overlap
     /// with the EXE span invalidates the verified mapping (conservative).
+    /// Ends are computed in <see cref="ulong"/> so address-space wraparound can
+    /// never hide an overlap.
     /// </summary>
     public void NotifyRamWrite(uint physicalStart, uint byteCount)
     {
         if (byteCount == 0) return;
         if (!FallbackReturnCheck.TryRamOffset(_loadAddress, out var exePhysical)) { Invalidate(); return; }
-        var exeStart = exePhysical;
-        var exeEnd = exeStart + (uint)_wordCount * 4u;
-        var writeEnd = physicalStart + byteCount;
-        if (physicalStart < exeEnd && exeStart < writeEnd) Invalidate();
+        var exeStart = (ulong)exePhysical;
+        var exeEnd = exeStart + (ulong)_expectedWords.Length * 4ul;
+        var writeEnd = (ulong)physicalStart + byteCount;
+        if ((ulong)physicalStart < exeEnd && exeStart < writeEnd) Invalidate();
     }
 
     private void Invalidate()
@@ -76,18 +84,29 @@ public sealed class VerifiedExeDispatch
 
     /// <summary>
     /// Tries verified native dispatch. Returns the matched version, or null for
-    /// explicit fallback. Never dispatches on PC alone.
+    /// explicit fallback. Never dispatches on PC alone: the full expected span is
+    /// compared against real RAM first, then the table selects the version.
+    /// A reader failure is a closed fallback, never a dispatch.
     /// </summary>
     public GuardedBlock? TryDispatch(uint pc, Func<uint, uint> readWord)
     {
         ArgumentNullException.ThrowIfNull(readWord);
         DispatchAttempts++;
-        if (_invalidated || !InLoadRange(pc))
+        if (_invalidated || !InLoadRange(pc) || !FullSpanMatches(readWord))
         {
             Fallbacks++;
             return null;
         }
-        var match = _table.Match(pc, readWord);
+        GuardedBlock? match;
+        try
+        {
+            match = _table.Match(pc, readWord);
+        }
+        catch
+        {
+            Fallbacks++;
+            return null;
+        }
         if (match is null)
         {
             Fallbacks++;
@@ -97,14 +116,61 @@ public sealed class VerifiedExeDispatch
         return match;
     }
 
-    /// <summary>Re-verifies after invalidation; fails closed when RAM differs.</summary>
+    /// <summary>
+    /// Re-verifies after invalidation; fails closed when RAM differs.
+    /// Counts exactly one dispatch attempt and at most one fallback.
+    /// </summary>
     public GuardedBlock? Reverify(uint pc, Func<uint, uint> readWord)
     {
         ArgumentNullException.ThrowIfNull(readWord);
+        DispatchAttempts++;
         _invalidated = false;
-        var match = TryDispatch(pc, readWord);
-        if (match is null) _invalidated = true;
+        if (!InLoadRange(pc) || !FullSpanMatches(readWord))
+        {
+            _invalidated = true;
+            Fallbacks++;
+            return null;
+        }
+        GuardedBlock? match;
+        try
+        {
+            match = _table.Match(pc, readWord);
+        }
+        catch
+        {
+            _invalidated = true;
+            Fallbacks++;
+            return null;
+        }
+        if (match is null)
+        {
+            _invalidated = true;
+            Fallbacks++;
+            return null;
+        }
+        NativeHits++;
         return match;
+    }
+
+    /// <summary>
+    /// Compares the whole expected image span against real RAM bytes.
+    /// A single fused block <see cref="LoadedCodeTable.Match"/> is not enough:
+    /// it proves only its own words, not the full EXE span.
+    /// </summary>
+    private bool FullSpanMatches(Func<uint, uint> readWord)
+    {
+        try
+        {
+            for (var i = 0; i < _expectedWords.Length; i++)
+            {
+                if (readWord(_loadAddress + (uint)i * 4u) != _expectedWords[i]) return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        return true;
     }
 
     public void NoteNativeToInterpreter() => NativeToInterpreter++;
