@@ -216,7 +216,7 @@ public sealed class OpenBiosProbeAccountingTests
     }
 
     [Fact]
-    public void PingPong_Counts_Short_Returns_For_Entry_Only_Root_Measurement()
+    public void PingPong_AdditiveReportSection_Names_Both_Share_Denominators()
     {
         var accounting = new OpenBiosProbeAccounting();
         accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
@@ -232,6 +232,7 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal(90ul, pingPong["shortReturnsRetired"]!.GetValue<ulong>());
         Assert.Equal(OpenBiosProbeAccounting.PingPongRetiredThreshold, pingPong["shortSegmentThreshold"]!.GetValue<ulong>());
         Assert.Equal(0.5, pingPong["shortReturnShare"]!.GetValue<double>());
+        Assert.Equal(0.6667, pingPong["shortReturnShareOfReturned"]!.GetValue<double>());
     }
 
     [Fact]

@@ -195,13 +195,19 @@ internal sealed class OpenBiosProbeAccounting
                         transitionShare = Share(a.Value.Transitions, transitions), retiredShare = Share(a.Value.Retired, retired),
                     }).ToArray(),
                 byExit = _exits.Select(static e => new { exit = e.Key, transitions = e.Value }).ToArray(),
+                // Report-shape note (R01/F7): `pingPong` is an additive section under `transitions`; no existing
+                // field is renamed or removed, so older report readers keep working.
                 pingPong = new
                 {
                     shortSegmentThreshold = PingPongRetiredThreshold,
                     returned = _returned,
                     shortReturns = _shortReturns,
                     shortReturnsRetired = _shortReturnsRetired,
+                    // Denominators (R01/F6): `shortReturnShare` is over all transitions (entry-only-root pressure
+                    // on the whole run); `shortReturnShareOfReturned` is over returned segments only (how many of
+                    // the returns are short hops back to AOT).
                     shortReturnShare = Share(_shortReturns, transitions),
+                    shortReturnShareOfReturned = Share(_shortReturns, _returned),
                 },
             },
             hotEntries = _entries.OrderByDescending(static e => e.Value.Transitions).ThenByDescending(static e => e.Value.Retired).ThenBy(static e => e.Key)
