@@ -22,6 +22,7 @@ public sealed class MixedFallbackProtocolTests
     private sealed class Session : IDisposable
     {
         private readonly Process _process;
+        private readonly Task<string> _stderr;
 
         public Session(TempDirectory dir)
         {
@@ -32,14 +33,19 @@ public sealed class MixedFallbackProtocolTests
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
             psi.ArgumentList.Add(dir.Combine("artifact-input.txt"));
             psi.ArgumentList.Add(dir.Combine("artifact-image.bin"));
             psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+            // The state snapshot is written to stderr only for a run the parent manages (--host-snapshot); a direct launch prints none.
+            psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostSnapshotFlag);
             _process = Process.Start(psi)!;
             _process.StandardInput.AutoFlush = true;
+            // Drained from the start, so a full stderr pipe cannot stall the artifact.
+            _stderr = _process.StandardError.ReadToEndAsync();
         }
 
         public string ReadLine() => _process.StandardOutput.ReadLine() ?? throw new InvalidOperationException("The artifact closed its output.");
@@ -92,22 +98,25 @@ public sealed class MixedFallbackProtocolTests
         public uint ReadRamWord(uint physical) =>
             (uint)(ReadRamByte(physical) | ReadRamByte(physical + 1) << 8 | ReadRamByte(physical + 2) << 16 | ReadRamByte(physical + 3) << 24);
 
-        /// <summary>Declines the pending transfer and returns the exit code and the printed snapshot fields.</summary>
+        /// <summary>Declines the pending transfer and returns the exit code and the snapshot fields (read from stderr, where the snapshot is written).</summary>
         public (int ExitCode, Dictionary<string, uint> Snapshot) Finish()
         {
             Send(RecompiledArtifactCodeGen.ProtocolDeclineReply);
-            var snapshot = new Dictionary<string, uint>();
-            string? line;
-            while ((line = _process.StandardOutput.ReadLine()) is not null)
+            while (_process.StandardOutput.ReadLine() is not null)
             {
-                var split = line.Split('=');
+            }
+
+            _process.WaitForExit();
+            var snapshot = new Dictionary<string, uint>();
+            foreach (var line in _stderr.GetAwaiter().GetResult().Split('\n'))
+            {
+                var split = line.TrimEnd('\r').Split('=');
                 if (split.Length == 2 && split[1].StartsWith("0x", StringComparison.Ordinal))
                 {
                     snapshot[split[0]] = Convert.ToUInt32(split[1][2..], 16);
                 }
             }
 
-            _process.WaitForExit();
             return (_process.ExitCode, snapshot);
         }
 
