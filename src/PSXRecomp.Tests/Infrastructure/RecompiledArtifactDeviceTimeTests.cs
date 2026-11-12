@@ -118,8 +118,9 @@ public sealed class RecompiledArtifactDeviceTimeTests
 
         var run = RunScripted(dir, _ => "V 0");
 
-        // The read synchronizes four preceding retirements, its own retirement, and the remaining pure code.
-        run.Retired.Should().Equal(4ul, 1ul, (ulong)(words.Length - 5));
+        // The read synchronizes the four preceding retirements; its own retirement and the remaining pure
+        // code ride the final flush (Issue #768: reads defer their retirement instead of forcing a report).
+        run.Retired.Should().Equal(4ul, (ulong)(words.Length - 4));
     }
 
     [Fact]
@@ -127,7 +128,7 @@ public sealed class RecompiledArtifactDeviceTimeTests
     {
         // Issue #768: four retirements precede the read, so the report and the read are one line (one round trip);
         // the host handles them in the old order (report, then access), which the harness replays as two requests.
-        // A read straight after a read has nothing pending except the read itself, which is still reported first.
+        // A read straight after a read fuses everything pending since the last sync (no forced report after reads).
         var words = Program(
             [Lui(T0, 0x1F80)],
             [Nop, Nop, Nop],
@@ -142,14 +143,15 @@ public sealed class RecompiledArtifactDeviceTimeTests
 
         run.Requests.Should().HaveCount(2, "both reads reach the host exactly once each, as before");
         run.FusedRequests.Should().Be(2, "each read had instructions pending, so each travelled with its report");
-        run.Retired.Take(2).Should().Equal(new[] { 4ul, 1ul }, "the reports carry the same counts the stand-alone reports did");
+        run.Retired.Take(2).Should().Equal(new[] { 4ul, 2ul }, "the second report carries the first read's deferred retirement too");
     }
 
     [Fact]
     public void AnAccessWithNothingPending_TravelsAsAPlainRequest_AndIsNotPrecededByAReport()
     {
-        // Issue #768: two accesses inside ONE unit: the first reports the retirements before it, the second finds nothing
-        // pending (the unit retires after both) and keeps the stand-alone request form.
+        // Issue #768: two read accesses in consecutive units. The first fuses the retirements before it; the
+        // second fuses the first unit's deferred retirement (reads no longer force a report after each access),
+        // so both travel fused and no stand-alone report separates them.
         var words = Program(
             [Lui(T0, 0x1F80)],
             [Mem(R3000aOpcode.Lw, S0, T0, 0x1814), Mem(R3000aOpcode.Lw, R3000aRegister.S1, T0, 0x1814)]);
@@ -159,7 +161,7 @@ public sealed class RecompiledArtifactDeviceTimeTests
         var run = RunScripted(dir, _ => "V 0");
 
         run.Requests.Should().HaveCount(2);
-        run.FusedRequests.Should().Be(1, "only the first access had retirements to report; the second travels alone");
+        run.FusedRequests.Should().Be(2, "the second read carries the first read's deferred retirement");
         run.Retired.Count.Should().BeGreaterThan(1);
     }
 

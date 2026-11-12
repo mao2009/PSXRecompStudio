@@ -14,8 +14,8 @@ namespace PSXRecomp.Tests.Infrastructure;
 /// <summary>
 /// Issue #768: a synthetic measure of the generated-C to RuntimeHost round trips (no guest program, no disc). The parent
 /// is the scripted harness, so each round trip is a real pipe exchange with the artifact process. The assertions pin the
-/// protocol ceiling (an access costs at most one fused round trip plus one report after it); the numbers are written to the
-/// test output for the Issue comparison and are synthetic only.
+/// protocol ceiling (an access costs one fused round trip; its own retirement rides on the next sync, never a second
+/// forced report); the numbers are written to the test output for the Issue comparison and are synthetic only.
 /// </summary>
 [Test]
 public sealed class RecompiledArtifactRoundTripBenchmarkTests(ITestOutputHelper output)
@@ -50,10 +50,11 @@ public sealed class RecompiledArtifactRoundTripBenchmarkTests(ITestOutputHelper 
         // request fails this line instead of loosening the ceiling below.
         var expectedRequests = Enumerable.Repeat(Read(4, MmioBase), Accesses).ToArray();
         mmioRun.Requests.Should().Equal(expectedRequests, "every access is one request, in order, and nothing is sent twice");
-        // One fused request (report + access) and at most one stand-alone report after it per access. The ceiling is
-        // computed from the constant access count, not from the measured request count.
-        mmioRoundTrips.Should().BeLessThanOrEqualTo(2 * Accesses + 2,
-            "an access costs one fused round trip plus at most one report after it");
+        // One fused request (report + access) per access; the access's own retirement rides on the next sync
+        // (fused access, transfer, deadline/threshold report, or the final flush), never a second forced report.
+        // The ceiling is computed from the constant access count, not from the measured request count.
+        mmioRoundTrips.Should().BeLessThanOrEqualTo(Accesses + (int)(mmioInstructions / 1024) + 2,
+            "an access costs one fused round trip; the rest is threshold/deadline reports only");
         // Without accesses only the 1024-instruction threshold and the device deadlines report.
         computeRoundTrips.Should().BeLessThanOrEqualTo((int)(computeInstructions / 1024) + 2,
             "without accesses only the 1024-instruction threshold and the device deadlines report");
