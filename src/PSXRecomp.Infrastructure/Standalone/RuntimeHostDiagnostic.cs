@@ -43,7 +43,8 @@ public sealed record RuntimeHostDiagnostic(
     bool TimedOut,
     IReadOnlyList<MixedFallbackTarget>? FallbackTargets = null,
     string? FailureExceptionType = null,
-    RuntimeHostRunMetrics? Metrics = null)
+    RuntimeHostRunMetrics? Metrics = null,
+    string? OrchestratorDiagnosticMessage = null)
 {
     /// <summary>
     /// The diagnostic for a run that ended in an exception before any orchestration result existed: only the manifest's
@@ -134,7 +135,9 @@ public sealed record RuntimeHostDiagnostic(
             OrchestratorDiagnosticCode: execution.DiagnosticCode,
             TimedOut: execution.DiagnosticCode == RecompiledHostExecutionEngine.TimeoutDiagnosticCode,
             FallbackTargets: fallbackTargets,
-            Metrics: metrics);
+            Metrics: metrics,
+            // The orchestrator's own message names what a stop was (for ARTIFACT_FAILED, the artifact's exit code).
+            OrchestratorDiagnosticMessage: execution.DiagnosticMessage);
     }
 }
 
