@@ -174,6 +174,23 @@ public static class BiosAddressGuard
     }
 
     /// <summary>
+    /// The load-range refusal for a production AOT input that has no BIOS image to compare with: a PS-X EXE (CLI, live run) or a
+    /// packaged runtime image. It is the same ground as <see cref="BiosInputClass.BiosRange"/> in <see cref="DeriveInputClass"/>,
+    /// using the same <see cref="OverlapsBios"/> predicate (every alias). The content-identity ground is not applied on these routes:
+    /// it needs the BIOS bytes, which they do not read. Neither ground claims the historical origin of the input.
+    /// </summary>
+    public static void RequireNoBiosRange(string name, uint loadAddress, int wordCount)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        if (OverlapsBios(loadAddress, (ulong)wordCount * 4))
+        {
+            throw new InvalidDataException(
+                $"image '{name}' loads into the BIOS range: refused by the structural safety check on the load range (Issue #B2). " +
+                "This is not a claim about the historical origin; no code there is translated.");
+        }
+    }
+
+    /// <summary>
     /// The class of an AOT input, derived from what the parser actually produced (Issue #B2, the trust boundary). The directive keyword
     /// selects a reader; it cannot assign a class the reader did not produce. The class uses:
     /// the reader's own product (a ROM copy is read from the ROM by code); the actual load address (the range check); the actual words

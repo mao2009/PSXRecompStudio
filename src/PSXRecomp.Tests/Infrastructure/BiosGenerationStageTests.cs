@@ -93,6 +93,19 @@ public sealed class BiosGenerationStageTests : IDisposable
     }
 
     [Fact]
+    public void DispatchStage_InjectedBiosBlock_IsRefused_AndNamesItsStage()
+    {
+        // The dispatch stage (the program and loaded blocks the artifact is generated from) has its own entry point and its own label.
+        var words = BiosWords(16, seed: 4);
+        var injected = ReachableProgramBuilder.BuildFirmwareImage(
+            OpenBiosFirmware.ResetVector, words, OpenBiosFirmware.ResetVector, [OpenBiosFirmware.ResetVector]).Program;
+        injected.Blocks.Should().NotBeEmpty("the injection carries real BIOS blocks");
+
+        ((Action)(() => BiosAddressGuard.RequireNoBiosCode(injected, LoadedCodeTable.Empty, BiosGuardWiring.Dispatch)))
+            .Should().Throw<InvalidOperationException>().WithMessage("*lies in the BIOS*[stage: dispatch]*");
+    }
+
+    [Fact]
     public void LoadedStage_InjectedBiosRangeCode_IsRefused()
     {
         var observed = new HashSet<uint>();

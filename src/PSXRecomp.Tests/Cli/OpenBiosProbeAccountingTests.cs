@@ -160,7 +160,7 @@ public sealed class OpenBiosProbeAccountingTests
     }
 
     [Fact]
-    public void Records_The_First_Reserved_Or_Coprocessor_Fault_Of_Each_Opcode()
+    public void Records_The_First_Reserved_Or_Coprocessor_Fault_Of_Each_Pc()
     {
         var accounting = new OpenBiosProbeAccounting();
         var words = new Dictionary<uint, uint> { [0x80010010] = 0x4A000001u, [0x80010024] = 0x4A180001u, [0x80010030] = 0xFC000000u };
@@ -175,16 +175,36 @@ public sealed class OpenBiosProbeAccountingTests
         Exception(11u << 2 | 0x80000000u, 0x80010020);            // CpU in a branch delay slot: the fault is at EPC + 4
         Exception(10u << 2, 0x80010030);                          // RI
         Exception(0, 0x80010040);                                 // an interrupt is not an unsupported instruction
+        Exception(11u << 2 | 2u << 28, 0x80010010);              // the same PC again: not a new entry
 
         var unsupported = Report(accounting, null, null, []).AsObject()["unsupportedOpcodes"]!.AsArray();
-        Assert.Equal(2, unsupported.Count); // one per (ExcCode, opcode): the second COP2 fault is not new
+        Assert.Equal(3, unsupported.Count); // one per (ExcCode, PC): every fault here is at its own PC, so none is merged
         Assert.Equal(10u, unsupported[0]!["excCode"]!.GetValue<uint>());
         Assert.Equal("0x80010030", unsupported[0]!["pc"]!.ToString());
-        Assert.Equal("0xFC000000", unsupported[0]!["word"]!.ToString());
+        // Decision A (PR #839, arbitration): a RAM word at a PC is not exported, so the word is withheld.
+        Assert.Null(unsupported[0]!["word"]);
         Assert.Equal(11u, unsupported[1]!["excCode"]!.GetValue<uint>());
-        Assert.Equal(0x12u, unsupported[1]!["opcode"]!.GetValue<uint>());
+        // Decision A (PR #839, arbitration): the opcode is a field of the RAM word, so it is withheld with the word.
+        Assert.False(unsupported[1]!.AsObject().ContainsKey("opcode"), "an entry has no opcode: the opcode is a field of the withheld word");
         Assert.Equal("0x80010010", unsupported[1]!["pc"]!.ToString());
         Assert.Equal(1ul, unsupported[1]!["atFallbackFetch"]!.GetValue<ulong>());
+        Assert.Equal(11u, unsupported[2]!["excCode"]!.GetValue<uint>());
+        Assert.Equal("0x80010024", unsupported[2]!["pc"]!.ToString()); // the delay-slot fault is at EPC + 4, a PC of its own
+        Assert.Null(unsupported[2]!["word"]);
+    }
+
+    // PR #839 re-review (MAJOR): an unsupported instruction at a ROM-range EPC is a BIOS word; neither the word nor its opcode is exported.
+    [Fact]
+    public void Unsupported_AtRomRangeEpc_ExportsNoBiosWordOrOpcode()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnFetch(0x80000080, () => (10u << 2, 0xBFC00010u), _ => 0xFC000000u);
+
+        var unsupported = Report(accounting, null, null, []).AsObject()["unsupportedOpcodes"]!.AsArray();
+        Assert.Single(unsupported);
+        Assert.Null(unsupported[0]!["word"]);
+        Assert.False(unsupported[0]!.AsObject().ContainsKey("opcode"), "an entry has no opcode: the opcode is a field of the withheld word");
+        Assert.Equal("0xBFC00010", unsupported[0]!["pc"]!.ToString());
     }
 
     [Fact]

@@ -162,4 +162,24 @@ public sealed class LiveGameRunnerTests
 
         act.Should().Throw<ArgumentException>().WithMessage("*truncated*");
     }
+
+    // Issue #B2 (R1 scope): a live run whose load range lies in the BIOS ROM is refused before anything is lowered or started.
+    [Fact]
+    public void BiosRange_PsxExeTextInBiosRange_IsRefusedBeforeAnythingRuns()
+    {
+        var file = SyntheticPsxExeBuilder.Build(
+            entryPoint: 0xBFC00000u, textStart: 0xBFC00000u, textSize: 4, storedTextBytes: new byte[4]);
+
+        Action act = () => _ = LiveGameRunner.RunPsxExeAsync(file, "bios.exe", SegmentBudget, new LiveFrameSlot(), Path.GetTempPath());
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*loads into the BIOS range*");
+    }
+
+    [Fact]
+    public void BiosRange_RawWordsAtBiosRange_AreRefusedBeforeAnythingRuns()
+    {
+        Action act = () => _ = LiveGameRunner.RunAsync([0u], 0xBFC00000u, SegmentBudget, new LiveFrameSlot(), Path.GetTempPath());
+
+        act.Should().Throw<InvalidDataException>().WithMessage("*loads into the BIOS range*");
+    }
 }

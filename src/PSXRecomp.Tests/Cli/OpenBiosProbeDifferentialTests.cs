@@ -93,14 +93,16 @@ public sealed class OpenBiosProbeDifferentialTests
         Assert.False(diff["match"]!.GetValue<bool>());
         Assert.Equal("cpu", diff["firstMismatch"]!["kind"]!.ToString());
         Assert.Equal("r9", diff["firstMismatch"]!["name"]!.ToString());
-        Assert.Equal("0x00001234", diff["firstMismatch"]!["interpreter"]!.ToString());
-        Assert.Equal("0x00001235", diff["firstMismatch"]!["host"]!.ToString());
+        // PR #839 (decision A): the GPR is still the first mismatch, but its values are withheld.
+        Assert.Null(diff["firstMismatch"]!["interpreter"]);
+        Assert.Null(diff["firstMismatch"]!["host"]);
         var ram = diff["ramFirstMismatch"]!;
         Assert.Equal("0x00010100", ram["address"]!.ToString());
         Assert.Equal("0x010000", ram["page"]!.ToString());
-        Assert.Equal("0x000100F0", ram["contextStart"]!.ToString());
-        Assert.Equal("34120000", ram["interpreterBytes"]!.ToString().Substring(32, 8));
-        Assert.Equal("35120000", ram["hostBytes"]!.ToString().Substring(32, 8));
+        // Decision A (PR #839, arbitration): the RAM bytes around the difference are never published, only its metadata.
+        Assert.False(ram.AsObject().ContainsKey("contextStart"));
+        Assert.False(ram.AsObject().ContainsKey("interpreterBytes"));
+        Assert.False(ram.AsObject().ContainsKey("hostBytes"));
         Assert.Equal(1, diff["ramMismatchBytes"]!.GetValue<int>());
         Assert.Equal("0x010000", diff["ramMismatchPages"]![0]!.ToString());
     }
@@ -193,5 +195,73 @@ public sealed class OpenBiosProbeDifferentialTests
             Assert.False(diff["match"]!.GetValue<bool>());
             Assert.Equal(name, diff["firstMismatch"]!["name"]!.GetValue<string>());
         }
+    }
+
+    // PR #839 (decision A): a differing general-purpose register is still named as the first mismatch, so the comparison is
+    // unchanged, but neither its interpreter nor its host value is written out. The describe output withholds the GPR values too.
+    private static ProbeGuestState RegisterState(uint r5) => new(
+        0xBFC00028u, 1,
+        [("pc", 0xBFC00028u), ("r5", r5), ("hi", 0), ("lo", 0), ("sr", 0), ("cause", 0), ("epc", 0), ("badvaddr", 0)],
+        [("guest_cycles", "1"), ("scratchpad_sha256", "x")],
+        new byte[ProbeGuestState.RamBytes]);
+
+    [Fact]
+    public void Compare_GprMismatch_NamesTheRegisterButWithholdsItsValues()
+    {
+        var output = JsonSerializer.Serialize(ProbeGuestState.Compare(RegisterState(0x24BEEF01u), RegisterState(0x24BEEF02u)));
+        var diff = JsonNode.Parse(output)!;
+
+        diff["match"]!.GetValue<bool>().Should().BeFalse("the registers differ, so the comparison still fails");
+        diff["firstMismatch"]!["name"]!.GetValue<string>().Should().Be("r5");
+        output.ToUpperInvariant().Should().NotContain("24BEEF", "a general-purpose register value must not be exported");
+    }
+
+    [Fact]
+    public void Compare_RamOnlyMismatch_WithholdsTheRamBytesAndKeepsTheMetadata()
+    {
+        var interpreter = RegisterState(0x1u);
+        var host = RegisterState(0x1u);
+        interpreter.Ram[0x100] = 0x34;
+        host.Ram[0x100] = 0x35;
+        var output = JsonSerializer.Serialize(ProbeGuestState.Compare(interpreter, host));
+        var diff = JsonNode.Parse(output)!;
+
+        diff["match"]!.GetValue<bool>().Should().BeFalse("the RAM bytes differ, so the comparison still fails");
+        diff["firstMismatch"]!["kind"]!.GetValue<string>().Should().Be("ram");
+        diff["firstMismatch"]!["name"]!.GetValue<string>().Should().Be("0x00000100");
+        diff["firstMismatch"]!["interpreter"].Should().BeNull("a RAM byte value is never exported");
+        diff["firstMismatch"]!["host"].Should().BeNull("a RAM byte value is never exported");
+        diff["ramFirstMismatch"]!["address"]!.GetValue<string>().Should().Be("0x00000100");
+        diff["ramMismatchBytes"]!.GetValue<int>().Should().Be(1);
+        var ram = diff["ramFirstMismatch"]!.AsObject();
+        ram.ContainsKey("interpreterBytes").Should().BeFalse();
+        ram.ContainsKey("hostBytes").Should().BeFalse();
+        output.Should().NotContain("0x34", "no RAM byte is exported as text");
+    }
+
+    [Fact]
+    public void Describe_RamPcWord_IsWithheld()
+    {
+        var state = RegisterState(0x1u);
+        state.Ram[0x100] = 0x78;
+        state.Ram[0x101] = 0x56;
+        state.Ram[0x102] = 0x34;
+        state.Ram[0x103] = 0x12;
+        var output = JsonSerializer.Serialize(new ProbeGuestState(0x00000100u, 1, state.Cpu, state.Devices, state.Ram).Describe());
+        var describe = JsonNode.Parse(output)!;
+
+        describe.AsObject().ContainsKey("instructionWord").Should().BeFalse("a RAM word at the PC is not exported");
+        output.ToUpperInvariant().Should().NotContain("12345678", "the RAM word at the PC must not be exported");
+    }
+
+    [Fact]
+    public void Describe_GprValues_AreWithheldAndTheOtherRegistersStay()
+    {
+        var output = JsonSerializer.Serialize(RegisterState(0x24BEEF01u).Describe());
+        var describe = JsonNode.Parse(output)!;
+
+        output.ToUpperInvariant().Should().NotContain("24BEEF", "a general-purpose register value must not be exported");
+        describe["gpr"].Should().BeNull("the GPR values are withheld, so the field is explicit null");
+        describe["cpu"]!["pc"]!.GetValue<string>().Should().Be("0xBFC00028", "the non-GPR registers are still exported");
     }
 }

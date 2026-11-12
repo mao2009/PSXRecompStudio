@@ -32,7 +32,9 @@ internal sealed class OpenBiosProbeAccounting
     private readonly Dictionary<uint, (ulong Transitions, ulong Indirect, ulong Retired)> _entries = [];
     private readonly SortedDictionary<string, ulong> _exits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (ulong Transitions, ulong Retired)> _aotClasses = new(StringComparer.Ordinal);
-    private readonly SortedDictionary<(uint ExcCode, uint Opcode), (uint Pc, uint Word, ulong AtFetch)> _unsupported = [];
+    // Keyed by exception code and PC: the PC is an address, so it is kept (a fault at each PC is its own entry). The word is withheld
+    // (OpenBiosProbeCommand.WordFor), so an entry has no opcode: the opcode is a field of the word, and a withheld word's field is not exported.
+    private readonly SortedDictionary<(uint ExcCode, uint Pc), (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
 
     public ulong FallbackFetches { get; private set; }
 
@@ -83,8 +85,8 @@ internal sealed class OpenBiosProbeAccounting
         }
 
         var at = (cause & 0x80000000u) != 0 ? epc + 4 : epc; // CAUSE.BD: the faulting instruction is in the delay slot
-        var word = readWord(at);
-        _unsupported.TryAdd((code, word >> 26), (at, word, FallbackFetches));
+        var word = OpenBiosProbeCommand.WordFor(at, readWord(at));
+        _unsupported.TryAdd((code, at), (at, word, FallbackFetches));
     }
 
     /// <summary>
@@ -194,7 +196,7 @@ internal sealed class OpenBiosProbeAccounting
                 .ToArray(),
             unsupportedOpcodes = _unsupported.Select(static u => new
             {
-                excCode = u.Key.ExcCode, opcode = u.Key.Opcode, pc = Hex(u.Value.Pc), word = Hex(u.Value.Word), atFallbackFetch = u.Value.AtFetch,
+                excCode = u.Key.ExcCode, pc = Hex(u.Value.Pc), word = u.Value.Word is { } w ? Hex(w) : null, atFallbackFetch = u.Value.AtFetch,
             }).ToArray(),
         };
     }
