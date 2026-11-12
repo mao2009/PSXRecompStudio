@@ -110,6 +110,26 @@ public sealed class VerifiedExeDispatchTests
     }
 
     [Fact]
+    public void Ctor_RejectsMisalignedLoadEntryWrapUnmappedAndOversized()
+    {
+        var words = new uint[] { Nop, Nop };
+        var (table, _) = Build(words);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VerifiedExeDispatch(table, Load + 1u, Load + 1u, "exe-sha", words));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VerifiedExeDispatch(table, Load, Load + 1u, "exe-sha", words));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VerifiedExeDispatch(table, Load, Load + 0x1000u, "exe-sha", words));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VerifiedExeDispatch(table, 0xFFFFFFFCu, 0xFFFFFFFCu, "exe-sha", words));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VerifiedExeDispatch(table, 0xBFC00000u, 0xBFC00000u, "exe-sha", words));
+        // Span longer than real RAM from its offset fails closed.
+        var huge = new uint[(0x200000 / 4) + 1];
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VerifiedExeDispatch(table, Load, Load, "exe-sha", huge));
+        // Upper RAM boundary still constructs.
+        FallbackReturnCheck.TryRamOffset(Load, out var phys);
+        var fitCount = (int)((0x200000u - phys) / 4u);
+        var fit = new VerifiedExeDispatch(table, Load, Load, "exe-sha", new uint[fitCount]);
+        Assert.Equal(fitCount, fit.WordCount);
+    }
+
+    [Fact]
     public void Reverify_CountsSingleAttempt()
     {
         var words = new uint[] { Nop, Nop };

@@ -34,6 +34,17 @@ public sealed class VerifiedExeDispatch
         ArgumentException.ThrowIfNullOrWhiteSpace(imageId);
         ArgumentNullException.ThrowIfNull(expectedWords);
         if (expectedWords.Count == 0) throw new ArgumentOutOfRangeException(nameof(expectedWords));
+        if ((loadAddress & 3u) != 0) throw new ArgumentOutOfRangeException(nameof(loadAddress), "Load address must be word-aligned.");
+        var byteLen = (ulong)expectedWords.Count * 4ul;
+        var end = (ulong)loadAddress + byteLen;
+        if (end > 0x1_0000_0000ul) throw new ArgumentOutOfRangeException(nameof(expectedWords), "Span must not wrap the 32-bit address space.");
+        if (!FallbackReturnCheck.TryRamOffset(loadAddress, out var physical))
+            throw new ArgumentOutOfRangeException(nameof(loadAddress), "Load address must map to real RAM.");
+        if (byteLen > (ulong)PSXCoreWrapper.RamSize - physical)
+            throw new ArgumentOutOfRangeException(nameof(expectedWords), "Span must fit in real RAM from its load offset.");
+        if ((entryPc & 3u) != 0) throw new ArgumentOutOfRangeException(nameof(entryPc), "Entry PC must be word-aligned.");
+        if (entryPc < loadAddress || (ulong)entryPc >= end)
+            throw new ArgumentOutOfRangeException(nameof(entryPc), "Entry PC must lie in the registered load range.");
         _table = table;
         _loadAddress = loadAddress;
         _entryPc = entryPc;
