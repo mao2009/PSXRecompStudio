@@ -761,5 +761,175 @@ class PublicOutputAndErrorTests(unittest.TestCase):
         self.assertNotIn(str(self.tmp), result.stdout + result.stderr)
 
 
+class HostOutcomeTests(unittest.TestCase):
+    """The host-outcome gate pins the exact classified stop. Synthetic fixtures only."""
+
+    EXPECT_STATE = "RuntimeFailure"
+    EXPECT_CODE = "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED"
+    EXPECT_BUDGET = 25000000
+    EXPECT_TIMEOUT_MS = 300000
+    GPR_MARKER = "0xDEADBEEF"
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="host-outcome-test-"))
+        self.stderr_file = self.tmp / "host-stderr.txt"
+        self.manifest_file = self.tmp / "runtime-host.json"
+        self.frame_file = self.tmp / "frame.png"
+        self.frame_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        self.write_manifest(self.EXPECT_BUDGET, self.EXPECT_TIMEOUT_MS)
+        self.write_stderr(self.EXPECT_STATE, self.EXPECT_CODE, self.EXPECT_BUDGET)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write_manifest(self, budget: int, timeout_ms: int) -> None:
+        self.manifest_file.write_text(
+            json.dumps({"fallbackSegmentInstructionBudget": budget, "runTimeoutMs": timeout_ms}),
+            encoding="utf-8",
+        )
+
+    def write_stderr(self, state: str, code: str, budget: int) -> None:
+        line = json.dumps(
+            {
+                "kind": "firmware-run",
+                "bios": "openbios",
+                "state": state,
+                "diagnosticCode": code,
+                "fallbackSegmentInstructionBudget": budget,
+                "finalGpr": [self.GPR_MARKER] * 4,
+            }
+        )
+        self.stderr_file.write_text("runtime host: bios mode classified-at-run\n" + line + "\n", encoding="utf-8")
+
+    def run_outcome(self, actual_exit: int) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "host-outcome",
+                "--stderr-file", str(self.stderr_file), "--manifest", str(self.manifest_file),
+                "--frame", str(self.frame_file), "--actual-exit", str(actual_exit),
+                "--expect-exit", "1", "--expect-state", self.EXPECT_STATE,
+                "--expect-code", self.EXPECT_CODE, "--expect-budget", str(self.EXPECT_BUDGET),
+                "--expect-timeout-ms", str(self.EXPECT_TIMEOUT_MS),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_expected_classified_stop_passes(self) -> None:
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("expected classified stop", result.stdout)
+        self.assertNotIn(self.GPR_MARKER, result.stdout)
+
+    def test_clean_exit_zero_is_rejected(self) -> None:
+        result = self.run_outcome(0)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+    def test_wrong_state_is_rejected(self) -> None:
+        self.write_stderr("Completed", self.EXPECT_CODE, self.EXPECT_BUDGET)
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+    def test_wrong_diagnostic_code_is_rejected(self) -> None:
+        self.write_stderr(self.EXPECT_STATE, "ARTIFACT_TIMEOUT", self.EXPECT_BUDGET)
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+    def test_budget_mismatch_with_the_manifest_is_rejected(self) -> None:
+        self.write_manifest(100000000, self.EXPECT_TIMEOUT_MS)
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+    def test_timeout_mismatch_with_the_manifest_is_rejected(self) -> None:
+        self.write_manifest(self.EXPECT_BUDGET, 60000)
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+    def test_missing_frame_is_rejected(self) -> None:
+        self.frame_file.unlink()
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+    def test_missing_firmware_run_line_is_rejected(self) -> None:
+        self.stderr_file.write_text("runtime host: bios mode classified-at-run\n", encoding="utf-8")
+        result = self.run_outcome(1)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("HOST OUTCOME REJECTED", result.stdout)
+
+
+class MaxGapCalibrationTests(unittest.TestCase):
+    """The global gap default stays strict; only an explicit per-input limit calibrates."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="max-gap-test-"))
+        self.staging = self.tmp / "stage"
+        self.staging.mkdir()
+        self.rom = self.tmp / "openbios.bin"
+        # Random bytes at both ends and a 200 KiB zero run in the middle: enough probes, huge gap.
+        self.rom.write_bytes(random_bytes(1011, 200000) + bytes(200000) + random_bytes(1012, ROM_SIZE - 400000))
+        (self.staging / "unrelated.bin").write_bytes(random_bytes(9011, 100000))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_verify(self, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "verify", "--rom", str(self.rom), "--staging", str(self.staging), *extra],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_global_default_still_fails_the_gappy_input(self) -> None:
+        gate = load_gate()
+        self.assertEqual(gate.MAX_GAP, 8192)
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("COVERAGE_GAP_ABOVE_LIMIT", result.stdout)
+
+    def test_explicit_per_input_limit_calibrates_without_changing_the_default(self) -> None:
+        gate = load_gate()
+        max_gap, _ = gate.gap_stats(gate.select_probes(self.rom.read_bytes()))
+        self.assertGreater(max_gap, gate.MAX_GAP)
+        result = self.run_verify("--max-gap-limit", str(max_gap))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ROM coverage check: PASSED", result.stdout)
+        # The default is untouched by the override.
+        self.assertEqual(gate.MAX_GAP, 8192)
+
+
+class WorkflowHostOutcomeTests(unittest.TestCase):
+    """The public workflow pins the exact classified stop, the determinism bounds and the per-input calibration."""
+
+    WORKFLOW = HERE.parent.parent / ".github" / "workflows" / "standalone-package-public.yml"
+
+    def setUp(self) -> None:
+        self.text = self.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_host_outcome_is_pinned_to_the_classified_stop(self) -> None:
+        self.assertIn("host-outcome", self.text)
+        self.assertIn("FALLBACK_SEGMENT_BUDGET: 25000000", self.text)
+        self.assertIn("RUN_TIMEOUT_SECONDS: 300", self.text)
+        self.assertIn("--expect-exit 1", self.text)
+        self.assertIn("--expect-state RuntimeFailure", self.text)
+        self.assertIn("--expect-code ARTIFACT_FALLBACK_BUDGET_EXHAUSTED", self.text)
+        self.assertIn('--expect-budget "$FALLBACK_SEGMENT_BUDGET"', self.text)
+        self.assertIn('--expect-timeout-ms "$((RUN_TIMEOUT_SECONDS * 1000))"', self.text)
+        self.assertNotIn("expected 0", self.text)
+
+    def test_the_package_run_bounds_are_determinism_scoped(self) -> None:
+        self.assertIn('--fallback-segment-budget "$FALLBACK_SEGMENT_BUDGET"', self.text)
+        self.assertIn('--run-timeout-seconds "$RUN_TIMEOUT_SECONDS"', self.text)
+
+    def test_the_coverage_check_is_calibrated_per_input(self) -> None:
+        self.assertIn("REAL_OPENBIOS_MAX_GAP: 286720", self.text)
+        self.assertIn('--max-gap-limit "$REAL_OPENBIOS_MAX_GAP"', self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
