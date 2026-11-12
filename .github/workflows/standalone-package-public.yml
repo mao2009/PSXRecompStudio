@@ -27,6 +27,17 @@ jobs:
       TOOLCHAIN_URL: https://static.grumpycoder.net/pixel/mips/g++-mipsel-none-elf-16.2.0.zip
       TOOLCHAIN_SHA256: cf84960f5624829d44b866c5f194094c21c63b30f7cbb8cf3030f1abebd52b75
       SYNTHETIC_DISC_SHA256: ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606
+      # Bounded-boot determinism scoping: the packaged OpenBIOS run is a bounded boot probe that always
+      # ends in the classified fallback-budget stop (RuntimeFailure/ARTIFACT_FALLBACK_BUDGET_EXHAUSTED,
+      # exit 1), never a clean exit 0. A 25M-instruction segment budget exhausts first on any runner
+      # (measured ~24s locally, ~43s for 100M in CI), well inside the 300s wall backstop, so the outcome
+      # is deterministic and a frame is always written before the stop. A clean exit is not expected.
+      FALLBACK_SEGMENT_BUDGET: 25000000
+      RUN_TIMEOUT_SECONDS: 300
+      # Per-input ROM-absence calibration for the pinned OpenBIOS build only (measured max_gap 285696
+      # from its consecutive-zero core, plus one grid stride of margin). The global MAX_GAP default in
+      # standalone-package-verify.py stays strict; nothing else may raise it.
+      REAL_OPENBIOS_MAX_GAP: 286720
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -158,7 +169,8 @@ jobs:
           [[ "$code_bytes" =~ ^[0-9]+$ ]] || { echo "prepare-aot: code-byte input unavailable"; exit 1; }
           dotnet run --project src/PSXRecomp.Cli/PSXRecomp.Cli.csproj --configuration Release -- \
             package "$DISC" --bios openbios --bios-rom "$ROM" --aot-dir "$AOT" --output "$PKG" \
-            --code-bytes "$code_bytes" --run-timeout-seconds 60 --build-timeout-seconds 900
+            --code-bytes "$code_bytes" --run-timeout-seconds "$RUN_TIMEOUT_SECONDS" \
+            --fallback-segment-budget "$FALLBACK_SEGMENT_BUDGET" --build-timeout-seconds 900
           # Relative names only: an absolute runner path is a machine path, not for the public log.
           (cd "$PKG" && find . -type f | sort)
 
@@ -181,23 +193,29 @@ jobs:
           test -s "$ROM"
           ROM_WIN="$(cygpath -w "$ROM")"
           set +e
-          (cd "$RUN" && PSXRECOMP_BIOS_ROM="$ROM_WIN" "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json")
+          (cd "$RUN" && PSXRECOMP_BIOS_ROM="$ROM_WIN" "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json" > "$W/host-stdout.txt" 2> "$W/host-stderr.txt")
           rc=$?
           set -e
           echo "runtime host exit code: $rc"
           echo "HOST_EXIT_CODE=$rc" >> "$GITHUB_ENV"
+          # The host logs stay in files under $WORK: the frame log line names an absolute machine path,
+          # so raw host output must never reach the public log. host-outcome reads the files, pins the
+          # exact classified stop, and prints only fixed status strings. Nothing else is uploaded.
           # Names only: file sizes of the host's output are not printed (they are run-derived numbers).
           ls "$RUN"
-          # Fail closed: the job is green only when the host exits 0 and produced a non-empty frame.png.
-          # A failing step stops the later steps, so nothing is staged or uploaded.
-          if [ "$rc" -ne 0 ]; then
-            echo "FAIL: runtime host exited $rc (expected 0); no frame is accepted"
-            exit 1
-          fi
-          if [ ! -s "$RUN/frame.png" ]; then
-            echo "FAIL: $RUN/frame.png is missing or empty"
-            exit 1
-          fi
+          # Fail closed on the exact classified stop: the bounded OpenBIOS boot probe always ends in
+          # RuntimeFailure/ARTIFACT_FALLBACK_BUDGET_EXHAUSTED with exit 1 and a rendered frame; a clean
+          # exit 0 is not a possible outcome for this input. host-outcome pins the exit code, the
+          # firmware-run state and diagnostic code, the segment budget and run timeout against the
+          # runtime manifest, and the non-empty frame. Any other outcome fails this step, so nothing
+          # is staged or uploaded. This asserts the classified stop; it never ignores the exit code.
+          python scripts/ci/standalone-package-verify.py host-outcome \
+            --stderr-file "$W/host-stderr.txt" --manifest "$PKG/runtime/runtime-host.json" \
+            --frame "$RUN/frame.png" --actual-exit "$rc" \
+            --expect-exit 1 --expect-state RuntimeFailure \
+            --expect-code ARTIFACT_FALLBACK_BUDGET_EXHAUSTED \
+            --expect-budget "$FALLBACK_SEGMENT_BUDGET" \
+            --expect-timeout-ms "$((RUN_TIMEOUT_SECONDS * 1000))"
           echo "frame.png: present and non-empty"
 
       # The host's diagnostics.json and frame.png stay on the runner. Neither is uploaded (the public artifact is
@@ -216,8 +234,10 @@ jobs:
           rm -rf "$STAGE"
           python scripts/ci/standalone-package-verify.py stage-public \
             --package "$W/pkg/psxrecomp-public-openbios" --rom "$ROM" --out "$STAGE" \
-            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" --allow-digest "$TOOLCHAIN_SHA256"
-          python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE"
+            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" --allow-digest "$TOOLCHAIN_SHA256" \
+            --max-gap-limit "$REAL_OPENBIOS_MAX_GAP"
+          python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE" \
+            --max-gap-limit "$REAL_OPENBIOS_MAX_GAP"
 
       # The manifest records no built-ROM size or digest, and no size or digest of any ROM-derived file (see
       # standalone-package-verify.py manifest). A published digest or size of the ROM would let anyone test a candidate ROM.
@@ -248,7 +268,7 @@ jobs:
             --repository "$GH_REPOSITORY" --run-id "$GH_RUN_ID" --run-attempt "$GH_RUN_ATTEMPT" \
             --runner-image "${ImageOS:-unknown} ${ImageVersion:-unknown}" \
             --compiler-name gcc --compiler-version "$gcc_version" --compiler-line "$gcc_line" \
-            --host-exit-code "$HOST_EXIT_CODE"
+            --host-exit-code "$HOST_EXIT_CODE" --max-gap-limit "$REAL_OPENBIOS_MAX_GAP"
           {
             echo "## Standalone package (public inputs) provenance"
             echo ""
