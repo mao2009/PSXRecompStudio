@@ -1565,6 +1565,29 @@ public sealed class GuestCancellationTests
     }
 
     [Fact]
+    public void HostTransferPump_CompletedPump_WithSettledStop_IsObserved_NotATimeout()
+    {
+        // Issue #876: the wait read HasExitedOrGone before Settled. A stop settling in between skipped Observe and
+        // returned false (false timeout) even when the pump had completed. The fix gives a completed pump one
+        // Observe before deciding, without weakening child-exit or grandchild-pipe classification.
+        using var dir = new TempDirectory();
+        using var child = StartSleeper(dir);
+        using var cts = new CancellationTokenSource();
+        using var stop = new StopRecord { KillForTest = _ => { } };
+        using var stopSeal = stop.Attach(child, cts.Token);
+        cts.Cancel();
+        // The no-op kill leaves the live child running, so Decide refuses after its confirm wait, then settles.
+        WaitUntil(() => stop.Settled, StopWait);
+        child.HasExited.Should().BeFalse("the seam left the child alive so the stop settles while it runs");
+        var completed = Task.CompletedTask;
+        var result = RecompiledHostExecutionEngine.WaitPumpWithinOutputBudget(completed, child, runTimeoutMs: 60_000, outputBudgetMs: 500, stop, out var drainTimedOut);
+        result.Should().BeTrue("a completed pump must be observed even when a stop has settled");
+        drainTimedOut.Should().BeFalse();
+        child.HasExited.Should().BeFalse("the live child must not be reclassified by the pump observation");
+        try { child.Kill(true); } catch { }
+    }
+
+    [Fact]
     public void StoppedTreeWithRealDescendants_IsConfirmedOnlyOnceTheyAreGone()
     {
         using var dir = new TempDirectory();
