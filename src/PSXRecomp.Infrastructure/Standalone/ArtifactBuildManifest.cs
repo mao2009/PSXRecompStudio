@@ -9,7 +9,7 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// Issue #864 (writer, schema 1, minimal scope): writes <c>runtime/build-manifest.json</c>
 /// carrying post-build digests. H2 (<c>binary.sha256</c>) is recorded for every packaged
 /// build; H3 (<c>packaged.imageSidecar.sha256</c>) is recorded for HLE packages only.
-/// Digests are computed from the bytes as written, never from a pre-write buffer held by
+/// Digests are read back from the files on disk, never from a pre-write buffer held by
 /// the caller. They are post-build outputs and are not part of any build key. The packaged
 /// host must treat this carrier as read-only (Issue #865 owns the reader).
 /// Full schema-1 fields owned by Issue C (buildKey, codegen hashes, toolchain, etc.) are
@@ -28,20 +28,30 @@ public static class ArtifactBuildManifest
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    /// <summary>Writes an HLE carrier (with <c>packaged</c> block) as the last file in staging.</summary>
-    public static void WriteHle(string runtimeDir, string binaryFileName, byte[] artifactBytes, byte[] sidecarBytes)
+    /// <summary>
+/// Writes an HLE carrier (with <c>packaged</c> block) as the last file in staging.
+/// The digests are read back from <paramref name="artifactPath"/> and
+/// <paramref name="sidecarPath"/> on disk, so they describe the bytes as written.
+/// </summary>
+    public static void WriteHle(string runtimeDir, string artifactPath, string sidecarPath)
     {
+        var artifactBytes = File.ReadAllBytes(artifactPath);
+        var sidecarBytes = File.ReadAllBytes(sidecarPath);
         File.WriteAllBytes(
             Path.Combine(runtimeDir, FileName),
-            SerializeHle(binaryFileName, artifactBytes, sidecarBytes));
+            SerializeHle(Path.GetFileName(artifactPath), artifactBytes, sidecarBytes));
     }
 
-    /// <summary>Writes a firmware carrier (H2 only, no <c>packaged</c> block).</summary>
-    public static void WriteFirmware(string runtimeDir, string binaryFileName, byte[] artifactBytes)
+    /// <summary>
+    /// Writes a firmware carrier (H2 only, no <c>packaged</c> block).
+    /// The digest is read back from <paramref name="artifactPath"/> on disk.
+    /// </summary>
+    public static void WriteFirmware(string runtimeDir, string artifactPath)
     {
+        var artifactBytes = File.ReadAllBytes(artifactPath);
         File.WriteAllBytes(
             Path.Combine(runtimeDir, FileName),
-            SerializeFirmware(binaryFileName, artifactBytes));
+            SerializeFirmware(Path.GetFileName(artifactPath), artifactBytes));
     }
 
     internal static byte[] SerializeHle(string binaryFileName, byte[] artifactBytes, byte[] sidecarBytes) =>

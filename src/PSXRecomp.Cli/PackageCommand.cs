@@ -275,9 +275,8 @@ public static class PackageCommand
 
             ArtifactBuildManifest.WriteHle(
                 runtimeDir,
-                Path.GetFileName(artifactPath),
-                File.ReadAllBytes(artifactPath),
-                File.ReadAllBytes(Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName)));
+                artifactPath,
+                Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName));
 
             if (arguments.Json)
             {

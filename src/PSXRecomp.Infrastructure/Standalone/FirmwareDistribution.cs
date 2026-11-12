@@ -485,8 +485,7 @@ public static class FirmwareDistributionBuilder
 
             ArtifactBuildManifest.WriteFirmware(
                 stagingRuntimeDir,
-                Path.GetFileName(build.Artifact!.BinaryPath),
-                File.ReadAllBytes(build.Artifact!.BinaryPath));
+                build.Artifact!.BinaryPath);
 
             // Only a fully built distribution is committed into place.
             CommitStaging(staging, outputDir);
