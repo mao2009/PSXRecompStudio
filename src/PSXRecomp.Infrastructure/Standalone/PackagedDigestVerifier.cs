@@ -16,7 +16,39 @@ public static class PackagedDigestVerifier
 {
     public const string CarrierFileName = "build-manifest.json";
 
-    public sealed record VerifiedInputs(string ArtifactLaunchPath, byte[] ImageBytes, string PrivateCopyDirectory);
+    /// <summary>
+    /// The verified inputs to use. Owns the private-copy directory and
+    /// deletes it on <see cref="Dispose"/> (F2): callers must dispose after
+    /// the launched copy is no longer needed (when the run returns).
+    /// </summary>
+    public sealed class VerifiedInputs : IDisposable
+    {
+        public VerifiedInputs(string artifactLaunchPath, byte[] imageBytes, string privateCopyDirectory)
+        {
+            ArtifactLaunchPath = artifactLaunchPath;
+            ImageBytes = imageBytes;
+            PrivateCopyDirectory = privateCopyDirectory;
+        }
+
+        public string ArtifactLaunchPath { get; }
+        public byte[] ImageBytes { get; }
+        public string PrivateCopyDirectory { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (Directory.Exists(PrivateCopyDirectory))
+                {
+                    Directory.Delete(PrivateCopyDirectory, recursive: true);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort cleanup: never fail the run on delete.
+            }
+        }
+    }
 
     /// <summary>
     /// Verifies H2 (every package) and H3 (HLE only) and returns the bytes to
@@ -62,6 +94,7 @@ public static class PackagedDigestVerifier
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(expectedArtifactHex), Convert.FromHexString(actualArtifactHex)))
         {
+            DeleteQuietly(copyDir);
             throw new InvalidDataException("Packaged artifact digest mismatch (H2).");
         }
 
@@ -83,6 +116,7 @@ public static class PackagedDigestVerifier
             if (!CryptographicOperations.FixedTimeEquals(
                     Convert.FromHexString(expectedImageHex!), Convert.FromHexString(actualImageHex)))
             {
+                DeleteQuietly(copyDir);
                 throw new InvalidDataException("Packaged image digest mismatch (H3).");
             }
         }
@@ -205,6 +239,20 @@ public static class PackagedDigestVerifier
             name.Contains("..") || Path.IsPathRooted(name) || name.Contains(':'))
         {
             throw new InvalidDataException($"Packaged digest carrier '{what}' must be a bare file name.");
+        }
+    }
+
+    private static void DeleteQuietly(string dir)
+    {
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 

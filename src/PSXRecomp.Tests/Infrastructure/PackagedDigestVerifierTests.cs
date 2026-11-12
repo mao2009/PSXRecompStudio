@@ -67,7 +67,7 @@ public sealed class PackagedDigestVerifierTests
         {
 #pragma warning disable AARC003
             WriteCarrier(runtime, Sha(File.ReadAllBytes(artifact)), Sha(File.ReadAllBytes(image)), Path.GetFileName(artifact));
-            var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
+            using var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
             v.ArtifactLaunchPath.Should().NotBe(artifact);
             File.ReadAllBytes(v.ArtifactLaunchPath).Should().Equal(File.ReadAllBytes(artifact));
             v.ImageBytes.Should().Equal(File.ReadAllBytes(image));
@@ -134,6 +134,50 @@ public sealed class PackagedDigestVerifierTests
 #pragma warning restore AARC003
                 a.Should().Throw<InvalidDataException>(because: bad);
             }
+        }
+    }
+
+    [Fact]
+    public void Dispose_RemovesPrivateCopyDirectory()
+    {
+        var (temp, runtime, artifact, image) = Layout(firmware: false);
+        using (temp)
+        {
+#pragma warning disable AARC003
+            WriteCarrier(runtime, Sha(File.ReadAllBytes(artifact)), Sha(File.ReadAllBytes(image)), Path.GetFileName(artifact));
+            string copyDir;
+            using (var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false))
+            {
+                copyDir = v.PrivateCopyDirectory;
+                Directory.Exists(copyDir).Should().BeTrue();
+            }
+
+            Directory.Exists(copyDir).Should().BeFalse("disposing the verified inputs must delete the private copy");
+#pragma warning restore AARC003
+        }
+    }
+
+    [Fact]
+    public void Mismatch_DeletesPrivateCopy()
+    {
+        var (temp, runtime, artifact, image) = Layout(firmware: false);
+        using (temp)
+        {
+#pragma warning disable AARC003
+            var before = new HashSet<string>(Directory.GetDirectories(Path.GetTempPath(), "psxrecomp-h2-*"));
+            WriteCarrier(runtime, new string('a', 64), Sha(File.ReadAllBytes(image)), Path.GetFileName(artifact));
+            try
+            {
+                using var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
+            }
+            catch (InvalidDataException)
+            {
+            }
+
+            Directory.GetDirectories(Path.GetTempPath(), "psxrecomp-h2-*")
+                .Where(d => !before.Contains(d)).Should().BeEmpty(
+                "a failed verification must not leave a private copy behind");
+#pragma warning restore AARC003
         }
     }
 

@@ -213,6 +213,7 @@ public static class Program
         RuntimeHostManifest? manifest = null;
         // Issue #773: written from the finally below, so a failed or stopped run still leaves its refusals behind.
         var loadedCodeMismatch = loadedCodeMismatchPath is null ? null : new LoadedCodeMismatchDiagnostics();
+        PackagedDigestVerifier.VerifiedInputs? verifiedInputs = null;
         try
         {
             manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
@@ -231,7 +232,6 @@ public static class Program
             // for use. The verified private copy is launched, never the
             // original path; the verified image array is the array used.
             var isFirmware = FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory);
-            PackagedDigestVerifier.VerifiedInputs verified;
             try
             {
                 var prebuiltForVerify = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
@@ -241,7 +241,7 @@ public static class Program
                     imageForVerify = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
                 }
 
-                verified = PackagedDigestVerifier.VerifyAndStage(
+                verifiedInputs = PackagedDigestVerifier.VerifyAndStage(
                     manifestDirectory, prebuiltForVerify, imageForVerify, isFirmware);
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
@@ -250,7 +250,7 @@ public static class Program
                 return 78;
             }
 
-            var prebuiltArtifactPath = verified.ArtifactLaunchPath;
+            var prebuiltArtifactPath = verifiedInputs.ArtifactLaunchPath;
 
             // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
@@ -265,7 +265,7 @@ public static class Program
                     manifest, manifestDirectory, prebuiltArtifactPath, biosPath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
             }
 
-            var imageBytes = verified.ImageBytes;
+            var imageBytes = verifiedInputs.ImageBytes;
 
             var imageWords = new uint[imageBytes.Length / 4];
             for (var i = 0; i < imageWords.Length; i++)
@@ -399,6 +399,7 @@ public static class Program
         }
         finally
         {
+            verifiedInputs?.Dispose();
             WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch, runId);
         }
     }
