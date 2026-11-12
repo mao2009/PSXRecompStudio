@@ -226,7 +226,31 @@ public static class Program
 
             // Resolve and confine both manifest paths before anything is read or launched
             // (fail closed: an out-of-distribution or linked path never reaches Process.Start).
-            var prebuiltArtifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
+            // Fail closed (Issue #865): verify H2/H3 digests against
+            // runtime/build-manifest.json before anything is launched or read
+            // for use. The verified private copy is launched, never the
+            // original path; the verified image array is the array used.
+            var isFirmware = FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory);
+            PackagedDigestVerifier.VerifiedInputs verified;
+            try
+            {
+                var prebuiltForVerify = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
+                string? imageForVerify = null;
+                if (!isFirmware)
+                {
+                    imageForVerify = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
+                }
+
+                verified = PackagedDigestVerifier.VerifyAndStage(
+                    manifestDirectory, prebuiltForVerify, imageForVerify, isFirmware);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"runtime host: packaged digest verification failed: {ex.Message}");
+                return 78;
+            }
+
+            var prebuiltArtifactPath = verified.ArtifactLaunchPath;
 
             // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
@@ -241,11 +265,7 @@ public static class Program
                     manifest, manifestDirectory, prebuiltArtifactPath, biosPath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
             }
 
-            var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
-
-            // Read the program image for the host-transfer bridge / interpreter fallback
-            // (for a prebuilt artifact this is the same image the artifact embeds).
-            var imageBytes = File.ReadAllBytes(imagePath);
+            var imageBytes = verified.ImageBytes;
 
             var imageWords = new uint[imageBytes.Length / 4];
             for (var i = 0; i < imageWords.Length; i++)

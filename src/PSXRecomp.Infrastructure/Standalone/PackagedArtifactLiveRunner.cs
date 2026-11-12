@@ -43,7 +43,11 @@ public static class PackagedArtifactLiveRunner
 
         var artifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
         var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
-        var imageBytes = File.ReadAllBytes(imagePath);
+        // Same fail-closed H2/H3 check as the packaged host (Issue #865):
+        // verified private copy is launched, verified image array is used.
+        var verified = PackagedDigestVerifier.VerifyAndStage(
+            manifestDirectory, artifactPath, imagePath, isFirmware: false);
+        var imageBytes = verified.ImageBytes;
         var imageWords = new uint[imageBytes.Length / 4];
         for (var i = 0; i < imageWords.Length; i++)
         {
@@ -57,7 +61,7 @@ public static class PackagedArtifactLiveRunner
         return Task.Run(() =>
         {
             using var engine = RecompiledHostExecutionEngine.ForPrebuiltArtifact(
-                artifactPath,
+                verified.ArtifactLaunchPath,
                 (manifest.BlockEntryPcs ?? []).ToHashSet(),
                 biosRuntimeFactory: (reader, writer) => new BiosHleRuntime(new DiscardOutput(), reader, writer),
                 mixedFallback: mixedFallback,
