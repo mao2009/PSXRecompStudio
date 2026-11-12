@@ -196,6 +196,134 @@ public sealed class PackagedDigestVerifierTests
     }
 
     [Fact]
+    public void SizeBytes_Missing_WrongType_Negative_Refused()
+    {
+        var (temp, runtime, artifact, image) = Layout(firmware: false);
+        using (temp)
+        {
+#pragma warning disable AARC003
+            var artifactHex = Sha(File.ReadAllBytes(artifact));
+            var imageHex = Sha(File.ReadAllBytes(image));
+            var name = Path.GetFileName(artifact);
+            string Good(string binarySize, string sidecarSize) =>
+                "{\"schemaVersion\":1,\"binary\":{\"file\":\"" + name + "\",\"sha256\":\"" + artifactHex
+                + "\",\"sizeBytes\":" + binarySize + "},\"packaged\":{\"imageSidecar\":{\"file\":\"artifact-image.bin\",\"sha256\":\""
+                + imageHex + "\",\"sizeBytes\":" + sidecarSize + "}}}";
+            var badCarriers = new[]
+            {
+                // binary.sizeBytes missing / wrong type / negative / fractional.
+                "{\"schemaVersion\":1,\"binary\":{\"file\":\"" + name + "\",\"sha256\":\"" + artifactHex
+                    + "\"},\"packaged\":{\"imageSidecar\":{\"file\":\"artifact-image.bin\",\"sha256\":\"" + imageHex + "\",\"sizeBytes\":8}}}",
+                Good("\"4\"", "8"),
+                Good("-1", "8"),
+                Good("4.5", "8"),
+                // imageSidecar.sizeBytes missing / wrong type / negative.
+                "{\"schemaVersion\":1,\"binary\":{\"file\":\"" + name + "\",\"sha256\":\"" + artifactHex
+                    + "\",\"sizeBytes\":4},\"packaged\":{\"imageSidecar\":{\"file\":\"artifact-image.bin\",\"sha256\":\"" + imageHex + "\"}}}",
+                Good("4", "\"8\""),
+                Good("4", "-8"),
+            };
+            foreach (var bad in badCarriers)
+            {
+                File.WriteAllText(Path.Combine(runtime, "build-manifest.json"), bad);
+                Action a = () => PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
+                a.Should().Throw<InvalidDataException>(because: bad);
+            }
+#pragma warning restore AARC003
+        }
+    }
+
+    [Fact]
+    public void SizeBytes_Mismatch_RealLength_Refused()
+    {
+        var (temp, runtime, artifact, image) = Layout(firmware: false);
+        using (temp)
+        {
+#pragma warning disable AARC003
+            // Digests are correct; the declared lengths are not (real: 4 and 8).
+            var artifactHex = Sha(File.ReadAllBytes(artifact));
+            var imageHex = Sha(File.ReadAllBytes(image));
+            var name = Path.GetFileName(artifact);
+            foreach (var bad in new[]
+                     {
+                         "{\"schemaVersion\":1,\"binary\":{\"file\":\"" + name + "\",\"sha256\":\"" + artifactHex
+                             + "\",\"sizeBytes\":5},\"packaged\":{\"imageSidecar\":{\"file\":\"artifact-image.bin\",\"sha256\":\"" + imageHex + "\",\"sizeBytes\":8}}}",
+                         "{\"schemaVersion\":1,\"binary\":{\"file\":\"" + name + "\",\"sha256\":\"" + artifactHex
+                             + "\",\"sizeBytes\":4},\"packaged\":{\"imageSidecar\":{\"file\":\"artifact-image.bin\",\"sha256\":\"" + imageHex + "\",\"sizeBytes\":7}}}",
+                     })
+            {
+                var before = new HashSet<string>(Directory.GetDirectories(Path.GetTempPath(), "psxrecomp-h2-*"));
+                File.WriteAllText(Path.Combine(runtime, "build-manifest.json"), bad);
+                Action a = () => PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
+                a.Should().Throw<InvalidDataException>(because: bad);
+                Directory.GetDirectories(Path.GetTempPath(), "psxrecomp-h2-*")
+                    .Where(d => !before.Contains(d)).Should().BeEmpty(
+                    "a size mismatch must not leave a private copy behind");
+            }
+#pragma warning restore AARC003
+        }
+    }
+
+    [Fact]
+    public void Failure_Messages_CarryNoLocalPaths()
+    {
+        var (temp, runtime, artifact, image) = Layout(firmware: false);
+        using (temp)
+        {
+#pragma warning disable AARC003
+            var messages = new List<string>();
+            // Missing carrier.
+            messages.Add(CaptureMessage(() => PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false)));
+            // Bad digest + bad size.
+            WriteCarrier(runtime, new string('a', 64), Sha(File.ReadAllBytes(image)), Path.GetFileName(artifact));
+            messages.Add(CaptureMessage(() => PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false)));
+            foreach (var message in messages)
+            {
+                message.Should().NotContain(runtime);
+                message.Should().NotContain(artifact);
+                message.Should().NotContain(image);
+                message.Should().NotContain(Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar));
+            }
+#pragma warning restore AARC003
+        }
+    }
+
+    [Fact]
+    public void MissingArtifactFile_CleansUpPrivateCopy()
+    {
+        var (temp, runtime, artifact, image) = Layout(firmware: false);
+        using (temp)
+        {
+#pragma warning disable AARC003
+            var before = new HashSet<string>(Directory.GetDirectories(Path.GetTempPath(), "psxrecomp-h2-*"));
+            var missing = Path.Combine(Path.GetDirectoryName(artifact)!, "no-such-game" + Path.GetExtension(artifact));
+            // The carrier names the missing file so parsing succeeds and the copy itself fails.
+            WriteCarrier(runtime, Sha([1, 2, 3, 4]), Sha(File.ReadAllBytes(image)), Path.GetFileName(missing));
+            Action a = () => PackagedDigestVerifier.VerifyAndStage(runtime, missing, image, isFirmware: false);
+            // The copy itself fails: still an IO failure, and still no leftover.
+            a.Should().Throw<Exception>();
+            Directory.GetDirectories(Path.GetTempPath(), "psxrecomp-h2-*")
+                .Where(d => !before.Contains(d)).Should().BeEmpty(
+                "a copy failure must not leave a private copy behind");
+#pragma warning restore AARC003
+        }
+    }
+
+    private static string CaptureMessage(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+
+        throw new Xunit.Sdk.XunitException("Expected the action to throw, but it did not.");
+    }
+
+    [Fact]
     public void Swap_AfterVerify_UsesVerifiedBytes()
     {
         var (temp, runtime, artifact, image) = Layout(firmware: false);

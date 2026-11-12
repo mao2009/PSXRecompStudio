@@ -64,6 +64,10 @@ public static class PackagedDigestVerifier
         bool isFirmware,
         string? privateCopyRoot = null)
     {
+        // NOTE (public-log boundary, Issue #878): no path or machine-specific
+        // detail is ever embedded in these messages. The public stderr route
+        // (RuntimeHost) prints them verbatim, so they stay fixed codes; the
+        // inner exception (when present) carries local detail for developers.
         var carrierPath = Path.Combine(Path.GetFullPath(manifestDirectory), CarrierFileName);
         string carrierText;
         try
@@ -72,59 +76,88 @@ public static class PackagedDigestVerifier
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            throw new InvalidDataException($"Packaged digest carrier missing or unreadable: {carrierPath}", ex);
+            throw new InvalidDataException("Packaged digest carrier missing or unreadable.", ex);
         }
 
-        var (expectedArtifactHex, expectedImageHex) = ParseCarrier(carrierText, artifactPath, imagePath, isFirmware);
+        var carrier = ParseCarrier(carrierText, artifactPath, imagePath, isFirmware);
 
         // H2: copy original -> private dir first, then hash the copy through a
         // FileShare.Read handle and launch the copy by path. Verified bytes ==
         // used bytes; replacing the original afterwards changes nothing.
+        // Ownership: the private copy is deleted on every failure path below;
+        // only a successful return transfers it to the caller (dispose after run).
         var copyDir = Directory.CreateDirectory(Path.Combine(
             privateCopyRoot ?? Path.GetTempPath(),
             "psxrecomp-h2-" + Guid.NewGuid().ToString("N"))).FullName;
-        var copyPath = Path.Combine(copyDir, Path.GetFileName(artifactPath));
-        File.Copy(artifactPath, copyPath);
-        string actualArtifactHex;
-        using (var handle = File.Open(copyPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        var staged = false;
+        try
         {
-            actualArtifactHex = Convert.ToHexString(SHA256.HashData(ReadAll(handle))).ToLowerInvariant();
-        }
-
-        if (!CryptographicOperations.FixedTimeEquals(
-                Convert.FromHexString(expectedArtifactHex), Convert.FromHexString(actualArtifactHex)))
-        {
-            DeleteQuietly(copyDir);
-            throw new InvalidDataException("Packaged artifact digest mismatch (H2).");
-        }
-
-        byte[] imageBytes = [];
-        if (!isFirmware)
-        {
-            if (imagePath is null)
+            var copyPath = Path.Combine(copyDir, Path.GetFileName(artifactPath));
+            File.Copy(artifactPath, copyPath);
+            byte[] artifactCopyBytes;
+            using (var handle = File.Open(copyPath, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                throw new InvalidDataException("HLE package requires the H3 image sidecar.");
+                artifactCopyBytes = ReadAll(handle);
             }
 
-            // H3: single read; the hashed array is the array returned for use.
-            using (var handle = File.Open(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            if (artifactCopyBytes.Length != carrier.ArtifactSizeBytes)
             {
-                imageBytes = ReadAll(handle);
+                throw new InvalidDataException("Packaged artifact size mismatch (H2).");
             }
 
-            var actualImageHex = Convert.ToHexString(SHA256.HashData(imageBytes)).ToLowerInvariant();
+            var actualArtifactHex = Convert.ToHexString(SHA256.HashData(artifactCopyBytes)).ToLowerInvariant();
             if (!CryptographicOperations.FixedTimeEquals(
-                    Convert.FromHexString(expectedImageHex!), Convert.FromHexString(actualImageHex)))
+                    Convert.FromHexString(carrier.ArtifactHex), Convert.FromHexString(actualArtifactHex)))
+            {
+                throw new InvalidDataException("Packaged artifact digest mismatch (H2).");
+            }
+
+            byte[] imageBytes = [];
+            if (!isFirmware)
+            {
+                if (imagePath is null || carrier.ImageHex is null || carrier.ImageSizeBytes is null)
+                {
+                    throw new InvalidDataException("HLE package requires the H3 image sidecar.");
+                }
+
+                // H3: single read; the hashed array is the array returned for use.
+                using (var handle = File.Open(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    imageBytes = ReadAll(handle);
+                }
+
+                if (imageBytes.Length != carrier.ImageSizeBytes.Value)
+                {
+                    throw new InvalidDataException("Packaged image size mismatch (H3).");
+                }
+
+                var actualImageHex = Convert.ToHexString(SHA256.HashData(imageBytes)).ToLowerInvariant();
+                if (!CryptographicOperations.FixedTimeEquals(
+                        Convert.FromHexString(carrier.ImageHex), Convert.FromHexString(actualImageHex)))
+                {
+                    throw new InvalidDataException("Packaged image digest mismatch (H3).");
+                }
+            }
+
+            staged = true;
+            return new VerifiedInputs(copyPath, imageBytes, copyDir);
+        }
+        finally
+        {
+            if (!staged)
             {
                 DeleteQuietly(copyDir);
-                throw new InvalidDataException("Packaged image digest mismatch (H3).");
             }
         }
-
-        return new VerifiedInputs(copyPath, imageBytes, copyDir);
     }
 
-    internal static (string ArtifactHex, string? ImageHex) ParseCarrier(
+    internal sealed record CarrierExpectations(
+        string ArtifactHex,
+        long ArtifactSizeBytes,
+        string? ImageHex,
+        long? ImageSizeBytes);
+
+    internal static CarrierExpectations ParseCarrier(
         string json, string artifactPath, string? imagePath, bool isFirmware)
     {
         JsonDocument doc;
@@ -160,6 +193,7 @@ public static class PackagedDigestVerifier
             RejectUnknownKeys(binary, ["file", "sha256", "sizeBytes"], "binary");
             var binaryFile = RequiredString(binary, "file", "binary");
             var binaryHex = RequiredHexDigest(binary, "sha256", "binary");
+            var binarySize = RequiredSizeBytes(binary, "binary");
             AssertBareFileName(binaryFile, "binary.file");
             if (!string.Equals(binaryFile, Path.GetFileName(artifactPath), StringComparison.Ordinal))
             {
@@ -174,7 +208,7 @@ public static class PackagedDigestVerifier
                     throw new InvalidDataException("Firmware carrier must not contain a 'packaged' block.");
                 }
 
-                return (binaryHex, null);
+                return new CarrierExpectations(binaryHex, binarySize, null, null);
             }
 
             if (!hasPackaged || packaged.ValueKind != JsonValueKind.Object)
@@ -191,13 +225,14 @@ public static class PackagedDigestVerifier
             RejectUnknownKeys(sidecar, ["file", "sha256", "sizeBytes"], "packaged.imageSidecar");
             var sidecarFile = RequiredString(sidecar, "file", "packaged.imageSidecar");
             var sidecarHex = RequiredHexDigest(sidecar, "sha256", "packaged.imageSidecar");
+            var sidecarSize = RequiredSizeBytes(sidecar, "packaged.imageSidecar");
             AssertBareFileName(sidecarFile, "packaged.imageSidecar.file");
             if (imagePath is null || !string.Equals(sidecarFile, Path.GetFileName(imagePath), StringComparison.Ordinal))
             {
                 throw new InvalidDataException("Carrier packaged.imageSidecar.file does not name the manifest image.");
             }
 
-            return (binaryHex, sidecarHex);
+            return new CarrierExpectations(binaryHex, binarySize, sidecarHex, sidecarSize);
         }
     }
 
@@ -231,6 +266,19 @@ public static class PackagedDigestVerifier
         }
 
         return value;
+    }
+
+    private static long RequiredSizeBytes(JsonElement obj, string what)
+    {
+        if (!obj.TryGetProperty("sizeBytes", out var el) ||
+            el.ValueKind != JsonValueKind.Number ||
+            !el.TryGetInt64(out var size) ||
+            size < 0)
+        {
+            throw new InvalidDataException($"Packaged digest carrier '{what}.sizeBytes' must be a non-negative integer.");
+        }
+
+        return size;
     }
 
     private static void AssertBareFileName(string name, string what)

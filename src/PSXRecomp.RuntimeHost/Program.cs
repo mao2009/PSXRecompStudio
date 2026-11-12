@@ -244,9 +244,14 @@ public static class Program
                 verifiedInputs = PackagedDigestVerifier.VerifyAndStage(
                     manifestDirectory, prebuiltForVerify, imageForVerify, isFirmware);
             }
+            // Public-log boundary (Issue #878): stderr carries a fixed code only.
+            // The verifier's messages (and any IO detail) may name local paths,
+            // so they never reach the public stream; local detail stays in the
+            // thrown exception for developers, never on stderr.
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
-                Console.Error.WriteLine($"runtime host: packaged digest verification failed: {ex.Message}");
+                Console.Error.WriteLine(
+                    "runtime host: packaged digest verification failed: PACKAGED_DIGEST_VERIFY_FAILED (no guest code was run)");
                 return 78;
             }
 

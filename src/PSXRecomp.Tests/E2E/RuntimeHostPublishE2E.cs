@@ -197,13 +197,14 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         }
         """;
 
-    /// <summary>Compiles the blocking stub over the packaged artifact (same path, so the manifest stays valid); returns its pid file.</summary>
+    /// <summary>Compiles the blocking stub over the packaged artifact and re-signs the digest carrier; returns its pid file.</summary>
     private static string ReplaceArtifactWithBlockingStub(string manifestPath, string distDir)
     {
 #pragma warning disable AARC003 // Test-layer synthetic fixture: a process that never terminates on its own
         // The manifest's artifact path is relative to the manifest's own (runtime/) directory.
+        var runtimeDir = Path.GetDirectoryName(manifestPath)!;
         var artifact = Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(manifestPath)!, RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath)).Artifact));
+            runtimeDir, RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath)).Artifact));
         var source = Path.Join(distDir, "blocking-stub.c");
         File.WriteAllText(source, BlockingStubSource);
         File.Delete(artifact);
@@ -224,6 +225,11 @@ public sealed class RuntimeHostPublishE2E : IDisposable
 
         gcc.ExitCode.Should().Be(0, gccOut.Result);
         File.Delete(source);
+        // The packaged host fails closed on a digest mismatch (Issue #865): re-sign
+        // the carrier over the stub bytes so this fixture keeps testing the timeout,
+        // not the tamper refusal.
+        ArtifactBuildManifest.WriteHle(
+            runtimeDir, artifact, Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName));
         return artifact + ".pid";
 #pragma warning restore AARC003
     }
