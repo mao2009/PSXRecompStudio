@@ -232,15 +232,27 @@ public static class Program
             // for use. The verified private copy is launched, never the
             // original path; the verified image array is the array used.
             var isFirmware = FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory);
+            // Path confinement first, before any image is read or launched: a
+            // linked/out-of-distribution path is rejected here with its own
+            // message, never reaching digest verification.
+            string prebuiltForVerify;
+            string? imageForVerify = null;
             try
             {
-                var prebuiltForVerify = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
-                string? imageForVerify = null;
+                prebuiltForVerify = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
                 if (!isFirmware)
                 {
                     imageForVerify = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
                 }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"runtime host: packaged input rejected by path confinement: {ex.Message}");
+                return 78;
+            }
 
+            try
+            {
                 verifiedInputs = PackagedDigestVerifier.VerifyAndStage(
                     manifestDirectory, prebuiltForVerify, imageForVerify, isFirmware);
             }

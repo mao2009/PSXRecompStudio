@@ -175,8 +175,14 @@ public sealed class RuntimeHostPublishE2E : IDisposable
     // lui t0,0x8000 / ori t0,t0,0x3000 / jr t0 / nop: a register-indirect jump outside the image.
     private static readonly uint[] JumpOutOfImage = [0x3C088000u, 0x35083000u, 0x01000008u, 0u];
 
+    // The host launches the digest-verified private copy, not the packaged path
+    // (Issue #865), so the stub cannot report its pid next to argv[0]: the test
+    // names an explicit pid file through the environment instead.
+    private const string StubPidFileEnvironmentVariable = "PSXRECOMP_TEST_BLOCKING_STUB_PID_FILE";
+
     private const string BlockingStubSource = """
         #include <stdio.h>
+        #include <stdlib.h>
         #include <string.h>
         #if defined(_WIN32)
         #include <windows.h>
@@ -190,8 +196,13 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         #endif
         int main(int argc, char** argv) {
           char path[4096]; FILE* f;
-          if (argc < 1 || strlen(argv[0]) + 5 > sizeof path) return 2;
-          strcpy(path, argv[0]); strcat(path, ".pid");
+          const char* explicit = getenv("PSXRECOMP_TEST_BLOCKING_STUB_PID_FILE");
+          if (explicit && explicit[0] && strlen(explicit) + 5 <= sizeof path) {
+            strcpy(path, explicit);
+          } else {
+            if (argc < 1 || strlen(argv[0]) + 5 > sizeof path) return 2;
+            strcpy(path, argv[0]); strcat(path, ".pid");
+          }
           f = fopen(path, "w"); if (!f) return 3; fprintf(f, "%d", stub_pid()); fclose(f);
           for (;;) { if (getchar() == EOF) stub_sleep(); }
         }
@@ -230,7 +241,9 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         // not the tamper refusal.
         ArtifactBuildManifest.WriteHle(
             runtimeDir, artifact, Path.Combine(runtimeDir, RuntimeHostLayout.ImageFileName));
-        return artifact + ".pid";
+        // The stub runs from the verified private copy, so argv[0] is not the
+        // packaged path: the pid file lives at a test-known path instead.
+        return Path.Join(distDir, "blocking-stub.pid");
 #pragma warning restore AARC003
     }
 
@@ -308,25 +321,33 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         var pidFile = ReplaceArtifactWithBlockingStub(manifest, dir);
         var diagnosticsPath = Path.Join(dir, "timeout-diagnostic.json");
 
-        var withoutDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout);
-#pragma warning disable AARC003 // Test-layer check that a run without --diagnostics writes no JSON
-        Directory.GetFiles(dir, "*diagnostic*.json").Should().BeEmpty("diagnostics off writes no JSON");
+#pragma warning disable AARC003 // Test-layer pid rendezvous with the fixture stub
+        Environment.SetEnvironmentVariable(StubPidFileEnvironmentVariable, pidFile);
+        try
+        {
+            var withoutDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout);
+            Directory.GetFiles(dir, "*diagnostic*.json").Should().BeEmpty("diagnostics off writes no JSON");
+            var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout, ["--diagnostics", diagnosticsPath]);
+
+            withDiagnostics.ExitCode.Should().Be(RecompiledArtifactExitCode.Failure, $"stderr: {withDiagnostics.Stderr}");
+            withDiagnostics.Stderr.Should().Contain("guest pc unknown").And.NotContain("NullReferenceException");
+            withoutDiagnostics.ExitCode.Should().Be(withDiagnostics.ExitCode, "diagnostics never change the classified exit code");
+            withoutDiagnostics.Stderr.Should().Contain("guest pc unknown");
+
+            var root = ReadDiagnostic(diagnosticsPath);
+            root.GetProperty("timedOut").GetBoolean().Should().BeTrue();
+            root.GetProperty("finalPc").ValueKind.Should().Be(JsonValueKind.Null, "a run with no snapshot has no known pc");
+            root.GetProperty("transferTargetPc").ValueKind.Should().Be(JsonValueKind.Null);
+            root.GetProperty("classifiedExitCode").GetInt32().Should().Be(RecompiledArtifactExitCode.Failure);
+            AssertStubReaped(pidFile);
+            root.GetProperty("orchestratorState").GetString().Should().Be("RuntimeFailure");
+            root.GetProperty("orchestratorDiagnosticCode").GetString().Should().Be("ARTIFACT_TIMEOUT");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(StubPidFileEnvironmentVariable, null);
+        }
 #pragma warning restore AARC003
-        var withDiagnostics = RuntimeHostBuildService.RunRuntimeHost(host, manifest, HostOuterTimeout, ["--diagnostics", diagnosticsPath]);
-
-        withDiagnostics.ExitCode.Should().Be(RecompiledArtifactExitCode.Failure, $"stderr: {withDiagnostics.Stderr}");
-        withDiagnostics.Stderr.Should().Contain("guest pc unknown").And.NotContain("NullReferenceException");
-        withoutDiagnostics.ExitCode.Should().Be(withDiagnostics.ExitCode, "diagnostics never change the classified exit code");
-        withoutDiagnostics.Stderr.Should().Contain("guest pc unknown");
-
-        var root = ReadDiagnostic(diagnosticsPath);
-        root.GetProperty("timedOut").GetBoolean().Should().BeTrue();
-        root.GetProperty("finalPc").ValueKind.Should().Be(JsonValueKind.Null, "a run with no snapshot has no known pc");
-        root.GetProperty("transferTargetPc").ValueKind.Should().Be(JsonValueKind.Null);
-        root.GetProperty("classifiedExitCode").GetInt32().Should().Be(RecompiledArtifactExitCode.Failure);
-        AssertStubReaped(pidFile);
-        root.GetProperty("orchestratorState").GetString().Should().Be("RuntimeFailure");
-        root.GetProperty("orchestratorDiagnosticCode").GetString().Should().Be("ARTIFACT_TIMEOUT");
     }
 
     /// <summary>Issue #763: an UnsupportedTransfer with a snapshot is diagnosed; the exit code matches the diagnostics-off run.</summary>
