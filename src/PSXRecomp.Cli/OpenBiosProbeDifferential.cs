@@ -19,7 +19,6 @@ internal sealed record ProbeGuestState(
     uint Pc, ulong AtFetch, IReadOnlyList<(string Name, uint Value)> Cpu, IReadOnlyList<(string Name, string Value)> Devices, byte[] Ram)
 {
     public const int RamBytes = 0x200000;
-    private const int ContextBytes = 16;
 
     public static ProbeGuestState Capture(InterpreterTitleExecutionEngine engine, uint pc, ulong atFetch)
     {
@@ -96,10 +95,10 @@ internal sealed record ProbeGuestState(
     {
         pc = Hex(Pc),
         atFetch = AtFetch,
-        cpu = Cpu.ToDictionary(static c => c.Name, static c => Hex(c.Value)),
+        // Decision A (PR #839): the general-purpose register values are withheld (gpr is null); the other CPU registers stay.
+        cpu = Cpu.Where(static c => !OpenBiosProbeCommand.IsGprName(c.Name)).ToDictionary(static c => c.Name, static c => Hex(c.Value)),
+        gpr = OpenBiosProbeCommand.GprFor(Cpu.Where(static c => OpenBiosProbeCommand.IsGprName(c.Name)).Select(static c => c.Value)),
         devices = Devices.ToDictionary(static d => d.Name, static d => d.Value),
-        instructionWord = (Pc & 0x1FFFFFFFu) <= RamBytes - 4
-            ? Hex(BitConverter.ToUInt32(Ram, (int)(Pc & 0x1FFFFFFFu))) : null,
         sr = Hex(Value("sr")), cause = Hex(Value("cause")), epc = Hex(Value("epc")),
         ramSha256 = Sha256(Ram),
         guestCycles = Devices.First(static d => d.Name == "guest_cycles").Value,
@@ -115,7 +114,8 @@ internal sealed record ProbeGuestState(
     public static object Compare(ProbeGuestState interpreter, ProbeGuestState host)
     {
         var cpu = interpreter.Cpu.Zip(host.Cpu).Where(static p => p.First.Value != p.Second.Value)
-            .Select(static p => new { kind = "cpu", name = p.First.Name, interpreter = Hex(p.First.Value), host = Hex(p.Second.Value) }).ToArray();
+            // A mismatching GPR is still named (the comparison is unchanged); its values are withheld as null.
+            .Select(static p => new { kind = "cpu", name = p.First.Name, interpreter = OpenBiosProbeCommand.CpuValueFor(p.First.Name, p.First.Value), host = OpenBiosProbeCommand.CpuValueFor(p.Second.Name, p.Second.Value) }).ToArray();
         var devices = interpreter.Devices.Zip(host.Devices).Where(static p => p.First.Value != p.Second.Value)
             .Select(static p => new { kind = "device", name = p.First.Name, interpreter = p.First.Value, host = p.Second.Value }).ToArray();
 
@@ -133,18 +133,12 @@ internal sealed record ProbeGuestState(
         object? ram = null;
         if (first is { } f)
         {
-            var start = Math.Max(0, f - ContextBytes);
-            var length = Math.Min(RamBytes, f + ContextBytes) - start;
-            ram = new
-            {
-                address = $"0x{f:X8}", page = $"0x{f & ~0xFFF:X6}", contextStart = $"0x{start:X8}",
-                interpreterBytes = Convert.ToHexStringLower(interpreter.Ram.AsSpan(start, length)),
-                hostBytes = Convert.ToHexStringLower(host.Ram.AsSpan(start, length)),
-            };
+            // Decision A (PR #839, arbitration): only the metadata of the RAM difference is published, never its bytes.
+            ram = new { address = $"0x{f:X8}", page = $"0x{f & ~0xFFF:X6}" };
         }
 
-        var firstMismatch = cpu.FirstOrDefault() ?? devices.FirstOrDefault()
-            ?? (first is { } a ? new { kind = "ram", name = $"0x{a:X8}", interpreter = $"0x{interpreter.Ram[a]:X2}", host = $"0x{host.Ram[a]:X2}" } : null);
+        object? firstMismatch = (object?)cpu.FirstOrDefault() ?? devices.FirstOrDefault()
+            ?? (first is { } a ? new { kind = "ram", name = $"0x{a:X8}", interpreter = (string?)null, host = (string?)null } : null);
         return new
         {
             match = firstMismatch is null,

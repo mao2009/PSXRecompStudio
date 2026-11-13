@@ -94,7 +94,9 @@ public sealed class OpenBiosProbeBoundaryCompareTests
         var exit = Compare(left, dir.Combine("absent.jsonl"), out _, out var error);
 
         exit.Should().Be(1);
-        error.Should().Contain("absent.jsonl");
+        // The refusal names the fixed category, never the local path (xsec: no path values on stderr).
+        error.Should().Contain("--compare-boundary-logs: FileNotFoundException");
+        error.Should().NotContain("absent.jsonl");
     }
 
     [Fact]
@@ -121,7 +123,8 @@ public sealed class OpenBiosProbeBoundaryCompareTests
         // Pinned to the branch this test is about: opening a directory as a file is refused as UnauthorizedAccessException on Windows.
         exit.Should().Be(1);
         output.Should().BeEmpty();
-        error.Should().Contain("--compare-boundary-logs: UnauthorizedAccessException:");
+        error.Should().Contain("--compare-boundary-logs: UnauthorizedAccessException");
+        error.Should().NotContain(dir.FullPath, "the refusal names the fixed category, never the local path");
     }
 
     [Fact]

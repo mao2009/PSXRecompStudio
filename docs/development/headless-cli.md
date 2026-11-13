@@ -255,10 +255,13 @@ human-readable `message`; `success` is `false`.
   "artifact": "/abs/path/recompiled-artifact",
   "output": [ ...guest bytes written to the TTY... ],
   "result": { "outcome": 1, "exitCode": 2, "state": 4, "guestPc": 2147614720,
-              "resultValue": 0, "engineName": "recompiled-host-artifact",
+              "resultValue": null, "engineName": "recompiled-host-artifact",
               "diagnosticCode": "UNRESOLVED_TRANSFER",
               "diagnosticMessage": "..." } }
 ```
+
+`result.resultValue` is always `null` in the output (JSON and text). The V0 marker it would carry is a general-purpose
+register value, which no public output may hold (Decision A, PR #839).
 
 `result` is the production `RecompiledArtifactResult`; numeric enum values are
 serialized as numbers, matching the Studio's artifact schema. When the launch

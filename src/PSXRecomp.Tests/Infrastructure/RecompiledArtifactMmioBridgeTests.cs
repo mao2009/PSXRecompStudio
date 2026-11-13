@@ -127,6 +127,8 @@ public sealed class RecompiledArtifactMmioBridgeTests
         psi.ArgumentList.Add(dir.Combine("artifact-input.txt"));
         psi.ArgumentList.Add(dir.Combine("artifact-image.bin"));
         psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostTransferFlag);
+        psi.ArgumentList.Add(RecompiledArtifactCodeGen.HostSnapshotFlag);
+        psi.RedirectStandardError = true;
         if (requireExactTime) psi.ArgumentList.Add(RecompiledArtifactCodeGen.ExactDeviceTimeFlag);
         if (guestExceptions) psi.ArgumentList.Add(RecompiledArtifactCodeGen.GuestExceptionsFlag);
 
@@ -224,18 +226,24 @@ public sealed class RecompiledArtifactMmioBridgeTests
                     process.StandardInput.WriteLine(answer);
                 }
             }
-            else if (line == RecompiledArtifactCodeGen.SnapshotBeginMarker)
+        }
+
+        // The state snapshot is on stderr (PR #839 ruling): read it from there, line by line, after the protocol ends.
+        var stderrText = process.StandardError.ReadToEnd();
+        foreach (var stderrLine in stderrText.Split('\n').Select(static l => l.TrimEnd('\r')))
+        {
+            if (stderrLine == RecompiledArtifactCodeGen.SnapshotBeginMarker)
             {
                 hasSnapshot = true;
             }
-            else if (line.StartsWith("gpr[", StringComparison.Ordinal))
+            else if (stderrLine.StartsWith("gpr[", StringComparison.Ordinal))
             {
-                var parts = line.Split('=');
+                var parts = stderrLine.Split('=');
                 gpr[parts[0]] = uint.Parse(parts[1][2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
             }
-            else if (hasSnapshot && line.Contains("=0x", StringComparison.Ordinal))
+            else if (hasSnapshot && stderrLine.Contains("=0x", StringComparison.Ordinal))
             {
-                var parts = line.Split('=');
+                var parts = stderrLine.Split('=');
                 snapshot[parts[0]] = uint.Parse(parts[1][2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
             }
         }

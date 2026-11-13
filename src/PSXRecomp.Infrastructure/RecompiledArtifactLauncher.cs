@@ -20,13 +20,22 @@ namespace PSXRecomp.Infrastructure;
 [Infrastructure]
 public sealed class RecompiledArtifactLauncher
 {
-    /// <summary>One launch's classified result, its canonical JSON encoding, and the guest's TTY bytes.</summary>
+    /// <summary>
+    /// One launch's internal result, the guest's TTY bytes, and the evidence. The public JSON is derived from <see cref="PublicResult"/> only,
+    /// a type with no register value (PR #839 ruling): <see cref="Result"/> keeps the host's full value and is never serialised.
+    /// </summary>
     public sealed record LaunchOutcome(
         RecompiledArtifactResult Result,
-        string Json,
         IReadOnlyList<byte> Output,
         MixedFallbackEvidence? FallbackEvidence = null,
-        MixedFallbackTimings? FallbackTimings = null);
+        MixedFallbackTimings? FallbackTimings = null)
+    {
+        /// <summary>The public view of <see cref="Result"/>: the only result a JSON document is built from.</summary>
+        public PublicRecompiledArtifactResult PublicResult => Result.ToPublic();
+
+        /// <summary>The canonical public JSON, built from <see cref="PublicResult"/> only.</summary>
+        public string Json => ArtifactJson.Serialize(PublicResult);
+    }
 
     /// <summary>
     /// Builds and runs one runnable artifact for <paramref name="program"/> from
@@ -119,7 +128,7 @@ public sealed class RecompiledArtifactLauncher
             input.InstructionWords.Count);
         var result = RecompiledArtifactResult.From(execution, resultRegister);
 
-        return new LaunchOutcome(result, ArtifactJson.Serialize(result), sink.Bytes, engine.FallbackEvidence, engine.FallbackTimings);
+        return new LaunchOutcome(result, sink.Bytes, engine.FallbackEvidence, engine.FallbackTimings);
     }
 
     /// <summary>Collects the guest's TTY bytes, encoding-free, as <see cref="IRuntimeOutputSink"/> requires.</summary>

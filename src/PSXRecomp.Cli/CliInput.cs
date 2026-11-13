@@ -4,6 +4,7 @@ using PSXRecomp.Core.DiscImage;
 using PSXRecomp.Core.DiscImage.AnalysisArtifacts;
 using PSXRecomp.Core.Execution;
 using PSXRecomp.Core.Recompiler;
+using PSXRecomp.Infrastructure.Standalone;
 
 namespace PSXRecomp.Infrastructure.Cli;
 
@@ -129,6 +130,8 @@ internal static class CliInput
     /// entry-only discovery.</param>
     public static RecompilerIrProgram Lower(PsxExeTitleExecution input, IReadOnlyList<uint>? entryRoots = null)
     {
+        // Issue #B2 (R1 scope): every CLI AOT input (recompile, run, package; .exe and .chd alike) is lowered here.
+        BiosAddressGuard.RequireNoBiosRange("program", input.LoadAddress, input.InstructionWords.Count);
         return ReachableProgramBuilder.Build(
             input.LoadAddress,
             input.InstructionWords,

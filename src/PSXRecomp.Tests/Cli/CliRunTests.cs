@@ -37,6 +37,7 @@ public sealed class CliRunTests
     private const uint EntryPc = 0x80010000u;
     private const uint UncompiledTarget = 0x80020000u;
     private const byte OriOpcode = 0x0D;
+    private const byte LuiOpcode = 0x0F;
     private const byte JalOpcode = 0x03;
     private const byte JumpOpcode = 0x02;
     private const byte MarkerRegister = (byte)R3000aRegister.S1;
@@ -45,6 +46,22 @@ public sealed class CliRunTests
 
     private static uint Immediate(byte opcode, byte rt, uint immediate) =>
         (uint)opcode << 26 | (uint)rt << 16 | (immediate & 0xFFFFu);
+
+    /// <summary>The CLI run reports V0 as its result register. This synthetic, identifiable value is loaded into V0 before the marker.</summary>
+    private const uint ResultValue = 0xC0FFEE11u;
+
+    /// <summary>The synthetic program with <see cref="ResultValue"/> in V0 when it ends: lui v0, hi; ori v0, v0, lo; then the marker.</summary>
+    private static uint[] ProgramWithResultValue()
+    {
+        const byte v0 = (byte)R3000aRegister.V0;
+        var program = SuccessfulProgram();
+        var loadV0 = new[]
+        {
+            Immediate(LuiOpcode, v0, ResultValue >> 16),
+            (uint)OriOpcode << 26 | (uint)v0 << 21 | (uint)v0 << 16 | (ResultValue & 0xFFFFu),
+        };
+        return program[..4].Concat(loadV0).Append(program[4]).ToArray();
+    }
 
     /// <summary>
     /// The successful fixture: putchar('P') through the shared BIOS A0 vector,
@@ -764,6 +781,40 @@ public sealed class CliRunTests
         var result = json.RootElement.GetProperty("result");
         result.EnumerateObject().Select(static p => p.Name).Should().BeEquivalentTo(
             "outcome", "exitCode", "state", "guestPc", "resultValue", "engineName", "diagnosticCode", "diagnosticMessage");
+        // Decision A (PR #839, arbitration): the marker register is a GPR value and is never exported.
+        result.GetProperty("resultValue").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public void Run_Text_DoesNotPrintTheResultRegisterValue()
+    {
+        // The run goes through the CLI's run command (Program.Execute -> RunCommand), the same path as a user's run. V0, the result
+        // register, ends the run holding ResultValue.
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", ProgramWithResultValue());
+
+        var (exit, output, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        output.Should().NotContain("Result:", "the text output prints no result line: a GPR value is never printed");
+        output.ToUpperInvariant().Should().NotContain($"{ResultValue:X8}", "the V0 value is not printed in hexadecimal");
+        output.Should().NotContain(ResultValue.ToString(), "the V0 value is not printed in decimal");
+    }
+
+    // The JSON document of the same run, through the same path: no byte of it carries the V0 value, in decimal or hexadecimal.
+    [Fact]
+    public void Run_Json_ExportsNoResultRegisterValue_InAnyForm()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExe(dir, "program.exe", ProgramWithResultValue());
+
+        var (exit, output, _) = Invoke("run", exePath, "--output", dir.CreateSubdirectory("out"), "--json");
+
+        exit.Should().Be(RecompiledArtifactExitCode.Success);
+        using var json = JsonDocument.Parse(output);
+        json.RootElement.GetProperty("result").GetProperty("resultValue").ValueKind.Should().Be(JsonValueKind.Null);
+        output.ToUpperInvariant().Should().NotContain($"{ResultValue:X8}", "the document carries no hexadecimal form of the V0 value");
+        output.Should().NotContain(ResultValue.ToString(), "the document carries no decimal form of the V0 value");
     }
 
     [Fact]
@@ -873,4 +924,48 @@ public sealed class CliRunTests
 
     [Fact]
     public void Help_ExitsZero() => Invoke("--help").Exit.Should().Be(RecompiledArtifactExitCode.Success);
+
+    // Issue #B2 (R1 scope): the production CLI lowering refuses a PS-X EXE whose text loads into the BIOS range (any alias).
+    // Synthetic bytes only; the refusal message names the range ground and contains no BIOS bytes.
+    [Theory]
+    [InlineData("recompile")]
+    [InlineData("run")]
+    public void BiosRange_TextStartInBiosRange_IsRefusedByTheProductionLowering(string command)
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExeAt(dir, "bios-range.exe", SuccessfulProgram(), 0xBFC00000u);
+
+        var (exit, output, error) = Invoke(command, exePath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().NotBe(RecompiledArtifactExitCode.Success);
+        (output + error).Should().Contain("loads into the BIOS range");
+    }
+
+    [Fact]
+    public void BiosRange_ChdWithTextStartInBiosRange_IsRefusedByTheProductionLowering()
+    {
+        using var dir = new TempDirectory();
+        var chdPath = dir.WriteFile("bios-range.chd", SyntheticChdBuilder.Build(BuildSyntheticExe(SuccessfulProgram(), 0xBFC00000u)));
+
+        var (exit, output, error) = Invoke("recompile", chdPath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().NotBe(RecompiledArtifactExitCode.Success);
+        (output + error).Should().Contain("loads into the BIOS range");
+    }
+
+    // Issue #B2 (R1 scope, review): the package command reaches the same lowering guard directly, not only through recompile and run.
+    [Fact]
+    public void BiosRange_PackageWithTextStartInBiosRange_IsRefusedByTheProductionLowering()
+    {
+        using var dir = new TempDirectory();
+        var exePath = WriteSyntheticExeAt(dir, "bios-range-package.exe", SuccessfulProgram(), 0xBFC00000u);
+
+        var (exit, output, error) = Invoke("package", exePath, "--output", dir.CreateSubdirectory("out"));
+
+        exit.Should().NotBe(RecompiledArtifactExitCode.Success);
+        (output + error).Should().Contain("loads into the BIOS range");
+    }
+
+    private static string WriteSyntheticExeAt(TempDirectory dir, string name, uint[] words, uint textStart) =>
+        dir.WriteFile(name, BuildSyntheticExe(words, textStart));
 }
