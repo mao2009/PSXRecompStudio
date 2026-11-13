@@ -127,7 +127,7 @@ public static class Program
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
-                $"runtime host: manifest not found: {manifestPath}");
+                "runtime host: manifest not found: MANIFEST_NOT_FOUND (no guest code was run)");
             return 78;
         }
 
@@ -237,7 +237,7 @@ public static class Program
             if (!Directory.Exists(manifestDirectory))
             {
                 Console.Error.WriteLine(
-                    $"runtime host: manifest directory not found: {manifestDirectory}");
+                    "runtime host: manifest directory not found: MANIFEST_DIRECTORY_NOT_FOUND (no guest code was run)");
                 return 78;
             }
 
@@ -253,9 +253,23 @@ public static class Program
             // message, never reaching digest verification.
             string prebuiltForVerify;
             string? imageForVerify = null;
+            // Public-log boundary (Issue #878/#889): fixed category codes only.
+            // ResolveArtifactPath/ResolveImagePath (and ConfineRegularFile /
+            // EnsureRealDirectory) embed local absolute paths in their messages,
+            // so ex.Message never reaches public stderr. Each input gets its own
+            // path-invalid category, distinct from the MANIFEST_* categories above.
             try
             {
                 prebuiltForVerify = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine("runtime host: packaged artifact path rejected: PACKAGED_ARTIFACT_PATH_INVALID (no guest code was run)");
+                return 78;
+            }
+
+            try
+            {
                 if (!isFirmware)
                 {
                     imageForVerify = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
@@ -263,7 +277,7 @@ public static class Program
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
-                Console.Error.WriteLine($"runtime host: packaged input rejected by path confinement: {ex.Message}");
+                Console.Error.WriteLine("runtime host: packaged image path rejected: PACKAGED_IMAGE_PATH_INVALID (no guest code was run)");
                 return 78;
             }
 

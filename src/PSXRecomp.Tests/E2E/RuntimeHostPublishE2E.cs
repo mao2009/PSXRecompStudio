@@ -532,7 +532,7 @@ public sealed class RuntimeHostPublishE2E : IDisposable
         var result = RuntimeHostBuildService.RunRuntimeHost(hostPath, Path.Combine(link, RuntimeHostLayout.ManifestFileName));
 
         result.ExitCode.Should().Be(78, result.Stderr);
-        result.Stderr.Should().Contain("must not be a symbolic link", "rejected by path confinement, before any image read or launch");
+        result.Stderr.Should().Contain("PACKAGED_ARTIFACT_PATH_INVALID", "rejected by path confinement, before any image read or launch");
     }
 
     [Fact]
