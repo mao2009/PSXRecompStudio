@@ -1300,7 +1300,10 @@ static void artifact_report_retired(void) {
 /* An MMIO write is reported as soon as its unit retires, not at the next observation: the
    interpreter advances its devices after every instruction, so what a store sets going (a
    DMA kick, a CD-ROM command) has already happened — device-originated RAM writes included
-   — before the next guest instruction runs. */
+   — before the next guest instruction runs. Reads keep the same immediate post-access
+   retirement: the read instruction's own guest time must be advanced before the next
+   guest instruction observes interrupts (IRQ right after read, CAUSE.IP2, delay-slot and
+   read-modify-write order), exactly as the interpreter observes it. */
 static int artifact_flush_after_unit = 0;
 
 static void artifact_after_unit(RecompilerState* state) {
@@ -1337,6 +1340,8 @@ static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t a
     if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
     if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
     if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);
+    /* Both reads and writes flush their retirement at once, so the access's device
+       effects and guest-time advance are visible before the next unit. */
     artifact_flush_after_unit = 1;
     return (uint32_t)v;
 }
