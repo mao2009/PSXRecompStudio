@@ -42,11 +42,11 @@ internal sealed class OpenBiosProbeAccounting
 
     private readonly SortedDictionary<(uint ExcCode, uint Pc), (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
 
+    public ulong FallbackFetches { get; private set; }
+
     private ulong _returned;
     private ulong _shortReturns;
     private ulong _shortReturnsRetired;
-
-    public ulong FallbackFetches { get; private set; }
 
     /// <summary>The region of a PC, by physical address: ROM, kernel RAM (&lt; 0x10000), the shell image, other user RAM, or other.</summary>
     public static string RegionOf(uint pc)
