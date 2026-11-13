@@ -1297,19 +1297,13 @@ static void artifact_report_retired(void) {
     artifact_retired_receive();
 }
 
-/* An MMIO access already carries the guest-time report that must precede it as one
-   fused request (Issue #768), and the host answers with fresh credit and the
-   interrupt line. A read's own retirement is left pending: it rides on the next
-   fused access, transfer, trap, deadline/threshold report, or the final
-   end-of-segment flush, so a device-polling loop costs one round trip per access
-   instead of two. A write keeps the immediate flush: what a store sets going (a
-   DMA kick, a CD-ROM command, device-originated RAM writes included) must have
-   happened — devices advanced — before the next guest instruction runs, exactly
-   as the interpreter (which advances after every instruction) observes it.
-   Deferral never crosses a device deadline: the deadline and threshold checks
-   below still force a report first, and totals reported are unchanged, so
-   --exact-device-time advances devices by the same time for the same retired
-   instructions. */
+/* An MMIO write is reported as soon as its unit retires, not at the next observation: the
+   interpreter advances its devices after every instruction, so what a store sets going (a
+   DMA kick, a CD-ROM command) has already happened — device-originated RAM writes included
+   — before the next guest instruction runs. Reads keep the same immediate post-access
+   retirement: the read instruction's own guest time must be advanced before the next
+   guest instruction observes interrupts (IRQ right after read, CAUSE.IP2, delay-slot and
+   read-modify-write order), exactly as the interpreter observes it. */
 static int artifact_flush_after_unit = 0;
 
 static void artifact_after_unit(RecompilerState* state) {
@@ -1346,9 +1340,9 @@ static uint32_t artifact_mmio_access(const char* tag, uint32_t width, uint32_t a
     if (scanf(""%7s"", reply) != 1) exit(@EXIT_MMIO_PROTOCOL@);
     if (strcmp(reply, ""@MMIO_REFUSED@"") == 0) exit(@EXIT_MMIO_REFUSED@);
     if (strcmp(reply, ""@MMIO_VALUE@"") != 0 || scanf(""%lu"", &v) != 1) exit(@EXIT_MMIO_PROTOCOL@);
-    /* Reads defer their retirement to the next sync (Issue #768); writes flush at once, so the
-       store's device effects (DMA, commands, device RAM writes) are advanced before the next unit. */
-    if (is_write) artifact_flush_after_unit = 1;
+    /* Both reads and writes flush their retirement at once, so the access's device
+       effects and guest-time advance are visible before the next unit. */
+    artifact_flush_after_unit = 1;
     return (uint32_t)v;
 }
 
