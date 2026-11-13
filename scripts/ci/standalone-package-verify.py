@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """ROM-absence gate and provenance manifest for the public standalone-package CI route.
 
-The staging directory is the ONLY directory that is uploaded as an artifact. This script:
+The staging directory is the ONLY directory that is uploaded as an artifact, and it is an allowlist: it may hold only the
+README and the manifest (see PUBLIC_STAGE_NAMES). This script:
 
-  verify       fails (exit 1) when any staged file is a symbolic link, has the same SHA-256 as the
+  stage-public creates a NEW staging directory holding only the package README, copied by its fixed name after the
+               ROM, digest, path and size checks pass. Nothing else in the package is copied.
+  verify       fails (exit 1) when the staging tree holds any name that is not allowlisted (including directories and
+               links), when any staged file is a symbolic link, has the same SHA-256 as the
                built OpenBIOS ROM, or contains a high-entropy 64-byte window of the ROM. Probe windows
                are taken on a 1024-byte grid over the whole ROM and kept only when they hold at least
                16 distinct byte values, so zero or 0xFF padding is never used as a probe. It also fails
@@ -12,23 +16,18 @@ The staging directory is the ONLY directory that is uploaded as an artifact. Thi
                provenance fields, the names of every staged file (the manifest itself is excluded), and the
                SHA-256 and size of the PUBLIC_HASHED_FILES only, then runs verify once more over the final
                staging tree. The built ROM's SHA-256 and size are deliberately NOT written to the manifest.
-  diag-scan    the public-safety scan of diagnostics.json (ROM windows, absolute paths, digests, JSON).
-               It applies the same probe coverage check as verify.
-  stage        copies the public upload set by an explicit allowlist (PUBLIC_ALLOWED_FILES and the patterns). A file
-               that matches no rule is refused and no stage is created. runtime-host.json is copied with its
-               blockEntryPcs emptied: they are the ROM's static block addresses.
-  public-lines prints only the runtime host's firmware-run JSON line and plain text lines from its stdout or stderr. Any
-               other line is withheld, and only the count is printed.
-  host-outcome asserts the packaged runtime host ended in the exact classified stop the workflow
-               expects (exit code, firmware-run state and diagnostic code, segment budget and run
-               timeout against the runtime manifest, non-empty frame). Any deviation fails.
-               This pins the expected stop; it never ignores or relabels the exit code.
+   diag-scan    the public-safety scan of diagnostics.json (ROM windows, absolute paths, digests, JSON).
+                It applies the same probe coverage check as verify.
+   public-lines prints only the runtime host's firmware-run JSON line and plain text lines from its stdout or stderr. Any
+                other line is withheld, and only the count is printed.
+   host-outcome asserts the packaged runtime host ended in the exact classified stop the workflow
+                expects (exit code, firmware-run state and diagnostic code, segment budget and run
+                timeout against the runtime manifest, non-empty frame). Any deviation fails.
+                This pins the expected stop; it never ignores or relabels the exit code.
 
-  --max-gap-limit overrides the global MAX_GAP for one invocation. The default stays strict; only
-  the pinned OpenBIOS workflow input passes REAL_OPENBIOS_MAX_GAP (measured 285696 plus one grid
-  stride of margin for that ROM's consecutive-zero core). Nothing else may raise it.
-
-Any uncaught exception in a subcommand prints the exception type only: a traceback can name local paths.
+   --max-gap-limit overrides the global MAX_GAP for one invocation. The default stays strict; only
+   the pinned OpenBIOS workflow input passes REAL_OPENBIOS_MAX_GAP (measured 285696 plus one grid
+   stride of margin for that ROM's consecutive-zero core). Nothing else may raise it.
 
 Guaranteed detection (computed from the actual probe selection, see gap_stats):
   Let max_gap be the largest distance between consecutive kept probe offsets, with the ROM start
@@ -46,7 +45,6 @@ import argparse
 import hashlib
 import json
 import re
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,11 +55,15 @@ PROBE_STRIDE = 1024
 MIN_DISTINCT_BYTES = 16
 MANIFEST_NAME = "provenance-manifest.json"
 
-# The only staged files whose size and SHA-256 the public manifest records. The README is static text from the package
-# writer (FirmwareDistribution.Readme), with no ROM bytes, digests or counts in it.
-# Every other staged file is listed by NAME only. The package was built from the ROM (runtime/firmware/*, the AOT
-# artifact, firmware-boot.json carry ROM-derived data), and the run output is not proven ROM-free either.
-PUBLIC_HASHED_FILES = frozenset({"package/README.txt"})
+# The public artifact is an allowlist: the README (copied from the package, the only package file that is public) and
+# the provenance manifest. Nothing else may be staged: no package tree, no executable, no AOT input, no diagnostics and no
+# frame. The package was built from the ROM (runtime/firmware/*, the AOT artifact and firmware-boot.json carry
+# ROM-derived data), and the run output is not proven ROM-free either.
+PUBLIC_README_NAME = "README.txt"
+PUBLIC_STAGE_NAMES = frozenset({PUBLIC_README_NAME, MANIFEST_NAME})
+# The README is static text from the package writer (FirmwareDistribution.Readme). Its size and SHA-256 are published.
+PUBLIC_HASHED_FILES = frozenset({PUBLIC_README_NAME})
+PUBLIC_README_MAX_BYTES = 64 * 1024
 
 # Coverage thresholds for the ROM-absence check. They fail closed: below them the check cannot
 # claim coverage of the ROM and must not pass. The earlier CI run had 211 probes of 513 grid
@@ -211,8 +213,28 @@ ABSOLUTE_PATH_PATTERNS = [
     ("POSIX user or temp path", re.compile(r"(?<![A-Za-z0-9_.~])/(?:home|Users|root|tmp|var|private|mnt|Volumes|opt)/")),
     ("Git Bash drive path", re.compile(r"(?<![A-Za-z0-9_.~])/[a-z]/(?:a|Users|home)/")),
     ("file URI", re.compile(r"file://", re.IGNORECASE)),
+    ("UNC share path", re.compile(r"\\\\[A-Za-z0-9._$-]+\\[A-Za-z0-9._$-]+")),
+    ("home-relative path", re.compile(r"(?<![A-Za-z0-9_])~[\/]")),
 ]
 DIGEST_TOKEN = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])")
+HEX_RUN = re.compile(r"[0-9A-Fa-f]{32,}")
+# Shorter runs are refused only in host-output lines (public-lines): a 16-hex run can be a
+# truncated digest or address fragment in a log line, while README/manifest text uses HEX_RUN.
+PUBLIC_LINE_HEX_RUN = re.compile(r"[0-9A-Fa-f]{16,}")
+
+
+def unlisted_hex_runs(text: str, allowed: set[str]) -> int:
+    """Count hex runs of 32 or more digits that are not, exactly, an allowlisted identifier.
+
+    A run is taken whole: a 66-hex, 96-hex or letter-adjacent run is refused, not only a 64-hex token.
+    """
+    allowed_lower = {value.lower() for value in allowed if value}
+    return sum(1 for run in HEX_RUN.findall(text) if run.lower() not in allowed_lower)
+
+
+def rom_digest_in_text(text: str, rom_sha: str) -> bool:
+    """The ROM SHA-256 in any letter case, inside any longer hex run. The match is never printed."""
+    return rom_sha.lower() in text.lower()
 
 
 def diag_scan(rom: Path, diag: Path, allow_digests: set[str], forbid_prefixes: list[str], max_gap_limit: int = MAX_GAP) -> list[str]:
@@ -291,184 +313,100 @@ def cmd_diag_scan(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_verify(args: argparse.Namespace) -> int:
-    violations = verify(args.rom, args.staging, args.max_gap_limit)
-    if violations:
-        print("ROM-absence check FAILED; nothing may be uploaded.")
-        return 1
-    print("ROM-absence check PASSED.")
-    return 0
+def staging_name_violations(staging: Path) -> list[str]:
+    """The staging tree may hold only the allowlisted names: no directory, link, or any other file.
 
-
-# The public upload set is an EXPLICIT ALLOWLIST over the package tree. A file that matches no rule is refused, and the stage is
-# not created, so a new file added to the package cannot be published by default.
-#
-# Allowed (relative POSIX paths in the package tree):
-#   README.txt                        static text from the package writer (no ROM bytes, digests or counts)
-#   runtime/runtime-host.json         the run configuration; its blockEntryPcs are emptied in the public copy (see below)
-#   runtime/*.dll                     the runtime's own libraries (MIT: PSXRecomp, SharpCompress)
-#   runtime/PSXRecomp.RuntimeHost.deps.json, runtime/PSXRecomp.RuntimeHost.runtimeconfig.json
-#
-# Excluded by policy (skipped and counted; they stay in the work directory and are never deleted):
-#   every *.exe                       the .NET apphost (Microsoft .NET Library terms) and the generated package executable
-#                                     (its linked GCC runtime is not verified for this route). Not run-contract changes: the
-#                                     internal package and the Standalone run are unchanged.
-#   firmware-boot.json                holds the ROM's code-byte count
-#   bios-content-diagnostic.txt       holds BIOS content counts
-#   diagnostics.json                  the Runtime host's private stop diagnostic
-#   runtime/firmware/**               the ROM-derived AOT inputs: rom.roots holds ROM block roots, images.txt the RAM-image manifest
-#   runtime/disc/**                   the disc image; the public manifest records it as not uploaded
-PUBLIC_DENIED_NAMES = frozenset({"firmware-boot.json", "bios-content-diagnostic.txt", "diagnostics.json"})
-PUBLIC_EXCLUDED_PREFIXES = ("runtime/firmware/", "runtime/disc/")
-# Executables are excluded from the public set by policy (any *.exe, at any depth). The runtime host is a .NET apphost, which
-# is distributed under the Microsoft .NET Library license terms (SDK LICENSE.txt), and the generated package executable is a
-# GCC build whose linked runtime is not verified for this route. Both stay in the internal package, which the Standalone run
-# executes unchanged. Only the upload omits them.
-PUBLIC_EXCLUDED_EXECUTABLE_SUFFIX = ".exe"
-PUBLIC_ALLOWED_FILES = frozenset({"runtime/runtime-host.json"})
-PUBLIC_ALLOWED_PATTERNS = (
-    re.compile(r"^runtime/[A-Za-z0-9._-]+\.dll$"),  # the runtime's own libraries: MIT (PSXRecomp, SharpCompress)
-    re.compile(r"^runtime/PSXRecomp\.RuntimeHost\.(?:deps|runtimeconfig)\.json$"),
-)
-HOST_MANIFEST_REL = "runtime/runtime-host.json"
-
-# frame.png is NOT published: it is a render of a run that used the OpenBIOS image, and the fonts in that image (charset/font1.raw,
-# font2.raw) are not cleared for redistribution (docs/legal/openbios-license-audit.md, R2). It stays in the work directory. The
-# run must still produce it: the host step requires a non-empty frame, and the stage fails closed without one.
-PUBLIC_README_NAME = "README.txt"
-# The public artifact's own README. The package's README (FirmwareDistribution.Readme) describes the internal runnable package, so it is
-# never copied: it names an executable and a disc that this artifact does not contain.
-PUBLIC_README_TEXT = """PSXRecomp standalone package: PUBLIC VERIFICATION ARTIFACT (not the runnable package)
-
-This artifact contains only:
-  runtime/runtime-host.json   the run configuration, with its list of ROM block addresses removed
-  runtime/*.dll               the runtime's own libraries (MIT; see THIRD-PARTY-NOTICES.txt)
-  runtime/PSXRecomp.RuntimeHost.deps.json and .runtimeconfig.json, where the runtime provides them
-  THIRD-PARTY-NOTICES.txt     the licenses of the files above
-  provenance-manifest.json    the files of this artifact and how they were checked
-
-It does NOT contain: any executable, the disc image, the firmware AOT inputs, the frame image, or the run diagnostics.
-It cannot be run on its own. A runnable package is produced from your own inputs with `psxrecomp package`, and is not published here.
-"""
-PUBLIC_NOTICE_NAME = "THIRD-PARTY-NOTICES.txt"
-PUBLIC_NOTICE_TEXT = """THIRD-PARTY NOTICES for the psxrecomp-public-openbios package
-
-The files in this package are the runtime's libraries and text files, each under the MIT License:
-
-  PSXRecomp (runtime host and libraries)   Copyright (c) 2026 mao2009
-  SharpCompress (shipped version 0.50.4)   Copyright (c) 2025 Adam Hathcock
-
-No executable is included in this public package. The executables of the packaged runtime (the .NET apphost launcher and
-the generated package executable) are excluded from the public upload. The .NET apphost is distributed under the Microsoft
-.NET Library license terms, which are not reproduced here and are not granted by this package. The executables remain in the
-internal package and are not redistributed through this public artifact.
-
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-"""
-
-
-def _public_rule(rel: str, name: str) -> str:
-    """'excluded', 'allowed' or 'unlisted' for one package file. Exclusions win over allowances."""
-    if name in PUBLIC_DENIED_NAMES or rel.startswith(PUBLIC_EXCLUDED_PREFIXES):
-        return "excluded"
-    if name.lower().endswith(PUBLIC_EXCLUDED_EXECUTABLE_SUFFIX):
-        return "excluded"
-    if rel == PUBLIC_README_NAME:
-        return "excluded"  # replaced by the public artifact's own README (PUBLIC_README_TEXT)
-    if rel in PUBLIC_ALLOWED_FILES or any(pattern.match(rel) for pattern in PUBLIC_ALLOWED_PATTERNS):
-        return "allowed"
-    return "unlisted"
-
-
-def _public_host_manifest(text: str) -> str:
-    """The public copy of runtime-host.json. blockEntryPcs are the ROM's static block entry addresses: they are emptied here,
-    in the staged copy only. The internal manifest is unchanged, and the public copy is not used to run anything."""
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError("the runtime host manifest is not a JSON object")
-    data["blockEntryPcs"] = []
-    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-
-
-def public_stage(package_src: Path, run_dir: Path, stage: Path) -> list[str]:
-    """Copies the public upload set into stage. Returns fixed violation texts; an empty list means the set was staged.
-
-    Every check runs before the stage is created or touched, so a refusal leaves no partial stage behind.
+    Names are never printed (a leaked name can be ROM-derived); only the count of refused entries is reported.
     """
-    if not package_src.is_dir():
-        return ["the package tree is missing"]
-    frame = run_dir / "frame.png"
-    if not frame.is_file() or frame.stat().st_size == 0:
-        return ["run/frame.png is missing or empty"]
-    # Refuse before anything is copied: a link could publish a denied file's content under an innocuous name. NTFS junctions
-    # are checked too, where the interpreter provides the test (Path.is_junction, Python 3.12 and later).
-    if any(src.is_symlink() or getattr(src, "is_junction", lambda: False)() for src in package_src.rglob("*")):
-        return ["a symbolic link or junction is not allowed in the package tree"]
-
-    plan: list[tuple[Path, str]] = []
-    unlisted = 0
-    excluded = 0
-    for src in sorted(package_src.rglob("*")):
-        if not src.is_file():
-            continue
-        rel = src.relative_to(package_src).as_posix()
-        rule = _public_rule(rel, src.name)
-        if rule == "excluded":
-            excluded += 1
-        elif rule == "allowed":
-            plan.append((src, rel))
-        else:
-            unlisted += 1
-    # The count is printed; the names are not, because a name of an unlisted file is not known to be public.
-    if unlisted:
-        return [f"{unlisted} file(s) in the package tree match no public allowlist rule; nothing is staged"]
-    allowed_rels = {rel for _, rel in plan}
-    if PUBLIC_NOTICE_NAME in allowed_rels:
-        # The generated notice must never overwrite a copied file of the same name. (The package README is excluded by rule
-        # before this point, so it can never be in the plan.)
-        return ["a generated public file name collides with a copied file; nothing is staged"]
-    if HOST_MANIFEST_REL not in allowed_rels:
-        return ["the runtime host manifest is missing from the package tree"]
-    host_manifest_text = (package_src / HOST_MANIFEST_REL).read_text(encoding="utf-8")
-    try:
-        sanitized_host = _public_host_manifest(host_manifest_text)
-    except ValueError:
-        return ["the runtime host manifest could not be read for publication"]
-
-    if stage.exists():
-        shutil.rmtree(stage)
-    (stage / "package").mkdir(parents=True)
-    for src, rel in plan:
-        dst = stage / "package" / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if rel == HOST_MANIFEST_REL:
-            dst.write_text(sanitized_host, encoding="utf-8")
-        else:
-            shutil.copyfile(src, dst, follow_symlinks=False)
-    (stage / "package" / PUBLIC_NOTICE_NAME).write_text(PUBLIC_NOTICE_TEXT, encoding="utf-8")
-    (stage / "package" / PUBLIC_README_NAME).write_text(PUBLIC_README_TEXT, encoding="utf-8")
-    if any(p.is_file() and p.name in PUBLIC_DENIED_NAMES for p in stage.rglob("*")):
-        return ["a denied file reached the staging tree"]
-    print(f"public stage: {excluded} internal file(s) excluded by policy; they stay in the work directory")
+    staging = staging.resolve()
+    refused = 0
+    for path in sorted(staging.rglob("*")):
+        rel = path.relative_to(staging).as_posix()
+        if path.is_dir() and not path.is_symlink():
+            refused += 1
+        elif rel not in PUBLIC_STAGE_NAMES or path.is_symlink():
+            refused += 1
+    if refused:
+        return [f"{refused} staged entr{'y' if refused == 1 else 'ies'} not on the public allowlist (names not printed)"]
     return []
+
+
+def manifest_content_violations(text: str, allowed_digests: set[str], rom_sha: str) -> list[str]:
+    """The manifest may hold only the expected identifiers: no absolute path, no unlisted digest-shaped value."""
+    violations = []
+    for name, pattern in ABSOLUTE_PATH_PATTERNS:
+        if pattern.search(text):
+            violations.append(f"manifest contains a {name}")
+    if rom_digest_in_text(text, rom_sha):
+        violations.append("manifest contains the built ROM's SHA-256 (value not printed)")
+    unlisted = unlisted_hex_runs(text, allowed_digests)
+    if unlisted:
+        violations.append(f"manifest: {unlisted} hex value(s) not on the public allowlist (values not printed)")
+    return violations
+
+
+def stage_public(package: Path, out: Path, rom: Path, allow_digests: set[str], max_gap_limit: int = MAX_GAP) -> list[str]:
+    """Create a NEW staging directory holding only the allowlisted README copied from the package.
+
+    Nothing is copied from the package except the fixed README name. Every check runs before anything is written, so a
+    refusal leaves no staging directory behind. Only counts and status codes are returned, never bytes.
+    """
+    if package.is_symlink() or not package.is_dir():
+        return ["the package directory is missing or is a symbolic link"]
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        return ["the public staging directory must not exist, or must be empty"]
+    source = package / PUBLIC_README_NAME
+    if source.is_symlink():
+        return ["the package README is a symbolic link; refused"]
+    if not source.is_file():
+        return ["the package README is missing"]
+    if not source.resolve().is_relative_to(package.resolve()):
+        return ["the package README resolves outside the package; refused"]
+    if source.stat().st_size > PUBLIC_README_MAX_BYTES:
+        return ["the package README exceeds the public size limit"]
+    data = source.read_bytes()
+    rom_bytes = load_rom(rom)
+    probes = select_probes(rom_bytes)
+    # The byte-level ROM checks run on every README, text or not.
+    violations: list[str] = []
+    if sha256_of(data) == sha256_of(rom_bytes):
+        violations.append("the package README has the built ROM's SHA-256")
+    if any(window in data for _, window in probes):
+        violations.append("the package README contains a ROM high-entropy window")
+    violations.extend(coverage_violations(probes, max_gap_limit))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return violations + ["the package README is not UTF-8 text; refused"]
+    if any(pattern.search(text) for _, pattern in ABSOLUTE_PATH_PATTERNS):
+        violations.append("the package README contains an absolute machine path")
+    if rom_digest_in_text(text, sha256_of(rom_bytes)):
+        violations.append("the package README contains the built ROM's SHA-256 (value not printed)")
+    unlisted = unlisted_hex_runs(text, allow_digests)
+    if unlisted:
+        violations.append(f"the package README: {unlisted} hex value(s) not on the public allowlist (values not printed)")
+    if violations:
+        return violations
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / PUBLIC_README_NAME, "xb") as handle:  # exclusive create: never overwrites
+        handle.write(data)
+    return []
+
+
+def cmd_stage_public(args: argparse.Namespace) -> int:
+    allow = {digest.lower() for digest in args.allow_digest if digest}
+    try:
+        violations = stage_public(args.package, args.out, args.rom, allow, args.max_gap_limit)
+    except (Exception, SystemExit) as exc:  # fail closed; print the exception type only
+        print(f"PUBLIC STAGING COULD NOT RUN: {type(exc).__name__}; nothing may be uploaded.")
+        return 1
+    if violations:
+        for violation in violations:
+            print(f"VIOLATION: {violation}")
+        print("PUBLIC STAGING REFUSED; nothing was staged.")
+        return 1
+    print(f"public staging: allowlisted entries {sorted(PUBLIC_STAGE_NAMES)}; the package README only is copied.")
+    return 0
 
 
 # Host output filter. The runtime host's stdout and stderr are never printed raw. A line is printed only when it has one of two
@@ -489,11 +427,10 @@ FIRMWARE_RUN_KEYS = frozenset({
 })
 FIRMWARE_RUN_VALUE = re.compile(r"^[A-Za-z0-9_.:\-]{0,80}$")
 PLAIN_TEXT_LINE = re.compile(r"^[A-Za-z0-9 ;:()_.,=+\-\[\]]{1,200}$")
-HEX_RUN = re.compile(r"[0-9A-Fa-f]{16,}")
 
 
 def public_line_ok(line: str) -> bool:
-    if any(pattern.search(line) for _, pattern in ABSOLUTE_PATH_PATTERNS) or DIGEST_TOKEN.search(line) or HEX_RUN.search(line):
+    if any(pattern.search(line) for _, pattern in ABSOLUTE_PATH_PATTERNS) or DIGEST_TOKEN.search(line) or PUBLIC_LINE_HEX_RUN.search(line):
         return False
     if line.startswith("{"):
         try:
@@ -541,25 +478,20 @@ def cmd_public_lines(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_stage(args: argparse.Namespace) -> int:
-    try:
-        violations = public_stage(args.package_src, args.run_dir, args.stage)
-    except OSError:
-        # The exception text can name local paths: only the fixed line is printed.
-        print("public stage FAILED (I/O); details are not published. Nothing may be uploaded.")
+def cmd_verify(args: argparse.Namespace) -> int:
+    violations = verify(args.rom, args.staging, args.max_gap_limit)
+    name_violations = staging_name_violations(args.staging)
+    for violation in name_violations:
+        print(f"VIOLATION: {violation}")
+    if violations or name_violations:
+        print("ROM-absence check FAILED; nothing may be uploaded.")
         return 1
-    if violations:
-        print("public stage FAILED; nothing may be uploaded.")
-        return 1
-    print("public stage PASSED. Staged files (relative to the stage):")
-    for path in sorted(args.stage.rglob("*")):
-        if path.is_file():
-            print(path.relative_to(args.stage).as_posix())
+    print("ROM-absence check PASSED.")
     return 0
 
 
 def cmd_manifest(args: argparse.Namespace) -> int:
-    if verify(args.rom, args.staging, args.max_gap_limit):
+    if verify(args.rom, args.staging, args.max_gap_limit) or staging_name_violations(args.staging):
         print("ROM-absence check FAILED; no manifest written.")
         return 1
     staging = args.staging.resolve()
@@ -578,15 +510,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         "schema": "psxrecomp-standalone-package-public/1",
         "purpose": "Verification of the launch and measurement infrastructure. Not evidence that any title boots or reaches a title screen.",
         "inputs": {
-            # No commercial BIOS or game data is used. The OpenBIOS image is a build of public source, and it is not published:
-            # its bytes, digest and size are never written. The run that used that image produces the executable and frame.png,
-            # which are NOT published: the public artifact contains no executable and no frame.
-            "commercial_bios_or_game_data": "none",
-            "openbios_image": {
-                "published": False,
-                "note": "built from public source; the built image is not uploaded or cached; its bytes, digest and size are not recorded",
-                "run_outputs_published": "none",
-            },
+            "commercial_or_rom_data": "none",
             "disc": {
                 "generator": "scripts/demo/synthetic-disc.ps1 -OpenBiosCompatible",
                 "file": "synthetic-disc-openbios.bin",
@@ -624,22 +548,10 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             "built_rom_uploaded": False,
             "built_rom_cached": False,
         },
-        # Internal build provenance. It describes the internal runnable package, which is NOT published: none of its executables,
-        # run outputs or diagnostics are in this artifact (see public_artifact).
-        "internal_build": {
+        "package": {
             "command": "psxrecomp package <synthetic disc> --bios openbios --bios-rom <built ROM> --aot-dir <prepare-aot output>",
             "run_command": "runtime/PSXRecomp.RuntimeHost.exe --diagnostics <path> --frame-out <path> runtime/runtime-host.json",
             "runtime_host_exit_code": args.host_exit_code,
-            "published": False,
-        },
-        # What this artifact actually contains. The file list is the top-level "files" entry (computed from the staged tree).
-        "public_artifact": {
-            "executables": "none",
-            "frame_png": "not published",
-            "disc_image": "not published",
-            "firmware_aot_inputs": "not published",
-            "run_diagnostics": "not published",
-            "files_listed_in": "files",
         },
         # Status and fixed policy only. Probe count, grid size, max gap and guaranteed length are derived from the
         # ROM and are not published (tests read them through gap_stats).
@@ -663,11 +575,28 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         "files": files,
     }
     out = staging / MANIFEST_NAME
-    out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    # Every identifier in the manifest is expected: the disc, toolchain, OpenBIOS pin and the git SHAs of this run.
+    allowed = {manifest["inputs"]["disc"]["sha256"], toolchain_sha, args.toolchain_pin, args.openbios_revision, args.checkout_sha}
+    allowed.update(entry["sha256"] for entry in files if "sha256" in entry)  # the README's own hash, as published
+    if args.pr_head_sha:
+        allowed.add(args.pr_head_sha)
+    content_violations = manifest_content_violations(text, allowed, sha256_of(load_rom(args.rom)))
+    if content_violations:
+        for violation in content_violations:
+            print(f"VIOLATION: {violation}")
+        print("MANIFEST REFUSED; nothing was written.")
+        return 1
+    out.write_text(text, encoding="utf-8")
     # The name only: the resolved path is a runner path, and runner paths are not published.
     print(f"wrote {MANIFEST_NAME} listing {len(files)} file(s)")
-    if verify(args.rom, staging, args.max_gap_limit):
-        print("ROM-absence check FAILED after writing the manifest.")
+    post_violations = verify(args.rom, staging, args.max_gap_limit)
+    post_names = staging_name_violations(staging)
+    for violation in post_names:
+        print(f"VIOLATION: {violation}")
+    if post_violations or post_names:
+        out.unlink()  # fail closed: the manifest is not left behind next to a refused tree
+        print("ROM-absence check FAILED after writing the manifest; the manifest was removed.")
         return 1
     print("ROM-absence check PASSED over the final staging tree.")
     return 0
@@ -811,6 +740,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    s = sub.add_parser("stage-public")
+    s.add_argument("--package", type=Path, required=True)
+    s.add_argument("--rom", type=Path, required=True)
+    s.add_argument("--out", type=Path, required=True)
+    s.add_argument("--allow-digest", action="append", default=[])
+    s.add_argument("--max-gap-limit", type=int, default=MAX_GAP)
+    s.set_defaults(func=cmd_stage_public)
+
     v = sub.add_parser("verify")
     v.add_argument("--rom", type=Path, required=True)
     v.add_argument("--staging", type=Path, required=True)
@@ -859,12 +796,6 @@ def main() -> int:
     m.add_argument("--host-exit-code", type=int, required=True)
     m.add_argument("--max-gap-limit", type=int, default=MAX_GAP)
     m.set_defaults(func=cmd_manifest)
-
-    st = sub.add_parser("stage")
-    st.add_argument("--package-src", type=Path, required=True)
-    st.add_argument("--run-dir", type=Path, required=True)
-    st.add_argument("--stage", type=Path, required=True)
-    st.set_defaults(func=cmd_stage)
 
     pl = sub.add_parser("public-lines")
     pl.add_argument("--file", type=Path, required=True)
