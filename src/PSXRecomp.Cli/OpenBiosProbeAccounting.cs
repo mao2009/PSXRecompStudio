@@ -39,13 +39,14 @@ internal sealed class OpenBiosProbeAccounting
     private readonly Dictionary<uint, (ulong Transitions, ulong Indirect, ulong Retired)> _entries = [];
     private readonly SortedDictionary<string, ulong> _exits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (ulong Transitions, ulong Retired)> _aotClasses = new(StringComparer.Ordinal);
-    // Keyed by exception code and PC: the PC is an address, so it is kept (a fault at each PC is its own entry). The word is withheld
-    // (OpenBiosProbeCommand.WordFor), so an entry has no opcode: the opcode is a field of the word, and a withheld word's field is not exported.
-    private readonly SortedDictionary<(uint ExcCode, uint Pc), (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
 
     private ulong _returned;
     private ulong _shortReturns;
     private ulong _shortReturnsRetired;
+
+    // Keyed by exception code and PC: the PC is an address, so it is kept (a fault at each PC is its own entry). The word is withheld
+    // (OpenBiosProbeCommand.WordFor), so an entry has no opcode: the opcode is a field of the word, and a withheld word's field is not exported.
+    private readonly SortedDictionary<(uint ExcCode, uint Pc), (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
 
     public ulong FallbackFetches { get; private set; }
 
