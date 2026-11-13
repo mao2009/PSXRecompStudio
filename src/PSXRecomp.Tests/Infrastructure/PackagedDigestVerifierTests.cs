@@ -189,7 +189,7 @@ public sealed class PackagedDigestVerifierTests
         {
 #pragma warning disable AARC003
             WriteCarrier(runtime, Sha(File.ReadAllBytes(artifact)), imageHex: null, Path.GetFileName(artifact));
-            var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, null, isFirmware: true);
+            using var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, null, isFirmware: true);
 #pragma warning restore AARC003
             v.ImageBytes.Should().BeEmpty();
         }
@@ -331,7 +331,7 @@ public sealed class PackagedDigestVerifierTests
         {
 #pragma warning disable AARC003
             WriteCarrier(runtime, Sha(File.ReadAllBytes(artifact)), Sha(File.ReadAllBytes(image)), Path.GetFileName(artifact));
-            var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
+            using var v = PackagedDigestVerifier.VerifyAndStage(runtime, artifact, image, isFirmware: false);
             File.WriteAllBytes(artifact, [9, 9, 9, 9]);
             File.ReadAllBytes(v.ArtifactLaunchPath).Should().Equal([1, 2, 3, 4]);
 #pragma warning restore AARC003
