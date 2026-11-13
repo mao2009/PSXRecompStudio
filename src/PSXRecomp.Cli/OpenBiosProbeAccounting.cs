@@ -22,13 +22,6 @@ internal sealed class OpenBiosProbeAccounting
 {
     public const int TopCount = 20;
 
-    /// <summary>
-    /// Issue #773: a fallback segment that returns to a compiled block after retiring at most this many instructions
-    /// is a ping-pong candidate — the entry-only-root shape where an uncompiled callee runs briefly and returns to AOT
-    /// (the observed order is tens of instructions per entry). Measurement only; it names no title or address.
-    /// </summary>
-    public const ulong PingPongRetiredThreshold = 64;
-
     public const string Rom = "rom", KernelRam = "kernel-ram", Shell = "shell", UserRam = "user-ram", Other = "other";
     public static readonly string[] Regions = [Rom, KernelRam, Shell, UserRam, Other];
 
@@ -39,14 +32,11 @@ internal sealed class OpenBiosProbeAccounting
     private readonly Dictionary<uint, (ulong Transitions, ulong Indirect, ulong Retired)> _entries = [];
     private readonly SortedDictionary<string, ulong> _exits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (ulong Transitions, ulong Retired)> _aotClasses = new(StringComparer.Ordinal);
-
+    // Keyed by exception code and PC: the PC is an address, so it is kept (a fault at each PC is its own entry). The word is withheld
+    // (OpenBiosProbeCommand.WordFor), so an entry has no opcode: the opcode is a field of the word, and a withheld word's field is not exported.
     private readonly SortedDictionary<(uint ExcCode, uint Pc), (uint Pc, uint? Word, ulong AtFetch)> _unsupported = [];
 
     public ulong FallbackFetches { get; private set; }
-
-    private ulong _returned;
-    private ulong _shortReturns;
-    private ulong _shortReturnsRetired;
 
     /// <summary>The region of a PC, by physical address: ROM, kernel RAM (&lt; 0x10000), the shell image, other user RAM, or other.</summary>
     public static string RegionOf(uint pc)
@@ -96,8 +86,6 @@ internal sealed class OpenBiosProbeAccounting
 
         var at = (cause & 0x80000000u) != 0 ? epc + 4 : epc; // CAUSE.BD: the faulting instruction is in the delay slot
         var word = OpenBiosProbeCommand.WordFor(at, readWord(at));
-        // Keyed by exception code and PC: the PC is an address, so it is kept (a fault at each PC is its own entry). The word is withheld
-        // (OpenBiosProbeCommand.WordFor), so an entry has no opcode: the opcode is a field of the word, and a withheld word's field is not exported.
         _unsupported.TryAdd((code, at), (at, word, FallbackFetches));
     }
 
@@ -134,15 +122,6 @@ internal sealed class OpenBiosProbeAccounting
             _ => "stopped:" + transition.DiagnosticCode,
         };
         _exits[exit] = _exits.GetValueOrDefault(exit) + 1;
-        if (transition.Status == FallbackSegmentStatus.Returned)
-        {
-            _returned++;
-            if (transition.RetiredInstructions <= PingPongRetiredThreshold)
-            {
-                _shortReturns++;
-                _shortReturnsRetired += transition.RetiredInstructions;
-            }
-        }
     }
 
     public object Report(ulong? nativeInstructions, ulong? fallbackRetired, IEnumerable<uint> blockEntryPcs, ProbeSymbols? symbols, Func<uint, string>? fallbackCause = null)
@@ -198,20 +177,6 @@ internal sealed class OpenBiosProbeAccounting
                         transitionShare = Share(a.Value.Transitions, transitions), retiredShare = Share(a.Value.Retired, retired),
                     }).ToArray(),
                 byExit = _exits.Select(static e => new { exit = e.Key, transitions = e.Value }).ToArray(),
-                // Report-shape note (R01/F7): `pingPong` is an additive section under `transitions`; no existing
-                // field is renamed or removed, so older report readers keep working.
-                pingPong = new
-                {
-                    shortSegmentThreshold = PingPongRetiredThreshold,
-                    returned = _returned,
-                    shortReturns = _shortReturns,
-                    shortReturnsRetired = _shortReturnsRetired,
-                    // Denominators (R01/F6): `shortReturnShare` is over all transitions (entry-only-root pressure
-                    // on the whole run); `shortReturnShareOfReturned` is over returned segments only (how many of
-                    // the returns are short hops back to AOT).
-                    shortReturnShare = Share(_shortReturns, transitions),
-                    shortReturnShareOfReturned = Share(_shortReturns, _returned),
-                },
             },
             hotEntries = _entries.OrderByDescending(static e => e.Value.Transitions).ThenByDescending(static e => e.Value.Retired).ThenBy(static e => e.Key)
                 .Take(TopCount)
