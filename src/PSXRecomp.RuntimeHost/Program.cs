@@ -216,7 +216,23 @@ public static class Program
         PackagedDigestVerifier.VerifiedInputs? verifiedInputs = null;
         try
         {
-            manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            try
+            {
+                manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            }
+            catch (InvalidDataException ex)
+            {
+                // Public-log boundary (Issue #878): fixed category token only.
+                // The validator message names the rejected value, so it never
+                // reaches stderr; branch locally on the category instead.
+                var token = ex.Message.Contains("artifact path", StringComparison.Ordinal)
+                    ? "invalid manifest artifact path: MANIFEST_ARTIFACT_PATH_INVALID"
+                    : ex.Message.Contains("image", StringComparison.OrdinalIgnoreCase)
+                        ? "invalid manifest image path: MANIFEST_IMAGE_PATH_INVALID"
+                        : "invalid manifest: MANIFEST_INVALID";
+                Console.Error.WriteLine($"runtime host: {token} (no guest code was run)");
+                return 78;
+            }
 
             if (!Directory.Exists(manifestDirectory))
             {
