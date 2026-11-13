@@ -127,7 +127,7 @@ public static class Program
         if (!File.Exists(manifestPath))
         {
             Console.Error.WriteLine(
-                $"runtime host: manifest not found: {manifestPath}");
+                "runtime host: manifest not found: MANIFEST_NOT_FOUND (no guest code was run)");
             return 78;
         }
 
@@ -213,20 +213,91 @@ public static class Program
         RuntimeHostManifest? manifest = null;
         // Issue #773: written from the finally below, so a failed or stopped run still leaves its refusals behind.
         var loadedCodeMismatch = loadedCodeMismatchPath is null ? null : new LoadedCodeMismatchDiagnostics();
+        PackagedDigestVerifier.VerifiedInputs? verifiedInputs = null;
         try
         {
-            manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            try
+            {
+                manifest = RuntimeHostManifestJson.Parse(File.ReadAllText(manifestPath));
+            }
+            catch (InvalidDataException ex)
+            {
+                // Public-log boundary (Issue #878): fixed category token only.
+                // The validator message names the rejected value, so it never
+                // reaches stderr; branch locally on the category instead.
+                var token = ex.Message.Contains("artifact path", StringComparison.Ordinal)
+                    ? "invalid manifest artifact path: MANIFEST_ARTIFACT_PATH_INVALID"
+                    : ex.Message.Contains("image", StringComparison.OrdinalIgnoreCase)
+                        ? "invalid manifest image path: MANIFEST_IMAGE_PATH_INVALID"
+                        : "invalid manifest: MANIFEST_INVALID";
+                Console.Error.WriteLine($"runtime host: {token} (no guest code was run)");
+                return 78;
+            }
 
             if (!Directory.Exists(manifestDirectory))
             {
                 Console.Error.WriteLine(
-                    $"runtime host: manifest directory not found: {manifestDirectory}");
+                    "runtime host: manifest directory not found: MANIFEST_DIRECTORY_NOT_FOUND (no guest code was run)");
                 return 78;
             }
 
             // Resolve and confine both manifest paths before anything is read or launched
             // (fail closed: an out-of-distribution or linked path never reaches Process.Start).
-            var prebuiltArtifactPath = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
+            // Fail closed (Issue #865): verify H2/H3 digests against
+            // runtime/build-manifest.json before anything is launched or read
+            // for use. The verified private copy is launched, never the
+            // original path; the verified image array is the array used.
+            var isFirmware = FirmwareRuntimeLauncher.IsFirmwareDistribution(manifestDirectory);
+            // Path confinement first, before any image is read or launched: a
+            // linked/out-of-distribution path is rejected here with its own
+            // message, never reaching digest verification.
+            string prebuiltForVerify;
+            string? imageForVerify = null;
+            // Public-log boundary (Issue #878/#889): fixed category codes only.
+            // ResolveArtifactPath/ResolveImagePath (and ConfineRegularFile /
+            // EnsureRealDirectory) embed local absolute paths in their messages,
+            // so ex.Message never reaches public stderr. Each input gets its own
+            // path-invalid category, distinct from the MANIFEST_* categories above.
+            try
+            {
+                prebuiltForVerify = RuntimeHostLayout.ResolveArtifactPath(manifestDirectory, manifest.Artifact);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine("runtime host: packaged artifact path rejected: PACKAGED_ARTIFACT_PATH_INVALID (no guest code was run)");
+                return 78;
+            }
+
+            try
+            {
+                if (!isFirmware)
+                {
+                    imageForVerify = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine("runtime host: packaged image path rejected: PACKAGED_IMAGE_PATH_INVALID (no guest code was run)");
+                return 78;
+            }
+
+            try
+            {
+                verifiedInputs = PackagedDigestVerifier.VerifyAndStage(
+                    manifestDirectory, prebuiltForVerify, imageForVerify, isFirmware);
+            }
+            // Public-log boundary (Issue #878): stderr carries a fixed code only.
+            // The verifier's messages (and any IO detail) may name local paths,
+            // so they never reach the public stream; local detail stays in the
+            // thrown exception for developers, never on stderr.
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine(
+                    "runtime host: packaged digest verification failed: PACKAGED_DIGEST_VERIFY_FAILED (no guest code was run)");
+                return 78;
+            }
+
+            var prebuiltArtifactPath = verifiedInputs.ArtifactLaunchPath;
 
             // A firmware-booted distribution (OpenBIOS ROM + disc, Issue #732) is its own run: the disc and the
             // RAM-placed code table come from firmware-boot.json, and no BIOS HLE Runtime exists in that mode.
@@ -241,11 +312,7 @@ public static class Program
                     manifest, manifestDirectory, prebuiltArtifactPath, biosPath, Console.Error, diagnosticsPath, frameOutPath, loadedCodeMismatch);
             }
 
-            var imagePath = RuntimeHostLayout.ResolveImagePath(manifestDirectory, manifest.Image);
-
-            // Read the program image for the host-transfer bridge / interpreter fallback
-            // (for a prebuilt artifact this is the same image the artifact embeds).
-            var imageBytes = File.ReadAllBytes(imagePath);
+            var imageBytes = verifiedInputs.ImageBytes;
 
             var imageWords = new uint[imageBytes.Length / 4];
             for (var i = 0; i < imageWords.Length; i++)
@@ -361,13 +428,11 @@ public static class Program
         }
         catch (Exception ex)
         {
+            // Public-log boundary (Issue #878): fixed code only, never the
+            // exception message (it may name local paths). Detail stays local
+            // in the thrown exception; the diagnostic file keeps working.
             Console.Error.WriteLine(
-                $"runtime host: {ex.GetType().Name}: {ex.Message}");
-            if (ex.InnerException is not null)
-            {
-                Console.Error.WriteLine(
-                    $"runtime host: inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-            }
+                "runtime host: packaged run setup failed: PACKAGED_RUN_SETUP_FAILED (no guest code was run)");
 
             // Only the manifest's static facts exist once the run itself threw.
             if (diagnosticsPath is not null && manifest is not null)
@@ -379,6 +444,7 @@ public static class Program
         }
         finally
         {
+            verifiedInputs?.Dispose();
             WriteLoadedCodeMismatch(loadedCodeMismatchPath, loadedCodeMismatch, runId);
         }
     }
@@ -408,7 +474,8 @@ public static class Program
         catch (Exception ex)
         {
             // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
-            Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
+            // Public-log boundary (Issue #878): no paths or exception detail on stderr.
+            Console.Error.WriteLine("runtime host: could not write diagnostics: DIAGNOSTICS_WRITE_FAILED");
         }
     }
 
@@ -627,7 +694,7 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"runtime host: could not write loaded-code diagnostics to {path}: {ex.Message}");
+            Console.Error.WriteLine("runtime host: could not write loaded-code diagnostics: LOADED_CODE_REPORT_WRITE_FAILED");
         }
     }
 
