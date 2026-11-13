@@ -39,6 +39,63 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
+    /// <summary>
+    /// Runs the bundled Runtime host for a firmware run with the private stop diagnostic (Issue #763). The public stderr and the
+    /// diagnostic file come from this one process. The diagnostic is read by the caller and is never written to any log or artifact.
+    /// </summary>
+    private static (int ExitCode, string Stderr) RunHostWithDiagnostics(string runtime, bool windows, string romPath, string diagnosticsPath)
+    {
+        var hostBinary = Path.Combine(runtime, RuntimeHostLayout.HostFileName(windows));
+        var manifest = Path.Combine(runtime, RuntimeHostLayout.ManifestFileName);
+#pragma warning disable AARC003 // Test-layer process use to drive the bundled Runtime host
+        using var hostProcess = Process.Start(new ProcessStartInfo(hostBinary)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            ArgumentList = { "--diagnostics", diagnosticsPath, manifest },
+            Environment = { [RecompiledArtifactCodeGen.ExternalBiosEnvironmentVariable] = romPath },
+        })!;
+        var stderrTask = hostProcess.StandardError.ReadToEndAsync();
+        hostProcess.StandardOutput.ReadToEndAsync();
+        WaitOrKill(hostProcess, 120_000, "the bounded host run must finish");
+        var stderr = stderrTask.GetAwaiter().GetResult();
+        var exitCode = hostProcess.ExitCode;
+#pragma warning restore AARC003
+        return (exitCode, stderr);
+    }
+
+    /// <summary>The public firmware-run line of a run: the only JSON line the host writes for the run summary.</summary>
+    private static JsonElement FirmwareRunLine(string stderr) =>
+        JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement.Clone();
+
+    /// <summary>
+    /// Run detail that the public firmware-run line never carries (the allowlist removes it by policy). Its absence is checked on
+    /// the public line; its values are checked on the private diagnostic of the same run.
+    /// </summary>
+    private static readonly string[] PrivateRunDetailKeys =
+    [
+        "aotBiosBlocks", "aotLoadedBlocks", "nativeInstructions", "fallbackInstructions", "fallbackTransitions", "finalGpr",
+    ];
+
+    private static void AssertRunDetailIsPrivate(JsonElement publicLine)
+    {
+        foreach (var key in PrivateRunDetailKeys)
+        {
+            publicLine.TryGetProperty(key, out _).Should().BeFalse($"'{key}' is private run detail and is never on the public firmware-run line");
+        }
+    }
+
+    /// <summary>The private stop diagnostic of a run. A missing diagnostic fails the caller: it is never a pass.</summary>
+    private static JsonElement ReadPrivateDiagnostic(string diagnosticsPath)
+    {
+#pragma warning disable AARC003 // Test-layer inspection of the private diagnostic: read here only, never printed
+        File.Exists(diagnosticsPath).Should().BeTrue("the private stop diagnostic must exist; without it the run detail cannot be verified");
+        return JsonDocument.Parse(File.ReadAllText(diagnosticsPath)).RootElement.Clone();
+#pragma warning restore AARC003
+    }
+
     private static uint I(uint opcode, uint rs, uint rt, uint imm) => opcode << 26 | rs << 21 | rt << 16 | (imm & 0xFFFFu);
 
     private const uint GameEntry = 0x80010000u;
@@ -171,16 +228,32 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         var report = JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement;
         report.GetProperty("bios").GetString().Should().Be("openbios");
         report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic");
-        report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(rom));
+        report.TryGetProperty("romSha256", out _).Should().BeFalse("the public firmware-run line never carries a ROM digest");
+        stderr.Should().NotContain(OpenBiosRomInput.Sha256Hex(rom), "no ROM digest may reach stderr");
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "the interpreted BIOS loop ends at the fallback budget");
-        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)"); report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
+        report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue("the manifest's fallback policy is reported on the firmware-run line");
         report.GetProperty("fallbackSegmentInstructionBudget").GetUInt64().Should().Be(5000);
         report.GetProperty("fallbackMaxTransitions").GetUInt64().Should().Be(40);
-        report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "the BIOS is never translated, so no ROM code runs natively");
-        report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the BIOS runs in the interpreter fallback");
-        report.GetProperty("finalGpr").GetArrayLength().Should().Be(TitleExecutionRequest.GprCount,
-            "the firmware-run line carries the final register file for continuity checks");
+        AssertRunDetailIsPrivate(report);
+
+        // The private detail comes from the host run that writes the stop diagnostic. Its own public line must describe the same
+        // outcome as that diagnostic (the diagnostic is read here only; it is never printed).
+        var diagnosticsPath = _dir.Combine("firmware-run-diagnostics.json");
+        var (hostExit, hostStderr) = RunHostWithDiagnostics(runtime, windows, romPath, diagnosticsPath);
+        hostExit.Should().Be(1, "the host classifies the fallback-budget stop identically: " + hostStderr);
+        var hostLine = FirmwareRunLine(hostStderr);
+        AssertRunDetailIsPrivate(hostLine);
+        var diagnostic = ReadPrivateDiagnostic(diagnosticsPath);
+        (diagnostic.GetProperty("classifiedExitCode").GetInt32() == hostExit).Should().BeTrue("the private diagnostic and the process exit describe one run");
+        diagnostic.GetProperty("orchestratorState").GetString().Should().Be(hostLine.GetProperty("state").GetString(),
+            "the public state and the private state describe one run");
+        diagnostic.GetProperty("orchestratorDiagnosticCode").GetString().Should().Be(hostLine.GetProperty("diagnosticCode").GetString(),
+            "the public code and the private code describe one run");
+        (diagnostic.GetProperty("aotBiosBlockCount").GetInt32() == 0).Should().BeTrue("the generation stage translated no BIOS block (Issue #B2)");
+        (diagnostic.GetProperty("aotRetiredInstructions").GetUInt64() == 0).Should().BeTrue("the BIOS is never translated, so no ROM code runs natively");
+        (diagnostic.GetProperty("fallbackRetiredInstructions").GetUInt64() > 0).Should().BeTrue("the BIOS runs in the interpreter fallback");
+        (diagnostic.GetProperty("finalGpr").GetArrayLength() == TitleExecutionRequest.GprCount).Should().BeTrue("the private diagnostic carries the final register file for continuity checks");
     }
 
     /// <summary>
@@ -262,20 +335,15 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         processExit.Should().Be(1, "the interpreted BIOS loop ends at the fallback budget: " + stderr);
         var report = JsonDocument.Parse(stderr.Split('\n').First(static l => l.StartsWith("{\"kind\":\"firmware-run\"", StringComparison.Ordinal))).RootElement;
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "the interpreted BIOS loop ends at the fallback budget");
-        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)");
-        report.GetProperty("nativeInstructions").GetUInt64().Should().BeGreaterThan(0, "the ROM and the guarded game run natively");
-        report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the BIOS runs in the interpreter fallback; only the guarded game block is native");
+        AssertRunDetailIsPrivate(report);
         report.GetProperty("mixedFallback").GetBoolean().Should().BeTrue();
         report.GetProperty("fallbackSegmentInstructionBudget").GetUInt64().Should().Be(5000);
         report.GetProperty("fallbackMaxTransitions").GetUInt64().Should().Be(40);
-        var finalGpr = report.GetProperty("finalGpr").EnumerateArray()
-            .Select(static e => uint.Parse(e.GetString()![2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)).ToArray();
+        // Run detail (native and fallback counts, fallback transitions, final registers) is verified from the private diagnostic of
+        // the host run below. The artifact's own public line is checked only for its absence.
         // Measured: the final register file is the last native transition's (the game's return), not the interpreted
         // post-game segment's, so the firmware's own post-game markers are not read here. Control returning into the
         // firmware is shown by the two transitions (ROM -> game -> ROM) and the fallback instructions that ran after it.
-        report.GetProperty("fallbackTransitions").GetUInt64().Should().Be(2, "ROM -> game -> ROM: the game is entered once and control returns to the firmware" + stderr);
-        report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0, "the interpreted firmware runs after the game returns");
-        finalGpr[(int)R3000aRegister.T0].Should().Be(3u, "the game retired its own instructions: the boot EXE's last addiu wrote its immediate");
 
         // P2-1: the Runtime host honors --diagnostics for a firmware distribution exactly as for an HLE run.
         var hostBinary = Path.Combine(runtime, RuntimeHostLayout.HostFileName(windows));
@@ -302,9 +370,26 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         diagnostic.GetProperty("orchestratorState").GetString().Should().Be("RuntimeFailure");
         diagnostic.GetProperty("classifiedExitCode").GetInt32().Should().Be(1);
         diagnostic.GetProperty("fallbackEnabled").GetBoolean().Should().BeTrue();
-        diagnostic.GetProperty("fallbackRetiredInstructions").GetUInt64().Should().BeGreaterThan(0, "the interpreted BIOS retires instructions in the fallback");
-        diagnostic.GetProperty("aotRetiredInstructions").GetUInt64().Should().BeGreaterThan(0);
+        (diagnostic.GetProperty("fallbackRetiredInstructions").GetUInt64() > 0).Should().BeTrue("the interpreted BIOS retires instructions in the fallback");
+        (diagnostic.GetProperty("aotRetiredInstructions").GetUInt64() > 0).Should().BeTrue();
         diagnostic.GetProperty("finalPc").ValueKind.Should().Be(JsonValueKind.Number, "the budget stop has a known guest PC");
+
+        // The same host run's public line carries none of the run detail, and agrees with the private diagnostic on the outcome.
+        var hostLine = FirmwareRunLine(hostStderr);
+        AssertRunDetailIsPrivate(hostLine);
+        hostLine.GetProperty("state").GetString().Should().Be(diagnostic.GetProperty("orchestratorState").GetString(),
+            "the public state and the private state describe one run");
+        hostLine.GetProperty("diagnosticCode").GetString().Should().Be(diagnostic.GetProperty("orchestratorDiagnosticCode").GetString(),
+            "the public code and the private code describe one run");
+
+        // Run detail of the same run, from the private diagnostic: the ROM -> game -> ROM control and data continuity.
+        (diagnostic.GetProperty("aotBiosBlockCount").GetInt32() == 0).Should().BeTrue("the generation stage translated no BIOS block (Issue #B2)");
+        (diagnostic.GetProperty("aotRetiredInstructions").GetUInt64() > 0).Should().BeTrue("the ROM and the guarded game run natively");
+        (diagnostic.GetProperty("fallbackRetiredInstructions").GetUInt64() > 0).Should().BeTrue("the BIOS runs in the interpreter fallback; only the guarded game block is native");
+        (diagnostic.GetProperty("fallbackTransitionCount").GetUInt32() == 2).Should().BeTrue("ROM -> game -> ROM: the game is entered once and control returns to the firmware");
+        var finalGpr = diagnostic.GetProperty("finalGpr").EnumerateArray()
+            .Select(static e => uint.Parse(e.GetString()![2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)).ToArray();
+        (finalGpr[(int)R3000aRegister.T0] == 3u).Should().BeTrue("the game retired its own instructions: the boot EXE's last addiu wrote its immediate");
 #pragma warning restore AARC003
     }
 
@@ -441,10 +526,22 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("bios").GetString().Should().Be("openbios");
         report.GetProperty("biosMode").GetString().Should().Be("openbios-unverified",
             "the local build is not in the verified allowlist: it runs, but it is not a verified OpenBIOS run");
-        report.GetProperty("romSha256").GetString().Should().Be(romSha256, "the run reports the digest of the image it loaded");
-        report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "no BIOS code is translated, and the timed-out run reached no native block (Issue #B2)");
-        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "the generation stage translated no BIOS block (Issue #B2)");
-        report.GetProperty("aotLoadedBlocks").GetInt32().Should().Be(0, "this gate loads no RAM-placed code image");
+        report.TryGetProperty("romSha256", out _).Should().BeFalse("the public firmware-run line never carries a ROM digest");
+        line!.Should().NotContain(romSha256, "the digest of the loaded image is not published; the BIOS mode label is the public result");
+        AssertRunDetailIsPrivate(report);
+        // The private detail comes from a separate host run that writes the stop diagnostic (the same firmware distribution); that run's own public line is checked too.
+        var runtimeDir = Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName);
+        var diagnosticsPath = _dir.Combine("real-openbios-run-diagnostics.json");
+        var (hostExit, hostStderr) = RunHostWithDiagnostics(runtimeDir, RuntimeInformation.IsOSPlatform(OSPlatform.Windows), romSource!, diagnosticsPath);
+        var hostLine = FirmwareRunLine(hostStderr);
+        AssertRunDetailIsPrivate(hostLine);
+        var diagnostic = ReadPrivateDiagnostic(diagnosticsPath);
+        (diagnostic.GetProperty("classifiedExitCode").GetInt32() == hostExit).Should().BeTrue("the private diagnostic and the process exit describe one run");
+        diagnostic.GetProperty("orchestratorDiagnosticCode").GetString().Should().Be(hostLine.GetProperty("diagnosticCode").GetString(),
+            "the public code and the private code describe one run");
+        (diagnostic.GetProperty("aotRetiredInstructions").GetUInt64() == 0).Should().BeTrue("no BIOS code is translated, and the timed-out run reached no native block (Issue #B2)");
+        (diagnostic.GetProperty("aotBiosBlockCount").GetInt32() == 0).Should().BeTrue("the generation stage translated no BIOS block (Issue #B2)");
+        (diagnostic.GetProperty("aotLoadedBlockCount").GetInt32() == 0).Should().BeTrue("this gate loads no RAM-placed code image");
         // Run outcome, reported apart from the wiring above. This is the measured result, not a clean run: the instance
         // hit the wall-clock bound. The test pins it so that any change in the outcome is noticed.
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "measured run outcome (wiring PASS, run RuntimeFailure)");
@@ -578,17 +675,27 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         line.Should().NotBeNull("the firmware run writes its summary line: " + stderr);
 #pragma warning disable AARC003 // Test-layer evidence: the bounded run's line is echoed for the run log
         Console.WriteLine("b2-real-openbios-bounded-evidence " + line);
-        foreach (var hostLine in stderr.Split('\n').Where(static l => l.StartsWith("runtime host:", StringComparison.Ordinal)))
+        foreach (var hostEcho in stderr.Split('\n').Where(static l => l.StartsWith("runtime host:", StringComparison.Ordinal)))
         {
-            Console.WriteLine("b2-real-openbios-bounded-stop " + hostLine.TrimEnd());
+            Console.WriteLine("b2-real-openbios-bounded-stop " + hostEcho.TrimEnd());
         }
 #pragma warning restore AARC003
         var report = JsonDocument.Parse(line!).RootElement;
         report.GetProperty("biosMode").GetString().Should().Be("openbios-unverified", "the local build is not a verified OpenBIOS run");
-        report.GetProperty("aotBiosBlocks").GetInt32().Should().Be(0, "no BIOS block was ahead-of-time translated");
-        report.GetProperty("nativeInstructions").GetUInt64().Should().Be(0, "the interpreted BIOS runs no native block");
-        report.GetProperty("fallbackInstructions").GetUInt64().Should().BeGreaterThan(0,
-            "the BIOS ran in the interpreter: its fallback instruction count is reported once the segment ends");
+        AssertRunDetailIsPrivate(report);
+        // The private detail comes from a separate host run that writes the stop diagnostic (the same firmware distribution); that run's own public line is checked too.
+        var runtimeDir = Path.Combine(output, RuntimeHostLayout.RuntimeDirectoryName);
+        var diagnosticsPath = _dir.Combine("bounded-openbios-run-diagnostics.json");
+        var (hostExit, hostStderr) = RunHostWithDiagnostics(runtimeDir, RuntimeInformation.IsOSPlatform(OSPlatform.Windows), romSource!, diagnosticsPath);
+        var hostLine = FirmwareRunLine(hostStderr);
+        AssertRunDetailIsPrivate(hostLine);
+        var diagnostic = ReadPrivateDiagnostic(diagnosticsPath);
+        (diagnostic.GetProperty("classifiedExitCode").GetInt32() == hostExit).Should().BeTrue("the private diagnostic and the process exit describe one run");
+        diagnostic.GetProperty("orchestratorDiagnosticCode").GetString().Should().Be(hostLine.GetProperty("diagnosticCode").GetString(),
+            "the public code and the private code describe one run");
+        (diagnostic.GetProperty("aotBiosBlockCount").GetInt32() == 0).Should().BeTrue("no BIOS block was ahead-of-time translated");
+        (diagnostic.GetProperty("aotRetiredInstructions").GetUInt64() == 0).Should().BeTrue("the interpreted BIOS runs no native block");
+        (diagnostic.GetProperty("fallbackRetiredInstructions").GetUInt64() > 0).Should().BeTrue("the BIOS ran in the interpreter: its fallback instruction count is reported once the segment ends");
         report.GetProperty("state").GetString().Should().Be("RuntimeFailure", "a bounded stop is a classified failure, never a clean run");
         report.GetProperty("diagnosticCode").GetString().Should().Be("ARTIFACT_FALLBACK_BUDGET_EXHAUSTED");
     }
@@ -650,6 +757,7 @@ public sealed class OpenBiosStandalonePackageE2E : IDisposable
         report.GetProperty("biosMode").GetString().Should().Be("openbios-synthetic", "the stub is classified by its own digest");
         report.GetProperty("declaredProvenance").GetString().Should().Be("user-supplied");
         stderr.Should().Contain("warning: the image was declared 'user-supplied'", "the declaration is not confirmed by the run");
-        report.GetProperty("romSha256").GetString().Should().Be(OpenBiosRomInput.Sha256Hex(bios), "the run reports the digest of the image it loaded");
+        report.TryGetProperty("romSha256", out _).Should().BeFalse("the public firmware-run line never carries a ROM digest");
+        stderr.Should().NotContain(OpenBiosRomInput.Sha256Hex(bios), "no ROM digest may reach stderr");
     }
 }

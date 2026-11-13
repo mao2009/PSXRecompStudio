@@ -71,20 +71,20 @@ internal static class FirmwarePackageCommand
                     arguments.Input!,
                     arguments.OutputDirectory!,
                     arguments.SelfContained,
-                    arguments.MixedFallback,
+arguments.MixedFallback,
                     arguments.FallbackSegmentBudget,
                     arguments.FallbackMaxTransitions),
                 RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
-            standardOutput.WriteLine($"Firmware distribution packaged: {Path.GetFullPath(arguments.OutputDirectory!)}");
+            standardOutput.WriteLine("Firmware distribution packaged.");
             standardOutput.WriteLine($"  bios:       {BiosBackendSelection.NameOf(BiosBackendKind.OpenBios)} (real MIPS ROM; no BIOS HLE)");
-            standardOutput.WriteLine($"  artifact:   {artifact}");
+            standardOutput.WriteLine($"  artifact:   {Path.GetFileName(artifact)}");
             return 0;
         }
         catch (Exception ex) when (
             ex is BiosBackendNotImplementedException or ArgumentException or IOException or UnauthorizedAccessException
                 or InvalidDataException or InvalidOperationException or FormatException)
         {
-            standardError.WriteLine($"psxrecomp package: {ex.Message}");
+            standardError.WriteLine(PublicLog.FailureLine("psxrecomp package", ex));
             return 1;
         }
     }

@@ -53,6 +53,12 @@ public sealed class BiosProvenanceDeclarationTests : IDisposable
     }
 
     [Fact]
+    public void DefaultPackagingDeclaration_IsNull()
+    {
+        Request().BiosProvenance.Should().BeNull("no --bios-provenance means no recorded declaration");
+    }
+
+    [Fact]
     public void PublicPackagePath_WithoutProvenanceOption_RecordsNull()
     {
         PublicPathRequest(null).BiosProvenance.Should().BeNull("no --bios-provenance on the public path means no recorded declaration");
@@ -68,7 +74,7 @@ public sealed class BiosProvenanceDeclarationTests : IDisposable
     [Theory]
     [InlineData("user-supplied")]
     [InlineData("synthetic")]
-    public void PublicPackagePath_ExplicitDeclaration_IsKeptUnchanged(string declared)
+    public void ExplicitPackagingDeclaration_IsKeptUnchanged(string declared)
     {
         PublicPathRequest(declared).BiosProvenance.Should().Be(declared);
         Request(declared).BiosProvenance.Should().Be(declared);

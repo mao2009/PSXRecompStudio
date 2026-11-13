@@ -138,7 +138,8 @@ public sealed class OpenBiosStandaloneSelectionTests
         using var dir = new TempDirectory();
         var (exit, error) = Package(dir.WriteFile("d.chd", [1]), "--bios", bios, "--output", dir.Combine("out"));
         exit.Should().Be(1);
-        error.Should().Contain("not implemented");
+        // The public line is a fixed code; the backend's internal message is not published.
+        error.Should().Contain("details are not published").And.NotContain("not implemented");
         Directory.Exists(dir.Combine("out")).Should().BeFalse("nothing is produced for a backend that cannot run");
     }
 
@@ -149,12 +150,12 @@ public sealed class OpenBiosStandaloneSelectionTests
         var disc = dir.WriteFile("d.chd", [1]);
         var (missing, message) = Package(disc, "--bios", "openbios", "--output", dir.Combine("out"));
         missing.Should().Be(1);
-        message.Should().Contain("--bios-rom");
+        message.Should().Contain("code INVALID_ARGUMENT").And.NotContain("--bios-rom");
 
         var (bad, badMessage) = Package(
             disc, "--bios", "openbios", "--bios-rom", dir.WriteFile("rom.bin", new byte[10]), "--aot-dir", dir.FullPath, "--output", dir.Combine("out"));
         bad.Should().Be(1);
-        badMessage.Should().Contain("524288");
+        badMessage.Should().Contain("details are not published").And.NotContain("524288");
     }
 
     [Fact]
@@ -211,7 +212,7 @@ public sealed class OpenBiosStandaloneSelectionTests
             disc, "--bios", "openbios", "--bios-rom", rom, "--aot-dir", aot, "--output", output);
 
         exit.Should().Be(1, "a malformed roots file is a classified tooling failure: " + error);
-        error.Should().Contain("not a hexadecimal number");
+        error.Should().Contain("code INVALID_DATA").And.NotContain("not a hexadecimal number");
         Directory.Exists(output).Should().BeFalse("no partial distribution is committed");
         Directory.GetDirectories(dir.FullPath, ".out.staging-*").Should().BeEmpty("no staging directory is left behind");
     }
@@ -237,6 +238,6 @@ public sealed class OpenBiosStandaloneSelectionTests
         File.WriteAllBytes(Path.Combine(runtime, "disc", "disc.bin"), [9, 9, 9]); // tampered disc
         var error = new StringWriter();
         FirmwareRuntimeLauncher.Run(host, runtime, Path.Combine(dir.FullPath, "g"), romPath, error).Should().Be(FirmwareRuntimeLauncher.SetupFailureExitCode);
-        error.ToString().Should().Contain("disc image does not match");
+        error.ToString().Should().Contain("code INVALID_DATA").And.NotContain("does not match");
     }
 }

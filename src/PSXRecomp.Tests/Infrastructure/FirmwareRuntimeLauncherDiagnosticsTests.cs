@@ -85,7 +85,9 @@ public sealed class FirmwareRuntimeLauncherDiagnosticsTests
             Host(), runtime, dir.Combine("game"), dir.Combine("bios.bin"), stderr, diagnostics);
 
         exit.Should().Be(FirmwareRuntimeLauncher.SetupFailureExitCode, "a mismatched ROM stops the run before anything executes");
-        stderr.ToString().Should().Contain("runtime host: firmware distribution:").And.Contain("InvalidDataException").And.Contain("does not match");
+        // The public line carries the fixed code only; the message stays in the private diagnostic checked below.
+        stderr.ToString().Should().Contain("runtime host: firmware distribution:").And.Contain("code INVALID_DATA")
+            .And.Contain("InvalidDataException").And.NotContain("does not match");
 
 #pragma warning disable AARC003 // Test-layer inspection of the produced diagnostic document
         File.Exists(diagnostics).Should().BeTrue("the launcher wrote the Issue #763 stop diagnostic");

@@ -1179,7 +1179,9 @@ public sealed class RuntimeHostLoadedCodeReportTests
             new CausedUnreadableProbe(PosixStatResult.StatNotExportedCause), DiagnosticsFlag, report, manifest);
 
         code.Should().Be(78);
-        stderr.Should().Contain("identity unavailable: " + PosixStatResult.StatNotExportedCause);
+        // The cause stays identifiable as a fixed code; the probe's own text is not published (PR 3).
+        stderr.Should().Contain("identity unavailable (code IDENTITY_STAT_NOT_EXPORTED:")
+            .And.NotContain(PosixStatResult.StatNotExportedCause);
         stderr.Should().Contain("glibc 2.33", "the minimum to verify is named, so the refusal can be diagnosed");
     }
 

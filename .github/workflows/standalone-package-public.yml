@@ -1,0 +1,302 @@
+name: Standalone Package (public inputs)
+
+# Verification route for the launch and measurement infrastructure.
+# Inputs are public source and synthetic only: OpenBIOS is built from the pinned public
+# Nugget revision, the disc comes from scripts/demo/synthetic-disc.ps1. No ROM, BIOS or
+# commercial data is used, cached or uploaded. A green run is NOT evidence that any
+# title boots or reaches a title screen.
+#
+# This workflow is separate from ci.yml and is not a required check of the CI Gate.
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-package-public:
+    name: Standalone package (public inputs)
+    # The pinned OpenBIOS toolchain (mipsel-none-elf GCC 16.2.0, see scripts/openbios/build.sh)
+    # is a Windows build, so the native build runs on a Windows runner.
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      OPENBIOS_PIN: c950e18a168944ec2d4e6d3c408fc224317483a7
+      TOOLCHAIN_URL: https://static.grumpycoder.net/pixel/mips/g++-mipsel-none-elf-16.2.0.zip
+      TOOLCHAIN_SHA256: cf84960f5624829d44b866c5f194094c21c63b30f7cbb8cf3030f1abebd52b75
+      SYNTHETIC_DISC_SHA256: ce3981541466bf84f1589334b2e306b5e253ef7352b30b6e4bac101d09d41606
+      # Bounded-boot determinism scoping: the packaged OpenBIOS run is a bounded boot probe that always
+      # ends in the classified fallback-budget stop (RuntimeFailure/ARTIFACT_FALLBACK_BUDGET_EXHAUSTED,
+      # exit 1), never a clean exit 0. A 25M-instruction segment budget exhausts first on any runner
+      # (measured ~24s locally, ~43s for 100M in CI), well inside the 300s wall backstop, so the outcome
+      # is deterministic and a frame is always written before the stop. A clean exit is not expected.
+      FALLBACK_SEGMENT_BUDGET: 25000000
+      RUN_TIMEOUT_SECONDS: 300
+      # Per-input ROM-absence calibration for the pinned OpenBIOS build only (measured max_gap 285696
+      # from its consecutive-zero core, plus one grid stride of margin). The global MAX_GAP default in
+      # standalone-package-verify.py stays strict; nothing else may raise it.
+      REAL_OPENBIOS_MAX_GAP: 286720
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Self-tests for the ROM-absence gate. They use seeded random data in a temp directory, never a ROM.
+      - name: Self-test ROM-absence gate (no ROM)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci/test_standalone_package_verify.py
+
+      # Everything below lives outside the checkout. Only $WORK/stage is uploaded.
+      # (The runner context is not available in a job-level env block, so WORK is set here.)
+      - name: Set work directory
+        shell: bash
+        env:
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: echo "WORK=$RUNNER_TEMP_DIR/psx" >> "$GITHUB_ENV"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - name: Record tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+          gcc --version | head -1
+          gcc -dumpfullversion -dumpversion
+          python --version
+          dotnet --version
+          pwsh --version
+
+      - name: Fetch pinned OpenBIOS source (Nugget)
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          src="$W/nugget"
+          rm -rf "$src"
+          mkdir -p "$src"
+          git -c core.autocrlf=false -C "$src" init -q
+          git -C "$src" remote add origin https://github.com/pcsx-redux/nugget.git
+          git -C "$src" -c core.autocrlf=false fetch -q --depth 1 origin "$OPENBIOS_PIN"
+          git -C "$src" -c core.autocrlf=false -c advice.detachedHead=false checkout -q FETCH_HEAD
+          test "$(git -C "$src" rev-parse HEAD)" = "$OPENBIOS_PIN"
+          git -C "$src" -c core.autocrlf=false submodule update --init --recursive --depth 1
+          echo "Nugget checked out at $(git -C "$src" rev-parse HEAD)"
+
+      - name: Fetch and verify pinned toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dl = Join-Path $env:WORK 'toolchain'
+          Remove-Item -Recurse -Force $dl -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          $zip = Join-Path $dl 'toolchain.zip'
+          Invoke-WebRequest -Uri $env:TOOLCHAIN_URL -OutFile $zip -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TOOLCHAIN_SHA256) { throw "toolchain SHA-256 mismatch: $actual (expected $env:TOOLCHAIN_SHA256); refusing to use it" }
+          Write-Host "toolchain archive SHA-256 verified: $actual"
+          $extract = Join-Path $dl 'gcc'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract
+          $gcc = Get-ChildItem -Path $extract -Recurse -Filter 'mipsel-none-elf-gcc.exe' | Select-Object -First 1
+          if (-not $gcc) { throw 'mipsel-none-elf-gcc.exe not found in the verified archive' }
+          # scripts/openbios/build.sh prepends this bin directory to PATH. The archive's own coreutils would
+          # shadow the runner's Git Bash tools: its mkdir created the output directory under a different path
+          # mapping, so build.sh's cp then failed. They are renamed in this extracted copy only; the verified
+          # zip is unchanged, and gcc, as, ld, objcopy and make are kept.
+          foreach ($shadow in 'cat.exe', 'cp.exe', 'echo.exe', 'mkdir.exe', 'rm.exe', 'touch.exe', 'which.exe') {
+            $p = Join-Path $gcc.Directory.FullName $shadow
+            if (Test-Path -LiteralPath $p) { Rename-Item -LiteralPath $p -NewName "$shadow.shadowed" }
+          }
+          "TOOLCHAIN_BIN_WIN=$($gcc.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build OpenBIOS from the pinned revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          export OPENBIOS_TOOLCHAIN_BIN="$(cygpath -u "$TOOLCHAIN_BIN_WIN")"
+          export OPENBIOS_BUILD_JOBS=2
+          rm -rf "$W/openbios-out"
+          # build.sh does not print or record the built ROM's digest (the protection is at the source, not a log
+          # filter). Its output directory lives under $WORK and is never uploaded.
+          bash scripts/openbios/build.sh --builder native "$W/nugget" "$W/openbios-out"
+
+      - name: Generate synthetic disc (public generator)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $disc = Join-Path $env:WORK 'disc'
+          Remove-Item -Recurse -Force $disc -ErrorAction SilentlyContinue
+          # The script throws on a hash mismatch; with $ErrorActionPreference = 'Stop' that ends this step.
+          # ($LASTEXITCODE is not used: it is $null here because no native command has run.)
+          & (Join-Path $env:GITHUB_WORKSPACE 'scripts/demo/synthetic-disc.ps1') -WorkDir $disc -OpenBiosCompatible
+          $file = Join-Path $disc 'synthetic-disc-openbios.bin'
+          $sha = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $env:SYNTHETIC_DISC_SHA256) { throw "synthetic disc SHA-256 mismatch: $sha" }
+          "DISC_PATH=$file" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "synthetic disc SHA-256 $sha"
+
+      - name: Prepare AOT inputs and package (--bios openbios)
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          ROM="$W/openbios-out/openbios.bin"
+          ELF="$W/openbios-out/openbios.elf"
+          AOT="$W/aot"
+          PKG="$W/pkg/psxrecomp-public-openbios"
+          DISC="$(cygpath -u "$DISC_PATH")"
+          rm -rf "$AOT" "$W/pkg"
+          mkdir -p "$AOT"
+          # prepare-aot's output is not echoed: a traceback can name local paths. Only a status is public.
+          # The ROM-derived code-byte count goes to a file under $WORK (never uploaded, never printed).
+          code_file="$W/prepare-aot-code-bytes.txt"
+          rm -f "$code_file"
+          if ! python scripts/openbios/prepare-aot.py "$ELF" "$AOT" --code-bytes-out "$code_file" >/dev/null 2>&1; then
+            echo "prepare-aot: FAILED"
+            exit 1
+          fi
+          echo "prepare-aot: ok"
+          code_bytes="$(cat "$code_file")"
+          [[ "$code_bytes" =~ ^[0-9]+$ ]] || { echo "prepare-aot: code-byte input unavailable"; exit 1; }
+          # The package command's output can name local paths (usage and failure messages), so it goes to the work directory and
+          # only fixed status lines are printed. A failure prints no detail.
+          if !           dotnet run --project src/PSXRecomp.Cli/PSXRecomp.Cli.csproj --configuration Release -- \
+            package "$DISC" --bios openbios --bios-rom "$ROM" --aot-dir "$AOT" --output "$PKG" \
+            --code-bytes "$code_bytes" --run-timeout-seconds "$RUN_TIMEOUT_SECONDS" \
+            --fallback-segment-budget "$FALLBACK_SEGMENT_BUDGET" --build-timeout-seconds 900 \
+            > "$W/package-output.txt" 2>&1; then
+            echo "package: FAILED; details are not published."
+            exit 1
+          fi
+          echo "package: ok"
+          # Relative names only: the runner's absolute paths are not printed.
+          (cd "$PKG" && find . -type f | sort)
+
+      - name: Run packaged runtime host (--frame-out, --diagnostics)
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          PKG="$W/pkg/psxrecomp-public-openbios"
+          RUN="$W/run"
+          rm -rf "$RUN"
+          mkdir -p "$RUN"
+          host="$PKG/runtime/PSXRecomp.RuntimeHost.exe"
+          test -f "$host"
+          # The firmware distribution needs the OpenBIOS image named at run time. It is the ROM built
+          # above, read from the runner's work directory; it is never copied into the package, the run
+          # folder or the upload set. The .NET host reads the variable directly, so it gets a Windows path.
+          # The variable is set for this command only.
+          ROM="$W/openbios-out/openbios.bin"
+          test -s "$ROM"
+          ROM_WIN="$(cygpath -w "$ROM")"
+          set +e
+          (cd "$RUN" && PSXRECOMP_BIOS_ROM="$ROM_WIN" "$host" --diagnostics "$RUN/diagnostics.json" --frame-out "$RUN/frame.png" "$PKG/runtime/runtime-host.json" > "$W/host-stdout.txt" 2> "$W/host-stderr.txt")
+          rc=$?
+          set -e
+          echo "runtime host exit code: $rc"
+          echo "HOST_EXIT_CODE=$rc" >> "$GITHUB_ENV"
+          # The host's stdout and stderr are never printed raw (they can carry paths, digests and ROM-run detail). Each stream goes
+          # through the public-lines filter: only the firmware-run JSON line and plain text are printed, and the rest is counted.
+          # host-outcome reads the same files, pins the exact classified stop, and prints only fixed status strings.
+          python scripts/ci/standalone-package-verify.py public-lines --file "$W/host-stdout.txt" --label stdout
+          python scripts/ci/standalone-package-verify.py public-lines --file "$W/host-stderr.txt" --label stderr
+          # Names only: file sizes of the host's output are not printed (they are run-derived numbers).
+          ls "$RUN"
+          # Fail closed on the exact classified stop: the bounded OpenBIOS boot probe always ends in
+          # RuntimeFailure/ARTIFACT_FALLBACK_BUDGET_EXHAUSTED with exit 1 and a rendered frame; a clean
+          # exit 0 is not a possible outcome for this input. host-outcome pins the exit code, the
+          # firmware-run state and diagnostic code, the segment budget and run timeout against the
+          # runtime manifest, and the non-empty frame. Any other outcome fails this step, so nothing
+          # is staged or uploaded. This asserts the classified stop; it never ignores the exit code.
+          python scripts/ci/standalone-package-verify.py host-outcome \
+            --stderr-file "$W/host-stderr.txt" --manifest "$PKG/runtime/runtime-host.json" \
+            --frame "$RUN/frame.png" --actual-exit "$rc" \
+            --expect-exit 1 --expect-state RuntimeFailure \
+            --expect-code ARTIFACT_FALLBACK_BUDGET_EXHAUSTED \
+            --expect-budget "$FALLBACK_SEGMENT_BUDGET" \
+            --expect-timeout-ms "$((RUN_TIMEOUT_SECONDS * 1000))"
+          echo "frame.png: present and non-empty"
+
+      # The host's diagnostics.json and frame.png stay on the runner. Neither is uploaded (the public artifact is
+      # an allowlist of the README and the manifest), so no failure artifact is produced.
+
+      # The public artifact is an allowlist. stage-public creates a new staging directory and copies only the package
+      # README, by its fixed name, after the ROM, digest, path and size checks pass. Nothing else from the package is
+      # copied: no package tree, no executable, no AOT input, no firmware file, no diagnostics and no frame.
+      - name: Stage upload set (allowlist) and verify ROM absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          ROM="$W/openbios-out/openbios.bin"
+          STAGE="$W/stage"
+          rm -rf "$STAGE"
+          python scripts/ci/standalone-package-verify.py stage-public \
+            --package "$W/pkg/psxrecomp-public-openbios" --rom "$ROM" --out "$STAGE" \
+            --allow-digest "$SYNTHETIC_DISC_SHA256" --allow-digest "$OPENBIOS_PIN" --allow-digest "$TOOLCHAIN_SHA256" \
+            --max-gap-limit "$REAL_OPENBIOS_MAX_GAP"
+          python scripts/ci/standalone-package-verify.py verify --rom "$ROM" --staging "$STAGE" \
+            --max-gap-limit "$REAL_OPENBIOS_MAX_GAP"
+
+      # The manifest records no built-ROM size or digest, and no size or digest of any ROM-derived file (see
+      # standalone-package-verify.py manifest). A published digest or size of the ROM would let anyone test a candidate ROM.
+      - name: Write provenance manifest and re-verify
+        shell: bash
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_SHA: ${{ github.sha }}
+          GH_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          W="$(cygpath -u "$WORK")"
+          ROM="$W/openbios-out/openbios.bin"
+          STAGE="$W/stage"
+          DISC="$(cygpath -u "$DISC_PATH")"
+          TC_ZIP="$W/toolchain/toolchain.zip"
+          gcc_version="$(gcc -dumpfullversion -dumpversion)"
+          gcc_line="$(gcc --version | head -1)"
+          tc_gcc_version="$("$(cygpath -u "$TOOLCHAIN_BIN_WIN")/mipsel-none-elf-gcc.exe" -dumpfullversion -dumpversion)"
+          python scripts/ci/standalone-package-verify.py manifest \
+            --rom "$ROM" --staging "$STAGE" --disc "$DISC" --toolchain-zip "$TC_ZIP" \
+            --toolchain-pin "$TOOLCHAIN_SHA256" --toolchain-url "$TOOLCHAIN_URL" \
+            --toolchain-gcc-version "$tc_gcc_version" --openbios-revision "$OPENBIOS_PIN" \
+            --checkout-sha "$GH_SHA" --pr-head-sha "$GH_PR_HEAD_SHA" --event-name "$GH_EVENT" \
+            --repository "$GH_REPOSITORY" --run-id "$GH_RUN_ID" --run-attempt "$GH_RUN_ATTEMPT" \
+            --runner-image "${ImageOS:-unknown} ${ImageVersion:-unknown}" \
+            --compiler-name gcc --compiler-version "$gcc_version" --compiler-line "$gcc_line" \
+            --host-exit-code "$HOST_EXIT_CODE" --max-gap-limit "$REAL_OPENBIOS_MAX_GAP"
+          {
+            echo "## Standalone package (public inputs) provenance"
+            echo ""
+            echo '```json'
+            cat "$STAGE/provenance-manifest.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified package (1-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-package-public
+          path: ${{ env.WORK }}/stage
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove built ROM from the runner
+        if: always()
+        shell: bash
+        run: |
+          W="$(cygpath -u "$WORK")"
+          rm -f "$W/openbios-out/openbios.bin" || true
