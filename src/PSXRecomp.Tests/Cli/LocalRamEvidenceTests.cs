@@ -334,6 +334,142 @@ public sealed class LocalRamEvidenceTests
         File.ReadAllBytes(target).Should().Equal(0x00, 0xFF, 0x10);
     }
 
+    // MEDIUM (PR #849 review): the parent directory is verified, then the file is created. A link swapped into that
+    // window must not carry RAM bytes into a work tree. POSIX pins the directory (O_NOFOLLOW) and the file
+    // (openat O_EXCL|O_NOFOLLOW) and re-checks through the handle; Windows re-checks through the creating handle and
+    // deletes through it. Either way the write is refused and no RAM byte reaches the tree.
+    [SkippableFact]
+    public void CreateWindow_ParentSwappedForALinkIntoAWorkTree_IsRefused_AndNoRamByteReachesTheTree()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var reports = dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var outside = dir.CreateSubdirectory("outside");
+        var target = Path.Combine(outside, "ram.bin");
+        var inWorkTree = Path.Combine(reports, "ram.bin");
+        var swapped = false;
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [0xDE, 0xAD, 0xBE, 0xEF], RealPathInterop.TryGetRealPath,
+            RealPathInterop.TryGetRealPath, beforeCreate: () =>
+            {
+                Directory.Delete(outside);
+                // The swap link: a junction on Windows (needs no privilege), a directory symlink elsewhere.
+                // Skipping inside the hook propagates out of the write (the catch filters do not catch it).
+                if (OperatingSystem.IsWindows())
+                {
+                    Skip.IfNot(TryCreateJunction(outside, reports, out var error),
+                        $"NOT RUN: the junction could not be created in the create window: {error}");
+                }
+                else
+                {
+                    Skip.IfNot(TryCreateDirectorySymlink(outside, reports, out var error),
+                        $"NOT RUN: symbolic link creation failed in this environment: {error}");
+                }
+
+                swapped = true;
+            });
+
+        swapped.Should().BeTrue("the swap ran in the create window");
+        refusal.Should().NotBeNull("a link swapped in after the check must not receive RAM bytes");
+        refusal.Should().Contain("nothing was written");
+        File.Exists(inWorkTree).Should().BeFalse("no file may be created in the work tree through the swapped directory");
+        File.Exists(target).Should().BeFalse("a refused write leaves no file behind through the swapped name either");
+        if (Directory.Exists(outside))
+        {
+            Directory.GetFiles(outside, "*", SearchOption.AllDirectories).Should().BeEmpty("no RAM byte may be left anywhere reachable");
+        }
+    }
+
+    // A link standing at the final name and pointing into a work tree: the create must not follow it (POSIX O_NOFOLLOW
+    // fails it; the pre-check already refuses a link that resolves into a tree).
+    [SkippableFact]
+    public void CreateWindow_FileSwappedForALinkIntoAWorkTree_IsRefused_AndNoRamByteReachesTheTree()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var reports = dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var existing = dir.WriteFile(Path.Combine("repo", "reports", "existing.json"), Encoding.UTF8.GetBytes("{}"));
+        var outside = dir.CreateSubdirectory("outside");
+        var target = Path.Combine(outside, "ram.bin");
+        var swapped = false;
+
+        var refusal = LocalRamEvidence.WriteNewChecked(target, [0xDE, 0xAD, 0xBE, 0xEF], RealPathInterop.TryGetRealPath,
+            RealPathInterop.TryGetRealPath, beforeCreate: () =>
+            {
+                // Skipping inside the hook propagates out of the write (the catch filters do not catch it).
+                Skip.IfNot(TryCreateFileSymlink(target, existing, out var error),
+                    $"NOT RUN: symbolic link creation needs Developer Mode or elevation in this environment: {error}");
+
+                swapped = true;
+            });
+
+        swapped.Should().BeTrue("the swap ran in the create window");
+        refusal.Should().NotBeNull("a file link swapped in after the check must not receive RAM bytes");
+        File.ReadAllText(existing).Should().Be("{}", "the work-tree file the link points at is untouched");
+        Directory.GetFiles(reports, "ram*", SearchOption.TopDirectoryOnly).Should().BeEmpty("no RAM byte may be left in the tree");
+    }
+
+    // Fail closed: when the created file's location cannot be confirmed through its handle, the write is refused even
+    // though the file was made. Opts out of the platform check through the seam (resolveHandle returns null, as an
+    // unresolvable /proc entry would).
+    [Fact]
+    public void WriteNew_WhenTheCreatedFileCannotBeConfirmed_IsRefused_AndWritesNothing()
+    {
+        using var dir = new TempDirectory();
+        var target = Path.Combine(dir.FullPath, "ram.bin");
+
+        LocalRamEvidence.WriteNewChecked(target, [1, 2, 3], RealPathInterop.TryGetRealPath, _ => null, beforeCreate: null)
+            .Should().Contain("nothing was written");
+        File.Exists(target).Should().BeFalse("an unconfirmable create leaves no file behind");
+    }
+
+    // ReadText hardens the same window on POSIX: the file is opened without following a link and confirmed through the
+    // handle. A parent swapped for a link into a work tree after the check is refused instead of read.
+    [SkippableFact]
+    public void ReadText_ParentSwappedForALinkIntoAWorkTree_IsRefused()
+    {
+        using var dir = new TempDirectory();
+        dir.CreateSubdirectory(Path.Combine("repo", ".git"));
+        var reports = dir.CreateSubdirectory(Path.Combine("repo", "reports"));
+        var secret = dir.WriteFile(Path.Combine("repo", "reports", "evidence.json"), Encoding.UTF8.GetBytes("{\"tree\":true}"));
+        _ = secret;
+        var outside = dir.CreateSubdirectory("outside");
+        var decoy = dir.WriteFile(Path.Combine("outside", "evidence.json"), Encoding.UTF8.GetBytes("{\"outside\":true}"));
+        _ = decoy;
+        var target = Path.Combine(outside, "evidence.json");
+
+        Directory.Delete(outside, recursive: true);
+        // The swap link: a junction on Windows (needs no privilege), a directory symlink elsewhere.
+        if (OperatingSystem.IsWindows())
+        {
+            Skip.IfNot(TryCreateJunction(outside, reports, out var error),
+                $"NOT RUN: the junction could not be created: {error}");
+        }
+        else
+        {
+            Skip.IfNot(TryCreateDirectorySymlink(outside, reports, out var error),
+                $"NOT RUN: symbolic link creation failed in this environment: {error}");
+        }
+
+        LocalRamEvidence.ReadText(target, out var text).Should().Contain("outside any Git work tree");
+        text.Should().BeNull("a refused read returns no text");
+    }
+
+    private static bool TryCreateFileSymlink(string link, string target, out string error)
+    {
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private static bool TryCreateJunction(string link, string target, out string error) =>
         TryRun("cmd.exe", ["/c", "mklink", "/J", link, target], out error);
 

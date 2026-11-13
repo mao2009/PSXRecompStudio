@@ -331,7 +331,8 @@ internal static class FallbackRootsCommand
             ex is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException or InvalidDataException
                 or FileNotFoundException or DirectoryNotFoundException or DllNotFoundException or FormatException)
         {
-            error.WriteLine($"fallback-roots: {ex.GetType().Name}: {ex.Message}");
+            // Fixed category only: the free-form message can carry local paths, so it never reaches stderr.
+            error.WriteLine($"fallback-roots: {ex.GetType().Name}");
             return 1;
         }
     }

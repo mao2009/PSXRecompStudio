@@ -282,6 +282,9 @@ internal static class OpenBiosProbeCommand
         // as an unhandled crash: it is reported here, never turned into a success.
         catch (Exception ex)
         {
+            // Owner ruling (PR #850) pins this channel's content: a game-execution callback's exception is reported
+            // with its type and message, never turned into a success. The observer-failure and game-callback tests
+            // assert the message text, so it is kept here by explicit contract (xsec: no RAM words/GPR in this channel).
             error.WriteLine($"openbios-probe: {ex.GetType().Name}: {ex.Message}");
             return 1;
         }
@@ -311,7 +314,8 @@ internal static class OpenBiosProbeCommand
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or UnauthorizedAccessException)
         {
-            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.GetType().Name}: {ex.Message}");
+            // Fixed category only: the free-form message carries the file path, so it never reaches stderr.
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: {ex.GetType().Name}");
             return 1;
         }
 
@@ -350,8 +354,8 @@ internal static class OpenBiosProbeCommand
         catch (Exception ex)
         {
             // Not a path problem: a defect in the parser or the comparison. It is reported as one, so it is neither silent
-            // nor mistaken for an unreadable file.
-            error.WriteLine($"openbios-probe: --compare-boundary-logs: internal error while parsing or comparing ({ex.GetType().Name}): {ex.Message}");
+            // nor mistaken for an unreadable file. Fixed category only: the free-form message never reaches stderr.
+            error.WriteLine($"openbios-probe: --compare-boundary-logs: internal error while parsing or comparing ({ex.GetType().Name})");
             return 1;
         }
 
@@ -1028,7 +1032,18 @@ internal static class OpenBiosProbeCommand
         var transitions = a["transitions"]!;
         yield return $"OpenBIOS generated-host probe: {document["executionState"]} ({document["diagnosticCode"]}); kernelBooted={document["kernelBooted"]}, titleStarted={document["titleStarted"]}, standalone={document["standalone"]}";
         yield return $"Instructions: native {native["instructions"]} ({native["region"]?.ToString() ?? "unattributed"}); fallback {fallback["retiredInstructions"]} retired, " +
-                     $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
+                      $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
+        var pingPong = transitions["pingPong"];
+        if (pingPong is null)
+        {
+            // Old-report contract (pre-#773): accounting has no pingPong section.
+            yield return "Ping-pong (Issue #773): not measured (report predates ping-pong accounting)";
+        }
+        else
+        {
+            yield return $"Ping-pong (Issue #773): {pingPong["shortReturns"]} of {pingPong["returned"]} returns retire at most {pingPong["shortSegmentThreshold"]} instructions " +
+                         $"({Percent(pingPong["shortReturnShare"])} of all transitions), {pingPong["shortReturnsRetired"]} retired";
+        }
         yield return "Regions (fallback fetches / transitions): " + string.Join(", ", a["regions"]!.AsArray()
             .Select(r => $"{r!["region"]} {Percent(r["fallbackFetchShare"])}/{Percent(r["transitionShare"])}"));
         foreach (var r in transitions["byReason"]!.AsArray())

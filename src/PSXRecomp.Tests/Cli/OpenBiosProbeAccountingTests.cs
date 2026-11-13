@@ -139,6 +139,49 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal(pass, OpenBiosProbeCommand.Consistency(JsonNode.Parse(document)!.AsObject())["differentialPass"]!.GetValue<bool>());
 
     [Fact]
+    public void Summarize_ToleratesOldReport_WithoutPingPong()
+    {
+        // Old-report contract (pre-#773): readers may re-display saved reports lacking transitions.pingPong.
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(0x80010000, true, FallbackSegmentStatus.Returned, 0x80010004, 1, null));
+        var node = JsonSerializer.SerializeToNode(new
+        {
+            executionState = "Completed",
+            diagnosticCode = "OK",
+            kernelBooted = true,
+            titleStarted = true,
+            standalone = false,
+            accounting = accounting.Report(10, 1, [0xBFC00000], null),
+            timings = new { buildMs = 1.0, codegenMs = 1.0, gccMs = 0.0, referenceMs = 0.0, runMs = 1.0, fallbackMs = 0.0, transferMs = 0.0, nativeAndHostMs = 1.0, totalMs = 2.0 },
+            aot = new { generatedCBytes = 1, artifactBytes = 1 },
+            consistency = new { differentialPass = true },
+        })!;
+        node["accounting"]!["transitions"]!.AsObject().Remove("pingPong");
+        var lines = OpenBiosProbeCommand.Summarize(node).ToArray();
+        Assert.Contains(lines, l => l.Contains("not measured"));
+    }
+
+    [Fact]
+    public void PingPong_AdditiveReportSection_Names_Both_Share_Denominators()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 500, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x80030000, false, FallbackSegmentStatus.BudgetExhausted, 0x80030004, 2, "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED"));
+
+        var report = Report(accounting, native: 1000, retired: 592, blocks: [0xBFC00000]);
+        var pingPong = report["transitions"]!["pingPong"]!;
+
+        Assert.Equal(3ul, pingPong["returned"]!.GetValue<ulong>());
+        Assert.Equal(2ul, pingPong["shortReturns"]!.GetValue<ulong>());
+        Assert.Equal(90ul, pingPong["shortReturnsRetired"]!.GetValue<ulong>());
+        Assert.Equal(OpenBiosProbeAccounting.PingPongRetiredThreshold, pingPong["shortSegmentThreshold"]!.GetValue<ulong>());
+        Assert.Equal(0.5, pingPong["shortReturnShare"]!.GetValue<double>());
+        Assert.Equal(0.6667, pingPong["shortReturnShareOfReturned"]!.GetValue<double>());
+    }
+
+    [Fact]
     public void Native_Instructions_Stay_Unattributed_When_Blocks_Span_Regions()
     {
         var report = Report(new OpenBiosProbeAccounting(), native: 10, retired: 0, blocks: [0xBFC00000, 0x80010000]);

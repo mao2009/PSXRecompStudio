@@ -35,8 +35,33 @@ internal static class LocalRamEvidence
             return refusal;
         }
 
-        text = File.ReadAllText(real);
-        return null;
+        if (OperatingSystem.IsWindows())
+        {
+            text = File.ReadAllText(real);
+            return null;
+        }
+
+        // POSIX: open read-only without following a link at the final name, then confirm the open file is still the
+        // verified one and outside any work tree. A parent or file swapped for a link after the check fails here.
+        if (!RealPathInterop.TryOpenPinned(real, out var pinnedHandle))
+        {
+            return $"{real}: its file could not be opened without following a link, so it cannot be verified as outside any Git work tree; refusing";
+        }
+
+        using (pinnedHandle)
+        {
+            var location = RealPathInterop.TryGetRealPath(pinnedHandle);
+            if (location is null || !SameLocation(location, real) || IsInWorkTree(location))
+            {
+                var where = location ?? "an unknown location";
+                return $"{real}: the file opened there resolves to {where}, not to the verified location; refusing";
+            }
+
+            using var stream = new FileStream(pinnedHandle, FileAccess.Read);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            text = reader.ReadToEnd();
+            return null;
+        }
     }
 
     /// <summary>Creates a new evidence file with <paramref name="text"/> (UTF-8, no byte-order mark). See <see cref="WriteNewBytes(string, byte[])"/>.</summary>
@@ -44,18 +69,26 @@ internal static class LocalRamEvidence
 
     /// <summary>
     /// Creates a new file with <paramref name="bytes"/>. Returns the refusal, or null when the file was written. The path is checked, the
-    /// check is repeated, and the file is created exclusively at the verified real location, not through the link the caller named. On
-    /// Windows the created file is then checked through the handle that created it, before any byte is written. Nothing is written when a
-    /// check fails; a file that failed the handle check is deleted through that same handle when it is still empty.
+    /// check is repeated, and the file is created exclusively at the verified real location, not through the link the caller named.
+    /// The create is pinned to the verified directory (Windows: a delete-capable exclusive handle; POSIX: a directory handle held with
+    /// <c>O_NOFOLLOW</c> plus <c>openat(O_CREAT | O_EXCL | O_NOFOLLOW)</c>, so a swapped-in parent or file link fails the create), and the
+    /// created file is then checked through the handle that created it, before any byte is written, on every platform. Nothing is written
+    /// when a check fails; a file that failed the handle check is deleted through that same directory handle (POSIX, still empty) or
+    /// through its own handle (Windows, when it is still empty). Nothing is deleted by path.
     /// </summary>
     public static string? WriteNewBytes(string path, byte[] bytes) =>
-        WriteNewChecked(path, bytes, RealPathInterop.TryGetRealPath, RealPathInterop.CanResolveHandle ? RealPathInterop.TryGetRealPath : null, beforeCreate: null);
+        WriteNewChecked(path, bytes, RealPathInterop.TryGetRealPath, RealPathInterop.TryGetRealPath, beforeCreate: null);
 
     /// <summary>
     /// The write with its seams: <paramref name="resolveExisting"/> resolves a path; <paramref name="resolveHandle"/> resolves the created file
-    /// through its handle (null skips that check: used only where the platform cannot confirm a handle, which is POSIX, a documented limit);
-    /// <paramref name="beforeCreate"/> runs between the last check and the create (a test hook for a link swapped into that window); and
-    /// <paramref name="create"/> makes the handle (a test hook; the default creates the file exclusively at the verified location).
+    /// through its handle (null skips that check: used only where the check is impossible, which no supported platform is — Windows resolves
+    /// through the handle, POSIX reads back <c>/proc/self/fd</c>; passing null documents a test that opts out); <paramref name="beforeCreate"/>
+    /// runs between the last check and the create (a test hook for a link swapped into that window); and <paramref name="create"/> makes the
+    /// handle (a test hook; the default creates the file exclusively at the verified location, pinned to its directory on POSIX).
+    /// OS differences: Windows refuses a swapped parent through the post-creation handle check and deletes through the handle; POSIX refuses a
+    /// swapped parent or file link already at the pinned <c>openat</c> (fail closed when the directory cannot be pinned or the handle's location
+    /// cannot be confirmed), re-checks the work-tree boundary through the handle, and unlinks through the pinned directory handle. Both fail
+    /// closed wherever anything is unverifiable, keep no-overwrite with exclusive create, and write no RAM byte before every check has passed.
     /// </summary>
     internal static string? WriteNewChecked(
         string path, byte[] bytes, Func<string, string?> resolveExisting, Func<SafeFileHandle, string?>? resolveHandle, Action? beforeCreate,
@@ -81,12 +114,29 @@ internal static class LocalRamEvidence
         beforeCreate?.Invoke();
 
         // The create below makes an empty file at the verified location, and it is in the work tree from then until the handle check has run
-        // (on Windows, a few instructions later, when the check fails it is deleted through the handle). That transient zero-byte file is
+        // (a few instructions later, when the check fails it is deleted through a handle, never by path). That transient zero-byte file is
         // the one stated exception to "nothing is created in the work tree"; it holds no RAM.
         SafeFileHandle handle;
+        SafeFileHandle? directory = null;
         try
         {
-            handle = create is null ? CreateNewHandle(real) : create(real);
+            if (create is not null)
+            {
+                handle = create(real);
+            }
+            else if (OperatingSystem.IsWindows())
+            {
+                handle = CreateNewHandle(real);
+            }
+            else if (!RealPathInterop.TryCreateNewPinned(real, out var pinned, out var dir))
+            {
+                return $"{real} could not be created exclusively at its verified location (its directory could not be pinned without following a link); nothing was written.";
+            }
+            else
+            {
+                handle = pinned;
+                directory = dir;
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -94,16 +144,20 @@ internal static class LocalRamEvidence
         }
 
         using (handle)
+        using (directory)
         {
             if (resolveHandle is not null)
             {
                 var location = resolveHandle(handle);
-                if (location is null || !SameLocation(location, real))
+                if (location is null || !SameLocation(location, real) || (!OperatingSystem.IsWindows() && IsInWorkTree(location)))
                 {
                     var where = location ?? "an unknown location";
-                    // This call created the file and holds its handle, so the handle names it. It is deleted through the handle only when it is
-                    // still empty; nothing is deleted by path.
-                    if (IsEmpty(handle) && RealPathInterop.TryDeleteByHandle(handle))
+                    // This call created the file and holds its handle, so the handle names it. It is deleted when it is still
+                    // empty: through the pinned directory handle on POSIX, through its own handle on Windows. Nothing is deleted by path.
+                    var deleted = directory is not null
+                        ? RealPathInterop.TryUnlinkPinned(directory, Path.GetFileName(real))
+                        : IsEmpty(handle) && RealPathInterop.TryDeleteByHandle(handle);
+                    if (deleted)
                     {
                         return $"{real}: the file created there resolves to {where}, not to the verified location; it was empty, so it was deleted " +
                             "through its handle and nothing was written.";
@@ -147,6 +201,20 @@ internal static class LocalRamEvidence
             : File.OpenHandle(real, FileMode.CreateNew, FileAccess.Write, FileShare.None);
 
     private static bool SameLocation(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when <paramref name="location"/> is inside a Git work tree (a directory holding <c>.git</c> as a directory or a file, the linked-worktree form).</summary>
+    private static bool IsInWorkTree(string location)
+    {
+        for (var directory = location; directory is not null; directory = Path.GetDirectoryName(directory))
+        {
+            if (Directory.Exists(Path.Combine(directory, ".git")) || File.Exists(Path.Combine(directory, ".git")))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static string? Resolve(string path, bool mustBeNew, Func<string, string?> resolveExisting, out string real)
     {
@@ -192,12 +260,9 @@ internal static class LocalRamEvidence
             }
 
             var candidate = Path.GetFullPath(Path.Combine([resolvedBase, .. Enumerable.Reverse(missing)]));
-            for (var directory = candidate; directory is not null; directory = Path.GetDirectoryName(directory))
+            if (IsInWorkTree(candidate))
             {
-                if (Directory.Exists(Path.Combine(directory, ".git")) || File.Exists(Path.Combine(directory, ".git")))
-                {
-                    return WorkTreeRefusal;
-                }
+                return WorkTreeRefusal;
             }
 
             real = candidate;
