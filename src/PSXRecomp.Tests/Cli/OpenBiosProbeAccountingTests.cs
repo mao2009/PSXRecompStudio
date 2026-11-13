@@ -162,26 +162,6 @@ public sealed class OpenBiosProbeAccountingTests
     }
 
     [Fact]
-    public void PingPong_AdditiveReportSection_Names_Both_Share_Denominators()
-    {
-        var accounting = new OpenBiosProbeAccounting();
-        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
-        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
-        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 500, null));
-        accounting.OnTransition(new MixedFallbackTransition(0x80030000, false, FallbackSegmentStatus.BudgetExhausted, 0x80030004, 2, "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED"));
-
-        var report = Report(accounting, native: 1000, retired: 592, blocks: [0xBFC00000]);
-        var pingPong = report["transitions"]!["pingPong"]!;
-
-        Assert.Equal(3ul, pingPong["returned"]!.GetValue<ulong>());
-        Assert.Equal(2ul, pingPong["shortReturns"]!.GetValue<ulong>());
-        Assert.Equal(90ul, pingPong["shortReturnsRetired"]!.GetValue<ulong>());
-        Assert.Equal(OpenBiosProbeAccounting.PingPongRetiredThreshold, pingPong["shortSegmentThreshold"]!.GetValue<ulong>());
-        Assert.Equal(0.5, pingPong["shortReturnShare"]!.GetValue<double>());
-        Assert.Equal(0.6667, pingPong["shortReturnShareOfReturned"]!.GetValue<double>());
-    }
-
-    [Fact]
     public void Native_Instructions_Stay_Unattributed_When_Blocks_Span_Regions()
     {
         var report = Report(new OpenBiosProbeAccounting(), native: 10, retired: 0, blocks: [0xBFC00000, 0x80010000]);
@@ -276,6 +256,26 @@ public sealed class OpenBiosProbeAccountingTests
         Assert.Equal("kernel-ram:fastMemset", hot[0]!["symbol"]!.ToString());
         Assert.Equal(2ul, hot[0]!["fetches"]!.GetValue<ulong>());
         Assert.Equal("shell:(no symbol)", hot[1]!["symbol"]!.ToString());
+    }
+
+    [Fact]
+    public void PingPong_AdditiveReportSection_Names_Both_Share_Denominators()
+    {
+        var accounting = new OpenBiosProbeAccounting();
+        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 45, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x80084C88, true, FallbackSegmentStatus.Returned, 0x8008AECC, 500, null));
+        accounting.OnTransition(new MixedFallbackTransition(0x80030000, false, FallbackSegmentStatus.BudgetExhausted, 0x80030004, 2, "ARTIFACT_FALLBACK_BUDGET_EXHAUSTED"));
+
+        var report = Report(accounting, native: 1000, retired: 592, blocks: [0xBFC00000]);
+        var pingPong = report["transitions"]!["pingPong"]!;
+
+        Assert.Equal(3ul, pingPong["returned"]!.GetValue<ulong>());
+        Assert.Equal(2ul, pingPong["shortReturns"]!.GetValue<ulong>());
+        Assert.Equal(90ul, pingPong["shortReturnsRetired"]!.GetValue<ulong>());
+        Assert.Equal(OpenBiosProbeAccounting.PingPongRetiredThreshold, pingPong["shortSegmentThreshold"]!.GetValue<ulong>());
+        Assert.Equal(0.5, pingPong["shortReturnShare"]!.GetValue<double>());
+        Assert.Equal(0.6667, pingPong["shortReturnShareOfReturned"]!.GetValue<double>());
     }
 
     [Fact]

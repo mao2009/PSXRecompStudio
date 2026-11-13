@@ -1032,7 +1032,7 @@ internal static class OpenBiosProbeCommand
         var transitions = a["transitions"]!;
         yield return $"OpenBIOS generated-host probe: {document["executionState"]} ({document["diagnosticCode"]}); kernelBooted={document["kernelBooted"]}, titleStarted={document["titleStarted"]}, standalone={document["standalone"]}";
         yield return $"Instructions: native {native["instructions"]} ({native["region"]?.ToString() ?? "unattributed"}); fallback {fallback["retiredInstructions"]} retired, " +
-                      $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
+                     $"{fallback["fetches"]} fetched; transitions {transitions["total"]} ({transitions["indirect"]} indirect)";
         var pingPong = transitions["pingPong"];
         if (pingPong is null)
         {
