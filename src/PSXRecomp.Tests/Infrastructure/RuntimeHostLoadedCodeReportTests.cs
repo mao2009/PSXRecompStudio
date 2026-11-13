@@ -551,11 +551,21 @@ public sealed class RuntimeHostLoadedCodeReportTests
     // 78 and every input keeps its content.
     private const string DiagnosticsFlag = "--diagnostics";
 
+    private static void WriteFirmwareCarrier(TempDirectory dir, string artifact)
+    {
+#pragma warning disable AARC003 // Test-layer fixture: digest carrier the packaged host verifies (Issue #865).
+        var runtimeDir = dir.Combine("runtime");
+        Directory.CreateDirectory(runtimeDir);
+        ArtifactBuildManifest.WriteFirmware(runtimeDir, artifact);
+#pragma warning restore AARC003
+    }
+
     private static (string Manifest, string Boot, string Artifact) WriteDistribution(TempDirectory dir)
     {
         var boot = dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes("{}"));
         var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
         var artifact = dir.WriteFile("game.exe", Bytes("artifact bytes"));
+        WriteFirmwareCarrier(dir, artifact);
         return (manifest, boot, artifact);
     }
 
@@ -634,6 +644,7 @@ public sealed class RuntimeHostLoadedCodeReportTests
         var boot = dir.WriteFile(Path.Combine("runtime", FirmwareBootManifest.FileName), Bytes(BootText("disc/disc.bin")));
         var manifest = dir.WriteFile(Path.Combine("runtime", "runtime-host.json"), Bytes(ManifestText("game.exe")));
         var artifact = dir.WriteFile("game.exe", Bytes("artifact bytes"));
+        WriteFirmwareCarrier(dir, artifact);
         return (manifest, boot, artifact, disc);
     }
 

@@ -398,13 +398,11 @@ public static class Program
         }
         catch (Exception ex)
         {
+            // Public-log boundary (Issue #878): fixed code only, never the
+            // exception message (it may name local paths). Detail stays local
+            // in the thrown exception; the diagnostic file keeps working.
             Console.Error.WriteLine(
-                $"runtime host: {ex.GetType().Name}: {ex.Message}");
-            if (ex.InnerException is not null)
-            {
-                Console.Error.WriteLine(
-                    $"runtime host: inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-            }
+                "runtime host: packaged run setup failed: PACKAGED_RUN_SETUP_FAILED (no guest code was run)");
 
             // Only the manifest's static facts exist once the run itself threw.
             if (diagnosticsPath is not null && manifest is not null)
@@ -446,7 +444,8 @@ public static class Program
         catch (Exception ex)
         {
             // Best-effort observation: whatever fails here (I/O, assembly, serialization) must not alter the run result.
-            Console.Error.WriteLine($"runtime host: could not write diagnostics to {path}: {ex.Message}");
+            // Public-log boundary (Issue #878): no paths or exception detail on stderr.
+            Console.Error.WriteLine("runtime host: could not write diagnostics: DIAGNOSTICS_WRITE_FAILED");
         }
     }
 
@@ -665,7 +664,7 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"runtime host: could not write loaded-code diagnostics to {path}: {ex.Message}");
+            Console.Error.WriteLine("runtime host: could not write loaded-code diagnostics: LOADED_CODE_REPORT_WRITE_FAILED");
         }
     }
 
