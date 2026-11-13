@@ -259,6 +259,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             // Attached (Issue #693): the owner's scheduler, and no Load — the image arrives by RAM sync.
             _scheduler = sharedScheduler;
+            AttachVBlankObserver();
             _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
             _loaded = true;
         }
@@ -339,6 +340,44 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
     /// <summary>Active device scheduler, available after Load; used for VBlank-aligned capture.</summary>
     public DeviceScheduler? Scheduler => _scheduler;
 
+    private Action<ulong, ulong>? _vblankObserver;
+
+    /// <summary>
+    /// Called at each VBlank of this engine's scheduler with the VBlank index and the scheduler time (diagnostic observation
+    /// only, Issue #774 W03). Setting it attaches the observer to the current scheduler at once when one exists (an engine
+    /// created with <see cref="Attach"/> already has one, and Load creates one); otherwise it is attached when Load creates the
+    /// scheduler. Setting a new value replaces this engine's registration, and null removes it. No other subscriber is touched.
+    /// </summary>
+    public Action<ulong, ulong>? VBlankObserver
+    {
+        get => _vblankObserver;
+        set
+        {
+            _vblankObserver = value;
+            AttachVBlankObserver();
+        }
+    }
+
+    /// <summary>
+    /// The first exception the diagnostic <see cref="VBlankObserver"/> threw on the scheduler this engine uses, or null. When
+    /// <c>Load</c> creates the scheduler, the value starts empty for each Load. An attached engine reads the owner's scheduler.
+    /// A non-null value means the observer failed: the guest result is unaffected, but the run is not a clean observation.
+    /// </summary>
+    public VblankObserverFailure? VBlankObserverFailure => _scheduler?.VblankObserverFailure;
+
+    private IDisposable? _vblankObserverRegistration;
+
+    // Attaches this engine's observer to the current scheduler. It replaces only its own earlier registration; other
+    // subscribers on the scheduler are left in place.
+    private void AttachVBlankObserver()
+    {
+        _vblankObserverRegistration?.Dispose();
+        _vblankObserverRegistration = null;
+        // A disposed engine never registers again: its observer must not reach a scheduler that outlives it.
+        if (_disposed || VBlankObserver is not { } observer || _scheduler is not { } scheduler) return;
+        _vblankObserverRegistration = scheduler.AddDiagnosticVblankObserver(vblank => observer(vblank, scheduler.ElapsedCycles));
+    }
+
     /// <summary>Total cycles advanced on the shared device scheduler (diagnostic only).</summary>
     public ulong GuestCycles => _scheduler?.ElapsedCycles ?? 0;
 
@@ -379,6 +418,7 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
 
         // Fresh device timing for the freshly reset core (Issue #442).
         _scheduler = _devices.CreateScheduler();
+        AttachVBlankObserver();
         // Issue #774 (B-7): the MDEC event observer reports the scheduler time (= guest retirements). Diagnostic only.
         _devices.Mdec.CycleSource = () => _scheduler?.ElapsedCycles ?? 0;
         _inInterruptHandler = false;
@@ -879,6 +919,11 @@ public sealed class InterpreterTitleExecutionEngine : IRecompiledExecutionEngine
         {
             return;
         }
+
+        // The observer's registration may sit on a scheduler this engine does not own (an attached run), so it is removed
+        // here: a disposed engine must not stay subscribed to a scheduler that outlives it.
+        _vblankObserverRegistration?.Dispose();
+        _vblankObserverRegistration = null;
 
         if (_ownsDevices)
         {

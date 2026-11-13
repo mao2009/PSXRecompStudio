@@ -654,7 +654,7 @@ public sealed class CdRomDevice : ICdRom
         if (!RequireParameterCount(parameters, 0) || !RequireDisc(out var toc)) return;
 
         var track = toc.Tracks.Last(t => t.StartLba <= _position || t == toc.Tracks[0]);
-        var relative = Math.Max(0, _position - track.StartLba) - 150; // relative MSF counts from 00:00:00
+        var relative = Math.Max(0, _position - track.StartLba) - CdSectorAddress.LeadInFrames; // relative MSF counts from 00:00:00
         var (am, @as, af) = LbaToMsf(_position);
         var (rm, rs, rf) = LbaToMsf(relative);
         QueueResponse(IntAcknowledge, ToBcd(track.Number), 0x01, rm, rs, rf, am, @as, af);
@@ -738,7 +738,8 @@ public sealed class CdRomDevice : ICdRom
         }
 
         HasPendingLocation = false;
-        _position = (FromBcd(location.Minute) * 60 + FromBcd(location.Second)) * 75 + FromBcd(location.Frame) - 150;
+        // The one MSF-to-LBA step (LBA 0 = 00:02:00). The source maps its LBA to its own file index; do not offset here too.
+        _position = (FromBcd(location.Minute) * 60 + FromBcd(location.Second)) * 75 + FromBcd(location.Frame) - CdSectorAddress.LeadInFrames;
         return true;
     }
 
@@ -944,7 +945,8 @@ public sealed class CdRomDevice : ICdRom
 
     private static (byte Minute, byte Second, byte Frame) LbaToMsf(int lba)
     {
-        var absolute = lba + 150;
+        // The one LBA-to-MSF step (LBA 0 = 00:02:00), the inverse of ConsumeSeekTarget.
+        var absolute = lba + CdSectorAddress.LeadInFrames;
         return (ToBcd(absolute / 4500), ToBcd(absolute / 75 % 60), ToBcd(absolute % 75));
     }
 

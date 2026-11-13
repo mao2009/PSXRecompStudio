@@ -291,6 +291,28 @@ internal sealed class StopRecord : IDisposable
 
     private bool _childEndedBeforeStop;
 
+    /// <summary>
+    /// True when the process with this id is gone: it no longer exists, or it exits within <paramref name="bound"/>. Waits on the exit, never on a
+    /// fixed sleep. Used by the tests to confirm a stopped child is dead, not merely sent a kill.
+    /// </summary>
+    internal static bool ProcessGoneWithin(int processId, TimeSpan bound)
+    {
+        Process child;
+        try
+        {
+            child = Process.GetProcessById(processId);
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+
+        using (child)
+        {
+            return child.WaitForExit(bound);
+        }
+    }
+
     /// <summary>True when the child has exited, or its handle is no longer usable (the run already released it).</summary>
     internal static bool HasExitedOrGone(Process process)
     {

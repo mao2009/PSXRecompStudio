@@ -84,6 +84,36 @@ public sealed class OpenBiosProbeStandaloneTests
             "compilation time must not be netted out of codegen, which would drive codegenMs negative");
     }
 
+    /// <summary>
+    /// Issue #774 (W03) wiring: the standalone run's VBlank observer reaches the boundary log. Without it (the observer not
+    /// handed to the bridge, or not wired at the probe) the log is empty, and the comparison would see no boundaries.
+    /// The budget is sized so the spin loop passes at least one VBlank (one VBlank is 564480 scheduler cycles).
+    /// </summary>
+    [Fact]
+    public void Standalone_Run_Writes_Boundary_Records_From_Its_Own_Scheduler()
+    {
+        using var dir = new TempDirectory();
+        var rom = dir.WriteFile("openbios.bin", SyntheticRom());
+        var roots = dir.WriteFile("roots.txt", []);
+        var boundaryLog = dir.Combine("standalone-boundary.jsonl");
+        var error = new StringWriter();
+        string[] args =
+        [
+            rom, "--engine", "generated-host", "--roots", roots, "--code-bytes", "64",
+            "--segments", "1", "--segment-budget", "1000000", "--standalone", "--boundary-log", boundaryLog, "--json",
+        ];
+
+        OpenBiosProbeCommand.Run(args, TextWriter.Null, error);
+
+        error.ToString().Should().NotContain("boundary log is incomplete");
+#pragma warning disable AARC003 // Test-only read of the probe's own output file; production I/O stays behind Infrastructure.
+        var lines = File.ReadAllLines(boundaryLog).Where(static l => l.Trim().Length > 0).ToArray();
+#pragma warning restore AARC003
+        lines.Should().NotBeEmpty("the standalone scheduler reaches at least one VBlank within the budget");
+        JsonNode.Parse(lines[0])!["engine"]!.GetValue<string>().Should().Be("standalone");
+        JsonNode.Parse(lines[0])!["vblank"]!.GetValue<ulong>().Should().Be(1ul);
+    }
+
     [Theory]
     [InlineData(25.0, 24000.0, 1.0)] // standalone: the embedded artifact's gcc build is excluded from the run/boundary clock
     [InlineData(25.0, 0.0, 25.0)] // file-driven: nothing to exclude, so the elapsed time is unchanged

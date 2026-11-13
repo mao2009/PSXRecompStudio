@@ -769,7 +769,8 @@ public static class ScreenshotCommand
                         () => interpreterEngine.DiagnosticDevices.Core.Pc,
                         guestPcTiming: "capture-instant");
 
-                    interpreterEngine.Scheduler!.VblankCallback = vblank => screenshotCapture.TryCaptureAtVBlank(vblank);
+                    // Composed with any other VBlank subscriber on the scheduler (such as the boundary observer), not overwriting it.
+                    _ = interpreterEngine.Scheduler!.AddVblankCallback(vblank => screenshotCapture.TryCaptureAtVBlank(vblank));
                 });
             stopReason = executionResult.State == TitleExecutionState.RuntimeHandoff
                 ? CleanBoundaryStop(screenshotCapture, stopwatch, timeout) ?? StopReasonOf(executionResult.State)

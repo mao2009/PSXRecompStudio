@@ -25,7 +25,7 @@ public sealed class ScreenshotCapture : IDisposable
     private readonly string? _guestPcTiming;
     private readonly List<CapturedFrame> _frames = new();
     private int _screenshotsTaken;
-    private ulong _lastVblank = 0;
+    private ulong? _lastSavedVblank;
     private bool _disposed;
 
     /// <summary>The output directory for screenshots.</summary>
@@ -94,42 +94,7 @@ public sealed class ScreenshotCapture : IDisposable
 
         var currentVblank = _scheduler.VblankCount;
         
-        // Check for exact match first
-        var targetIndex = _targetVblanks.BinarySearch(currentVblank);
-        if (targetIndex >= 0)
-        {
-            if (_capturedVblanks.Contains(currentVblank))
-                return false; // Already captured this VBlank (duplicate notification)
-
-            if (!CaptureAndSave(currentVblank, currentVblank))
-            {
-                _lastVblank = currentVblank; // unsaved target is dropped, not retried (not counted, not consumed)
-                return false;
-            }
-            _capturedVblanks.Add(currentVblank);
-            _screenshotsTaken++;
-            _lastVblank = currentVblank;
-            return true;
-        }
-
-        // Also check if we've passed any target VBlanks since last check
-        // This handles cases where VBlank counter jumps over target values
-        foreach (var targetVblank in _targetVblanks)
-        {
-            if (targetVblank <= currentVblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
-            {
-                // A3: the frame is the picture at the actual VBlank; the target is only the schedule it was due for.
-                if (!CaptureAndSave(targetVblank, currentVblank))
-                    continue; // nothing saved: this target is not counted or consumed
-                _capturedVblanks.Add(targetVblank);
-                _screenshotsTaken++;
-                _lastVblank = targetVblank;
-                return true;
-            }
-        }
-
-        _lastVblank = currentVblank;
-        return false;
+        return CaptureDueTargets(currentVblank);
     }
 
     /// <summary>
@@ -141,8 +106,15 @@ public sealed class ScreenshotCapture : IDisposable
             return;
 
         var currentVblank = _scheduler.VblankCount;
+        // Same picture as the last saved frame (same VBlank, same GPU state): not saved again, so the run stays partial.
+        if (_lastSavedVblank == currentVblank)
+            return;
+
         if (CaptureAndSave(null, currentVblank, customName))
+        {
             _screenshotsTaken++;
+            _lastSavedVblank = currentVblank;
+        }
     }
 
     /// <summary>
@@ -155,39 +127,37 @@ public sealed class ScreenshotCapture : IDisposable
         if (_disposed || _screenshotsTaken >= _maxScreenshots)
             return false;
 
-        // Check for exact match first
-        var targetIndex = _targetVblanks.BinarySearch(vblank);
-        if (targetIndex >= 0)
-        {
-            if (_capturedVblanks.Contains(vblank))
-                return false; // Already captured this VBlank
+        return CaptureDueTargets(vblank);
+    }
 
-            if (!CaptureAndSave(vblank, vblank))
-            {
-                _lastVblank = vblank; // unsaved target is dropped, not retried (not counted, not consumed)
-                return false;
-            }
-            _capturedVblanks.Add(vblank);
-            _screenshotsTaken++;
-            _lastVblank = vblank;
-            return true;
-        }
+    /// <summary>
+    /// Saves at most one due target per check, in schedule order. A target is due once the counter has reached it and it
+    /// was not captured yet, so a skipped-over target is captured on a check past it, even when a later target is hit
+    /// exactly (regression: the exact-match branch returned before the skipped target was considered). All saved frames
+    /// read the GPU at the same instant, so a second save from the same VBlank would repeat the picture: after a save,
+    /// the next save needs a later VBlank. A target whose PNG could not be written is not counted or consumed, so a later
+    /// check retries it (each attempt counts as a write failure).
+    /// </summary>
+    private bool CaptureDueTargets(ulong vblank)
+    {
+        if (_disposed || _lastSavedVblank == vblank)
+            return false;
 
-        // Also check if we've passed any target VBlanks since last check
         foreach (var targetVblank in _targetVblanks)
         {
-            if (targetVblank <= vblank && targetVblank > _lastVblank && !_capturedVblanks.Contains(targetVblank))
-            {
-                if (!CaptureAndSave(targetVblank, vblank))
-                    continue; // nothing saved: this target is not counted or consumed
-                _capturedVblanks.Add(targetVblank);
-                _screenshotsTaken++;
-                _lastVblank = targetVblank;
-                return true;
-            }
-        }
+            if (targetVblank > vblank || _screenshotsTaken >= _maxScreenshots)
+                break;
+            if (_capturedVblanks.Contains(targetVblank))
+                continue;
 
-        _lastVblank = vblank;
+            // A3: the frame is the picture at the actual VBlank; the target is only the schedule it was due for.
+            if (!CaptureAndSave(targetVblank, vblank))
+                continue; // nothing saved: this target is not counted or consumed
+            _capturedVblanks.Add(targetVblank);
+            _screenshotsTaken++;
+            _lastSavedVblank = vblank;
+            return true;
+        }
         return false;
     }
 
@@ -276,7 +246,10 @@ public sealed class ScreenshotCapture : IDisposable
         return true;
     }
 
-    /// <summary>Number of frames whose PNG could not be written (not in the manifest, not counted).</summary>
+    /// <summary>
+    /// Number of failed PNG write attempts (not in the manifest, not counted). A target whose write failed stays due and
+    /// is retried on a later check, so one target can add more than one attempt here.
+    /// </summary>
     public int WriteFailures { get; private set; }
 
     /// <summary>Message of the most recent PNG write failure, or null.</summary>

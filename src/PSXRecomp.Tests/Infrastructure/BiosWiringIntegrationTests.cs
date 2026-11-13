@@ -41,7 +41,7 @@ public sealed class BiosWiringIntegrationTests : IDisposable
         _dir.WriteFile("aot/roots-bios.txt", System.Text.Encoding.ASCII.GetBytes("0xBFC00000\n"));
         _dir.WriteFile("aot/images.txt", System.Text.Encoding.ASCII.GetBytes(
             "image bios-range 0xBFC00000 rom 0xBFC00000 0x40 roots-bios.txt\n"));
-        var disc = _dir.WriteFile("disc.bin", new byte[2352]);
+        var disc = _dir.WriteFile("disc.bin", new byte[(PSXRecomp.Core.Runtime.CdRom.CdSectorAddress.LeadInFrames + 1) * 2352]);
         return new FirmwareDistributionRequest(
             RomPath: rom,
             DiscPath: disc,

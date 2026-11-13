@@ -81,7 +81,8 @@ internal sealed class ArtifactFallbackSession : IDisposable
         Action<InterpreterTitleExecutionEngine, uint>? fetchObserver = null,
         Action<MixedFallbackTransition>? transitionObserver = null,
         LoadedCodeTable? loadedCode = null,
-        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null)
+        LoadedCodeMismatchDiagnostics? loadedCodeMismatch = null,
+        Func<bool>? stopNow = null)
     {
         _transitionObserver = transitionObserver;
         _guestFirmware = guestFirmware;
@@ -99,10 +100,20 @@ internal sealed class ArtifactFallbackSession : IDisposable
             imageWords, imageLoadAddress, devices, scheduler, biosRuntimeFactory, exceptionChain, guestFirmware);
         _interpreter.ReturnDiagnostics = _returnStats;
         _ramWordAtPhysical = RamWordAtPhysical;
-        if (fetchObserver is not null)
+        if (fetchObserver is not null || stopNow is not null)
         {
             var interpreter = _interpreter;
-            _interpreter.FetchObserver = pc => fetchObserver(interpreter, pc);
+            _interpreter.FetchObserver = pc =>
+            {
+                // Issue #829: the interpreter's step loop only sees its own StopRequested, which nothing else sets. A stop
+                // reaches a running fallback segment here, before the next instruction executes, so the segment ends.
+                if (stopNow is not null && stopNow())
+                {
+                    interpreter.StopRequested = true;
+                }
+
+                fetchObserver?.Invoke(interpreter, pc);
+            };
         }
     }
 
