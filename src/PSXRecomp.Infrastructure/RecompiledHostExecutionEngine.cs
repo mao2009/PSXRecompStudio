@@ -1628,6 +1628,22 @@ public sealed class RecompiledHostExecutionEngine : IRecompiledExecutionEngine, 
             }
             else if (stop.Settled || now >= end)
             {
+                // Read-order race (Issue #876): HasExitedOrGone was read above before Settled. A stop that settles
+                // between those reads after observing the child's exit would return false here without ever calling
+                // Observe, misclassifying a natural end as a timeout. Re-check the child and give a completed pump
+                // one Observe before deciding, preserving child-exit and grandchild-pipe classification.
+                stop.SampleTree();
+                if (stop.Observe(process, "pump", pump.IsCompleted))
+                {
+                    return true;
+                }
+
+                if (StopRecord.HasExitedOrGone(process))
+                {
+                    childEnded = Stopwatch.GetTimestamp();
+                    continue;
+                }
+
                 return false;
             }
 
