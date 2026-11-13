@@ -32,7 +32,7 @@ namespace PSXRecomp.Infrastructure.Standalone;
 /// <param name="ProgramEnd">The guest PC one past the program image, the natural-exit handoff boundary.</param>
 /// <param name="ResultRegister">The GPR index reported as the observable result (V0 = 2), or null for none.</param>
 /// <param name="RunTimeoutMs">The bounded per-run timeout in milliseconds.</param>
-/// <param name="BiosProvenance">For guest firmware: <see cref="BiosProvenanceUserSupplied"/> or <see cref="BiosProvenanceSynthetic"/>. Null for HLE.</param>
+/// <param name="BiosProvenance">For guest firmware: <see cref="BiosProvenanceUserSupplied"/> or <see cref="BiosProvenanceSynthetic"/>, or null when no declaration was given (always null for HLE).</param>
 /// <param name="EntryPc">The guest PC at which the guest's own program begins (the PS-X EXE header entry point for games, or the
 /// firmware load address for guest firmware). The runtime host's run request starts here; it is used for
 /// diagnostics and, on guest firmware, as the execution entry so the firmware's own vectors run first.</param>

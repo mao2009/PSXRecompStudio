@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using FluentAssertions;
+using PSXRecomp.Infrastructure.Cli;
 using PSXRecomp.Infrastructure.Standalone;
 using PSXRecomp.Tests.RealRomAnalysis;
 using Xunit;
@@ -20,6 +21,11 @@ public sealed class BiosProvenanceDeclarationTests : IDisposable
 
     private static FirmwareDistributionRequest Request(string? provenance = null) => new(
         "bios.bin", "disc.bin", "aot", "out", 37160u, 1000, SelfContained: false, BiosProvenance: provenance);
+
+    // The public package path: the request is built from the command's options, not from a caller-supplied null.
+    private static FirmwareDistributionRequest PublicPathRequest(string? provenance) => FirmwarePackageCommand.BuildRequest(
+        new FirmwareOptions("openbios", "bios.bin", "aot", CodeBytes: null, RunTimeoutSeconds: null, BiosProvenance: provenance),
+        "disc.bin", "out", selfContained: false, mixedFallback: false, fallbackSegmentBudget: null, fallbackMaxTransitions: null);
 
     private static RuntimeHostManifest FirmwareManifest(string? provenance) => new(
         RuntimeHostManifest.CurrentSchemaVersion, "../game", GuestFirmware: true, MixedFallback: false,
@@ -52,11 +58,25 @@ public sealed class BiosProvenanceDeclarationTests : IDisposable
         Request().BiosProvenance.Should().BeNull("no --bios-provenance means no recorded declaration");
     }
 
+    [Fact]
+    public void PublicPackagePath_WithoutProvenanceOption_RecordsNull()
+    {
+        PublicPathRequest(null).BiosProvenance.Should().BeNull("no --bios-provenance on the public path means no recorded declaration");
+    }
+
+    [Fact]
+    public void RequestRecord_DefaultDeclaration_IsNull()
+    {
+        new FirmwareDistributionRequest("bios.bin", "disc.bin", "aot", "out", 37160u, 1000, SelfContained: false)
+            .BiosProvenance.Should().BeNull("the record default must not be synthetic");
+    }
+
     [Theory]
     [InlineData("user-supplied")]
     [InlineData("synthetic")]
     public void ExplicitPackagingDeclaration_IsKeptUnchanged(string declared)
     {
+        PublicPathRequest(declared).BiosProvenance.Should().Be(declared);
         Request(declared).BiosProvenance.Should().Be(declared);
     }
 

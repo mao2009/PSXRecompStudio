@@ -17,6 +17,39 @@ internal static class FirmwarePackageCommand
     private const uint DefaultCodeBytes = 37160; // .text + .text_memcpy of the pinned build (see the OpenBIOS doc).
     private const int DefaultRunTimeoutSeconds = 1800;
 
+    /// <summary>
+    /// Maps the parsed package options to the distribution request. Pure: no file is read or written, so the public
+    /// path's defaults can be tested directly (issue #880: the BIOS declaration is null unless the option is given).
+    /// </summary>
+    internal static FirmwareDistributionRequest BuildRequest(
+        FirmwareOptions options,
+        string input,
+        string outputDirectory,
+        bool selfContained,
+        bool mixedFallback,
+        uint? fallbackSegmentBudget,
+        uint? fallbackMaxTransitions)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return new FirmwareDistributionRequest(
+            options.BiosRom!,
+            input,
+            options.AotDir!,
+            outputDirectory,
+            options.CodeBytes ?? DefaultCodeBytes,
+            checked((options.RunTimeoutSeconds ?? DefaultRunTimeoutSeconds) * 1000),
+            selfContained,
+            InstructionBudget: options.InstructionBudget ?? uint.MaxValue,
+            MixedFallback: mixedFallback,
+            FallbackSegmentInstructionBudget: fallbackSegmentBudget ?? FirmwareDistributionRequest.DefaultFallbackSegmentInstructionBudget,
+            FallbackMaxTransitions: fallbackMaxTransitions ?? FirmwareDistributionRequest.DefaultFallbackMaxTransitions,
+            BuildTimeout: options.BuildTimeoutSeconds is { } buildTimeoutSeconds
+                ? TimeSpan.FromSeconds(buildTimeoutSeconds)
+                : null,
+            // Issue #B2, LOW-3: no declaration is recorded as null. The run classifies the image by digest and never reads this label.
+            BiosProvenance: options.BiosProvenance);
+    }
+
     internal static int Run(ParsedArguments arguments, FirmwareOptions options, TextWriter standardOutput, TextWriter standardError)
     {
         try
@@ -33,23 +66,14 @@ internal static class FirmwarePackageCommand
             }
 
             var artifact = FirmwareDistributionBuilder.Build(
-                new FirmwareDistributionRequest(
-                    options.BiosRom,
+                BuildRequest(
+                    options,
                     arguments.Input!,
-                    options.AotDir,
                     arguments.OutputDirectory!,
-                    options.CodeBytes ?? DefaultCodeBytes,
-                    checked((options.RunTimeoutSeconds ?? DefaultRunTimeoutSeconds) * 1000),
                     arguments.SelfContained,
-                    InstructionBudget: options.InstructionBudget ?? uint.MaxValue,
-                    MixedFallback: arguments.MixedFallback,
-                    FallbackSegmentInstructionBudget: arguments.FallbackSegmentBudget ?? FirmwareDistributionRequest.DefaultFallbackSegmentInstructionBudget,
-                    FallbackMaxTransitions: arguments.FallbackMaxTransitions ?? FirmwareDistributionRequest.DefaultFallbackMaxTransitions,
-                    BuildTimeout: options.BuildTimeoutSeconds is { } buildTimeoutSeconds
-                        ? TimeSpan.FromSeconds(buildTimeoutSeconds)
-                        : null,
-                    // Issue #B2, LOW-3: no declaration is recorded as null. The run classifies the image by digest and never reads this label.
-                    BiosProvenance: options.BiosProvenance),
+arguments.MixedFallback,
+                    arguments.FallbackSegmentBudget,
+                    arguments.FallbackMaxTransitions),
                 RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             standardOutput.WriteLine("Firmware distribution packaged.");
             standardOutput.WriteLine($"  bios:       {BiosBackendSelection.NameOf(BiosBackendKind.OpenBios)} (real MIPS ROM; no BIOS HLE)");
